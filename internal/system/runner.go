@@ -4,13 +4,22 @@
 // a real exec runner.
 package system
 
-import "strings"
+import (
+	"context"
+	"io"
+	"os/exec"
+	"strings"
+)
 
 // Command is a single program invocation, kept as name+args so it can be both
 // rendered for display and executed without a shell.
 type Command struct {
 	Name string
 	Args []string
+	// Env holds extra environment entries ("KEY=value") for this command, used
+	// e.g. to pass repo-setup variables. The process inherits the parent
+	// environment plus these.
+	Env []string
 }
 
 // String renders the command as a human-readable line for the UI/logs.
@@ -21,4 +30,40 @@ func (c Command) String() string {
 // Runner executes commands. Implementations may record (tests) or exec (prod).
 type Runner interface {
 	Run(Command) error
+}
+
+// ExecRunner runs commands with os/exec, streaming combined stdout/stderr to
+// Output so the UI can show live progress. A nil Output discards command output.
+type ExecRunner struct {
+	Output io.Writer
+	ctx    context.Context
+}
+
+// NewExecRunner returns an ExecRunner writing command output to out.
+func NewExecRunner(out io.Writer) *ExecRunner {
+	return &ExecRunner{Output: out, ctx: context.Background()}
+}
+
+// WithContext returns a copy of the runner bound to ctx for cancellation.
+func (r *ExecRunner) WithContext(ctx context.Context) *ExecRunner {
+	cp := *r
+	cp.ctx = ctx
+	return &cp
+}
+
+// Run executes the command, streaming its output.
+func (r *ExecRunner) Run(c Command) error {
+	ctx := r.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
+	if len(c.Env) > 0 {
+		cmd.Env = append(cmd.Environ(), c.Env...)
+	}
+	if r.Output != nil {
+		cmd.Stdout = r.Output
+		cmd.Stderr = r.Output
+	}
+	return cmd.Run()
 }

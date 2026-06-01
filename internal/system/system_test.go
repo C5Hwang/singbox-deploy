@@ -1,6 +1,9 @@
 package system
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDetectOSUbuntu(t *testing.T) {
 	osr, err := ParseOSRelease("ID=ubuntu\nVERSION_ID=\"22.04\"\n")
@@ -68,5 +71,37 @@ func TestSystemctlCommand(t *testing.T) {
 	}
 	if MonitorService != "singbox-deploy-monitor.service" {
 		t.Fatalf("monitor service = %q", MonitorService)
+	}
+}
+
+type recordingRunner struct{ commands []string }
+
+func (r *recordingRunner) Run(c Command) error {
+	r.commands = append(r.commands, c.String())
+	return nil
+}
+
+func TestRunInstallPlanRecordsCommands(t *testing.T) {
+	r := &recordingRunner{}
+	plan := InstallPlan{Commands: []Command{
+		{Name: "apt", Args: []string{"update"}},
+		{Name: "systemctl", Args: []string{"enable", "sing-box.service"}},
+	}}
+	if err := RunInstallPlan(r, plan); err != nil {
+		t.Fatalf("RunInstallPlan error: %v", err)
+	}
+	if len(r.commands) != 2 {
+		t.Fatalf("commands = %#v", r.commands)
+	}
+}
+
+func TestExecRunnerStreamsOutput(t *testing.T) {
+	var buf strings.Builder
+	r := NewExecRunner(&buf)
+	if err := r.Run(Command{Name: "printf", Args: []string{"hello"}}); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if buf.String() != "hello" {
+		t.Fatalf("output = %q", buf.String())
 	}
 }
