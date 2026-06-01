@@ -1,2 +1,9 @@
 docs/
 .superpowers/
+
+# Node / frontend
+node_modules/
+web/traffic/node_modules/
+
+# Build artifacts
+/dist/
