@@ -4,7 +4,7 @@ After=network.target sing-box.service
 
 [Service]
 User=root
-ExecStart={{ .DeployBin }} monitor serve --listen 127.0.0.1:{{ .MonitorPort }}
+ExecStart={{ .DeployBin }} monitor serve --listen 127.0.0.1:{{ .MonitorPort }} --interface {{ .Interface }} --db {{ .DB }} --limit-bytes {{ .LimitBytes }} --reset-day {{ .ResetDay }} --interval-seconds {{ .IntervalSeconds }}
 Restart=on-failure
 RestartSec=10
 MemoryMax=128M
