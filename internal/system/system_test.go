@@ -105,3 +105,23 @@ func TestExecRunnerStreamsOutput(t *testing.T) {
 		t.Fatalf("output = %q", buf.String())
 	}
 }
+
+func TestNormalizeArch(t *testing.T) {
+	cases := map[string]string{"amd64": "amd64", "x86_64": "amd64", "arm64": "arm64", "aarch64": "arm64"}
+	for in, want := range cases {
+		if got := normalizeArch(in); got != want {
+			t.Fatalf("normalizeArch(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestHostSupported(t *testing.T) {
+	h := Host{OS: OSRelease{Family: FamilyDebian}, Arch: "amd64"}
+	if !h.Supported() {
+		t.Fatalf("ubuntu/amd64 should be supported")
+	}
+	bad := Host{OS: OSRelease{Family: FamilyUnknown}, Arch: "amd64"}
+	if bad.Supported() {
+		t.Fatalf("unknown family must be unsupported")
+	}
+}

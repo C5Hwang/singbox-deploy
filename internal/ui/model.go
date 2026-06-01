@@ -51,6 +51,7 @@ type Model struct {
 	status Status
 	groups []MenuGroup
 	cursor int // flat index across all items
+	wizard *wizard
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -99,10 +100,21 @@ func (m *Model) Init() tea.Cmd { return nil }
 
 // Update implements tea.Model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.SetSize(msg.Width, msg.Height)
-	case tea.KeyMsg:
+	if sz, ok := msg.(tea.WindowSizeMsg); ok {
+		m.SetSize(sz.Width, sz.Height)
+	}
+
+	// While a sub-flow (the install wizard) is active, delegate everything to it
+	// so its state machine and async run messages are handled in one place.
+	if m.wizard != nil {
+		cmd, done := m.wizard.Update(msg)
+		if done {
+			m.wizard = nil
+		}
+		return m, cmd
+	}
+
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
@@ -114,9 +126,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.flatItems())-1 {
 				m.cursor++
 			}
+		case "enter":
+			return m, m.activate()
 		}
 	}
 	return m, nil
+}
+
+// activate runs the action for the highlighted menu item. Only "Install /
+// reinstall" (the first item) is wired so far.
+func (m *Model) activate() tea.Cmd {
+	if m.cursor == 0 {
+		w := newWizard()
+		w.setSize(m.width, m.height)
+		m.wizard = w
+	}
+	return nil
 }
 
 var (
@@ -128,6 +153,9 @@ var (
 
 // View implements tea.Model.
 func (m *Model) View() string {
+	if m.wizard != nil {
+		return panelStyle.Render(m.wizard.View())
+	}
 	status := panelStyle.Render(m.statusView())
 	menu := panelStyle.Render(m.menuView())
 	footer := dimStyle.Render("↑/↓ move · enter select · esc/q quit")

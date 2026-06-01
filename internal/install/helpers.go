@@ -16,9 +16,12 @@ func writeFile(path string, data []byte, perm os.FileMode) error {
 	return os.WriteFile(path, data, perm)
 }
 
-// subscriptionToken derives the subscription URL token from the salt.
-func subscriptionToken(salt string) string {
+// SubscriptionToken derives the subscription URL token from the salt.
+func SubscriptionToken(salt string) string {
 	return subscription.TokenFromSalt(salt)
 }
+
+// subscriptionToken is the internal alias used by the orchestrator.
+func subscriptionToken(salt string) string { return SubscriptionToken(salt) }
 
 func itoa(n int) string { return strconv.Itoa(n) }
