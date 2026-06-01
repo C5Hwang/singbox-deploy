@@ -2,11 +2,27 @@ package main
 
 import (
 	"fmt"
+	"os"
 
-	"github.com/C5Hwang/singbox-deploy/internal/app"
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/C5Hwang/singbox-deploy/internal/ui"
 )
 
 func main() {
-	info := app.Metadata()
-	fmt.Printf("%s\n", info.Name)
+	// The monitor subcommand runs the long-lived traffic monitor service and is
+	// dispatched before the interactive UI. It is wired in the monitor task.
+	if len(os.Args) > 1 && os.Args[1] == "monitor" {
+		if err := runMonitor(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "monitor:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	p := tea.NewProgram(ui.NewModel(), tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 }
