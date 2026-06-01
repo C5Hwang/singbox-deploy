@@ -1,0 +1,21 @@
+{
+  "type": "tuic",
+  "tag": "tuic",
+  "listen": "::",
+  "listen_port": {{ .Port }},
+  "users": [
+    {
+      "uuid": {{ .UUID | json }},
+      "password": {{ .Password | json }},
+      "name": {{ .Name | json }}
+    }
+  ],
+  "congestion_control": "bbr",
+  "tls": {
+    "enabled": true,
+    "server_name": {{ .Domain | json }},
+    "alpn": ["h3"],
+    "certificate_path": {{ .CertPath | json }},
+    "key_path": {{ .KeyPath | json }}
+  }
+}

@@ -5,10 +5,24 @@ package templatefs
 
 import (
 	"bytes"
+	"encoding/json"
 	"text/template"
 
 	assets "github.com/C5Hwang/singbox-deploy/template"
 )
+
+// funcMap exposes helpers to every template. "json" marshals a value to its
+// JSON literal form so JSON/YAML templates can safely interpolate strings,
+// numbers, and arrays without ad-hoc quoting.
+var funcMap = template.FuncMap{
+	"json": func(v any) (string, error) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	},
+}
 
 // Render parses the named embedded template and executes it against data.
 func Render(name string, data any) (string, error) {
@@ -16,7 +30,7 @@ func Render(name string, data any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	t, err := template.New(name).Option("missingkey=error").Parse(string(b))
+	t, err := template.New(name).Funcs(funcMap).Option("missingkey=error").Parse(string(b))
 	if err != nil {
 		return "", err
 	}

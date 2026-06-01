@@ -1,0 +1,19 @@
+{
+  "type": "hysteria2",
+  "tag": "hysteria2",
+  "listen": "::",
+  "listen_port": {{ .Port }},
+  "users": [
+    {
+      "password": {{ .Password | json }},
+      "name": {{ .Name | json }}
+    }
+  ],
+  "tls": {
+    "enabled": true,
+    "server_name": {{ .Domain | json }},
+    "alpn": ["h3"],
+    "certificate_path": {{ .CertPath | json }},
+    "key_path": {{ .KeyPath | json }}
+  }
+}

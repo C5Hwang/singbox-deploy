@@ -1,0 +1,26 @@
+{
+  "type": "vless",
+  "tag": "reality-vision",
+  "listen": "::",
+  "listen_port": {{ .Port }},
+  "users": [
+    {
+      "uuid": {{ .UUID | json }},
+      "flow": "xtls-rprx-vision",
+      "name": {{ .Name | json }}
+    }
+  ],
+  "tls": {
+    "enabled": true,
+    "server_name": {{ .ServerName | json }},
+    "reality": {
+      "enabled": true,
+      "handshake": {
+        "server": {{ .ServerName | json }},
+        "server_port": {{ .HandshakePort }}
+      },
+      "private_key": {{ .PrivateKey | json }},
+      "short_id": ["", {{ .ShortID | json }}]
+    }
+  }
+}
