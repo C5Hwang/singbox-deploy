@@ -52,6 +52,7 @@ type Model struct {
 	groups []MenuGroup
 	cursor int // flat index across all items
 	wizard *wizard
+	dryRun bool
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -118,6 +119,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
+		case "d":
+			m.dryRun = !m.dryRun
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -137,7 +140,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // reinstall" (the first item) is wired so far.
 func (m *Model) activate() tea.Cmd {
 	if m.cursor == 0 {
-		w := newWizard()
+		w := newWizard(m.dryRun)
 		w.setSize(m.width, m.height)
 		m.wizard = w
 	}
@@ -153,12 +156,12 @@ var (
 
 // View implements tea.Model.
 func (m *Model) View() string {
+	footer := m.footerView()
 	if m.wizard != nil {
-		return panelStyle.Render(m.wizard.View())
+		return lipgloss.JoinVertical(lipgloss.Left, panelStyle.Render(m.wizard.View()), footer)
 	}
 	status := panelStyle.Render(m.statusView())
 	menu := panelStyle.Render(m.menuView())
-	footer := dimStyle.Render("↑/↓ move · enter select · esc/q quit")
 
 	var body string
 	if m.LayoutMode() == LayoutWide {
@@ -167,6 +170,18 @@ func (m *Model) View() string {
 		body = lipgloss.JoinVertical(lipgloss.Left, status, menu)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
+}
+
+func (m *Model) footerView() string {
+	var parts []string
+	if m.dryRun {
+		parts = append(parts, "dry-run mode")
+	}
+	if m.wizard == nil {
+		parts = append(parts, "d dry-run")
+	}
+	parts = append(parts, "↑/↓ move", "enter select", "esc/q quit")
+	return dimStyle.Render(strings.Join(parts, " · "))
 }
 
 func or(v, fallback string) string {

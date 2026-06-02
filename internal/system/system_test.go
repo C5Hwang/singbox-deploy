@@ -106,6 +106,22 @@ func TestExecRunnerStreamsOutput(t *testing.T) {
 	}
 }
 
+func TestDryRunRunnerPrintsWithoutExecuting(t *testing.T) {
+	var buf strings.Builder
+	var captured string
+	r := NewDryRunRunner(&buf)
+	r.OnCommand = func(c Command) { captured = c.String() }
+	if err := r.Run(Command{Name: "sh", Args: []string{"-c", "exit 7"}}); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "[dry-run] sh -c exit 7") {
+		t.Fatalf("dry-run output = %q", buf.String())
+	}
+	if captured != "sh -c exit 7" {
+		t.Fatalf("captured command = %q", captured)
+	}
+}
+
 func TestNormalizeArch(t *testing.T) {
 	cases := map[string]string{"amd64": "amd64", "x86_64": "amd64", "arm64": "arm64", "aarch64": "arm64"}
 	for in, want := range cases {

@@ -1,8 +1,12 @@
 package ui
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -29,6 +33,7 @@ const (
 	phaseForm
 	phaseConfirm
 	phaseRunning
+	phaseDryRunReview
 	phaseDone
 )
 
@@ -61,10 +66,11 @@ func installFields() []field {
 // completion into the UI. It is the only channel the orchestrator goroutine
 // uses to communicate, so all wizard state stays mutated on the UI goroutine.
 type runMsg struct {
-	event   *install.Event
-	logLine string
-	done    bool
-	err     error
+	event         *install.Event
+	logLine       string
+	dryRunCommand string
+	done          bool
+	err           error
 }
 
 // wizard is the interactive install flow.
@@ -85,12 +91,14 @@ type wizard struct {
 	logBuf []string
 	runErr error
 	cfg    install.Config
+	dryRun bool
+	cmds   []string
 
 	ch chan runMsg
 }
 
 // newWizard builds the wizard, running host preflight immediately.
-func newWizard() *wizard {
+func newWizard(dryRun bool) *wizard {
 	ti := textinput.New()
 	ti.CharLimit = 256
 	ti.Prompt = "› "
@@ -101,20 +109,25 @@ func newWizard() *wizard {
 		values: map[string]string{},
 		input:  ti,
 		bar:    progress.New(progress.WithDefaultGradient()),
+		dryRun: dryRun,
 	}
 	host, err := system.DetectHost()
 	w.host = host
 	switch {
 	case err != nil:
 		w.hosts = "Failed to detect host: " + err.Error()
-	case !host.IsRoot:
+	case !host.IsRoot && !dryRun:
 		w.hosts = "This installer must be run as root."
 	case !host.Supported():
 		w.hosts = fmt.Sprintf("Unsupported system: family=%q arch=%q", host.OS.Family, host.Arch)
-	case host.SELinux:
+	case host.SELinux && !dryRun:
 		w.hosts = "SELinux is enforcing; installation is blocked. Set it permissive and retry."
 	default:
-		w.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s — ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
+		if dryRun {
+			w.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s - dry-run ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
+		} else {
+			w.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s — ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
+		}
 	}
 	return w
 }
@@ -128,7 +141,7 @@ func firewallName(f system.Firewall) string {
 
 // canProceed reports whether preflight passed.
 func (w *wizard) canProceed() bool {
-	return w.host.IsRoot && w.host.Supported() && !w.host.SELinux
+	return (w.dryRun || w.host.IsRoot) && w.host.Supported() && (w.dryRun || !w.host.SELinux)
 }
 
 func (w *wizard) setSize(width, height int) {
@@ -221,6 +234,9 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 	case phaseRunning:
 		// Ignore input while running, except quit-after-failure handled in done.
+	case phaseDryRunReview:
+		w.phase = phaseDone
+		return nil, false
 	case phaseDone:
 		return nil, true
 	}
@@ -240,9 +256,16 @@ func (w *wizard) handleRun(msg runMsg) tea.Cmd {
 	if msg.logLine != "" {
 		w.appendLog(dimStyle.Render(msg.logLine))
 	}
+	if msg.dryRunCommand != "" {
+		w.cmds = append(w.cmds, msg.dryRunCommand)
+	}
 	if msg.done {
 		w.runErr = msg.err
-		w.phase = phaseDone
+		if w.dryRun && msg.err == nil {
+			w.phase = phaseDryRunReview
+		} else {
+			w.phase = phaseDone
+		}
 		return nil
 	}
 	return w.waitForRun()
@@ -268,13 +291,57 @@ func (w *wizard) startRun() tea.Cmd {
 	w.ch = make(chan runMsg, 64)
 
 	ch := w.ch
+	logs := &logWriter{ch: ch}
+	runner := system.Runner(system.NewExecRunner(logs))
+	layout := paths.DefaultLayout()
+	acmeManager := acme.NewManager(acme.NewLegoIssuer())
+	releases := release.NewClient("", nil)
+	var latestSingBox func(context.Context) (string, error)
+	var download func(context.Context, string, string) error
+	var systemdDir, nginxConfPath string
+
+	if w.dryRun {
+		root, err := os.MkdirTemp("", "singbox-deploy-dry-run-*")
+		if err != nil {
+			w.runErr = err
+			w.phase = phaseDone
+			return nil
+		}
+		ch <- runMsg{logLine: "dry-run mode: system commands will be printed only"}
+		ch <- runMsg{logLine: "dry-run output root: " + root}
+		dryRunner := system.NewDryRunRunner(logs)
+		dryRunner.OnCommand = func(c system.Command) {
+			ch <- runMsg{dryRunCommand: c.String()}
+		}
+		runner = dryRunner
+		layout = paths.LayoutForRoot(root)
+		acmeManager = acme.NewManager(dryRunIssuer{})
+		releases = nil
+		latestSingBox = func(context.Context) (string, error) { return "v1.12.0", nil }
+		download = func(_ context.Context, url, dest string) error {
+			cmd := "download " + url + " -> " + dest
+			ch <- runMsg{dryRunCommand: cmd}
+			select {
+			case ch <- runMsg{logLine: "[dry-run] " + cmd}:
+			default:
+			}
+			return writeDryRunSingBoxArchive(dest)
+		}
+		systemdDir = filepath.Join(root, "systemd")
+		nginxConfPath = filepath.Join(root, "nginx", "singbox-deploy.conf")
+	}
+
 	orch := &install.Orchestrator{
-		Runner:   system.NewExecRunner(&logWriter{ch: ch}),
-		Layout:   paths.DefaultLayout(),
-		ACME:     acme.NewManager(acme.NewLegoIssuer()),
-		Releases: release.NewClient("", nil),
-		GOOS:     "linux",
-		GOARCH:   w.host.Arch,
+		Runner:        runner,
+		Layout:        layout,
+		ACME:          acmeManager,
+		Releases:      releases,
+		Download:      download,
+		LatestSingBox: latestSingBox,
+		GOOS:          "linux",
+		GOARCH:        w.host.Arch,
+		SystemdDir:    systemdDir,
+		NginxConfPath: nginxConfPath,
 	}
 	orch.Progress = func(e install.Event) {
 		ev := e
@@ -381,6 +448,9 @@ func (w *wizard) View() string {
 	case phaseRunning:
 		return wizardTitle.Render("Install · Running") + "\n\n" +
 			w.bar.ViewAs(w.percent()) + "\n\n" + strings.Join(w.logBuf, "\n")
+	case phaseDryRunReview:
+		return wizardTitle.Render("Install · Dry-run commands") + "\n\n" +
+			w.dryRunCommandReview() + "\n\n" + dimStyle.Render("press any key to continue to completion")
 	case phaseDone:
 		if w.runErr != nil {
 			return wizardErr.Render("Install failed") + "\n\n" + w.runErr.Error() + "\n\n" +
@@ -390,6 +460,19 @@ func (w *wizard) View() string {
 			dimStyle.Render("press any key to return")
 	}
 	return ""
+}
+
+func (w *wizard) dryRunCommandReview() string {
+	if len(w.cmds) == 0 {
+		return "No system commands were captured."
+	}
+	var b strings.Builder
+	b.WriteString("dry-run mode: commands were printed only and not executed.\n\n")
+	for i, cmd := range w.cmds {
+		cmd = strings.ReplaceAll(cmd, "\n", "\n    ")
+		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, cmd))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func (w *wizard) percent() float64 {
@@ -446,4 +529,44 @@ func (lw *logWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+type dryRunIssuer struct{}
+
+func (dryRunIssuer) Issue(context.Context, acme.Request) (acme.Certificate, error) {
+	return acme.Certificate{
+		CertificatePEM: []byte("-----BEGIN CERTIFICATE-----\ndry-run\n-----END CERTIFICATE-----\n"),
+		PrivateKeyPEM:  []byte("-----BEGIN PRIVATE KEY-----\ndry-run\n-----END PRIVATE KEY-----\n"),
+	}, nil
+}
+
+func writeDryRunSingBoxArchive(dest string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	content := "#!/bin/sh\nexit 0\n"
+	hdr := &tar.Header{
+		Name:     "sing-box-dry-run/sing-box",
+		Mode:     0o755,
+		Size:     int64(len(content)),
+		Typeflag: tar.TypeReg,
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return gz.Close()
 }

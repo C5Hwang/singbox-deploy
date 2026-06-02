@@ -1,6 +1,11 @@
 package ui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 func TestProgressPercent(t *testing.T) {
 	p := Progress{Current: 4, Total: 10, Label: "Install sing-box"}
@@ -38,5 +43,36 @@ func TestInstallStepsLabeled(t *testing.T) {
 	}
 	if steps[0].Label == "" {
 		t.Fatalf("first step has no label")
+	}
+}
+
+func TestDryRunShortcutShowsIndicator(t *testing.T) {
+	m := NewModel()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if !m.dryRun {
+		t.Fatalf("dry-run shortcut did not enable mode")
+	}
+	if !strings.Contains(m.View(), "dry-run mode") {
+		t.Fatalf("view missing dry-run indicator:\n%s", m.View())
+	}
+}
+
+func TestDryRunStopsAtCommandReviewBeforeComplete(t *testing.T) {
+	w := &wizard{phase: phaseRunning, dryRun: true}
+	w.handleRun(runMsg{dryRunCommand: "systemctl restart nginx"})
+	w.handleRun(runMsg{done: true})
+	if w.phase != phaseDryRunReview {
+		t.Fatalf("phase = %v, want dry-run review", w.phase)
+	}
+	view := w.View()
+	if !strings.Contains(view, "Install · Dry-run commands") || !strings.Contains(view, "systemctl restart nginx") {
+		t.Fatalf("review view missing command:\n%s", view)
+	}
+	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done {
+		t.Fatalf("review should continue to completion screen, not close wizard")
+	}
+	if w.phase != phaseDone {
+		t.Fatalf("phase after review key = %v, want done", w.phase)
 	}
 }
