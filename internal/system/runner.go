@@ -90,6 +90,14 @@ func (r *DryRunRunner) Run(c Command) error {
 	if r.Output == nil {
 		return nil
 	}
-	_, err := fmt.Fprintf(r.Output, "[dry-run] %s\n", c.String())
+	_, err := fmt.Fprint(r.Output, prefixDryRunLines(c.String()))
 	return err
+}
+
+func prefixDryRunLines(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "[dry-run] " + line
+	}
+	return strings.Join(lines, "\n") + "\n"
 }

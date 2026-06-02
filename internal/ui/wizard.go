@@ -33,7 +33,6 @@ const (
 	phaseForm
 	phaseConfirm
 	phaseRunning
-	phaseDryRunReview
 	phaseDone
 )
 
@@ -42,6 +41,7 @@ type field struct {
 	key   string
 	label string
 	def   string
+	note  string
 	// skip reports whether this field is hidden given the values so far.
 	skip func(vals map[string]string) bool
 }
@@ -50,15 +50,15 @@ type field struct {
 func installFields() []field {
 	isDNS := func(v map[string]string) bool { return v["challenge"] != "dns-01" }
 	return []field{
-		{key: "domain", label: "Domain (must resolve to this server)"},
-		{key: "email", label: "ACME account email"},
-		{key: "challenge", label: "ACME challenge (http-01 / dns-01)", def: "http-01"},
-		{key: "dns_provider", label: "DNS provider (cloudflare / aliyun)", def: "cloudflare", skip: isDNS},
-		{key: "dns_credential", label: "DNS credential (CF token, or aliyun accessKey:secretKey)", skip: isDNS},
-		{key: "reality_sni", label: "Reality SNI (camouflage server)", def: "www.microsoft.com"},
-		{key: "display_name", label: "Node display name", def: "Node"},
-		{key: "traffic_limit_gb", label: "Monthly traffic limit in GB (0 = unlimited)", def: "0"},
-		{key: "reset_day", label: "Monthly reset day (1-28)", def: "1"},
+		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
+		{key: "email", label: "ACME account email", note: "Used to register the Let's Encrypt ACME account and receive certificate notices."},
+		{key: "challenge", label: "ACME challenge (http-01 / dns-01)", def: "http-01", note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
+		{key: "dns_provider", label: "DNS provider (cloudflare / aliyun)", def: "cloudflare", note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
+		{key: "dns_credential", label: "DNS credential (CF token, or aliyun accessKey:secretKey)", note: "Cloudflare uses an API token. Aliyun uses accessKey:secretKey. Passed to ACME for DNS validation.", skip: isDNS},
+		{key: "reality_sni", label: "Reality SNI (camouflage server)", def: "www.microsoft.com", note: "Used as the Reality handshake server name; choose a real HTTPS host suitable for camouflage."},
+		{key: "display_name", label: "Node display name", def: "Node", note: "Used only in generated node names shown by clients."},
+		{key: "traffic_limit_gb", label: "Monthly traffic limit in GB (0 = unlimited)", def: "0", note: "Used by the traffic monitor quota. When exceeded, sing-box.service is stopped automatically."},
+		{key: "reset_day", label: "Monthly reset day (1-28)", def: "1", note: "Day of month when the traffic quota cycle resets and service can be restored."},
 	}
 }
 
@@ -66,11 +66,10 @@ func installFields() []field {
 // completion into the UI. It is the only channel the orchestrator goroutine
 // uses to communicate, so all wizard state stays mutated on the UI goroutine.
 type runMsg struct {
-	event         *install.Event
-	logLine       string
-	dryRunCommand string
-	done          bool
-	err           error
+	event   *install.Event
+	logLine string
+	done    bool
+	err     error
 }
 
 // wizard is the interactive install flow.
@@ -86,13 +85,14 @@ type wizard struct {
 	values  map[string]string
 	input   textinput.Model
 
-	bar    progress.Model
-	events []install.Event
-	logBuf []string
-	runErr error
-	cfg    install.Config
-	dryRun bool
-	cmds   []string
+	bar                 progress.Model
+	events              []install.Event
+	logBuf              []string
+	logScroll           int
+	runErr              error
+	cfg                 install.Config
+	dryRun              bool
+	dryRunAwaitingEnter bool
 
 	ch chan runMsg
 }
@@ -150,6 +150,14 @@ func (w *wizard) setSize(width, height int) {
 	w.bar.Width = min(width-4, 60)
 }
 
+func (w *wizard) setField(index int) {
+	f := w.fields[index]
+	w.fieldIx = index
+	w.input.SetValue(w.values[f.key])
+	w.input.Placeholder = f.def
+	w.input.Focus()
+}
+
 // startForm activates the first visible field.
 func (w *wizard) startForm() {
 	w.phase = phaseForm
@@ -164,13 +172,45 @@ func (w *wizard) advanceField() {
 		if f.skip != nil && f.skip(w.values) {
 			continue
 		}
-		w.fieldIx = i
-		w.input.SetValue("")
-		w.input.Placeholder = f.def
-		w.input.Focus()
+		w.setField(i)
 		return
 	}
 	w.phase = phaseConfirm
+}
+
+func (w *wizard) previousField() {
+	if w.fieldIx < 0 {
+		return
+	}
+	w.saveFieldDraft()
+	for i := w.fieldIx - 1; i >= 0; i-- {
+		f := w.fields[i]
+		if f.skip != nil && f.skip(w.values) {
+			continue
+		}
+		w.setField(i)
+		return
+	}
+}
+
+func (w *wizard) backToLastField() {
+	w.phase = phaseForm
+	for i := len(w.fields) - 1; i >= 0; i-- {
+		f := w.fields[i]
+		if f.skip != nil && f.skip(w.values) {
+			continue
+		}
+		w.setField(i)
+		return
+	}
+}
+
+func (w *wizard) saveFieldDraft() {
+	if w.fieldIx < 0 || w.fieldIx >= len(w.fields) {
+		return
+	}
+	f := w.fields[w.fieldIx]
+	w.values[f.key] = strings.TrimSpace(w.input.Value())
 }
 
 // commitField stores the current field value (or its default) and advances.
@@ -218,6 +258,8 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		switch msg.String() {
 		case "enter":
 			w.commitField()
+		case "shift+tab", "ctrl+b":
+			w.previousField()
 		case "esc":
 			return nil, true
 		default:
@@ -229,22 +271,71 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		switch msg.String() {
 		case "enter", "y":
 			return w.startRun(), false
+		case "shift+tab", "ctrl+b":
+			w.backToLastField()
 		case "esc", "n":
 			return nil, true
 		}
 	case phaseRunning:
-		// Ignore input while running, except quit-after-failure handled in done.
-	case phaseDryRunReview:
-		w.phase = phaseDone
-		return nil, false
+		switch msg.String() {
+		case "up", "k":
+			w.scrollLog(1, w.logViewportHeight())
+			return nil, false
+		case "down", "j":
+			w.scrollLog(-1, w.logViewportHeight())
+			return nil, false
+		case "pgup":
+			w.scrollLog(w.logViewportHeight(), w.logViewportHeight())
+			return nil, false
+		case "pgdown":
+			w.scrollLog(-w.logViewportHeight(), w.logViewportHeight())
+			return nil, false
+		case "home":
+			w.logScroll = w.maxLogScroll(w.logViewportHeight())
+			return nil, false
+		case "end":
+			w.logScroll = 0
+			return nil, false
+		case "enter":
+			if !w.dryRun || !w.dryRunAwaitingEnter {
+				break
+			}
+			w.dryRunAwaitingEnter = false
+			w.logScroll = 0
+			return w.waitForRun(), false
+		}
 	case phaseDone:
+		if w.runErr != nil {
+			switch msg.String() {
+			case "up", "k":
+				w.scrollLog(1, w.doneLogHeight())
+				return nil, false
+			case "down", "j":
+				w.scrollLog(-1, w.doneLogHeight())
+				return nil, false
+			case "pgup":
+				w.scrollLog(w.doneLogHeight(), w.doneLogHeight())
+				return nil, false
+			case "pgdown":
+				w.scrollLog(-w.doneLogHeight(), w.doneLogHeight())
+				return nil, false
+			case "home":
+				w.logScroll = w.maxLogScroll(w.doneLogHeight())
+				return nil, false
+			case "end":
+				w.logScroll = 0
+				return nil, false
+			}
+		}
 		return nil, true
 	}
 	return nil, false
 }
 
 func (w *wizard) handleRun(msg runMsg) tea.Cmd {
+	visible := false
 	if msg.event != nil {
+		visible = true
 		w.events = append(w.events, *msg.event)
 		e := *msg.event
 		line := fmt.Sprintf("[%d/%d] %s — %s", e.Index, e.Total, e.Label, e.Status)
@@ -254,28 +345,28 @@ func (w *wizard) handleRun(msg runMsg) tea.Cmd {
 		w.appendLog(line)
 	}
 	if msg.logLine != "" {
+		visible = true
 		w.appendLog(dimStyle.Render(msg.logLine))
 	}
-	if msg.dryRunCommand != "" {
-		w.cmds = append(w.cmds, msg.dryRunCommand)
-	}
 	if msg.done {
+		w.dryRunAwaitingEnter = false
 		w.runErr = msg.err
-		if w.dryRun && msg.err == nil {
-			w.phase = phaseDryRunReview
-		} else {
-			w.phase = phaseDone
-		}
+		w.phase = phaseDone
+		return nil
+	}
+	if w.dryRun && visible {
+		w.dryRunAwaitingEnter = true
 		return nil
 	}
 	return w.waitForRun()
 }
 
 func (w *wizard) appendLog(line string) {
-	w.logBuf = append(w.logBuf, line)
-	if len(w.logBuf) > 12 {
-		w.logBuf = w.logBuf[len(w.logBuf)-12:]
+	if w.logScroll > 0 {
+		w.logScroll += w.logLineHeight(line)
 	}
+	w.logBuf = append(w.logBuf, line)
+	w.clampLogScroll(w.logViewportHeight())
 }
 
 // startRun builds the config and launches the orchestrator goroutine.
@@ -291,7 +382,7 @@ func (w *wizard) startRun() tea.Cmd {
 	w.ch = make(chan runMsg, 64)
 
 	ch := w.ch
-	logs := &logWriter{ch: ch}
+	logs := &logWriter{ch: ch, block: w.dryRun}
 	runner := system.Runner(system.NewExecRunner(logs))
 	layout := paths.DefaultLayout()
 	acmeManager := acme.NewManager(acme.NewLegoIssuer())
@@ -310,9 +401,6 @@ func (w *wizard) startRun() tea.Cmd {
 		ch <- runMsg{logLine: "dry-run mode: system commands will be printed only"}
 		ch <- runMsg{logLine: "dry-run output root: " + root}
 		dryRunner := system.NewDryRunRunner(logs)
-		dryRunner.OnCommand = func(c system.Command) {
-			ch <- runMsg{dryRunCommand: c.String()}
-		}
 		runner = dryRunner
 		layout = paths.LayoutForRoot(root)
 		acmeManager = acme.NewManager(dryRunIssuer{})
@@ -320,11 +408,7 @@ func (w *wizard) startRun() tea.Cmd {
 		latestSingBox = func(context.Context) (string, error) { return "v1.12.0", nil }
 		download = func(_ context.Context, url, dest string) error {
 			cmd := "download " + url + " -> " + dest
-			ch <- runMsg{dryRunCommand: cmd}
-			select {
-			case ch <- runMsg{logLine: "[dry-run] " + cmd}:
-			default:
-			}
+			ch <- runMsg{logLine: "[dry-run] " + cmd}
 			return writeDryRunSingBoxArchive(dest)
 		}
 		systemdDir = filepath.Join(root, "systemd")
@@ -436,25 +520,25 @@ func (w *wizard) View() string {
 		var b strings.Builder
 		b.WriteString(wizardTitle.Render("Install · Configuration") + "\n\n")
 		b.WriteString(f.label + "\n")
+		if f.note != "" {
+			for _, line := range wrapFieldNote(f.note, w.width) {
+				b.WriteString(dimStyle.Render(line) + "\n")
+			}
+		}
 		if f.def != "" {
 			b.WriteString(dimStyle.Render("default: "+f.def) + "\n")
 		}
 		b.WriteString(w.input.View() + "\n\n")
-		b.WriteString(dimStyle.Render("enter to continue · esc to cancel"))
+		b.WriteString(dimStyle.Render("enter to continue · shift+tab/ctrl+b back · esc to cancel"))
 		return b.String()
 	case phaseConfirm:
 		return wizardTitle.Render("Install · Confirm") + "\n\n" + w.summary() + "\n" +
-			dimStyle.Render("enter/y to install · esc/n to cancel")
+			dimStyle.Render("enter/y to install · shift+tab/ctrl+b back · esc/n to cancel")
 	case phaseRunning:
-		return wizardTitle.Render("Install · Running") + "\n\n" +
-			w.bar.ViewAs(w.percent()) + "\n\n" + strings.Join(w.logBuf, "\n")
-	case phaseDryRunReview:
-		return wizardTitle.Render("Install · Dry-run commands") + "\n\n" +
-			w.dryRunCommandReview() + "\n\n" + dimStyle.Render("press any key to continue to completion")
+		return w.runningView()
 	case phaseDone:
 		if w.runErr != nil {
-			return wizardErr.Render("Install failed") + "\n\n" + w.runErr.Error() + "\n\n" +
-				strings.Join(w.logBuf, "\n") + "\n\n" + dimStyle.Render("press any key to return")
+			return w.failedView()
 		}
 		return wizardOK.Render("Install complete") + "\n\n" + w.doneSummary() + "\n\n" +
 			dimStyle.Render("press any key to return")
@@ -462,17 +546,129 @@ func (w *wizard) View() string {
 	return ""
 }
 
-func (w *wizard) dryRunCommandReview() string {
-	if len(w.cmds) == 0 {
-		return "No system commands were captured."
+func (w *wizard) runningView() string {
+	logs := w.logView(w.logViewportHeight())
+	hint := "↑/↓ scroll log"
+	if w.dryRunAwaitingEnter {
+		hint = "enter to show next dry-run update · " + hint
+	} else if w.dryRun {
+		hint = "waiting for next dry-run update · " + hint
 	}
-	var b strings.Builder
-	b.WriteString("dry-run mode: commands were printed only and not executed.\n\n")
-	for i, cmd := range w.cmds {
-		cmd = strings.ReplaceAll(cmd, "\n", "\n    ")
-		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, cmd))
+	body := wizardTitle.Render("Install · Running") + "\n\n" + w.bar.ViewAs(w.percent())
+	if logs != "" {
+		body += "\n\n" + logs
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return body + "\n\n" + dimStyle.Render(hint)
+}
+
+func (w *wizard) failedView() string {
+	body := wizardErr.Render("Install failed") + "\n\n" + w.runErr.Error()
+	if logs := w.logView(w.doneLogHeight()); logs != "" {
+		body += "\n\n" + logs + "\n\n" + dimStyle.Render("↑/↓ scroll log · any other key to return")
+		return body
+	}
+	return body + "\n\n" + dimStyle.Render("press any key to return")
+}
+
+func (w *wizard) logView(height int) string {
+	lines := w.visibleLogLines(height)
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (w *wizard) visibleLogLines(height int) []string {
+	rows := w.logRows()
+	if height <= 0 || len(rows) == 0 {
+		return nil
+	}
+	visible := min(height, len(rows))
+	w.clampLogScroll(height)
+	start := len(rows) - visible - w.logScroll
+	return rows[start : start+visible]
+}
+
+func (w *wizard) scrollLog(delta, height int) {
+	w.logScroll += delta
+	w.clampLogScroll(height)
+}
+
+func (w *wizard) clampLogScroll(height int) {
+	w.logScroll = min(max(0, w.logScroll), w.maxLogScroll(height))
+}
+
+func (w *wizard) maxLogScroll(height int) int {
+	if height <= 0 {
+		return 0
+	}
+	return max(0, len(w.logRows())-height)
+}
+
+func (w *wizard) logRows() []string {
+	var rows []string
+	for _, line := range w.logBuf {
+		rows = append(rows, w.wrapLogLine(line)...)
+	}
+	return rows
+}
+
+func (w *wizard) wrapLogLine(line string) []string {
+	wrapped := lipgloss.NewStyle().Width(w.logWrapWidth()).Render(line)
+	return strings.Split(wrapped, "\n")
+}
+
+func (w *wizard) logLineHeight(line string) int {
+	return max(1, lipgloss.Height(lipgloss.NewStyle().Width(w.logWrapWidth()).Render(line)))
+}
+
+func (w *wizard) logWrapWidth() int {
+	if w.width <= 0 {
+		return 80
+	}
+	return max(1, w.width)
+}
+
+func (w *wizard) logViewportHeight() int {
+	if w.height <= 0 {
+		return 12
+	}
+	return max(1, w.height-6)
+}
+
+func (w *wizard) doneLogHeight() int {
+	if w.height <= 0 {
+		return 12
+	}
+	return max(1, w.height-7)
+}
+
+func wrapFieldNote(s string, width int) []string {
+	if width <= 0 {
+		width = 80
+	}
+	return wrapWords(s, max(24, width-4))
+}
+
+func wrapWords(s string, width int) []string {
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return nil
+	}
+	if width <= 0 {
+		return []string{s}
+	}
+	var lines []string
+	line := words[0]
+	for _, word := range words[1:] {
+		if len(line)+1+len(word) > width {
+			lines = append(lines, line)
+			line = word
+			continue
+		}
+		line += " " + word
+	}
+	return append(lines, line)
 }
 
 func (w *wizard) percent() float64 {
@@ -512,19 +708,25 @@ func (w *wizard) doneSummary() string {
 	}, "\n")
 }
 
-// logWriter forwards streamed command output to the UI via the run channel.
-// It runs on the orchestrator goroutine, so it must not touch wizard state
-// directly. Sends are non-blocking: if the buffer is full, lines are dropped
-// rather than stalling the install.
-type logWriter struct{ ch chan runMsg }
+// logWriter forwards streamed command output to the UI via the run channel. It
+// runs on the orchestrator goroutine, so it must not touch wizard state directly.
+type logWriter struct {
+	ch    chan runMsg
+	block bool
+}
 
 func (lw *logWriter) Write(p []byte) (int, error) {
 	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		msg := runMsg{logLine: line}
+		if lw.block {
+			lw.ch <- msg
+			continue
+		}
 		select {
-		case lw.ch <- runMsg{logLine: line}:
+		case lw.ch <- msg:
 		default:
 		}
 	}

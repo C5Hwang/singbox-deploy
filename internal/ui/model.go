@@ -18,6 +18,13 @@ const (
 // wideThreshold is the minimum width for the side-by-side layout.
 const wideThreshold = 100
 
+const (
+	defaultWidth  = 100
+	defaultHeight = 30
+	sidebarWidth  = 38
+	panelGap      = 1
+)
+
 // Status is the snapshot rendered in the top status panel. Empty fields render
 // as "unknown" so the panel is meaningful before installation.
 type Status struct {
@@ -62,14 +69,17 @@ func NewModel() *Model {
 
 func defaultGroups() []MenuGroup {
 	return []MenuGroup{
-		{Title: "Install", Items: []MenuItem{{"Install / reinstall"}}},
-		{Title: "Protocols", Items: []MenuItem{{"Manage protocols"}}},
-		{Title: "User & Subscription", Items: []MenuItem{{"Account & subscriptions"}}},
-		{Title: "Certificate & Nginx", Items: []MenuItem{{"Certificate / site management"}}},
-		{Title: "Traffic", Items: []MenuItem{{"Traffic monitor"}}},
-		{Title: "Routing", Items: []MenuItem{{"Domain/IP blacklist"}}},
-		{Title: "Core", Items: []MenuItem{{"sing-box core management"}}},
-		{Title: "System", Items: []MenuItem{{"Self-update"}, {"Uninstall"}}},
+		{Title: "Install", Items: []MenuItem{{Label: "Install / reinstall"}}},
+		{Title: "Protocols", Items: []MenuItem{{Label: "Manage protocols"}}},
+		{Title: "User & Subscription", Items: []MenuItem{{Label: "Account & subscriptions"}}},
+		{Title: "Certificate & Nginx", Items: []MenuItem{{Label: "Certificate / site management"}}},
+		{Title: "Traffic", Items: []MenuItem{{Label: "Traffic monitor"}}},
+		{Title: "Routing", Items: []MenuItem{{Label: "Domain/IP blacklist"}}},
+		{Title: "Core", Items: []MenuItem{{Label: "sing-box core management"}}},
+		{Title: "System", Items: []MenuItem{
+			{Label: "Self-update"},
+			{Label: "Uninstall"},
+		}},
 	}
 }
 
@@ -81,7 +91,11 @@ func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
 
 // LayoutMode reports the active layout based on terminal width.
 func (m *Model) LayoutMode() LayoutMode {
-	if m.width < wideThreshold {
+	width := m.width
+	if width <= 0 {
+		width = defaultWidth
+	}
+	if width < wideThreshold {
 		return LayoutNarrow
 	}
 	return LayoutWide
@@ -156,20 +170,49 @@ var (
 
 // View implements tea.Model.
 func (m *Model) View() string {
+	width, height := m.frameSize()
+	bodyHeight := max(6, height-3)
+	body := m.bodyView(width, bodyHeight)
 	footer := m.footerView()
-	if m.wizard != nil {
-		return lipgloss.JoinVertical(lipgloss.Left, panelStyle.Render(m.wizard.View()), footer)
-	}
-	status := panelStyle.Render(m.statusView())
-	menu := panelStyle.Render(m.menuView())
-
-	var body string
-	if m.LayoutMode() == LayoutWide {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, status, menu)
-	} else {
-		body = lipgloss.JoinVertical(lipgloss.Left, status, menu)
-	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
+}
+
+func (m *Model) frameSize() (int, int) {
+	width, height := m.width, m.height
+	if width <= 0 {
+		width = defaultWidth
+	}
+	if height <= 0 {
+		height = defaultHeight
+	}
+	return max(40, width), max(12, height)
+}
+
+func (m *Model) bodyView(width, height int) string {
+	if m.LayoutMode() == LayoutWide {
+		available := max(48, width-8-panelGap)
+		menuWidth := min(sidebarWidth, max(28, available/3))
+		contentWidth := max(24, available-menuWidth)
+		menuBody := m.menuView(menuWidth - 4)
+		contentHeight := lipgloss.Height(menuBody)
+		menu := panelStyle.Width(menuWidth).Render(menuBody)
+		contentBody := m.contentView(contentWidth-4, contentHeight)
+		contentBody = lipgloss.NewStyle().Width(contentWidth - 4).MaxHeight(contentHeight).Render(contentBody)
+		content := panelStyle.Width(contentWidth).Height(contentHeight).Render(contentBody)
+		return lipgloss.JoinHorizontal(lipgloss.Top, menu, strings.Repeat(" ", panelGap), content)
+	}
+	panelWidth := max(24, width-4)
+	menu := panelStyle.Width(panelWidth).Render(m.menuView(panelWidth - 4))
+	content := panelStyle.Width(panelWidth).Render(m.contentView(panelWidth-4, height))
+	return lipgloss.JoinVertical(lipgloss.Left, menu, content)
+}
+
+func (m *Model) contentView(width, height int) string {
+	if m.wizard != nil {
+		m.wizard.setSize(width, height)
+		return m.wizard.View()
+	}
+	return m.statusView()
 }
 
 func (m *Model) footerView() string {
@@ -213,7 +256,8 @@ func (m *Model) statusView() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func (m *Model) menuView() string {
+func (m *Model) menuView(width int) string {
+	width = max(18, width)
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Menu") + "\n")
 	idx := 0
