@@ -26,6 +26,8 @@ type ProtocolUpdateOptions struct {
 
 	Firewall system.Firewall
 	Selected []config.Protocol
+	Ports    config.Ports
+	Creds    Credentials
 
 	// RealityServerName overrides the stored Reality camouflage host when Reality
 	// is newly enabled and no stored value exists yet.
@@ -124,6 +126,7 @@ func UpdateProtocols(ctx context.Context, opts ProtocolUpdateOptions) (Config, e
 		return Config{}, err
 	}
 	old := cfg.enabled()
+	oldCfg := cfg
 	cfg.Enabled = canonicalProtocols(opts.Selected)
 	if len(cfg.Enabled) == 0 {
 		return Config{}, fmt.Errorf("select at least one supported protocol")
@@ -132,12 +135,13 @@ func UpdateProtocols(ctx context.Context, opts ProtocolUpdateOptions) (Config, e
 	if strings.TrimSpace(opts.RealityServerName) != "" {
 		cfg.RealityServerName = strings.TrimSpace(opts.RealityServerName)
 	}
-	added := addedProtocols(old, cfg.Enabled)
+	applyProtocolOverrides(&cfg, opts)
 	if err := ensureProtocolMaterial(&cfg, old, cfg.Enabled); err != nil {
 		return Config{}, err
 	}
+	changedPorts := protocolsNeedingPortChanges(oldCfg, cfg)
 
-	steps := protocolUpdateSteps(opts, added)
+	steps := protocolUpdateSteps(opts, changedPorts)
 	for i, s := range steps {
 		emitProtocolProgress(opts.Progress, Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx, cfg); err != nil {
@@ -155,15 +159,15 @@ type protocolUpdateStep struct {
 	run    func(context.Context, Config) error
 }
 
-func protocolUpdateSteps(opts ProtocolUpdateOptions, added []config.Protocol) []protocolUpdateStep {
+func protocolUpdateSteps(opts ProtocolUpdateOptions, changedPorts []config.Protocol) []protocolUpdateStep {
 	steps := []protocolUpdateStep{
-		{label: "Port check", detail: "check newly enabled protocol ports", run: func(ctx context.Context, cfg Config) error {
-			return opts.CheckPorts(ctx, cfg, added)
+		{label: "Port check", detail: "check new or changed protocol ports", run: func(ctx context.Context, cfg Config) error {
+			return opts.CheckPorts(ctx, cfg, changedPorts)
 		}},
 	}
-	if opts.Firewall != system.FirewallNone && len(added) > 0 {
-		steps = append(steps, protocolUpdateStep{label: "Firewall", detail: "open newly enabled protocol ports", run: func(_ context.Context, cfg Config) error {
-			cmds := system.FirewallCommands(opts.Firewall, firewallPortsForProtocols(cfg, added))
+	if opts.Firewall != system.FirewallNone && len(changedPorts) > 0 {
+		steps = append(steps, protocolUpdateStep{label: "Firewall", detail: "open new or changed protocol ports", run: func(_ context.Context, cfg Config) error {
+			cmds := system.FirewallCommands(opts.Firewall, firewallPortsForProtocols(cfg, changedPorts))
 			if opts.Firewall == system.FirewallFirewalld && len(cmds) > 0 {
 				cmds = append(cmds, system.Command{Name: "firewall-cmd", Args: []string{"--reload"}})
 			}
@@ -322,6 +326,62 @@ func addedProtocols(old, selected []config.Protocol) []config.Protocol {
 		}
 	}
 	return added
+}
+
+func applyProtocolOverrides(cfg *Config, opts ProtocolUpdateOptions) {
+	for _, p := range cfg.Enabled {
+		switch p {
+		case config.ProtocolRealityVision:
+			if opts.Ports.RealityVision > 0 {
+				cfg.Ports.RealityVision = opts.Ports.RealityVision
+			}
+			if strings.TrimSpace(opts.Creds.RealityVisionUUID) != "" {
+				cfg.Creds.RealityVisionUUID = strings.TrimSpace(opts.Creds.RealityVisionUUID)
+			}
+		case config.ProtocolRealityGRPC:
+			if opts.Ports.RealityGRPC > 0 {
+				cfg.Ports.RealityGRPC = opts.Ports.RealityGRPC
+			}
+			if strings.TrimSpace(opts.Creds.RealityGRPCUUID) != "" {
+				cfg.Creds.RealityGRPCUUID = strings.TrimSpace(opts.Creds.RealityGRPCUUID)
+			}
+		case config.ProtocolHysteria2:
+			if opts.Ports.Hysteria2 > 0 {
+				cfg.Ports.Hysteria2 = opts.Ports.Hysteria2
+			}
+			if strings.TrimSpace(opts.Creds.HysteriaPassword) != "" {
+				cfg.Creds.HysteriaPassword = strings.TrimSpace(opts.Creds.HysteriaPassword)
+			}
+		case config.ProtocolTUIC:
+			if opts.Ports.TUIC > 0 {
+				cfg.Ports.TUIC = opts.Ports.TUIC
+			}
+			if strings.TrimSpace(opts.Creds.TUICUUID) != "" {
+				cfg.Creds.TUICUUID = strings.TrimSpace(opts.Creds.TUICUUID)
+			}
+			if strings.TrimSpace(opts.Creds.TUICPassword) != "" {
+				cfg.Creds.TUICPassword = strings.TrimSpace(opts.Creds.TUICPassword)
+			}
+		case config.ProtocolAnyTLS:
+			if opts.Ports.AnyTLS > 0 {
+				cfg.Ports.AnyTLS = opts.Ports.AnyTLS
+			}
+			if strings.TrimSpace(opts.Creds.AnyTLSPassword) != "" {
+				cfg.Creds.AnyTLSPassword = strings.TrimSpace(opts.Creds.AnyTLSPassword)
+			}
+		}
+	}
+}
+
+func protocolsNeedingPortChanges(oldCfg, newCfg Config) []config.Protocol {
+	oldSet := selectedProtocolSet(oldCfg.enabled())
+	var changed []config.Protocol
+	for _, p := range newCfg.enabled() {
+		if !oldSet[p] || protocolPort(oldCfg, p) != protocolPort(newCfg, p) {
+			changed = append(changed, p)
+		}
+	}
+	return changed
 }
 
 func ensureProtocolMaterial(cfg *Config, old, selected []config.Protocol) error {

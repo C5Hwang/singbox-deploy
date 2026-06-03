@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -19,11 +20,22 @@ import (
 type protocolPhase int
 
 const (
-	protocolPhaseSelect protocolPhase = iota
-	protocolPhaseReality
+	protocolPhaseAction protocolPhase = iota
+	protocolPhaseSelect
+	protocolPhaseEditPick
+	protocolPhaseForm
 	protocolPhaseConfirm
 	protocolPhaseRunning
 	protocolPhaseDone
+)
+
+type protocolAction int
+
+const (
+	protocolActionNone protocolAction = iota
+	protocolActionChange
+	protocolActionEdit
+	protocolActionRealitySNI
 )
 
 var (
@@ -32,8 +44,21 @@ var (
 	updateProtocolsRun = install.UpdateProtocols
 )
 
+type protocolField struct {
+	key   string
+	label string
+	def   string
+	note  string
+}
+
+type protocolActionItem struct {
+	action protocolAction
+	label  string
+}
+
 type protocolManager struct {
 	phase  protocolPhase
+	action protocolAction
 	dryRun bool
 
 	width  int
@@ -48,8 +73,12 @@ type protocolManager struct {
 	selected map[string]bool
 	fieldErr string
 
-	input           textinput.Model
-	realityOverride string
+	fields  []protocolField
+	fieldIx int
+	values  map[string]string
+	input   textinput.Model
+
+	editProto config.Protocol
 
 	bar       progress.Model
 	events    []install.Event
@@ -64,12 +93,12 @@ func newProtocolManager(dryRun bool) *protocolManager {
 	input := textinput.New()
 	input.CharLimit = 256
 	input.Prompt = "› "
-	input.Placeholder = "www.microsoft.com"
 
 	pm := &protocolManager{
-		phase:    protocolPhaseSelect,
+		phase:    protocolPhaseAction,
 		dryRun:   dryRun,
 		selected: map[string]bool{},
+		values:   map[string]string{},
 		input:    input,
 		bar:      progress.New(progress.WithDefaultGradient()),
 	}
@@ -83,9 +112,6 @@ func newProtocolManager(dryRun bool) *protocolManager {
 	}
 	pm.cfg = cfg
 	pm.selected = selectedOptions(protocolsValue(cfg.Enabled))
-	if cfg.RealityServerName != "" {
-		pm.input.SetValue(cfg.RealityServerName)
-	}
 	return pm
 }
 
@@ -106,11 +132,6 @@ func (pm *protocolManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.MouseMsg:
 		return pm.handleMouse(msg), false
 	}
-	if pm.phase == protocolPhaseReality {
-		var cmd tea.Cmd
-		pm.input, cmd = pm.input.Update(msg)
-		return cmd, false
-	}
 	return nil, false
 }
 
@@ -123,25 +144,51 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	switch pm.phase {
-	case protocolPhaseSelect:
+	case protocolPhaseAction:
 		switch msg.String() {
 		case "up", "k", "left", "h":
-			pm.move(-1)
+			pm.moveAction(-1)
 		case "down", "j", "right", "l":
-			pm.move(1)
-		case " ", "space":
-			pm.toggle()
+			pm.moveAction(1)
 		case "enter":
-			return pm.enterConfirm()
+			pm.activateAction()
 		case "esc", "q":
 			return nil, true
 		}
-	case protocolPhaseReality:
+	case protocolPhaseSelect:
+		switch msg.String() {
+		case "up", "k", "left", "h":
+			pm.moveProtocol(-1)
+		case "down", "j", "right", "l":
+			pm.moveProtocol(1)
+		case " ", "space":
+			pm.toggleProtocol()
+		case "enter":
+			pm.prepareChangeConfirm()
+		case "shift+tab", "ctrl+b":
+			pm.phase = protocolPhaseAction
+		case "esc", "q":
+			return nil, true
+		}
+	case protocolPhaseEditPick:
+		switch msg.String() {
+		case "up", "k", "left", "h":
+			pm.moveInstalled(-1)
+		case "down", "j", "right", "l":
+			pm.moveInstalled(1)
+		case "enter":
+			pm.startEditForm()
+		case "shift+tab", "ctrl+b":
+			pm.phase = protocolPhaseAction
+		case "esc", "q":
+			return nil, true
+		}
+	case protocolPhaseForm:
 		switch msg.String() {
 		case "enter":
-			return pm.commitRealityServerName()
+			pm.commitField()
 		case "shift+tab", "ctrl+b":
-			pm.phase = protocolPhaseSelect
+			pm.previousField()
 		case "esc":
 			return nil, true
 		default:
@@ -155,7 +202,7 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		case "enter", "y":
 			return pm.startRun(), false
 		case "shift+tab", "ctrl+b":
-			pm.phase = protocolPhaseSelect
+			pm.backFromConfirm()
 		case "esc", "n":
 			return nil, true
 		}
@@ -204,13 +251,40 @@ func (pm *protocolManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 	return nil
 }
 
-func (pm *protocolManager) move(delta int) {
+func (pm *protocolManager) moveAction(delta int) {
+	actions := pm.actions()
+	pm.cursor = (pm.cursor + delta + len(actions)) % len(actions)
+	pm.fieldErr = ""
+}
+
+func (pm *protocolManager) activateAction() {
+	pm.fieldErr = ""
+	actions := pm.actions()
+	if len(actions) == 0 {
+		return
+	}
+	switch actions[min(max(0, pm.cursor), len(actions)-1)].action {
+	case protocolActionChange:
+		pm.action = protocolActionChange
+		pm.phase = protocolPhaseSelect
+		pm.cursor = 0
+		pm.selected = selectedOptions(protocolsValue(pm.cfg.Enabled))
+	case protocolActionEdit:
+		pm.action = protocolActionEdit
+		pm.phase = protocolPhaseEditPick
+		pm.cursor = 0
+	case protocolActionRealitySNI:
+		pm.startRealitySNIForm()
+	}
+}
+
+func (pm *protocolManager) moveProtocol(delta int) {
 	options := protocolOptions()
 	pm.cursor = (pm.cursor + delta + len(options)) % len(options)
 	pm.fieldErr = ""
 }
 
-func (pm *protocolManager) toggle() {
+func (pm *protocolManager) toggleProtocol() {
 	options := protocolOptions()
 	opt := options[min(max(0, pm.cursor), len(options)-1)]
 	if pm.selected[opt] {
@@ -221,43 +295,287 @@ func (pm *protocolManager) toggle() {
 	pm.fieldErr = ""
 }
 
-func (pm *protocolManager) enterConfirm() (tea.Cmd, bool) {
+func (pm *protocolManager) moveInstalled(delta int) {
+	installed := pm.cfg.Enabled
+	pm.cursor = (pm.cursor + delta + len(installed)) % len(installed)
+	pm.fieldErr = ""
+}
+
+func (pm *protocolManager) prepareChangeConfirm() {
 	target := pm.targetProtocols()
 	if len(target) == 0 {
 		pm.fieldErr = "select at least one protocol"
-		return nil, false
+		return
 	}
 	if !pm.canApply() {
 		pm.fieldErr = pm.applyBlocker()
-		return nil, false
+		return
 	}
 	if sameProtocolSet(pm.cfg.Enabled, target) {
 		pm.fieldErr = "selection is unchanged"
-		return nil, false
+		return
 	}
-	if needsRealityProtocol(target) && pm.cfg.RealityServerName == "" && pm.realityOverride == "" {
-		pm.phase = protocolPhaseReality
-		pm.input.Focus()
-		return nil, false
+	fields := pm.installFieldsForAdded(target)
+	if len(fields) == 0 {
+		pm.values = map[string]string{}
+		pm.phase = protocolPhaseConfirm
+		return
 	}
-	pm.phase = protocolPhaseConfirm
-	return nil, false
+	pm.startForm(fields)
 }
 
-func (pm *protocolManager) commitRealityServerName() (tea.Cmd, bool) {
-	value := pm.input.Value()
-	if strings.TrimSpace(value) == "" {
-		value = pm.input.Placeholder
+func (pm *protocolManager) startEditForm() {
+	if !pm.canApply() {
+		pm.fieldErr = pm.applyBlocker()
+		return
 	}
-	host, err := normalizeRealityServerName(value)
-	if err != nil {
-		pm.fieldErr = err.Error()
-		return nil, false
+	installed := pm.cfg.Enabled
+	if len(installed) == 0 {
+		pm.fieldErr = "no installed protocols"
+		return
 	}
-	pm.realityOverride = host
+	pm.editProto = installed[min(max(0, pm.cursor), len(installed)-1)]
+	pm.startForm(pm.editFields(pm.editProto))
+}
+
+func (pm *protocolManager) startRealitySNIForm() {
+	if !pm.canApply() {
+		pm.fieldErr = pm.applyBlocker()
+		return
+	}
+	pm.action = protocolActionRealitySNI
+	pm.startForm([]protocolField{realitySNIEditField(pm.cfg.RealityServerName)})
+}
+
+func (pm *protocolManager) startForm(fields []protocolField) {
+	pm.fields = fields
+	pm.values = map[string]string{}
+	pm.fieldIx = -1
+	pm.phase = protocolPhaseForm
+	pm.advanceField()
+}
+
+func (pm *protocolManager) advanceField() {
+	pm.fieldIx++
+	if pm.fieldIx >= len(pm.fields) {
+		pm.fieldErr = ""
+		pm.phase = protocolPhaseConfirm
+		return
+	}
+	f := pm.fields[pm.fieldIx]
+	pm.input.SetValue(pm.values[f.key])
+	pm.input.Placeholder = f.def
+	pm.input.Focus()
 	pm.fieldErr = ""
-	pm.phase = protocolPhaseConfirm
-	return nil, false
+}
+
+func (pm *protocolManager) previousField() {
+	if pm.fieldIx <= 0 {
+		if pm.action == protocolActionEdit {
+			pm.phase = protocolPhaseEditPick
+		} else {
+			pm.phase = protocolPhaseAction
+			if pm.action == protocolActionChange {
+				pm.phase = protocolPhaseSelect
+			}
+		}
+		return
+	}
+	pm.saveFieldDraft()
+	pm.fieldIx--
+	f := pm.fields[pm.fieldIx]
+	pm.input.SetValue(pm.values[f.key])
+	pm.input.Placeholder = f.def
+	pm.input.Focus()
+	pm.fieldErr = ""
+}
+
+func (pm *protocolManager) saveFieldDraft() {
+	if pm.fieldIx < 0 || pm.fieldIx >= len(pm.fields) {
+		return
+	}
+	f := pm.fields[pm.fieldIx]
+	pm.values[f.key] = pm.fieldValue(f)
+}
+
+func (pm *protocolManager) commitField() {
+	f := pm.fields[pm.fieldIx]
+	val := pm.fieldValue(f)
+	if err := validateProtocolField(f, val); err != nil {
+		pm.fieldErr = err.Error()
+		return
+	}
+	pm.values[f.key] = val
+	pm.advanceField()
+}
+
+func (pm *protocolManager) fieldValue(f protocolField) string {
+	val := strings.TrimSpace(pm.input.Value())
+	if val == "" {
+		return f.def
+	}
+	return val
+}
+
+func validateProtocolField(f protocolField, val string) error {
+	switch {
+	case f.key == "reality_sni":
+		_, err := normalizeRealityServerName(val)
+		return err
+	case strings.HasSuffix(f.key, "_port"):
+		if val == "" {
+			return nil
+		}
+		port, err := strconv.Atoi(val)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("port must be between 1 and 65535")
+		}
+	case strings.HasSuffix(f.key, "_uuid"):
+		if val != "" && !validUUID(val) {
+			return fmt.Errorf("uuid must be an RFC 4122 value")
+		}
+	}
+	return nil
+}
+
+func (pm *protocolManager) backFromConfirm() {
+	if len(pm.fields) > 0 {
+		pm.phase = protocolPhaseForm
+		pm.fieldIx = len(pm.fields) - 1
+		f := pm.fields[pm.fieldIx]
+		pm.input.SetValue(pm.values[f.key])
+		pm.input.Placeholder = f.def
+		pm.input.Focus()
+		return
+	}
+	if pm.action == protocolActionEdit {
+		pm.phase = protocolPhaseEditPick
+		return
+	}
+	if pm.action == protocolActionRealitySNI {
+		pm.phase = protocolPhaseAction
+		return
+	}
+	pm.phase = protocolPhaseSelect
+}
+
+func (pm *protocolManager) installFieldsForAdded(target []config.Protocol) []protocolField {
+	added, _ := protocolDiff(pm.cfg.Enabled, target)
+	addedSet := map[config.Protocol]bool{}
+	for _, p := range added {
+		addedSet[p] = true
+	}
+	var fields []protocolField
+	if needsRealityProtocol(target) && pm.cfg.RealityServerName == "" {
+		fields = append(fields, realitySNIField())
+	}
+	for _, proto := range config.AllProtocols {
+		if addedSet[proto] {
+			fields = append(fields, installFieldsForProtocol(proto)...)
+		}
+	}
+	return fields
+}
+
+func (pm *protocolManager) editFields(proto config.Protocol) []protocolField {
+	fields := editFieldsForProtocol(pm.cfg, proto)
+	if (proto == config.ProtocolRealityVision || proto == config.ProtocolRealityGRPC) && pm.cfg.RealityServerName == "" {
+		fields = append([]protocolField{realitySNIField()}, fields...)
+	}
+	return fields
+}
+
+func realitySNIField() protocolField {
+	return protocolField{
+		key:   "reality_sni",
+		label: "Reality URL/SNI (camouflage server)",
+		def:   "www.microsoft.com",
+		note:  "You may enter a URL or host; the host is used for the Reality handshake.",
+	}
+}
+
+func realitySNIEditField(current string) protocolField {
+	f := realitySNIField()
+	f.label = "Reality URL/SNI (camouflage server)"
+	f.def = current
+	if f.def == "" {
+		f.def = "www.microsoft.com"
+	}
+	f.note = "Updates the shared Reality handshake SNI for Reality Vision and Reality gRPC."
+	return f
+}
+
+func installFieldsForProtocol(proto config.Protocol) []protocolField {
+	switch proto {
+	case config.ProtocolRealityVision:
+		return []protocolField{
+			{key: "reality_vision_uuid", label: "Reality Vision UUID (optional)", note: "Blank generates a random UUID."},
+			{key: "reality_vision_port", label: "Reality Vision port (optional)", note: "Blank chooses a random listen port."},
+		}
+	case config.ProtocolRealityGRPC:
+		return []protocolField{
+			{key: "reality_grpc_uuid", label: "Reality gRPC UUID (optional)", note: "Blank generates a random UUID."},
+			{key: "reality_grpc_port", label: "Reality gRPC port (optional)", note: "Blank chooses a random listen port."},
+		}
+	case config.ProtocolHysteria2:
+		return []protocolField{
+			{key: "hysteria2_password", label: "Hysteria2 password (optional)", note: "Blank generates a random password."},
+			{key: "hysteria2_port", label: "Hysteria2 port (optional)", note: "Blank chooses a random listen port."},
+		}
+	case config.ProtocolTUIC:
+		return []protocolField{
+			{key: "tuic_uuid", label: "TUIC UUID (optional)", note: "Blank generates a random UUID."},
+			{key: "tuic_password", label: "TUIC password (optional)", note: "Blank generates a random password."},
+			{key: "tuic_port", label: "TUIC port (optional)", note: "Blank chooses a random listen port."},
+		}
+	case config.ProtocolAnyTLS:
+		return []protocolField{
+			{key: "anytls_password", label: "AnyTLS password (optional)", note: "Blank generates a random password."},
+			{key: "anytls_port", label: "AnyTLS port (optional)", note: "Blank chooses a random listen port."},
+		}
+	default:
+		return nil
+	}
+}
+
+func editFieldsForProtocol(cfg install.Config, proto config.Protocol) []protocolField {
+	switch proto {
+	case config.ProtocolRealityVision:
+		return []protocolField{
+			{key: "reality_vision_uuid", label: "Reality Vision UUID", def: cfg.Creds.RealityVisionUUID},
+			{key: "reality_vision_port", label: "Reality Vision port", def: portDefault(installedPort(proto, cfg.Ports))},
+		}
+	case config.ProtocolRealityGRPC:
+		return []protocolField{
+			{key: "reality_grpc_uuid", label: "Reality gRPC UUID", def: cfg.Creds.RealityGRPCUUID},
+			{key: "reality_grpc_port", label: "Reality gRPC port", def: portDefault(installedPort(proto, cfg.Ports))},
+		}
+	case config.ProtocolHysteria2:
+		return []protocolField{
+			{key: "hysteria2_password", label: "Hysteria2 password", def: cfg.Creds.HysteriaPassword},
+			{key: "hysteria2_port", label: "Hysteria2 port", def: portDefault(installedPort(proto, cfg.Ports))},
+		}
+	case config.ProtocolTUIC:
+		return []protocolField{
+			{key: "tuic_uuid", label: "TUIC UUID", def: cfg.Creds.TUICUUID},
+			{key: "tuic_password", label: "TUIC password", def: cfg.Creds.TUICPassword},
+			{key: "tuic_port", label: "TUIC port", def: portDefault(installedPort(proto, cfg.Ports))},
+		}
+	case config.ProtocolAnyTLS:
+		return []protocolField{
+			{key: "anytls_password", label: "AnyTLS password", def: cfg.Creds.AnyTLSPassword},
+			{key: "anytls_port", label: "AnyTLS port", def: portDefault(installedPort(proto, cfg.Ports))},
+		}
+	default:
+		return nil
+	}
+}
+
+func portDefault(port int) string {
+	if port <= 0 {
+		return ""
+	}
+	return strconv.Itoa(port)
 }
 
 func (pm *protocolManager) canApply() bool {
@@ -291,22 +609,18 @@ func (pm *protocolManager) startRun() tea.Cmd {
 	pm.runErr = nil
 	pm.ch = make(chan runMsg, 64)
 	ch := pm.ch
+	opts := pm.updateOptions()
 	if pm.dryRun {
-		go simulateProtocolDryRun(ch, pm.cfg.Enabled, pm.targetProtocols())
+		go simulateProtocolDryRun(ch, pm.cfg.Enabled, opts.Selected, pm.values)
 		return pm.waitForRun()
 	}
 	logs := &logWriter{ch: ch}
-	runner := system.NewExecRunner(logs)
-	opts := install.ProtocolUpdateOptions{
-		Layout:            protocolUILayout(),
-		Runner:            runner,
-		Firewall:          pm.host.Firewall,
-		Selected:          pm.targetProtocols(),
-		RealityServerName: pm.realityOverride,
-		Progress: func(e install.Event) {
-			ev := e
-			ch <- runMsg{event: &ev}
-		},
+	opts.Layout = protocolUILayout()
+	opts.Runner = system.NewExecRunner(logs)
+	opts.Firewall = pm.host.Firewall
+	opts.Progress = func(e install.Event) {
+		ev := e
+		ch <- runMsg{event: &ev}
 	}
 	go func() {
 		_, err := updateProtocolsRun(context.Background(), opts)
@@ -315,7 +629,42 @@ func (pm *protocolManager) startRun() tea.Cmd {
 	return pm.waitForRun()
 }
 
-func simulateProtocolDryRun(ch chan runMsg, current, target []config.Protocol) {
+func (pm *protocolManager) updateOptions() install.ProtocolUpdateOptions {
+	selected := pm.cfg.Enabled
+	if pm.action == protocolActionChange {
+		selected = pm.targetProtocols()
+	}
+	opts := install.ProtocolUpdateOptions{Selected: selected}
+	if v := strings.TrimSpace(pm.values["reality_sni"]); v != "" {
+		if host, err := normalizeRealityServerName(v); err == nil {
+			opts.RealityServerName = host
+		}
+	}
+	applyPortOverride := func(key string, set func(int)) {
+		v := strings.TrimSpace(pm.values[key])
+		if v == "" {
+			return
+		}
+		port, err := strconv.Atoi(v)
+		if err == nil && port > 0 {
+			set(port)
+		}
+	}
+	applyPortOverride("reality_vision_port", func(p int) { opts.Ports.RealityVision = p })
+	applyPortOverride("reality_grpc_port", func(p int) { opts.Ports.RealityGRPC = p })
+	applyPortOverride("hysteria2_port", func(p int) { opts.Ports.Hysteria2 = p })
+	applyPortOverride("tuic_port", func(p int) { opts.Ports.TUIC = p })
+	applyPortOverride("anytls_port", func(p int) { opts.Ports.AnyTLS = p })
+	opts.Creds.RealityVisionUUID = strings.TrimSpace(pm.values["reality_vision_uuid"])
+	opts.Creds.RealityGRPCUUID = strings.TrimSpace(pm.values["reality_grpc_uuid"])
+	opts.Creds.HysteriaPassword = strings.TrimSpace(pm.values["hysteria2_password"])
+	opts.Creds.TUICUUID = strings.TrimSpace(pm.values["tuic_uuid"])
+	opts.Creds.TUICPassword = strings.TrimSpace(pm.values["tuic_password"])
+	opts.Creds.AnyTLSPassword = strings.TrimSpace(pm.values["anytls_password"])
+	return opts
+}
+
+func simulateProtocolDryRun(ch chan runMsg, current, target []config.Protocol, values map[string]string) {
 	steps := []install.Event{
 		{Index: 1, Total: 3, Label: "Plan", Detail: "compute protocol changes", Status: "running"},
 		{Index: 1, Total: 3, Label: "Plan", Detail: "compute protocol changes", Status: "ok"},
@@ -326,6 +675,9 @@ func simulateProtocolDryRun(ch chan runMsg, current, target []config.Protocol) {
 	}
 	ch <- runMsg{logLine: "[dry-run] current protocols: " + protocolLabels(current)}
 	ch <- runMsg{logLine: "[dry-run] target protocols: " + protocolLabels(target)}
+	if len(values) > 0 {
+		ch <- runMsg{logLine: "[dry-run] explicit protocol parameters were collected"}
+	}
 	for _, e := range steps {
 		ev := e
 		ch <- runMsg{event: &ev}
@@ -362,7 +714,7 @@ func (pm *protocolManager) handleRun(msg runMsg) tea.Cmd {
 			}
 		} else if msg.err == nil {
 			pm.result = pm.cfg
-			pm.result.Enabled = pm.targetProtocols()
+			pm.result.Enabled = pm.updateOptions().Selected
 		}
 		pm.phase = protocolPhaseDone
 		return nil
@@ -375,10 +727,14 @@ func (pm *protocolManager) View() string {
 		return wizardTitle.Render("Protocol Management") + "\n\n" + wizardErr.Render(pm.loadErr.Error()) + "\n\n" + dimStyle.Render("run install first · press enter/esc to return")
 	}
 	switch pm.phase {
+	case protocolPhaseAction:
+		return pm.actionView()
 	case protocolPhaseSelect:
 		return pm.selectView()
-	case protocolPhaseReality:
-		return pm.realityView()
+	case protocolPhaseEditPick:
+		return pm.editPickView()
+	case protocolPhaseForm:
+		return pm.formView()
 	case protocolPhaseConfirm:
 		return pm.confirmView()
 	case protocolPhaseRunning:
@@ -393,11 +749,10 @@ func (pm *protocolManager) View() string {
 	}
 }
 
-func (pm *protocolManager) selectView() string {
+func (pm *protocolManager) actionView() string {
 	var b strings.Builder
 	b.WriteString(wizardTitle.Render("Protocol Management") + "\n\n")
 	b.WriteString(dimStyle.Render("Current: ") + protocolLabels(pm.cfg.Enabled) + "\n")
-	b.WriteString(dimStyle.Render("Target:  ") + protocolLabels(pm.targetProtocols()) + "\n")
 	if !pm.canApply() {
 		b.WriteString(wizardErr.Render(pm.applyBlocker()) + "\n")
 	}
@@ -405,12 +760,76 @@ func (pm *protocolManager) selectView() string {
 		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(pm.optionsView() + "\n\n")
-	b.WriteString(dimStyle.Render("space toggle · enter confirm · ↑/↓ move · esc cancel"))
+	for i, action := range pm.actions() {
+		row := "  " + action.label
+		if i == pm.cursor {
+			row = selStyle.Render("> " + action.label)
+		}
+		b.WriteString(row + "\n")
+	}
+	b.WriteString("\n" + dimStyle.Render("enter select · ↑/↓ move · esc cancel"))
 	return b.String()
 }
 
-func (pm *protocolManager) optionsView() string {
+func (pm *protocolManager) selectView() string {
+	var b strings.Builder
+	b.WriteString(wizardTitle.Render("Protocol Management · Install / Remove") + "\n\n")
+	b.WriteString(dimStyle.Render("Current: ") + protocolLabels(pm.cfg.Enabled) + "\n")
+	b.WriteString(dimStyle.Render("Target:  ") + protocolLabels(pm.targetProtocols()) + "\n")
+	if pm.fieldErr != "" {
+		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
+	}
+	b.WriteString("\n" + pm.protocolOptionsView() + "\n\n")
+	b.WriteString(dimStyle.Render("space toggle · enter continue · shift+tab back · esc cancel"))
+	return b.String()
+}
+
+func (pm *protocolManager) editPickView() string {
+	var b strings.Builder
+	b.WriteString(wizardTitle.Render("Protocol Management · Edit") + "\n\n")
+	b.WriteString(dimStyle.Render("Choose an installed protocol to edit its uuid/password and port.") + "\n")
+	if pm.fieldErr != "" {
+		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
+	}
+	b.WriteString("\n")
+	for i, proto := range pm.cfg.Enabled {
+		label := string(proto) + "  " + dimStyle.Render("port "+portDefault(installedPort(proto, pm.cfg.Ports)))
+		row := "  " + label
+		if i == pm.cursor {
+			row = selStyle.Render("> " + label)
+		}
+		b.WriteString(row + "\n")
+	}
+	b.WriteString("\n" + dimStyle.Render("enter edit · shift+tab back · esc cancel"))
+	return b.String()
+}
+
+func (pm *protocolManager) formView() string {
+	f := pm.fields[pm.fieldIx]
+	var b strings.Builder
+	title := "Protocol Management · Parameters"
+	if pm.action == protocolActionEdit {
+		title = "Protocol Management · Edit " + string(pm.editProto)
+	}
+	b.WriteString(wizardTitle.Render(title) + "\n\n")
+	b.WriteString(f.label + "\n")
+	if f.note != "" {
+		for _, line := range wrapFieldNote(f.note, pm.width) {
+			b.WriteString(dimStyle.Render(line) + "\n")
+		}
+	}
+	if f.def != "" {
+		b.WriteString(dimStyle.Render("default: "+f.def) + "\n")
+	}
+	if pm.fieldErr != "" {
+		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
+	}
+	b.WriteString(pm.input.View() + "\n\n")
+	b.WriteString(dimStyle.Render("enter continue · shift+tab back · esc cancel"))
+	return b.String()
+}
+
+func (pm *protocolManager) protocolOptionsView() string {
 	options := protocolOptions()
 	rows := make([]string, 0, len(options))
 	current := selectedProtocolNames(pm.cfg.Enabled)
@@ -433,35 +852,38 @@ func (pm *protocolManager) optionsView() string {
 	return strings.Join(rows, "\n")
 }
 
-func (pm *protocolManager) realityView() string {
-	var b strings.Builder
-	b.WriteString(wizardTitle.Render("Protocol Management · Reality") + "\n\n")
-	b.WriteString("Reality URL/SNI (camouflage server)\n")
-	b.WriteString(dimStyle.Render("Required before enabling Reality Vision or Reality gRPC. You may enter a URL or host; the host is stored in state.") + "\n")
-	if pm.fieldErr != "" {
-		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
-	}
-	b.WriteString(pm.input.View() + "\n\n")
-	b.WriteString(dimStyle.Render("enter continue · shift+tab back · esc cancel"))
-	return b.String()
-}
-
 func (pm *protocolManager) confirmView() string {
-	added, removed := protocolDiff(pm.cfg.Enabled, pm.targetProtocols())
-	rows := []string{
-		"Current: " + protocolLabels(pm.cfg.Enabled),
-		"Target:  " + protocolLabels(pm.targetProtocols()),
-		"Add:     " + or(strings.Join(added, ","), "none"),
-		"Remove:  " + or(strings.Join(removed, ","), "none"),
-	}
-	if pm.realityOverride != "" {
-		rows = append(rows, "Reality SNI: "+pm.realityOverride)
+	var rows []string
+	switch pm.action {
+	case protocolActionRealitySNI:
+		rows = append(rows,
+			"Edit: Reality SNI",
+			"Current: "+or(pm.cfg.RealityServerName, "not set"),
+			"Target:  "+or(pm.values["reality_sni"], "not set"),
+		)
+	case protocolActionEdit:
+		rows = append(rows, "Edit: "+string(pm.editProto))
+		for _, f := range pm.fields {
+			rows = append(rows, f.label+": "+or(pm.values[f.key], "generate/keep current"))
+		}
+	default:
+		added, removed := protocolDiff(pm.cfg.Enabled, pm.targetProtocols())
+		rows = append(rows,
+			"Current: "+protocolLabels(pm.cfg.Enabled),
+			"Target:  "+protocolLabels(pm.targetProtocols()),
+			"Add:     "+or(protocolStrings(added), "none"),
+			"Remove:  "+or(protocolStrings(removed), "none"),
+		)
+		if len(pm.fields) > 0 {
+			rows = append(rows, "", "New protocol parameters:")
+			for _, f := range pm.fields {
+				rows = append(rows, "  "+f.label+": "+or(pm.values[f.key], "generate/default"))
+			}
+		}
 	}
 	rows = append(rows,
 		"",
 		"This will regenerate sing-box config and all subscription files.",
-		"Newly enabled protocols receive generated credentials and random free ports when needed.",
-		"Firewall rules are opened for newly enabled protocols when ufw/firewalld is detected; removed ports are not closed automatically.",
 	)
 	return wizardTitle.Render("Protocol Management · Confirm") + "\n\n" + strings.Join(rows, "\n") + "\n\n" + dimStyle.Render("enter/y apply · shift+tab back · esc/n cancel")
 }
@@ -500,9 +922,13 @@ func (pm *protocolManager) footerHints() []string {
 		return []string{"enter/esc return"}
 	}
 	switch pm.phase {
+	case protocolPhaseAction:
+		return []string{"enter select", "esc cancel"}
 	case protocolPhaseSelect:
-		return []string{"space toggle", "enter confirm", "esc cancel"}
-	case protocolPhaseReality:
+		return []string{"space toggle", "enter continue", "shift+tab back"}
+	case protocolPhaseEditPick:
+		return []string{"enter edit", "shift+tab back", "esc cancel"}
+	case protocolPhaseForm:
 		return []string{"enter continue", "shift+tab back", "esc cancel"}
 	case protocolPhaseConfirm:
 		return []string{"enter apply", "shift+tab back", "esc cancel"}
@@ -518,12 +944,23 @@ func (pm *protocolManager) footerHints() []string {
 	}
 }
 
+func (pm *protocolManager) actions() []protocolActionItem {
+	actions := []protocolActionItem{
+		{action: protocolActionChange, label: "Install / remove protocols"},
+		{action: protocolActionEdit, label: "Edit protocol credentials / ports"},
+	}
+	if needsRealityProtocol(pm.cfg.Enabled) {
+		actions = append(actions, protocolActionItem{action: protocolActionRealitySNI, label: "Edit Reality SNI"})
+	}
+	return actions
+}
+
 func (pm *protocolManager) targetProtocols() []config.Protocol {
 	return protocolsFromValue(selectedOptionsValue(protocolOptions(), pm.selected))
 }
 
 func sameProtocolSet(a, b []config.Protocol) bool {
-	as, bs := selectedProtocolSet(a), selectedProtocolSet(b)
+	as, bs := protocolSet(a), protocolSet(b)
 	if len(as) != len(bs) {
 		return false
 	}
@@ -535,7 +972,7 @@ func sameProtocolSet(a, b []config.Protocol) bool {
 	return true
 }
 
-func selectedProtocolSet(protocols []config.Protocol) map[config.Protocol]bool {
+func protocolSet(protocols []config.Protocol) map[config.Protocol]bool {
 	set := map[config.Protocol]bool{}
 	for _, p := range protocols {
 		set[p] = true
@@ -551,17 +988,25 @@ func selectedProtocolNames(protocols []config.Protocol) map[string]bool {
 	return set
 }
 
-func protocolDiff(current, target []config.Protocol) (added, removed []string) {
-	cur, tgt := selectedProtocolSet(current), selectedProtocolSet(target)
+func protocolDiff(current, target []config.Protocol) (added, removed []config.Protocol) {
+	cur, tgt := protocolSet(current), protocolSet(target)
 	for _, p := range config.AllProtocols {
 		if tgt[p] && !cur[p] {
-			added = append(added, string(p))
+			added = append(added, p)
 		}
 		if cur[p] && !tgt[p] {
-			removed = append(removed, string(p))
+			removed = append(removed, p)
 		}
 	}
 	return added, removed
+}
+
+func protocolStrings(protocols []config.Protocol) string {
+	parts := make([]string, 0, len(protocols))
+	for _, p := range protocols {
+		parts = append(parts, string(p))
+	}
+	return strings.Join(parts, ",")
 }
 
 func needsRealityProtocol(protocols []config.Protocol) bool {

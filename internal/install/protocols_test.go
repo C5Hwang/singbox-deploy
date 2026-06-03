@@ -112,6 +112,101 @@ func TestUpdateProtocolsKeepsPreviousConfigOnValidationFailure(t *testing.T) {
 	}
 }
 
+func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.Enabled = []config.Protocol{config.ProtocolHysteria2}
+	cfg.Ports.Hysteria2 = 9443
+	cfg.Creds.HysteriaPassword = "oldpass"
+	if err := writeInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("writeInstallState: %v", err)
+	}
+
+	runner := &recordingRunner{}
+	var checked []config.Protocol
+	updated, err := UpdateProtocols(context.Background(), ProtocolUpdateOptions{
+		Layout:   layout,
+		Runner:   runner,
+		Firewall: system.FirewallUFW,
+		Selected: []config.Protocol{config.ProtocolHysteria2},
+		Ports:    config.Ports{Hysteria2: 18443},
+		Creds:    Credentials{HysteriaPassword: "newpass"},
+		CheckPorts: func(_ context.Context, _ Config, changed []config.Protocol) error {
+			checked = append([]config.Protocol(nil), changed...)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateProtocols error: %v", err)
+	}
+	if updated.Ports.Hysteria2 != 18443 || updated.Creds.HysteriaPassword != "newpass" {
+		t.Fatalf("override not applied: port=%d password=%q", updated.Ports.Hysteria2, updated.Creds.HysteriaPassword)
+	}
+	if !sameProtocols(checked, []config.Protocol{config.ProtocolHysteria2}) {
+		t.Fatalf("changed port protocols = %#v", checked)
+	}
+
+	configBody, err := os.ReadFile(layout.ConfigJSON)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(configBody), `"listen_port": 18443`) || !strings.Contains(string(configBody), `"password": "newpass"`) {
+		t.Fatalf("config did not include overrides:\n%s", configBody)
+	}
+	statePassword, err := os.ReadFile(filepath.Join(layout.StateDir, "hysteria2_password"))
+	if err != nil {
+		t.Fatalf("read password state: %v", err)
+	}
+	if strings.TrimSpace(string(statePassword)) != "newpass" {
+		t.Fatalf("password state = %q", statePassword)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "ufw allow 18443/udp") {
+		t.Fatalf("missing firewall command for changed port:\n%s", joined)
+	}
+}
+
+func TestUpdateProtocolsAppliesRealitySNIOverride(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.Enabled = []config.Protocol{config.ProtocolRealityVision}
+	cfg.RealityServerName = "www.microsoft.com"
+	if err := writeInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("writeInstallState: %v", err)
+	}
+
+	runner := &recordingRunner{}
+	updated, err := UpdateProtocols(context.Background(), ProtocolUpdateOptions{
+		Layout:            layout,
+		Runner:            runner,
+		Selected:          []config.Protocol{config.ProtocolRealityVision},
+		RealityServerName: "www.cloudflare.com",
+		CheckPorts:        func(context.Context, Config, []config.Protocol) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("UpdateProtocols error: %v", err)
+	}
+	if updated.RealityServerName != "www.cloudflare.com" {
+		t.Fatalf("RealityServerName = %q", updated.RealityServerName)
+	}
+	stateSNI, err := os.ReadFile(filepath.Join(layout.StateDir, "reality_server_name"))
+	if err != nil {
+		t.Fatalf("read reality_server_name: %v", err)
+	}
+	if strings.TrimSpace(string(stateSNI)) != "www.cloudflare.com" {
+		t.Fatalf("reality_server_name state = %q", stateSNI)
+	}
+	configBody, err := os.ReadFile(layout.ConfigJSON)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(configBody), `"server_name": "www.cloudflare.com"`) {
+		t.Fatalf("config missing updated SNI:\n%s", configBody)
+	}
+}
+
 type failOnCandidateCheckRunner struct{}
 
 func (r *failOnCandidateCheckRunner) Run(c system.Command) error {

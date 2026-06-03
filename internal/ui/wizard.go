@@ -75,11 +75,12 @@ func installFields() []field {
 		{key: "reality_vision_port", label: "Reality Vision port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolRealityVision}, skip: missingProtocol(config.ProtocolRealityVision)},
 		{key: "reality_grpc_uuid", label: "Reality gRPC UUID (optional)", note: "Blank generates a random UUID.", paramsFor: []config.Protocol{config.ProtocolRealityGRPC}, skip: missingProtocol(config.ProtocolRealityGRPC)},
 		{key: "reality_grpc_port", label: "Reality gRPC port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolRealityGRPC}, skip: missingProtocol(config.ProtocolRealityGRPC)},
-		{key: "hysteria2_password", label: "Hysteria2 password (optional)", note: "Hysteria2 uses a password credential. Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolHysteria2}, skip: missingProtocol(config.ProtocolHysteria2)},
+		{key: "hysteria2_password", label: "Hysteria2 password (optional)", note: "Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolHysteria2}, skip: missingProtocol(config.ProtocolHysteria2)},
 		{key: "hysteria2_port", label: "Hysteria2 port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolHysteria2}, skip: missingProtocol(config.ProtocolHysteria2)},
-		{key: "tuic_uuid", label: "TUIC UUID (optional)", note: "Blank generates a random UUID. TUIC password remains randomly generated.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
+		{key: "tuic_uuid", label: "TUIC UUID (optional)", note: "Blank generates a random UUID.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
+		{key: "tuic_password", label: "TUIC password (optional)", note: "Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
 		{key: "tuic_port", label: "TUIC port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
-		{key: "anytls_password", label: "AnyTLS password (optional)", note: "AnyTLS uses a password credential. Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
+		{key: "anytls_password", label: "AnyTLS password (optional)", note: "Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
 		{key: "anytls_port", label: "AnyTLS port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
 		{key: "display_name", label: "Node display name", def: "Node", note: "Used only in generated node names shown by clients."},
 		{key: "traffic_monitor", label: "Deploy traffic monitor", def: "yes", options: []string{"yes", "no"}, note: "Choose no to skip the traffic monitor service and /traffic/ UI."},
@@ -934,6 +935,9 @@ func (w *wizard) applyCredentialOverrides(creds *install.Credentials) {
 	}
 	if v := strings.TrimSpace(w.values["tuic_uuid"]); v != "" {
 		creds.TUICUUID = v
+	}
+	if v := strings.TrimSpace(w.values["tuic_password"]); v != "" {
+		creds.TUICPassword = v
 	}
 	if v := strings.TrimSpace(w.values["anytls_password"]); v != "" {
 		creds.AnyTLSPassword = v

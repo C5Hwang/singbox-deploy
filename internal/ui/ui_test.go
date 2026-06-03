@@ -182,7 +182,11 @@ func TestProtocolManagementAsksRealitySNIWhenEnablingReality(t *testing.T) {
 	if pm.loadErr != nil {
 		t.Fatalf("load protocol manager: %v", pm.loadErr)
 	}
-	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || pm.phase != protocolPhaseSelect {
+		t.Fatalf("enter should open install/remove selection, phase=%v done=%v", pm.phase, done)
+	}
+	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
 	if done {
 		t.Fatalf("space should not close protocol manager")
 	}
@@ -190,11 +194,60 @@ func TestProtocolManagementAsksRealitySNIWhenEnablingReality(t *testing.T) {
 	if done {
 		t.Fatalf("enter should not close protocol manager")
 	}
-	if pm.phase != protocolPhaseReality {
-		t.Fatalf("phase = %v, want Reality input", pm.phase)
+	if pm.phase != protocolPhaseForm {
+		t.Fatalf("phase = %v, want parameter form", pm.phase)
 	}
 	if !strings.Contains(pm.View(), "Reality URL/SNI") {
 		t.Fatalf("missing Reality SNI prompt:\n%s", pm.View())
+	}
+}
+
+func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	withProtocolManagerDeps(t, layout)
+	pm := newProtocolManager(false)
+	pm.setSize(100, 30)
+	pm.cursor = 1
+	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || pm.phase != protocolPhaseEditPick {
+		t.Fatalf("enter should open edit picker, phase=%v done=%v", pm.phase, done)
+	}
+	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || pm.phase != protocolPhaseForm {
+		t.Fatalf("enter should open edit form, phase=%v done=%v", pm.phase, done)
+	}
+	view := pm.View()
+	if !strings.Contains(view, "Hysteria2 password") || !strings.Contains(view, "default: hypass") {
+		t.Fatalf("missing password edit field:\n%s", view)
+	}
+	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || !strings.Contains(pm.View(), "Hysteria2 port") || !strings.Contains(pm.View(), "default: 9443") {
+		t.Fatalf("missing port edit field:\n%s", pm.View())
+	}
+}
+
+func TestProtocolManagementRealitySNIEntryOnlyForRealityProtocols(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	withProtocolManagerDeps(t, layout)
+	pm := newProtocolManager(false)
+	if strings.Contains(pm.View(), "Edit Reality SNI") {
+		t.Fatalf("Reality SNI entry should be hidden without Reality protocols:\n%s", pm.View())
+	}
+
+	realityLayout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withProtocolManagerDeps(t, realityLayout)
+	pm = newProtocolManager(false)
+	view := pm.View()
+	if !strings.Contains(view, "Edit Reality SNI") {
+		t.Fatalf("Reality SNI entry missing for Reality protocols:\n%s", view)
+	}
+	pm.cursor = 2
+	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || pm.phase != protocolPhaseForm {
+		t.Fatalf("enter should open Reality SNI form, phase=%v done=%v", pm.phase, done)
+	}
+	if !strings.Contains(pm.View(), "default: www.microsoft.com") {
+		t.Fatalf("Reality SNI form should show current default:\n%s", pm.View())
 	}
 }
 
@@ -635,6 +688,10 @@ func TestRealityFieldsHiddenWhenRealityNotSelected(t *testing.T) {
 	if tuic.skip != nil && tuic.skip(vals) {
 		t.Fatalf("tuic field should be visible when tuic is selected")
 	}
+	tuicPassword := fields[fieldIndex(t, fields, "tuic_password")]
+	if tuicPassword.skip != nil && tuicPassword.skip(vals) {
+		t.Fatalf("tuic password field should be visible when tuic is selected")
+	}
 }
 
 func TestTrafficMonitorFieldsHiddenWhenDisabled(t *testing.T) {
@@ -673,6 +730,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 			"reality_vision_uuid":    "11111111-1111-4111-8111-111111111111",
 			"reality_vision_port":    "24443",
 			"tuic_uuid":              "22222222-2222-4222-8222-222222222222",
+			"tuic_password":          "tuic-secret",
 			"tuic_port":              "24444",
 			"display_name":           "Node",
 			"traffic_monitor":        "yes",
@@ -702,6 +760,9 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	}
 	if cfg.Creds.TUICUUID != "22222222-2222-4222-8222-222222222222" {
 		t.Fatalf("TUICUUID = %q", cfg.Creds.TUICUUID)
+	}
+	if cfg.Creds.TUICPassword != "tuic-secret" {
+		t.Fatalf("TUICPassword = %q", cfg.Creds.TUICPassword)
 	}
 	if cfg.Ports.Hysteria2 != 0 || cfg.Ports.AnyTLS != 0 {
 		t.Fatalf("unselected protocol ports should stay zero: %#v", cfg.Ports)
