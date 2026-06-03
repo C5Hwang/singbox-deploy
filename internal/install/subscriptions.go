@@ -16,7 +16,7 @@ import (
 type node struct {
 	Name            string
 	DefaultLink     string
-	ClashYAML       string         // single inline-mapping list item, 2-space indent
+	ClashYAML       string         // block-style list item, 2-space indent
 	SingBoxOutbound map[string]any // sing-box client outbound object
 }
 
@@ -38,7 +38,7 @@ func (c Config) buildNodes() []node {
 					"sni": {c.RealityServerName}, "fp": {"chrome"}, "pbk": {c.Creds.RealityPublicKey},
 					"sid": {c.Creds.RealityShortID}, "type": {"tcp"},
 				}),
-				ClashYAML: clashInline(map[string]any{
+				ClashYAML: clashBlock(map[string]any{
 					"name": n, "type": "vless", "server": addr, "port": c.Ports.RealityVision,
 					"uuid": c.Creds.RealityVisionUUID, "network": "tcp", "tls": true, "udp": true,
 					"flow": "xtls-rprx-vision", "servername": c.RealityServerName, "client-fingerprint": "chrome",
@@ -59,7 +59,7 @@ func (c Config) buildNodes() []node {
 					"fp": {"chrome"}, "pbk": {c.Creds.RealityPublicKey}, "sid": {c.Creds.RealityShortID},
 					"type": {"grpc"}, "serviceName": {"grpc"},
 				}),
-				ClashYAML: clashInline(map[string]any{
+				ClashYAML: clashBlock(map[string]any{
 					"name": n, "type": "vless", "server": addr, "port": c.Ports.RealityGRPC,
 					"uuid": c.Creds.RealityGRPCUUID, "network": "grpc", "tls": true, "udp": true,
 					"servername": c.RealityServerName, "client-fingerprint": "chrome",
@@ -80,7 +80,7 @@ func (c Config) buildNodes() []node {
 				DefaultLink: scheme("hysteria2", c.Creds.HysteriaPassword, "", addr, c.Ports.Hysteria2, n, url.Values{
 					"sni": {c.Domain}, "alpn": {"h3"},
 				}),
-				ClashYAML: clashInline(map[string]any{
+				ClashYAML: clashBlock(map[string]any{
 					"name": n, "type": "hysteria2", "server": addr, "port": c.Ports.Hysteria2,
 					"password": c.Creds.HysteriaPassword, "sni": c.Domain, "alpn": []any{"h3"},
 				}),
@@ -97,7 +97,7 @@ func (c Config) buildNodes() []node {
 				DefaultLink: scheme("tuic", c.Creds.TUICUUID, c.Creds.TUICPassword, addr, c.Ports.TUIC, n, url.Values{
 					"congestion_control": {"bbr"}, "alpn": {"h3"}, "sni": {c.Domain},
 				}),
-				ClashYAML: clashInline(map[string]any{
+				ClashYAML: clashBlock(map[string]any{
 					"name": n, "type": "tuic", "server": addr, "port": c.Ports.TUIC,
 					"uuid": c.Creds.TUICUUID, "password": c.Creds.TUICPassword,
 					"alpn": []any{"h3"}, "congestion-controller": "bbr", "sni": c.Domain,
@@ -115,7 +115,7 @@ func (c Config) buildNodes() []node {
 				DefaultLink: scheme("anytls", c.Creds.AnyTLSPassword, "", addr, c.Ports.AnyTLS, n, url.Values{
 					"sni": {c.Domain},
 				}),
-				ClashYAML: clashInline(map[string]any{
+				ClashYAML: clashBlock(map[string]any{
 					"name": n, "type": "anytls", "server": addr, "port": c.Ports.AnyTLS,
 					"password": c.Creds.AnyTLSPassword, "sni": c.Domain,
 				}),
@@ -152,48 +152,92 @@ func scheme(proto, user, pass, host string, port int, name string, q url.Values)
 	return fmt.Sprintf("%s://%s@%s:%d?%s#%s", proto, auth, host, port, q.Encode(), url.PathEscape(name))
 }
 
-// clashInline renders a Clash proxy as a 2-space-indented inline-mapping list
-// item. Keys are emitted in a stable order for deterministic output.
-func clashInline(m map[string]any) string {
+// clashBlock renders a Clash proxy as a 2-space-indented block-style list item.
+// Keys are emitted in a stable order for deterministic output.
+func clashBlock(m map[string]any) string {
 	order := []string{
 		"name", "type", "server", "port", "uuid", "password", "network", "tls", "udp",
 		"flow", "servername", "sni", "alpn", "congestion-controller", "client-fingerprint",
 		"grpc-opts", "reality-opts",
 	}
-	var parts []string
+	var b strings.Builder
+	first := true
 	for _, k := range order {
 		v, ok := m[k]
 		if !ok {
 			continue
 		}
-		parts = append(parts, k+": "+yamlValue(v))
+		if first {
+			b.WriteString("  - ")
+			first = false
+		} else {
+			b.WriteString("    ")
+		}
+		writeYAMLField(&b, 4, k, v)
 	}
-	return "  - {" + strings.Join(parts, ", ") + "}"
+	return strings.TrimRight(b.String(), "\n")
 }
 
-func yamlValue(v any) string {
+func writeYAMLField(b *strings.Builder, indent int, key string, v any) {
+	b.WriteString(key)
+	switch t := v.(type) {
+	case []any:
+		b.WriteString(":\n")
+		for _, e := range t {
+			b.WriteString(strings.Repeat(" ", indent+2))
+			b.WriteString("- ")
+			b.WriteString(yamlScalar(e))
+			b.WriteString("\n")
+		}
+	case map[string]any:
+		b.WriteString(":\n")
+		for _, nestedKey := range sortedKeys(t) {
+			b.WriteString(strings.Repeat(" ", indent+2))
+			writeYAMLField(b, indent+2, nestedKey, t[nestedKey])
+		}
+	default:
+		b.WriteString(": ")
+		b.WriteString(yamlScalar(v))
+		b.WriteString("\n")
+	}
+}
+
+func yamlScalar(v any) string {
 	switch t := v.(type) {
 	case string:
-		return strconv.Quote(t)
+		if yamlNeedsQuotes(t) {
+			return strconv.Quote(t)
+		}
+		return t
 	case bool:
 		return strconv.FormatBool(t)
 	case int:
 		return strconv.Itoa(t)
-	case []any:
-		var items []string
-		for _, e := range t {
-			items = append(items, yamlValue(e))
-		}
-		return "[" + strings.Join(items, ", ") + "]"
-	case map[string]any:
-		var parts []string
-		for _, k := range sortedKeys(t) {
-			parts = append(parts, k+": "+yamlValue(t[k]))
-		}
-		return "{" + strings.Join(parts, ", ") + "}"
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func yamlNeedsQuotes(s string) bool {
+	if s == "" || strings.HasPrefix(s, "-") {
+		return true
+	}
+	switch strings.ToLower(s) {
+	case "true", "false", "null", "yes", "no", "on", "off":
+		return true
+	}
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '.', '_', '/', '-':
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func sortedKeys(m map[string]any) []string {
@@ -238,14 +282,10 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 		ClashFragment: "proxies:\n" + strings.Join(clashItems, "\n") + "\n",
 	}
 
-	// Clash full profile.
-	var names []string
-	for _, t := range tagsList {
-		names = append(names, "      - "+strconv.Quote(t))
-	}
+	// Clash full profile references the generated fragment through a provider.
+	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
 	clashProfile, err := templatefs.Render("subscription/clash-meta.yaml.tmpl", map[string]any{
-		"ProxiesYAML":    strings.Join(clashItems, "\n"),
-		"ProxyNamesYAML": strings.Join(names, "\n"),
+		"ClashProviderURL": clashProviderURL,
 	})
 	if err != nil {
 		return subscriptionOutputs{}, err

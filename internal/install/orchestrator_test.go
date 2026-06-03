@@ -201,6 +201,41 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	assertNewDNSServerFormat(t, "sing-box profile", profile)
 	assertDefaultDomainResolver(t, "sing-box profile", profile, "local")
 
+	clashFragment, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "clashMeta", token))
+	if err != nil {
+		t.Fatalf("read clash fragment: %v", err)
+	}
+	clashText := string(clashFragment)
+	if !strings.Contains(clashText, "  - name: \"🇺🇸 US-vps1-Reality-Vision\"\n    type: vless") {
+		t.Fatalf("clash fragment should use block-style proxies with UTF-8 names:\n%s", clashText)
+	}
+	if strings.Contains(clashText, "  - {") || strings.Contains(clashText, "reality-opts: {") {
+		t.Fatalf("clash fragment should not use inline mappings:\n%s", clashText)
+	}
+	clashProfile, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "clashMetaProfiles", token))
+	if err != nil {
+		t.Fatalf("read clash profile: %v", err)
+	}
+	clashProfileText := string(clashProfile)
+	for _, want := range []string{
+		"proxy-providers:\n  provider:\n",
+		"    url: \"https://example.com:2096/s/clashMeta/" + token + "\"\n",
+		"    use:\n      - provider\n    proxies: null\n",
+		"rule-providers:\n",
+		"  OpenAI:\n",
+		"  ChinaMaxDomain:\n",
+		"  - RULE-SET,OpenAI,AI服务\n",
+		"  - RULE-SET,ChinaMaxIPNoIPv6,本地直连,no-resolve\n",
+		"  - MATCH,漏网之鱼\n",
+	} {
+		if !strings.Contains(clashProfileText, want) {
+			t.Fatalf("clash profile missing %q:\n%s", want, clashProfileText)
+		}
+	}
+	if strings.Contains(clashProfileText, "proxies:\n  - name:") {
+		t.Fatalf("clash profile should load proxies from provider, not inline proxies:\n%s", clashProfileText)
+	}
+
 	// Units, nginx config, sing-box binary, and account state were written.
 	mustExist(t, filepath.Join(o.SystemdDir, "sing-box.service"))
 	mustExist(t, filepath.Join(o.SystemdDir, "singbox-deploy-cert-renew.service"))

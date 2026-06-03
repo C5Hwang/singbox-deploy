@@ -10,6 +10,7 @@ server {
     location /s/ {
         alias {{ .SubscribeDir }}/;
         default_type text/plain;
+        charset utf-8;
     }
 
     location /traffic/ {
