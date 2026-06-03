@@ -18,7 +18,7 @@ func InstallSteps() []Step {
 		{Label: "Dependencies", Summary: "install base packages"},
 		{Label: "Nginx", Summary: "install nginx.org mainline and managed config"},
 		{Label: "Firewall", Summary: "open required TCP/UDP ports"},
-		{Label: "Certificates", Summary: "obtain Let's Encrypt certificate via ACME"},
+		{Label: "Certificates", Summary: "reuse existing cert or obtain via ACME"},
 		{Label: "sing-box core", Summary: "download and install latest stable release"},
 		{Label: "Config", Summary: "generate fragments and final config.json"},
 		{Label: "Services", Summary: "install and start sing-box.service"},

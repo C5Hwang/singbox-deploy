@@ -4,11 +4,18 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
@@ -28,6 +35,17 @@ type fakeIssuer struct{}
 
 func (fakeIssuer) Issue(_ context.Context, _ acme.Request) (acme.Certificate, error) {
 	return acme.Certificate{CertificatePEM: []byte("CERTPEM"), PrivateKeyPEM: []byte("KEYPEM")}, nil
+}
+
+type countingIssuer struct {
+	calls int
+	cert  acme.Certificate
+	err   error
+}
+
+func (i *countingIssuer) Issue(_ context.Context, _ acme.Request) (acme.Certificate, error) {
+	i.calls++
+	return i.cert, i.err
 }
 
 // writeFakeArchive writes a tar.gz containing a sing-box binary to dest.
@@ -194,6 +212,132 @@ func mustExist(t *testing.T, path string) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected file %s: %v", path, err)
 	}
+}
+
+func TestStepCertificatesReusesExistingManagedCertificate(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	runner := &recordingRunner{}
+	issuer := &countingIssuer{}
+	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer)}
+	certPath, keyPath := o.certPaths(cfg)
+	writeTestCertificatePair(t, certPath, keyPath, cfg.Domain)
+
+	if err := o.stepCertificates(context.Background(), cfg); err != nil {
+		t.Fatalf("stepCertificates error: %v", err)
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("expected existing certificate to skip ACME, got %d calls", issuer.calls)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("expected no commands when reusing certificate, got %#v", runner.commands)
+	}
+}
+
+func TestStepCertificatesImportsLetsEncryptCertificate(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	oldLiveDir := letsEncryptLiveDir
+	letsEncryptLiveDir = filepath.Join(root, "letsencrypt", "live")
+	t.Cleanup(func() { letsEncryptLiveDir = oldLiveDir })
+	srcCert := filepath.Join(letsEncryptLiveDir, cfg.Domain, "fullchain.pem")
+	srcKey := filepath.Join(letsEncryptLiveDir, cfg.Domain, "privkey.pem")
+	certPEM, keyPEM := writeTestCertificatePair(t, srcCert, srcKey, cfg.Domain)
+	issuer := &countingIssuer{}
+	o := &Orchestrator{Runner: &recordingRunner{}, Layout: layout, ACME: acme.NewManager(issuer)}
+
+	if err := o.stepCertificates(context.Background(), cfg); err != nil {
+		t.Fatalf("stepCertificates error: %v", err)
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("expected imported certificate to skip ACME, got %d calls", issuer.calls)
+	}
+	dstCert, dstKey := o.certPaths(cfg)
+	gotCert, err := os.ReadFile(dstCert)
+	if err != nil {
+		t.Fatalf("read imported cert: %v", err)
+	}
+	gotKey, err := os.ReadFile(dstKey)
+	if err != nil {
+		t.Fatalf("read imported key: %v", err)
+	}
+	if string(gotCert) != string(certPEM) || string(gotKey) != string(keyPEM) {
+		t.Fatalf("imported certificate pair mismatch")
+	}
+}
+
+func TestStepCertificatesObtainsWhenExistingCertificateInvalid(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	runner := &recordingRunner{}
+	issuer := &countingIssuer{cert: acme.Certificate{CertificatePEM: []byte("NEWCERT"), PrivateKeyPEM: []byte("NEWKEY")}}
+	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer)}
+	certPath, keyPath := o.certPaths(cfg)
+	if err := writeFile(certPath, []byte("invalid cert"), 0o644); err != nil {
+		t.Fatalf("write invalid cert: %v", err)
+	}
+	if err := writeFile(keyPath, []byte("invalid key"), 0o600); err != nil {
+		t.Fatalf("write invalid key: %v", err)
+	}
+
+	if err := o.stepCertificates(context.Background(), cfg); err != nil {
+		t.Fatalf("stepCertificates error: %v", err)
+	}
+	if issuer.calls != 1 {
+		t.Fatalf("expected ACME call, got %d", issuer.calls)
+	}
+	if len(runner.commands) != 1 || runner.commands[0] != "systemctl stop nginx" {
+		t.Fatalf("expected nginx stop before ACME, got %#v", runner.commands)
+	}
+	gotCert, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("read cert: %v", err)
+	}
+	gotKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if string(gotCert) != "NEWCERT" || string(gotKey) != "NEWKEY" {
+		t.Fatalf("new certificate pair not written")
+	}
+}
+
+func writeTestCertificatePair(t *testing.T, certPath, keyPath, domain string) ([]byte, []byte) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generate serial: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: domain},
+		DNSNames:              []string{domain},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := writeFile(certPath, certPEM, 0o644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := writeFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	return certPEM, keyPEM
 }
 
 func assertNewDNSServerFormat(t *testing.T, name string, b []byte) {

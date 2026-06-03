@@ -93,7 +93,7 @@ func (o *Orchestrator) steps() []step {
 		{"Dependencies", "install base packages", o.stepDependencies},
 		{"Nginx", "install nginx.org mainline", o.stepNginxInstall},
 		{"Firewall", "open required ports", o.stepFirewall},
-		{"Certificates", "obtain Let's Encrypt certificate", o.stepCertificates},
+		{"Certificates", "reuse or obtain TLS certificate", o.stepCertificates},
 		{"sing-box core", "download latest stable", o.stepSingBox},
 		{"Config", "generate and validate config.json", o.stepConfig},
 		{"Services", "install and start sing-box.service", o.stepServices},
@@ -158,6 +158,20 @@ func (o *Orchestrator) stepFirewall(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
+	certPath, keyPath := o.certPaths(cfg)
+	if ok, err := certificatePairUsable(certPath, keyPath, cfg.Domain, now()); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("check existing certificate: %w", err)
+		}
+	} else if ok {
+		return nil
+	}
+	if ok, err := o.importExistingCertificate(cfg, certPath, keyPath); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+
 	// HTTP-01 binds port 80; free it by stopping Nginx (ignore if not running).
 	if cfg.Challenge == acme.ChallengeHTTP01 {
 		_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
@@ -172,7 +186,6 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	certPath, keyPath := o.certPaths(cfg)
 	if err := writeFile(certPath, cert.CertificatePEM, 0o644); err != nil {
 		return err
 	}
