@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
@@ -355,6 +356,7 @@ func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 		"dns_credential":      dnsCredentialForState(cfg),
 		"dns_provider":        cfg.DNSProvider,
 		"email":               cfg.Email,
+		"enabled_protocols":   protocolStateValue(cfg.enabled()),
 		"display_name":        cfg.DisplayName,
 		"reality_public_key":  cfg.Creds.RealityPublicKey,
 		"reality_short_id":    cfg.Creds.RealityShortID,
@@ -362,6 +364,8 @@ func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 		"subscribe_token":     subscriptionToken(cfg.Salt),
 		"monitor_port":        itoa(cfg.MonitorPort),
 		"subscribe_port":      itoa(cfg.SubscribePort),
+		"traffic_limit_bytes": fmt.Sprintf("%d", cfg.TrafficLimitBytes),
+		"reset_day":           itoa(cfg.ResetDay),
 	}
 	for name, value := range state {
 		if err := writeFile(filepath.Join(o.Layout.StateDir, name), []byte(value+"\n"), 0o600); err != nil {
@@ -369,4 +373,12 @@ func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 		}
 	}
 	return nil
+}
+
+func protocolStateValue(protocols []config.Protocol) string {
+	parts := make([]string, 0, len(protocols))
+	for _, proto := range protocols {
+		parts = append(parts, string(proto))
+	}
+	return strings.Join(parts, ",")
 }

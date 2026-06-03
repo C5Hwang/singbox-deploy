@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -105,6 +108,107 @@ func TestDryRunShortcutShowsIndicator(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "dry-run mode") {
 		t.Fatalf("view missing dry-run indicator:\n%s", m.View())
+	}
+}
+
+func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	writeStatusState(t, layout.StateDir, "domain", "example.com")
+	writeStatusState(t, layout.StateDir, "public_ip", "203.0.113.10")
+	writeStatusState(t, layout.StateDir, "subscribe_port", "2096")
+	writeStatusState(t, layout.StateDir, "subscribe_token", "tok")
+	writeStatusState(t, layout.StateDir, "enabled_protocols", "reality-vision,tuic")
+	writeStatusState(t, layout.StateDir, "traffic_limit_bytes", fmt.Sprintf("%d", uint64(100)<<30))
+	writeStatusState(t, layout.StateDir, "reset_day", "7")
+	if err := os.MkdirAll(filepath.Dir(layout.SingBoxBin), 0o755); err != nil {
+		t.Fatalf("mkdir sing-box dir: %v", err)
+	}
+	if err := os.WriteFile(layout.SingBoxBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write sing-box binary: %v", err)
+	}
+
+	oldLayout := defaultStatusLayout
+	oldDetect := detectStatusHost
+	oldOutput := statusCommandOutput
+	defer func() {
+		defaultStatusLayout = oldLayout
+		detectStatusHost = oldDetect
+		statusCommandOutput = oldOutput
+	}()
+	defaultStatusLayout = func() paths.Layout { return layout }
+	detectStatusHost = func() (system.Host, error) {
+		host := supportedTestHost()
+		host.OS.VersionID = "24.04"
+		return host, nil
+	}
+	statusCommandOutput = func(name string, args ...string) (string, error) {
+		if name == layout.SingBoxBin {
+			return "sing-box version 1.12.0\n", nil
+		}
+		if name != "systemctl" || len(args) != 2 || args[0] != "is-active" {
+			return "", fmt.Errorf("unexpected command: %s %v", name, args)
+		}
+		switch args[1] {
+		case system.SingBoxService:
+			return "active\n", nil
+		case "nginx.service":
+			return "inactive\n", fmt.Errorf("inactive")
+		case system.MonitorService:
+			return "failed\n", fmt.Errorf("failed")
+		default:
+			return "unknown\n", fmt.Errorf("unknown")
+		}
+	}
+
+	status := loadStatus()
+	if status.Domain != "example.com" || status.PublicIP != "203.0.113.10" {
+		t.Fatalf("state fields not loaded: %#v", status)
+	}
+	if status.OSArch != "ubuntu 24.04/amd64" {
+		t.Fatalf("OSArch = %q", status.OSArch)
+	}
+	if status.SingBoxVer != "sing-box version 1.12.0" {
+		t.Fatalf("SingBoxVer = %q", status.SingBoxVer)
+	}
+	if status.SingBoxState != "running" || status.NginxState != "not running" || status.MonitorState != "not running" {
+		t.Fatalf("service states = %#v", status)
+	}
+	if status.Protocols != "reality-vision,tuic" {
+		t.Fatalf("Protocols = %q", status.Protocols)
+	}
+	if status.Subscription != "https://example.com:2096/s/default/tok" {
+		t.Fatalf("Subscription = %q", status.Subscription)
+	}
+	if status.TrafficQuota != "limit 100 GB, reset day 7" {
+		t.Fatalf("TrafficQuota = %q", status.TrafficQuota)
+	}
+}
+
+func writeStatusState(t *testing.T, dir, name, value string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0o600); err != nil {
+		t.Fatalf("write state %s: %v", name, err)
+	}
+}
+
+func TestRunningStatusLevelClassifiesColors(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  statusLevel
+	}{
+		{value: "running", want: statusLevelRunning},
+		{value: "active", want: statusLevelRunning},
+		{value: "not running", want: statusLevelStopped},
+		{value: "failed", want: statusLevelStopped},
+		{value: "unknown", want: statusLevelUnknown},
+	} {
+		if got := runningStatusLevel(tc.value); got != tc.want {
+			t.Fatalf("runningStatusLevel(%q) = %v, want %v", tc.value, got, tc.want)
+		}
 	}
 }
 

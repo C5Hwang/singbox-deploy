@@ -34,6 +34,7 @@ type Status struct {
 	SingBoxVer   string
 	SingBoxState string
 	NginxState   string
+	MonitorState string
 	CertState    string
 	Protocols    string
 	Subscription string
@@ -64,7 +65,7 @@ type Model struct {
 
 // NewModel returns a Model populated with the default grouped menu.
 func NewModel() *Model {
-	return &Model{groups: defaultGroups()}
+	return &Model{groups: defaultGroups(), status: loadStatus()}
 }
 
 func defaultGroups() []MenuGroup {
@@ -85,6 +86,9 @@ func defaultGroups() []MenuGroup {
 
 // SetStatus replaces the status panel contents.
 func (m *Model) SetStatus(s Status) { m.status = s }
+
+// RefreshStatus reloads the status panel from the current host and state files.
+func (m *Model) RefreshStatus() { m.status = loadStatus() }
 
 // SetSize records the terminal dimensions.
 func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
@@ -122,8 +126,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// While a sub-flow (the install wizard) is active, delegate everything to it
 	// so its state machine and async run messages are handled in one place.
 	if m.wizard != nil {
+		w := m.wizard
 		cmd, done := m.wizard.Update(msg)
 		if done {
+			if w.phase == phaseDone && w.runErr == nil && !w.dryRun {
+				m.RefreshStatus()
+			}
 			m.wizard = nil
 		}
 		return m, cmd
@@ -166,6 +174,9 @@ var (
 	titleStyle = lipgloss.NewStyle().Bold(true)
 	selStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	dimStyle   = lipgloss.NewStyle().Faint(true)
+	statusOK   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	statusBad  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	statusWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
 )
 
 // View implements tea.Model.
@@ -243,6 +254,7 @@ func (m *Model) statusView() string {
 		{"sing-box", or(s.SingBoxVer, "not installed")},
 		{"Service", or(s.SingBoxState, "unknown")},
 		{"Nginx", or(s.NginxState, "unknown")},
+		{"Monitor", or(s.MonitorState, "unknown")},
 		{"Certificate", or(s.CertState, "unknown")},
 		{"Protocols", or(s.Protocols, "none")},
 		{"Subscription", or(s.Subscription, "none")},
@@ -251,9 +263,32 @@ func (m *Model) statusView() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Status") + "\n")
 	for _, r := range rows {
-		b.WriteString(dimStyle.Render(r[0]+": ") + r[1] + "\n")
+		b.WriteString(dimStyle.Render(r[0]+": ") + renderStatusField(r[0], r[1]) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderStatusField(label, value string) string {
+	if !isRunningStatusField(label) {
+		return value
+	}
+	switch runningStatusLevel(value) {
+	case statusLevelRunning:
+		return statusOK.Render(value)
+	case statusLevelStopped:
+		return statusBad.Render(value)
+	default:
+		return statusWarn.Render(value)
+	}
+}
+
+func isRunningStatusField(label string) bool {
+	switch label {
+	case "Service", "Nginx", "Monitor":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Model) menuView(width int) string {
