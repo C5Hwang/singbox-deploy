@@ -123,7 +123,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	// Key commands were issued.
 	joined := strings.Join(runner.commands, "\n")
 	for _, want := range []string{
-		"apt update",
+		"apt-get update",
 		"systemctl enable --now sing-box.service",
 		"check -c " + layout.ConfigJSON,
 		"nginx -t",

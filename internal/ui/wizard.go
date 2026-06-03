@@ -385,7 +385,9 @@ func (w *wizard) startRun() tea.Cmd {
 	logs := &logWriter{ch: ch, block: w.dryRun}
 	runner := system.Runner(system.NewExecRunner(logs))
 	layout := paths.DefaultLayout()
-	acmeManager := acme.NewManager(acme.NewLegoIssuer())
+	issuer := acme.NewLegoIssuer()
+	issuer.Output = logs
+	acmeManager := acme.NewManager(issuer)
 	releases := release.NewClient("", nil)
 	var latestSingBox func(context.Context) (string, error)
 	var download func(context.Context, string, string) error
@@ -716,7 +718,8 @@ type logWriter struct {
 }
 
 func (lw *logWriter) Write(p []byte) (int, error) {
-	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+	text := sanitizeLogOutput(string(p))
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -731,6 +734,55 @@ func (lw *logWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+func sanitizeLogOutput(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '\x1b':
+			i = skipANSIEscape(s, i)
+		case '\r':
+			if i+1 < len(s) && s[i+1] == '\n' {
+				continue
+			}
+			b.WriteByte('\n')
+		case '\n', '\t':
+			b.WriteByte(c)
+		default:
+			if c >= 0x20 || c >= 0x80 {
+				b.WriteByte(c)
+			}
+		}
+	}
+	return b.String()
+}
+
+func skipANSIEscape(s string, i int) int {
+	if i+1 >= len(s) {
+		return i
+	}
+	i++
+	switch s[i] {
+	case '[':
+		for i+1 < len(s) {
+			i++
+			if s[i] >= 0x40 && s[i] <= 0x7e {
+				return i
+			}
+		}
+	case ']', 'P', '^', '_':
+		for i+1 < len(s) {
+			i++
+			if s[i] == '\a' {
+				return i
+			}
+			if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '\\' {
+				return i + 1
+			}
+		}
+	}
+	return i
 }
 
 type dryRunIssuer struct{}

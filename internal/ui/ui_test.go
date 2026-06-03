@@ -141,6 +141,25 @@ func TestDryRunRunningEnterReadsNextUpdate(t *testing.T) {
 	}
 }
 
+func TestLogWriterSanitizesTerminalControlOutput(t *testing.T) {
+	ch := make(chan runMsg, 4)
+	lw := &logWriter{ch: ch, block: true}
+	input := "Downloading 10%\r\x1b[2KDownloading 20%\n\x1b[?25lsecret\x1b[?25h\n"
+	if _, err := lw.Write([]byte(input)); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+
+	for i, want := range []string{"Downloading 10%", "Downloading 20%", "secret"} {
+		msg := <-ch
+		if msg.logLine != want {
+			t.Fatalf("line %d = %q, want %q", i, msg.logLine, want)
+		}
+		if strings.ContainsAny(msg.logLine, "\x1b\r") {
+			t.Fatalf("line %d still has terminal controls: %q", i, msg.logLine)
+		}
+	}
+}
+
 func TestRunningLogKeepsHistoryAndScrolls(t *testing.T) {
 	w := &wizard{phase: phaseRunning, height: 10, bar: progressBarForTest()}
 	for i := 1; i <= 20; i++ {

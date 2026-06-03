@@ -7,14 +7,20 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
+	"io"
+	stdlog "log"
+	"sync"
 
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge/http01"
 	"github.com/go-acme/lego/v4/lego"
+	legolog "github.com/go-acme/lego/v4/log"
 	"github.com/go-acme/lego/v4/providers/dns/alidns"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
 	"github.com/go-acme/lego/v4/registration"
 )
+
+var legoLoggerMu sync.Mutex
 
 // legoUser implements lego's registration.User with an ephemeral account key.
 type legoUser struct {
@@ -35,6 +41,9 @@ type LegoIssuer struct {
 	HTTP01Port string
 	// Staging selects the Let's Encrypt staging directory when true.
 	Staging bool
+	// Output receives lego's own informational logs. When nil, lego keeps its
+	// default logger.
+	Output io.Writer
 }
 
 // NewLegoIssuer returns a LegoIssuer using the production directory and port 80.
@@ -43,6 +52,29 @@ func NewLegoIssuer() *LegoIssuer { return &LegoIssuer{HTTP01Port: "80"} }
 // Issue obtains a certificate for r.Domain via Let's Encrypt. The request is
 // assumed pre-validated by Manager.Obtain.
 func (i *LegoIssuer) Issue(ctx context.Context, r Request) (Certificate, error) {
+	return i.withLegoLogger(func() (Certificate, error) {
+		return i.issue(ctx, r)
+	})
+}
+
+func (i *LegoIssuer) withLegoLogger(fn func() (Certificate, error)) (Certificate, error) {
+	legoLoggerMu.Lock()
+	defer legoLoggerMu.Unlock()
+
+	if i.Output == nil {
+		return fn()
+	}
+
+	previous := legolog.Logger
+	legolog.Logger = stdlog.New(i.Output, "", stdlog.LstdFlags)
+	defer func() {
+		legolog.Logger = previous
+	}()
+
+	return fn()
+}
+
+func (i *LegoIssuer) issue(ctx context.Context, r Request) (Certificate, error) {
 	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return Certificate{}, fmt.Errorf("generate account key: %w", err)

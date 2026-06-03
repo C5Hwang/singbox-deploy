@@ -60,9 +60,21 @@ func TestFirewallCommandsFirewalld(t *testing.T) {
 
 func TestInstallPlanUsesAptOnUbuntu(t *testing.T) {
 	plan := BuildInstallPlan(OSRelease{Family: FamilyDebian, PackageManager: "apt"})
-	if plan.Commands[0].String() != "apt update" {
+	if plan.Commands[0].String() != "apt-get update" {
 		t.Fatalf("first command = %q", plan.Commands[0].String())
 	}
+	if !containsEnv(plan.Commands[0].Env, "DEBIAN_FRONTEND=noninteractive") {
+		t.Fatalf("apt command missing noninteractive env: %#v", plan.Commands[0].Env)
+	}
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, got := range env {
+		if got == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSystemctlCommand(t *testing.T) {
