@@ -76,19 +76,64 @@ func TestInstallViewKeepsMenuVisible(t *testing.T) {
 	}
 }
 
-func TestWideInstallContentUsesMenuHeight(t *testing.T) {
+func TestWideInstallContentUsesAvailableHeightAndMenuAdapts(t *testing.T) {
 	m := NewModel()
 	m.SetSize(160, 60)
 	w := &wizard{phase: phaseRunning, bar: progressBarForTest()}
 	m.wizard = w
-	_ = m.View()
-	if want := lipgloss.Height(m.menuView(sidebarWidth - 4)); w.height != want {
-		t.Fatalf("wizard height = %d, want menu height %d", w.height, want)
+	view := m.View()
+	if got := lipgloss.Height(view); got != 60 {
+		t.Fatalf("view height = %d, want 60:\n%s", got, view)
+	}
+	if want := 60 - 1 - panelStyle.GetVerticalFrameSize(); w.height != want {
+		t.Fatalf("wizard height = %d, want available content height %d", w.height, want)
+	}
+
+	body := m.bodyView(160, 59)
+	menuHeight := lipgloss.Height(panelStyle.Width(sidebarWidth).Render(m.menuView(sidebarWidth - 4)))
+	lines := strings.Split(body, "\n")
+	if menuHeight >= len(lines) {
+		t.Fatalf("menu height %d should be shorter than body height %d:\n%s", menuHeight, len(lines), body)
+	}
+	if !strings.HasPrefix(lines[menuHeight-1], "╰") {
+		t.Fatalf("menu should end at its content height:\n%s", body)
+	}
+	if strings.HasPrefix(lines[menuHeight], "│") || strings.HasPrefix(lines[menuHeight], "╰") {
+		t.Fatalf("menu should not extend to the right panel height:\n%s", body)
+	}
+}
+
+func TestViewKeepsFooterAtConfiguredBottom(t *testing.T) {
+	m := NewModel()
+	m.SetSize(120, 12)
+	m.wizard = confirmWizardForTest()
+	view := m.View()
+	if got := lipgloss.Height(view); got != 12 {
+		t.Fatalf("view height = %d, want 12:\n%s", got, view)
+	}
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[len(lines)-1], "enter install") {
+		t.Fatalf("footer should stay on final row:\n%s", view)
 	}
 }
 
 func supportedTestHost() system.Host {
 	return system.Host{OS: system.OSRelease{Family: system.FamilyDebian, ID: "ubuntu"}, Arch: "amd64", IsRoot: true}
+}
+
+func confirmWizardForTest() *wizard {
+	return &wizard{
+		phase: phaseConfirm,
+		values: map[string]string{
+			"domain":           "example.com",
+			"challenge":        "http-01",
+			"protocols":        defaultProtocolValue(),
+			"reality_sni":      "www.microsoft.com",
+			"display_name":     "Node",
+			"traffic_limit_gb": "0",
+		},
+		host: supportedTestHost(),
+	}
 }
 
 func TestInstallFieldShowsUsageNote(t *testing.T) {
@@ -304,6 +349,37 @@ func TestRunningViewFitsAssignedHeightWithWrappedLog(t *testing.T) {
 	w.appendLog("[dry-run] " + strings.Repeat("long-command ", 20))
 	if got := lipgloss.Height(w.View()); got > w.height {
 		t.Fatalf("running view height = %d, want <= %d:\n%s", got, w.height, w.View())
+	}
+}
+
+func TestConfirmViewScrollsWithKeysAndMouse(t *testing.T) {
+	w := confirmWizardForTest()
+	w.setSize(60, 8)
+	if strings.Contains(w.View(), "anytls port") {
+		t.Fatalf("confirm view should start at the top:\n%s", w.View())
+	}
+	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyEnd})
+	if done {
+		t.Fatalf("scrolling confirm view should not close wizard")
+	}
+	if !strings.Contains(w.View(), "anytls port") {
+		t.Fatalf("confirm view should scroll to the bottom:\n%s", w.View())
+	}
+
+	w.confirmScroll = 0
+	_, done = w.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if done {
+		t.Fatalf("mouse wheel should not close wizard")
+	}
+	if w.confirmScroll == 0 {
+		t.Fatalf("mouse wheel down should scroll confirm view")
+	}
+	_, done = w.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if done {
+		t.Fatalf("mouse wheel should not close wizard")
+	}
+	if w.confirmScroll != 0 {
+		t.Fatalf("mouse wheel up should scroll back to top, got %d", w.confirmScroll)
 	}
 }
 

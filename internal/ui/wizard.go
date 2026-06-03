@@ -118,6 +118,7 @@ type wizard struct {
 	events              []install.Event
 	logBuf              []string
 	logScroll           int
+	confirmScroll       int
 	runErr              error
 	cfg                 install.Config
 	dryRun              bool
@@ -356,6 +357,7 @@ func (w *wizard) advanceField() {
 		w.setField(i)
 		return
 	}
+	w.confirmScroll = 0
 	w.phase = phaseConfirm
 }
 
@@ -468,6 +470,8 @@ func (w *wizard) Update(msg tea.Msg) (tea.Cmd, bool) {
 		return w.handleRun(msg), false
 	case tea.KeyMsg:
 		return w.handleKey(msg)
+	case tea.MouseMsg:
+		return w.handleMouse(msg), false
 	}
 	if w.phase == phaseForm && !w.currentFieldHasOptions() {
 		var cmd tea.Cmd
@@ -522,6 +526,24 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 	case phaseConfirm:
 		switch msg.String() {
+		case "up", "k":
+			w.scrollConfirm(-1, w.confirmViewportHeight())
+			return nil, false
+		case "down", "j":
+			w.scrollConfirm(1, w.confirmViewportHeight())
+			return nil, false
+		case "pgup":
+			w.scrollConfirm(-w.confirmViewportHeight(), w.confirmViewportHeight())
+			return nil, false
+		case "pgdown":
+			w.scrollConfirm(w.confirmViewportHeight(), w.confirmViewportHeight())
+			return nil, false
+		case "home":
+			w.confirmScroll = 0
+			return nil, false
+		case "end":
+			w.confirmScroll = w.maxConfirmScroll(w.confirmViewportHeight())
+			return nil, false
 		case "enter", "y":
 			return w.startRun(), false
 		case "shift+tab", "ctrl+b":
@@ -583,6 +605,34 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	}
 	return nil, false
+}
+
+func (w *wizard) handleMouse(msg tea.MouseMsg) tea.Cmd {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		switch w.phase {
+		case phaseConfirm:
+			w.scrollConfirm(-3, w.confirmViewportHeight())
+		case phaseRunning:
+			w.scrollLog(3, w.logViewportHeight())
+		case phaseDone:
+			if w.runErr != nil {
+				w.scrollLog(3, w.doneLogHeight())
+			}
+		}
+	case tea.MouseButtonWheelDown:
+		switch w.phase {
+		case phaseConfirm:
+			w.scrollConfirm(3, w.confirmViewportHeight())
+		case phaseRunning:
+			w.scrollLog(-3, w.logViewportHeight())
+		case phaseDone:
+			if w.runErr != nil {
+				w.scrollLog(-3, w.doneLogHeight())
+			}
+		}
+	}
+	return nil
 }
 
 func (w *wizard) updateInput(msg tea.Msg) tea.Cmd {
@@ -1014,8 +1064,7 @@ func (w *wizard) View() string {
 		b.WriteString(dimStyle.Render("enter to continue · shift+tab/ctrl+b back · esc to cancel"))
 		return b.String()
 	case phaseConfirm:
-		return wizardTitle.Render("Install · Confirm") + "\n\n" + w.summary() + "\n" +
-			dimStyle.Render("enter/y to install · shift+tab/ctrl+b back · esc/n to cancel")
+		return w.confirmView()
 	case phaseRunning:
 		return w.runningView()
 	case phaseDone:
@@ -1026,6 +1075,86 @@ func (w *wizard) View() string {
 			dimStyle.Render("press any key to return")
 	}
 	return ""
+}
+
+func (w *wizard) footerHints() []string {
+	switch w.phase {
+	case phasePreflight:
+		return []string{"enter continue", "esc/q cancel"}
+	case phaseForm:
+		return []string{"enter continue", "shift+tab back", "esc cancel"}
+	case phaseConfirm:
+		return []string{"↑/↓ scroll", "enter install", "esc cancel"}
+	case phaseRunning:
+		if w.dryRunAwaitingEnter {
+			return []string{"enter next", "↑/↓ scroll log"}
+		}
+		return []string{"↑/↓ scroll log"}
+	case phaseDone:
+		if w.runErr != nil {
+			return []string{"↑/↓ scroll log", "any other key return"}
+		}
+		return []string{"any key return"}
+	default:
+		return nil
+	}
+}
+
+func (w *wizard) confirmView() string {
+	viewportHeight := w.confirmViewportHeight()
+	lines := w.visibleConfirmLines(viewportHeight)
+	return wizardTitle.Render("Install · Confirm") + "\n\n" + strings.Join(lines, "\n") + "\n\n" +
+		dimStyle.Render("↑/↓ or mouse wheel scroll · enter/y to install · shift+tab/ctrl+b back · esc/n to cancel")
+}
+
+func (w *wizard) visibleConfirmLines(height int) []string {
+	rows := w.confirmRows()
+	if height <= 0 || len(rows) == 0 {
+		return nil
+	}
+	w.clampConfirmScroll(height)
+	start := min(w.confirmScroll, max(0, len(rows)-height))
+	end := min(start+height, len(rows))
+	return rows[start:end]
+}
+
+func (w *wizard) scrollConfirm(delta, height int) {
+	w.confirmScroll += delta
+	w.clampConfirmScroll(height)
+}
+
+func (w *wizard) clampConfirmScroll(height int) {
+	w.confirmScroll = min(max(0, w.confirmScroll), w.maxConfirmScroll(height))
+}
+
+func (w *wizard) maxConfirmScroll(height int) int {
+	if height <= 0 {
+		return 0
+	}
+	return max(0, len(w.confirmRows())-height)
+}
+
+func (w *wizard) confirmRows() []string {
+	summary := strings.TrimRight(w.summary(), "\n")
+	if summary == "" {
+		return nil
+	}
+	wrapped := lipgloss.NewStyle().Width(w.confirmWrapWidth()).Render(summary)
+	return strings.Split(strings.TrimRight(wrapped, "\n"), "\n")
+}
+
+func (w *wizard) confirmViewportHeight() int {
+	if w.height <= 0 {
+		return 12
+	}
+	return max(1, w.height-4)
+}
+
+func (w *wizard) confirmWrapWidth() int {
+	if w.width <= 0 {
+		return 80
+	}
+	return max(1, w.width)
 }
 
 func (w *wizard) optionsView(f field) string {

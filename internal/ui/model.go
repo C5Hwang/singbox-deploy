@@ -182,9 +182,9 @@ var (
 // View implements tea.Model.
 func (m *Model) View() string {
 	width, height := m.frameSize()
-	bodyHeight := max(6, height-3)
-	body := m.bodyView(width, bodyHeight)
 	footer := m.footerView()
+	bodyHeight := max(1, height-lipgloss.Height(footer))
+	body := fitViewHeight(m.bodyView(width, bodyHeight), bodyHeight)
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
 
@@ -200,12 +200,16 @@ func (m *Model) frameSize() (int, int) {
 }
 
 func (m *Model) bodyView(width, height int) string {
+	panelFrameY := panelStyle.GetVerticalFrameSize()
+	contentHeight := max(1, height-panelFrameY)
 	if m.LayoutMode() == LayoutWide {
 		available := max(48, width-8-panelGap)
 		menuWidth := min(sidebarWidth, max(28, available/3))
 		contentWidth := max(24, available-menuWidth)
 		menuBody := m.menuView(menuWidth - 4)
-		contentHeight := lipgloss.Height(menuBody)
+		if lipgloss.Height(menuBody) > contentHeight {
+			menuBody = fitViewHeight(menuBody, contentHeight)
+		}
 		menu := panelStyle.Width(menuWidth).Render(menuBody)
 		contentBody := m.contentView(contentWidth-4, contentHeight)
 		contentBody = lipgloss.NewStyle().Width(contentWidth - 4).MaxHeight(contentHeight).Render(contentBody)
@@ -213,8 +217,13 @@ func (m *Model) bodyView(width, height int) string {
 		return lipgloss.JoinHorizontal(lipgloss.Top, menu, strings.Repeat(" ", panelGap), content)
 	}
 	panelWidth := max(24, width-4)
-	menu := panelStyle.Width(panelWidth).Render(m.menuView(panelWidth - 4))
-	content := panelStyle.Width(panelWidth).Render(m.contentView(panelWidth-4, height))
+	menuBody := m.menuView(panelWidth - 4)
+	menuHeight := min(lipgloss.Height(menuBody), max(1, height-panelFrameY-3))
+	menu := panelStyle.Width(panelWidth).Height(menuHeight).Render(fitViewHeight(menuBody, menuHeight))
+	contentHeight = max(1, height-lipgloss.Height(menu)-panelFrameY)
+	contentBody := m.contentView(panelWidth-4, contentHeight)
+	contentBody = lipgloss.NewStyle().Width(panelWidth - 4).MaxHeight(contentHeight).Render(contentBody)
+	content := panelStyle.Width(panelWidth).Height(contentHeight).Render(contentBody)
 	return lipgloss.JoinVertical(lipgloss.Left, menu, content)
 }
 
@@ -228,14 +237,34 @@ func (m *Model) contentView(width, height int) string {
 
 func (m *Model) footerView() string {
 	var parts []string
-	if m.dryRun {
+	dryRun := m.dryRun
+	if m.wizard != nil {
+		dryRun = m.wizard.dryRun
+	}
+	if dryRun {
 		parts = append(parts, "dry-run mode")
 	}
 	if m.wizard == nil {
-		parts = append(parts, "d dry-run")
+		parts = append(parts, "d dry-run", "↑/↓ move", "enter select", "esc/q quit")
+	} else {
+		parts = append(parts, m.wizard.footerHints()...)
 	}
-	parts = append(parts, "↑/↓ move", "enter select", "esc/q quit")
 	return dimStyle.Render(strings.Join(parts, " · "))
+}
+
+func fitViewHeight(view string, height int) string {
+	if height <= 0 {
+		return ""
+	}
+	view = strings.TrimRight(view, "\n")
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func or(v, fallback string) string {
