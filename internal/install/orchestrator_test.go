@@ -148,6 +148,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	if err := json.Unmarshal(cfgBytes, &decoded); err != nil {
 		t.Fatalf("config not valid json: %v", err)
 	}
+	assertNewDNSServerFormat(t, "config.json", cfgBytes)
 	if len(decoded.Inbounds) != 5 {
 		t.Fatalf("expected 5 inbounds, got %d", len(decoded.Inbounds))
 	}
@@ -177,6 +178,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	if err := json.Unmarshal(profile, &anyJSON); err != nil {
 		t.Fatalf("sing-box profile not valid json: %v\n%s", err, profile)
 	}
+	assertNewDNSServerFormat(t, "sing-box profile", profile)
 
 	// Units, nginx config, sing-box binary, and account state were written.
 	mustExist(t, filepath.Join(o.SystemdDir, "sing-box.service"))
@@ -191,6 +193,29 @@ func mustExist(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected file %s: %v", path, err)
+	}
+}
+
+func assertNewDNSServerFormat(t *testing.T, name string, b []byte) {
+	t.Helper()
+	var decoded struct {
+		DNS struct {
+			Servers []map[string]any `json:"servers"`
+		} `json:"dns"`
+	}
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("%s not valid json: %v", name, err)
+	}
+	if len(decoded.DNS.Servers) == 0 {
+		t.Fatalf("%s missing dns.servers", name)
+	}
+	for i, server := range decoded.DNS.Servers {
+		if _, ok := server["address"]; ok {
+			t.Fatalf("%s dns.servers[%d] uses legacy address field", name, i)
+		}
+		if typ, ok := server["type"].(string); !ok || typ == "" {
+			t.Fatalf("%s dns.servers[%d] missing type", name, i)
+		}
 	}
 }
 
