@@ -67,7 +67,7 @@ func installFields() []field {
 		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
 		{key: "challenge", label: "ACME challenge", def: "http-01", options: []string{"http-01", "dns-01"}, note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
 		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
-		{key: "dns_credential", label: "DNS credential (CF token, or aliyun accessKey:secretKey)", note: "Cloudflare uses an API token. Aliyun uses accessKey:secretKey. Passed to ACME for DNS validation.", skip: isDNS},
+		{key: "dns_credential", label: "DNS API credential", skip: isDNS},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
 		{key: "reality_sni", label: "Reality URL/SNI (camouflage server)", def: "www.microsoft.com", note: "You may enter a URL or host; the host is used for the Reality handshake.", paramsFor: []config.Protocol{config.ProtocolRealityVision, config.ProtocolRealityGRPC}, skip: noReality},
 		{key: "reality_vision_uuid", label: "Reality Vision UUID (optional)", note: "Blank generates a random UUID.", paramsFor: []config.Protocol{config.ProtocolRealityVision}, skip: missingProtocol(config.ProtocolRealityVision)},
@@ -961,6 +961,16 @@ func (w *wizard) parameterProtocolLabel(f field) string {
 	return protocolLabels(selected)
 }
 
+func (w *wizard) fieldNote(f field) string {
+	if f.key != "dns_credential" {
+		return f.note
+	}
+	if w.values["dns_provider"] == "aliyun" {
+		return "Aliyun uses accessKey:secretKey (AccessKey ID:AccessKey Secret).\nYou can apply at https://ram.console.aliyun.com/manage/ak"
+	}
+	return "Cloudflare uses an API token.\nYou can apply at https://dash.cloudflare.com/profile/api-tokens"
+}
+
 // View renders the wizard.
 func (w *wizard) View() string {
 	switch w.phase {
@@ -980,8 +990,8 @@ func (w *wizard) View() string {
 		if label := w.parameterProtocolLabel(f); label != "" {
 			b.WriteString(wizardOK.Render("Setting parameters for: "+label) + "\n")
 		}
-		if f.note != "" {
-			for _, line := range wrapFieldNote(f.note, w.width) {
+		if note := w.fieldNote(f); note != "" {
+			for _, line := range wrapFieldNote(note, w.width) {
 				b.WriteString(dimStyle.Render(line) + "\n")
 			}
 		}
@@ -1139,7 +1149,12 @@ func wrapFieldNote(s string, width int) []string {
 	if width <= 0 {
 		width = 80
 	}
-	return wrapWords(s, max(24, width-4))
+	wrapWidth := max(24, width-4)
+	var lines []string
+	for _, part := range strings.Split(s, "\n") {
+		lines = append(lines, wrapWords(part, wrapWidth)...)
+	}
+	return lines
 }
 
 func wrapWords(s string, width int) []string {

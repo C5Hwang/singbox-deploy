@@ -303,6 +303,38 @@ func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
 	}
 }
 
+func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
+	fields := installFields()
+	for _, tc := range []struct {
+		provider string
+		want     string
+		link     string
+		avoid    string
+	}{
+		{provider: "cloudflare", want: "Cloudflare uses an API token.", link: "https://dash.cloudflare.com/profile/api-tokens", avoid: "Aliyun uses"},
+		{provider: "aliyun", want: "Aliyun uses accessKey:secretKey", link: "https://ram.console.aliyun.com/manage/ak", avoid: "Cloudflare uses"},
+	} {
+		w := &wizard{
+			phase:  phaseForm,
+			fields: fields,
+			values: map[string]string{"dns_provider": tc.provider},
+			input:  textinput.New(),
+			width:  100,
+		}
+		w.setField(fieldIndex(t, fields, "dns_credential"))
+		view := w.View()
+		if !strings.Contains(view, tc.want) || !strings.Contains(view, tc.link) {
+			t.Fatalf("%s note missing provider text or link:\n%s", tc.provider, view)
+		}
+		if !strings.Contains(view, "You can apply at "+tc.link) {
+			t.Fatalf("%s note should use application hint format:\n%s", tc.provider, view)
+		}
+		if strings.Contains(view, tc.avoid) {
+			t.Fatalf("%s note should not include other provider text:\n%s", tc.provider, view)
+		}
+	}
+}
+
 func TestProtocolMultiSelectRequiresAtLeastOne(t *testing.T) {
 	w := &wizard{phase: phaseForm, fields: installFields(), values: map[string]string{}, input: textinput.New()}
 	w.setField(fieldIndex(t, w.fields, "protocols"))
