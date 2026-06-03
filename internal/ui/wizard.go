@@ -4,7 +4,11 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"fmt"
+	"math/big"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,11 +42,13 @@ const (
 
 // field is one collected input.
 type field struct {
-	key     string
-	label   string
-	def     string
-	note    string
-	options []string
+	key       string
+	label     string
+	def       string
+	note      string
+	options   []string
+	multi     bool
+	paramsFor []config.Protocol
 	// skip reports whether this field is hidden given the values so far.
 	skip func(vals map[string]string) bool
 }
@@ -50,13 +56,30 @@ type field struct {
 // installFields defines the wizard's input sequence.
 func installFields() []field {
 	isDNS := func(v map[string]string) bool { return v["challenge"] != "dns-01" }
+	missingProtocol := func(p config.Protocol) func(map[string]string) bool {
+		return func(v map[string]string) bool { return !protocolSelected(v, p) }
+	}
+	noReality := func(v map[string]string) bool {
+		return !protocolSelected(v, config.ProtocolRealityVision) && !protocolSelected(v, config.ProtocolRealityGRPC)
+	}
 	return []field{
 		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
 		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
 		{key: "challenge", label: "ACME challenge", def: "http-01", options: []string{"http-01", "dns-01"}, note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
 		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
 		{key: "dns_credential", label: "DNS credential (CF token, or aliyun accessKey:secretKey)", note: "Cloudflare uses an API token. Aliyun uses accessKey:secretKey. Passed to ACME for DNS validation.", skip: isDNS},
-		{key: "reality_sni", label: "Reality SNI (camouflage server)", def: "www.microsoft.com", note: "Used as the Reality handshake server name; choose a real HTTPS host suitable for camouflage."},
+		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
+		{key: "reality_sni", label: "Reality URL/SNI (camouflage server)", def: "www.microsoft.com", note: "You may enter a URL or host; the host is used for the Reality handshake.", paramsFor: []config.Protocol{config.ProtocolRealityVision, config.ProtocolRealityGRPC}, skip: noReality},
+		{key: "reality_vision_uuid", label: "Reality Vision UUID (optional)", note: "Blank generates a random UUID.", paramsFor: []config.Protocol{config.ProtocolRealityVision}, skip: missingProtocol(config.ProtocolRealityVision)},
+		{key: "reality_vision_port", label: "Reality Vision port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolRealityVision}, skip: missingProtocol(config.ProtocolRealityVision)},
+		{key: "reality_grpc_uuid", label: "Reality gRPC UUID (optional)", note: "Blank generates a random UUID.", paramsFor: []config.Protocol{config.ProtocolRealityGRPC}, skip: missingProtocol(config.ProtocolRealityGRPC)},
+		{key: "reality_grpc_port", label: "Reality gRPC port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolRealityGRPC}, skip: missingProtocol(config.ProtocolRealityGRPC)},
+		{key: "hysteria2_password", label: "Hysteria2 password (optional)", note: "Hysteria2 uses a password credential. Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolHysteria2}, skip: missingProtocol(config.ProtocolHysteria2)},
+		{key: "hysteria2_port", label: "Hysteria2 port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolHysteria2}, skip: missingProtocol(config.ProtocolHysteria2)},
+		{key: "tuic_uuid", label: "TUIC UUID (optional)", note: "Blank generates a random UUID. TUIC password remains randomly generated.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
+		{key: "tuic_port", label: "TUIC port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
+		{key: "anytls_password", label: "AnyTLS password (optional)", note: "AnyTLS uses a password credential. Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
+		{key: "anytls_port", label: "AnyTLS port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
 		{key: "display_name", label: "Node display name", def: "Node", note: "Used only in generated node names shown by clients."},
 		{key: "traffic_limit_gb", label: "Monthly traffic limit in GB (0 = unlimited)", def: "0", note: "Used by the traffic monitor quota. When exceeded, sing-box.service is stopped automatically."},
 		{key: "reset_day", label: "Monthly reset day (1-28)", def: "1", note: "Day of month when the traffic quota cycle resets and service can be restored."},
@@ -81,12 +104,13 @@ type wizard struct {
 	width  int
 	height int
 
-	fields   []field
-	fieldIx  int
-	values   map[string]string
-	input    textinput.Model
-	optionIx int
-	fieldErr string
+	fields         []field
+	fieldIx        int
+	values         map[string]string
+	input          textinput.Model
+	optionIx       int
+	optionSelected map[string]bool
+	fieldErr       string
 
 	validateDomain func(context.Context, string) error
 
@@ -165,10 +189,18 @@ func (w *wizard) setField(index int) {
 		if value == "" {
 			value = f.def
 		}
+		if f.multi {
+			w.optionSelected = selectedOptions(value)
+			w.optionIx = 0
+			w.input.Blur()
+			return
+		}
+		w.optionSelected = nil
 		w.optionIx = optionIndex(f.options, value)
 		w.input.Blur()
 		return
 	}
+	w.optionSelected = nil
 	w.input.SetValue(w.values[f.key])
 	w.input.Placeholder = f.def
 	w.input.Focus()
@@ -181,6 +213,130 @@ func optionIndex(options []string, value string) int {
 		}
 	}
 	return 0
+}
+
+func protocolOptions() []string {
+	options := make([]string, 0, len(config.AllProtocols))
+	for _, p := range config.AllProtocols {
+		options = append(options, string(p))
+	}
+	return options
+}
+
+func defaultProtocolValue() string {
+	return protocolsValue(config.AllProtocols)
+}
+
+func protocolsValue(protocols []config.Protocol) string {
+	parts := make([]string, 0, len(protocols))
+	for _, p := range protocols {
+		parts = append(parts, string(p))
+	}
+	return strings.Join(parts, ",")
+}
+
+func selectedOptions(value string) map[string]bool {
+	selected := map[string]bool{}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			selected[part] = true
+		}
+	}
+	return selected
+}
+
+func selectedOptionsValue(options []string, selected map[string]bool) string {
+	values := make([]string, 0, len(options))
+	for _, opt := range options {
+		if selected[opt] {
+			values = append(values, opt)
+		}
+	}
+	return strings.Join(values, ",")
+}
+
+func protocolsFromValue(value string) []config.Protocol {
+	selected := selectedOptions(value)
+	protocols := make([]config.Protocol, 0, len(config.AllProtocols))
+	for _, p := range config.AllProtocols {
+		if selected[string(p)] {
+			protocols = append(protocols, p)
+		}
+	}
+	return protocols
+}
+
+func protocolSelected(vals map[string]string, p config.Protocol) bool {
+	value := vals["protocols"]
+	if value == "" {
+		value = defaultProtocolValue()
+	}
+	return selectedOptions(value)[string(p)]
+}
+
+func hasProtocol(protocols []config.Protocol, want config.Protocol) bool {
+	for _, p := range protocols {
+		if p == want {
+			return true
+		}
+	}
+	return false
+}
+
+func protocolLabels(protocols []config.Protocol) string {
+	if len(protocols) == 0 {
+		return "none"
+	}
+	return protocolsValue(protocols)
+}
+
+func validUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch i {
+		case 8, 13, 18, 23:
+			if s[i] != '-' {
+				return false
+			}
+		default:
+			if !isHex(s[i]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isHex(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+func normalizeRealityServerName(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("reality URL/SNI is required")
+	}
+	if !strings.Contains(raw, "://") && strings.Contains(raw, "/") {
+		raw = "https://" + raw
+	}
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		host := u.Hostname()
+		if host == "" {
+			return "", fmt.Errorf("reality URL/SNI host is required")
+		}
+		return host, nil
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	}
+	raw = strings.Trim(raw, "[]")
+	if raw == "" || strings.ContainsAny(raw, "/?#") {
+		return "", fmt.Errorf("reality URL/SNI must be a URL or host")
+	}
+	return raw, nil
 }
 
 // startForm activates the first visible field.
@@ -253,6 +409,9 @@ func (w *wizard) commitField() {
 
 func (w *wizard) fieldValue(f field) string {
 	if len(f.options) > 0 {
+		if f.multi {
+			return selectedOptionsValue(f.options, w.optionSelected)
+		}
 		return f.options[min(max(0, w.optionIx), len(f.options)-1)]
 	}
 	val := strings.TrimSpace(w.input.Value())
@@ -263,19 +422,40 @@ func (w *wizard) fieldValue(f field) string {
 }
 
 func (w *wizard) validateField(f field, val string) error {
-	if f.key != "domain" {
-		return nil
+	switch {
+	case f.key == "domain":
+		if val == "" {
+			return fmt.Errorf("domain is required")
+		}
+		if w.dryRun {
+			return nil
+		}
+		if w.validateDomain == nil {
+			return nil
+		}
+		return w.validateDomain(context.Background(), val)
+	case f.key == "protocols":
+		if len(protocolsFromValue(val)) == 0 {
+			return fmt.Errorf("select at least one protocol")
+		}
+	case f.key == "reality_sni":
+		if _, err := normalizeRealityServerName(val); err != nil {
+			return err
+		}
+	case strings.HasSuffix(f.key, "_port"):
+		if val == "" {
+			return nil
+		}
+		port, err := strconv.Atoi(val)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("port must be between 1 and 65535")
+		}
+	case strings.HasSuffix(f.key, "_uuid"):
+		if val != "" && !validUUID(val) {
+			return fmt.Errorf("uuid must be an RFC 4122 value")
+		}
 	}
-	if val == "" {
-		return fmt.Errorf("domain is required")
-	}
-	if w.dryRun {
-		return nil
-	}
-	if w.validateDomain == nil {
-		return nil
-	}
-	return w.validateDomain(context.Background(), val)
+	return nil
 }
 
 // Update handles wizard messages. The bool return reports whether the wizard is
@@ -312,6 +492,12 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		switch msg.String() {
 		case "enter":
 			w.commitField()
+		case " ", "space":
+			if w.currentFieldIsMulti() {
+				w.toggleOption()
+				break
+			}
+			return w.updateInput(msg), false
 		case "up", "k", "left", "h":
 			if w.currentFieldHasOptions() {
 				w.moveOption(-1)
@@ -413,12 +599,39 @@ func (w *wizard) currentFieldHasOptions() bool {
 	return len(w.fields[w.fieldIx].options) > 0
 }
 
+func (w *wizard) currentFieldIsMulti() bool {
+	if w.fieldIx < 0 || w.fieldIx >= len(w.fields) {
+		return false
+	}
+	return w.fields[w.fieldIx].multi
+}
+
 func (w *wizard) moveOption(delta int) {
 	if !w.currentFieldHasOptions() {
 		return
 	}
 	options := w.fields[w.fieldIx].options
 	w.optionIx = (w.optionIx + delta + len(options)) % len(options)
+	w.fieldErr = ""
+}
+
+func (w *wizard) toggleOption() {
+	if !w.currentFieldIsMulti() {
+		return
+	}
+	options := w.fields[w.fieldIx].options
+	if len(options) == 0 {
+		return
+	}
+	if w.optionSelected == nil {
+		w.optionSelected = map[string]bool{}
+	}
+	opt := options[min(max(0, w.optionIx), len(options)-1)]
+	if w.optionSelected[opt] {
+		delete(w.optionSelected, opt)
+	} else {
+		w.optionSelected[opt] = true
+	}
 	w.fieldErr = ""
 }
 
@@ -542,6 +755,15 @@ func (w *wizard) buildConfig() (install.Config, error) {
 	if err != nil {
 		return install.Config{}, err
 	}
+	w.applyCredentialOverrides(&creds)
+	enabled := protocolsFromValue(w.values["protocols"])
+	if len(enabled) == 0 {
+		enabled = config.AllProtocols
+	}
+	ports, err := w.protocolPorts(enabled)
+	if err != nil {
+		return install.Config{}, err
+	}
 	salt, err := credentials.Salt()
 	if err != nil {
 		return install.Config{}, err
@@ -567,6 +789,13 @@ func (w *wizard) buildConfig() (install.Config, error) {
 	}
 
 	iface, _ := monitor.DefaultInterface()
+	realityServerName := ""
+	if hasProtocol(enabled, config.ProtocolRealityVision) || hasProtocol(enabled, config.ProtocolRealityGRPC) {
+		realityServerName, err = normalizeRealityServerName(w.values["reality_sni"])
+		if err != nil {
+			return install.Config{}, err
+		}
+	}
 
 	return install.Config{
 		Domain:               w.values["domain"],
@@ -574,10 +803,11 @@ func (w *wizard) buildConfig() (install.Config, error) {
 		Challenge:            challenge,
 		DNSProvider:          w.values["dns_provider"],
 		DNSCredentials:       dnsCreds,
-		Ports:                config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 2087, TUIC: 2088, AnyTLS: 2089},
+		Ports:                ports,
+		Enabled:              enabled,
 		DisplayName:          w.values["display_name"],
 		Salt:                 salt,
-		RealityServerName:    w.values["reality_sni"],
+		RealityServerName:    realityServerName,
 		RealityHandshakePort: 443,
 		SubscribePort:        2096,
 		MonitorPort:          19090,
@@ -590,11 +820,146 @@ func (w *wizard) buildConfig() (install.Config, error) {
 	}, nil
 }
 
+func (w *wizard) applyCredentialOverrides(creds *install.Credentials) {
+	if v := strings.TrimSpace(w.values["reality_vision_uuid"]); v != "" {
+		creds.RealityVisionUUID = v
+	}
+	if v := strings.TrimSpace(w.values["reality_grpc_uuid"]); v != "" {
+		creds.RealityGRPCUUID = v
+	}
+	if v := strings.TrimSpace(w.values["hysteria2_password"]); v != "" {
+		creds.HysteriaPassword = v
+	}
+	if v := strings.TrimSpace(w.values["tuic_uuid"]); v != "" {
+		creds.TUICUUID = v
+	}
+	if v := strings.TrimSpace(w.values["anytls_password"]); v != "" {
+		creds.AnyTLSPassword = v
+	}
+}
+
+func (w *wizard) protocolPorts(enabled []config.Protocol) (config.Ports, error) {
+	used := map[int]bool{80: true, 2096: true, 19090: true}
+	var ports config.Ports
+	for _, proto := range enabled {
+		port, err := w.portForProtocol(proto, used)
+		if err != nil {
+			return config.Ports{}, err
+		}
+		switch proto {
+		case config.ProtocolRealityVision:
+			ports.RealityVision = port
+		case config.ProtocolRealityGRPC:
+			ports.RealityGRPC = port
+		case config.ProtocolHysteria2:
+			ports.Hysteria2 = port
+		case config.ProtocolTUIC:
+			ports.TUIC = port
+		case config.ProtocolAnyTLS:
+			ports.AnyTLS = port
+		}
+	}
+	return ports, nil
+}
+
+func (w *wizard) portForProtocol(proto config.Protocol, used map[int]bool) (int, error) {
+	key := portFieldKey(proto)
+	raw := strings.TrimSpace(w.values[key])
+	if raw == "" {
+		return randomListenPort(used)
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("%s port must be between 1 and 65535", proto)
+	}
+	if used[port] {
+		return 0, fmt.Errorf("%s port %d conflicts with another selected port", proto, port)
+	}
+	used[port] = true
+	return port, nil
+}
+
+func portFieldKey(proto config.Protocol) string {
+	switch proto {
+	case config.ProtocolRealityVision:
+		return "reality_vision_port"
+	case config.ProtocolRealityGRPC:
+		return "reality_grpc_port"
+	case config.ProtocolHysteria2:
+		return "hysteria2_port"
+	case config.ProtocolTUIC:
+		return "tuic_port"
+	case config.ProtocolAnyTLS:
+		return "anytls_port"
+	default:
+		return ""
+	}
+}
+
+func installedPortsSummary(enabled []config.Protocol, ports config.Ports) string {
+	parts := make([]string, 0, len(enabled))
+	for _, proto := range enabled {
+		parts = append(parts, fmt.Sprintf("%s:%d", proto, installedPort(proto, ports)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func installedPort(proto config.Protocol, ports config.Ports) int {
+	switch proto {
+	case config.ProtocolRealityVision:
+		return ports.RealityVision
+	case config.ProtocolRealityGRPC:
+		return ports.RealityGRPC
+	case config.ProtocolHysteria2:
+		return ports.Hysteria2
+	case config.ProtocolTUIC:
+		return ports.TUIC
+	case config.ProtocolAnyTLS:
+		return ports.AnyTLS
+	default:
+		return 0
+	}
+}
+
+func randomListenPort(used map[int]bool) (int, error) {
+	const minPort = 20000
+	const maxPort = 59999
+	span := big.NewInt(maxPort - minPort + 1)
+	for range 1000 {
+		n, err := rand.Int(rand.Reader, span)
+		if err != nil {
+			return 0, err
+		}
+		port := int(n.Int64()) + minPort
+		if !used[port] {
+			used[port] = true
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("could not choose an unused random port")
+}
+
 var (
 	wizardTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	wizardOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	wizardErr   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 )
+
+func (w *wizard) parameterProtocolLabel(f field) string {
+	if len(f.paramsFor) == 0 {
+		return ""
+	}
+	selected := make([]config.Protocol, 0, len(f.paramsFor))
+	for _, p := range f.paramsFor {
+		if protocolSelected(w.values, p) {
+			selected = append(selected, p)
+		}
+	}
+	if len(selected) == 0 {
+		selected = f.paramsFor
+	}
+	return protocolLabels(selected)
+}
 
 // View renders the wizard.
 func (w *wizard) View() string {
@@ -612,6 +977,9 @@ func (w *wizard) View() string {
 		var b strings.Builder
 		b.WriteString(wizardTitle.Render("Install · Configuration") + "\n\n")
 		b.WriteString(f.label + "\n")
+		if label := w.parameterProtocolLabel(f); label != "" {
+			b.WriteString(wizardOK.Render("Setting parameters for: "+label) + "\n")
+		}
 		if f.note != "" {
 			for _, line := range wrapFieldNote(f.note, w.width) {
 				b.WriteString(dimStyle.Render(line) + "\n")
@@ -625,6 +993,10 @@ func (w *wizard) View() string {
 		}
 		if len(f.options) > 0 {
 			b.WriteString(w.optionsView(f) + "\n\n")
+			if f.multi {
+				b.WriteString(dimStyle.Render("space toggle · enter to continue · ↑/↓ or ←/→ move · shift+tab/ctrl+b back · esc to cancel"))
+				return b.String()
+			}
 			b.WriteString(dimStyle.Render("enter to continue · ↑/↓ or ←/→ select · shift+tab/ctrl+b back · esc to cancel"))
 			return b.String()
 		}
@@ -649,9 +1021,17 @@ func (w *wizard) View() string {
 func (w *wizard) optionsView(f field) string {
 	var rows []string
 	for i, opt := range f.options {
-		row := "  " + opt
+		label := opt
+		if f.multi {
+			mark := "[ ]"
+			if w.optionSelected[opt] {
+				mark = "[x]"
+			}
+			label = mark + " " + opt
+		}
+		row := "  " + label
 		if i == w.optionIx {
-			row = selStyle.Render("> " + opt)
+			row = selStyle.Render("> " + label)
 		}
 		rows = append(rows, row)
 	}
@@ -795,15 +1175,26 @@ func (w *wizard) percent() float64 {
 }
 
 func (w *wizard) summary() string {
+	protocols := protocolsFromValue(w.values["protocols"])
+	if len(protocols) == 0 {
+		protocols = config.AllProtocols
+	}
 	rows := []string{
 		"Domain:        " + w.values["domain"],
 		"Email:         " + or(w.values["email"], "not set"),
 		"Challenge:     " + w.values["challenge"],
-		"Reality SNI:   " + w.values["reality_sni"],
+		"Protocols:     " + protocolLabels(protocols),
 		"Display name:  " + w.values["display_name"],
 		"Traffic limit: " + w.values["traffic_limit_gb"] + " GB",
 		"OS / Arch:     " + w.host.OS.ID + " / " + w.host.Arch,
 		"Firewall:      " + firewallName(w.host.Firewall),
+	}
+	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
+		rows = append(rows, "Reality URL:   "+w.values["reality_sni"])
+	}
+	rows = append(rows, "Protocol params:")
+	for _, proto := range protocols {
+		rows = append(rows, fmt.Sprintf("  %s port: %s", proto, or(w.values[portFieldKey(proto)], "random")))
 	}
 	return strings.Join(rows, "\n") + "\n"
 }
@@ -813,6 +1204,8 @@ func (w *wizard) doneSummary() string {
 	base := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.SubscribePort)
 	return strings.Join([]string{
 		"Account:       " + w.cfg.DisplayName,
+		"Protocols:     " + protocolLabels(w.cfg.Enabled),
+		"Ports:         " + installedPortsSummary(w.cfg.Enabled, w.cfg.Ports),
 		"Subscription:  " + base + "/s/default/" + token,
 		"Clash:         " + base + "/s/clashMetaProfiles/" + token,
 		"sing-box:      " + base + "/s/sing-box/" + token,

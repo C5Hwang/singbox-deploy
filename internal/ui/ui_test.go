@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -300,4 +301,136 @@ func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
 	if got := w.fields[w.fieldIx].key; got != "dns_provider" {
 		t.Fatalf("current field = %q, want dns_provider", got)
 	}
+}
+
+func TestProtocolMultiSelectRequiresAtLeastOne(t *testing.T) {
+	w := &wizard{phase: phaseForm, fields: installFields(), values: map[string]string{}, input: textinput.New()}
+	w.setField(fieldIndex(t, w.fields, "protocols"))
+	for _, opt := range w.fields[w.fieldIx].options {
+		w.optionIx = optionIndex(w.fields[w.fieldIx].options, opt)
+		w.toggleOption()
+	}
+	w.commitField()
+
+	if w.values["protocols"] != "" {
+		t.Fatalf("protocols should not commit when none selected")
+	}
+	if !strings.Contains(w.View(), "select at least one protocol") {
+		t.Fatalf("missing validation error:\n%s", w.View())
+	}
+}
+
+func TestRealityFieldsHiddenWhenRealityNotSelected(t *testing.T) {
+	vals := map[string]string{"protocols": string(config.ProtocolTUIC)}
+	fields := installFields()
+	reality := fields[fieldIndex(t, fields, "reality_sni")]
+	if reality.skip == nil || !reality.skip(vals) {
+		t.Fatalf("reality field should be hidden when no reality protocol is selected")
+	}
+	tuic := fields[fieldIndex(t, fields, "tuic_uuid")]
+	if tuic.skip != nil && tuic.skip(vals) {
+		t.Fatalf("tuic field should be visible when tuic is selected")
+	}
+}
+
+func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
+	w := &wizard{
+		phase:  phaseForm,
+		fields: installFields(),
+		values: map[string]string{"protocols": string(config.ProtocolRealityVision)},
+		input:  textinput.New(),
+		width:  80,
+	}
+	w.setField(fieldIndex(t, w.fields, "reality_vision_uuid"))
+	view := w.View()
+	if !strings.Contains(view, "Setting parameters for: reality-vision") {
+		t.Fatalf("current protocol marker missing:\n%s", view)
+	}
+}
+
+func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
+	w := &wizard{
+		values: map[string]string{
+			"domain":              "example.com",
+			"challenge":           "http-01",
+			"protocols":           "reality-vision,tuic",
+			"reality_sni":         "https://www.cloudflare.com/cdn-cgi/trace",
+			"reality_vision_uuid": "11111111-1111-4111-8111-111111111111",
+			"reality_vision_port": "24443",
+			"tuic_uuid":           "22222222-2222-4222-8222-222222222222",
+			"tuic_port":           "24444",
+			"display_name":        "Node",
+			"traffic_limit_gb":    "0",
+			"reset_day":           "1",
+		},
+		host: supportedTestHost(),
+	}
+	cfg, err := w.buildConfig()
+	if err != nil {
+		t.Fatalf("buildConfig error: %v", err)
+	}
+
+	if got := protocolsValue(cfg.Enabled); got != "reality-vision,tuic" {
+		t.Fatalf("enabled = %q", got)
+	}
+	if cfg.RealityServerName != "www.cloudflare.com" {
+		t.Fatalf("RealityServerName = %q", cfg.RealityServerName)
+	}
+	if cfg.Ports.RealityVision != 24443 || cfg.Ports.TUIC != 24444 {
+		t.Fatalf("ports = %#v", cfg.Ports)
+	}
+	if cfg.Creds.RealityVisionUUID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("RealityVisionUUID = %q", cfg.Creds.RealityVisionUUID)
+	}
+	if cfg.Creds.TUICUUID != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("TUICUUID = %q", cfg.Creds.TUICUUID)
+	}
+	if cfg.Ports.Hysteria2 != 0 || cfg.Ports.AnyTLS != 0 {
+		t.Fatalf("unselected protocol ports should stay zero: %#v", cfg.Ports)
+	}
+}
+
+func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
+	w := &wizard{
+		values: map[string]string{
+			"domain":           "example.com",
+			"challenge":        "http-01",
+			"protocols":        "hysteria2,anytls",
+			"display_name":     "Node",
+			"traffic_limit_gb": "0",
+			"reset_day":        "1",
+		},
+		host: supportedTestHost(),
+	}
+	cfg, err := w.buildConfig()
+	if err != nil {
+		t.Fatalf("buildConfig error: %v", err)
+	}
+
+	if got := protocolsValue(cfg.Enabled); got != "hysteria2,anytls" {
+		t.Fatalf("enabled = %q", got)
+	}
+	if cfg.RealityServerName != "" {
+		t.Fatalf("RealityServerName should be empty without reality, got %q", cfg.RealityServerName)
+	}
+	if cfg.Ports.Hysteria2 < 20000 || cfg.Ports.Hysteria2 > 59999 {
+		t.Fatalf("Hysteria2 random port out of range: %d", cfg.Ports.Hysteria2)
+	}
+	if cfg.Ports.AnyTLS < 20000 || cfg.Ports.AnyTLS > 59999 {
+		t.Fatalf("AnyTLS random port out of range: %d", cfg.Ports.AnyTLS)
+	}
+	if cfg.Ports.Hysteria2 == cfg.Ports.AnyTLS {
+		t.Fatalf("random ports should be unique: %#v", cfg.Ports)
+	}
+}
+
+func fieldIndex(t *testing.T, fields []field, key string) int {
+	t.Helper()
+	for i, f := range fields {
+		if f.key == key {
+			return i
+		}
+	}
+	t.Fatalf("field %q not found", key)
+	return -1
 }
