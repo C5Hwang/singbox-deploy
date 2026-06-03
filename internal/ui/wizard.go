@@ -38,10 +38,11 @@ const (
 
 // field is one collected input.
 type field struct {
-	key   string
-	label string
-	def   string
-	note  string
+	key     string
+	label   string
+	def     string
+	note    string
+	options []string
 	// skip reports whether this field is hidden given the values so far.
 	skip func(vals map[string]string) bool
 }
@@ -51,9 +52,9 @@ func installFields() []field {
 	isDNS := func(v map[string]string) bool { return v["challenge"] != "dns-01" }
 	return []field{
 		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
-		{key: "email", label: "ACME account email", note: "Used to register the Let's Encrypt ACME account and receive certificate notices."},
-		{key: "challenge", label: "ACME challenge (http-01 / dns-01)", def: "http-01", note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
-		{key: "dns_provider", label: "DNS provider (cloudflare / aliyun)", def: "cloudflare", note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
+		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
+		{key: "challenge", label: "ACME challenge", def: "http-01", options: []string{"http-01", "dns-01"}, note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
+		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
 		{key: "dns_credential", label: "DNS credential (CF token, or aliyun accessKey:secretKey)", note: "Cloudflare uses an API token. Aliyun uses accessKey:secretKey. Passed to ACME for DNS validation.", skip: isDNS},
 		{key: "reality_sni", label: "Reality SNI (camouflage server)", def: "www.microsoft.com", note: "Used as the Reality handshake server name; choose a real HTTPS host suitable for camouflage."},
 		{key: "display_name", label: "Node display name", def: "Node", note: "Used only in generated node names shown by clients."},
@@ -80,10 +81,14 @@ type wizard struct {
 	width  int
 	height int
 
-	fields  []field
-	fieldIx int
-	values  map[string]string
-	input   textinput.Model
+	fields   []field
+	fieldIx  int
+	values   map[string]string
+	input    textinput.Model
+	optionIx int
+	fieldErr string
+
+	validateDomain func(context.Context, string) error
 
 	bar                 progress.Model
 	events              []install.Event
@@ -104,12 +109,13 @@ func newWizard(dryRun bool) *wizard {
 	ti.Prompt = "› "
 
 	w := &wizard{
-		phase:  phasePreflight,
-		fields: installFields(),
-		values: map[string]string{},
-		input:  ti,
-		bar:    progress.New(progress.WithDefaultGradient()),
-		dryRun: dryRun,
+		phase:          phasePreflight,
+		fields:         installFields(),
+		values:         map[string]string{},
+		input:          ti,
+		bar:            progress.New(progress.WithDefaultGradient()),
+		dryRun:         dryRun,
+		validateDomain: validateDomainResolvesToCurrentIP,
 	}
 	host, err := system.DetectHost()
 	w.host = host
@@ -153,9 +159,28 @@ func (w *wizard) setSize(width, height int) {
 func (w *wizard) setField(index int) {
 	f := w.fields[index]
 	w.fieldIx = index
+	w.fieldErr = ""
+	if len(f.options) > 0 {
+		value := w.values[f.key]
+		if value == "" {
+			value = f.def
+		}
+		w.optionIx = optionIndex(f.options, value)
+		w.input.Blur()
+		return
+	}
 	w.input.SetValue(w.values[f.key])
 	w.input.Placeholder = f.def
 	w.input.Focus()
+}
+
+func optionIndex(options []string, value string) int {
+	for i, opt := range options {
+		if opt == value {
+			return i
+		}
+	}
+	return 0
 }
 
 // startForm activates the first visible field.
@@ -210,18 +235,47 @@ func (w *wizard) saveFieldDraft() {
 		return
 	}
 	f := w.fields[w.fieldIx]
-	w.values[f.key] = strings.TrimSpace(w.input.Value())
+	w.values[f.key] = w.fieldValue(f)
 }
 
 // commitField stores the current field value (or its default) and advances.
 func (w *wizard) commitField() {
 	f := w.fields[w.fieldIx]
-	val := strings.TrimSpace(w.input.Value())
-	if val == "" {
-		val = f.def
+	val := w.fieldValue(f)
+	if err := w.validateField(f, val); err != nil {
+		w.fieldErr = err.Error()
+		return
 	}
+	w.fieldErr = ""
 	w.values[f.key] = val
 	w.advanceField()
+}
+
+func (w *wizard) fieldValue(f field) string {
+	if len(f.options) > 0 {
+		return f.options[min(max(0, w.optionIx), len(f.options)-1)]
+	}
+	val := strings.TrimSpace(w.input.Value())
+	if val == "" {
+		return f.def
+	}
+	return val
+}
+
+func (w *wizard) validateField(f field, val string) error {
+	if f.key != "domain" {
+		return nil
+	}
+	if val == "" {
+		return fmt.Errorf("domain is required")
+	}
+	if w.dryRun {
+		return nil
+	}
+	if w.validateDomain == nil {
+		return nil
+	}
+	return w.validateDomain(context.Background(), val)
 }
 
 // Update handles wizard messages. The bool return reports whether the wizard is
@@ -235,7 +289,7 @@ func (w *wizard) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.KeyMsg:
 		return w.handleKey(msg)
 	}
-	if w.phase == phaseForm {
+	if w.phase == phaseForm && !w.currentFieldHasOptions() {
 		var cmd tea.Cmd
 		w.input, cmd = w.input.Update(msg)
 		return cmd, false
@@ -258,14 +312,27 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		switch msg.String() {
 		case "enter":
 			w.commitField()
+		case "up", "k", "left", "h":
+			if w.currentFieldHasOptions() {
+				w.moveOption(-1)
+				break
+			}
+			return w.updateInput(msg), false
+		case "down", "j", "right", "l":
+			if w.currentFieldHasOptions() {
+				w.moveOption(1)
+				break
+			}
+			return w.updateInput(msg), false
 		case "shift+tab", "ctrl+b":
 			w.previousField()
 		case "esc":
 			return nil, true
 		default:
-			var cmd tea.Cmd
-			w.input, cmd = w.input.Update(msg)
-			return cmd, false
+			if w.currentFieldHasOptions() {
+				return nil, false
+			}
+			return w.updateInput(msg), false
 		}
 	case phaseConfirm:
 		switch msg.String() {
@@ -330,6 +397,29 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	}
 	return nil, false
+}
+
+func (w *wizard) updateInput(msg tea.Msg) tea.Cmd {
+	w.fieldErr = ""
+	var cmd tea.Cmd
+	w.input, cmd = w.input.Update(msg)
+	return cmd
+}
+
+func (w *wizard) currentFieldHasOptions() bool {
+	if w.fieldIx < 0 || w.fieldIx >= len(w.fields) {
+		return false
+	}
+	return len(w.fields[w.fieldIx].options) > 0
+}
+
+func (w *wizard) moveOption(delta int) {
+	if !w.currentFieldHasOptions() {
+		return
+	}
+	options := w.fields[w.fieldIx].options
+	w.optionIx = (w.optionIx + delta + len(options)) % len(options)
+	w.fieldErr = ""
 }
 
 func (w *wizard) handleRun(msg runMsg) tea.Cmd {
@@ -530,6 +620,14 @@ func (w *wizard) View() string {
 		if f.def != "" {
 			b.WriteString(dimStyle.Render("default: "+f.def) + "\n")
 		}
+		if w.fieldErr != "" {
+			b.WriteString(wizardErr.Render(w.fieldErr) + "\n")
+		}
+		if len(f.options) > 0 {
+			b.WriteString(w.optionsView(f) + "\n\n")
+			b.WriteString(dimStyle.Render("enter to continue · ↑/↓ or ←/→ select · shift+tab/ctrl+b back · esc to cancel"))
+			return b.String()
+		}
 		b.WriteString(w.input.View() + "\n\n")
 		b.WriteString(dimStyle.Render("enter to continue · shift+tab/ctrl+b back · esc to cancel"))
 		return b.String()
@@ -546,6 +644,18 @@ func (w *wizard) View() string {
 			dimStyle.Render("press any key to return")
 	}
 	return ""
+}
+
+func (w *wizard) optionsView(f field) string {
+	var rows []string
+	for i, opt := range f.options {
+		row := "  " + opt
+		if i == w.optionIx {
+			row = selStyle.Render("> " + opt)
+		}
+		rows = append(rows, row)
+	}
+	return strings.Join(rows, "\n")
 }
 
 func (w *wizard) runningView() string {
@@ -687,7 +797,7 @@ func (w *wizard) percent() float64 {
 func (w *wizard) summary() string {
 	rows := []string{
 		"Domain:        " + w.values["domain"],
-		"Email:         " + w.values["email"],
+		"Email:         " + or(w.values["email"], "not set"),
 		"Challenge:     " + w.values["challenge"],
 		"Reality SNI:   " + w.values["reality_sni"],
 		"Display name:  " + w.values["display_name"],

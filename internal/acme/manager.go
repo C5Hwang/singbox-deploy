@@ -46,9 +46,6 @@ func (r Request) Validate() error {
 	if r.Domain == "" {
 		return fmt.Errorf("domain is required")
 	}
-	if r.Email == "" {
-		return fmt.Errorf("account email is required")
-	}
 	switch r.Challenge {
 	case ChallengeHTTP01:
 		// no extra requirements

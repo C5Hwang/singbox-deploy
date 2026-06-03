@@ -31,6 +31,10 @@ func TestRequestValidate(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
 	}
+	withoutEmail := Request{Domain: "example.com", Challenge: ChallengeHTTP01}
+	if err := withoutEmail.Validate(); err != nil {
+		t.Fatalf("request without email rejected: %v", err)
+	}
 	dnsNoProvider := Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeDNS01}
 	if err := dnsNoProvider.Validate(); err == nil {
 		t.Fatalf("dns-01 without provider should be invalid")

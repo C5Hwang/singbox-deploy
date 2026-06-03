@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -220,5 +221,83 @@ func TestInstallFormCanGoBackToPreviousField(t *testing.T) {
 	}
 	if got := w.input.Value(); got != "example.com" {
 		t.Fatalf("restored input = %q, want domain", got)
+	}
+}
+
+func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
+	w := &wizard{
+		phase:  phaseForm,
+		fields: installFields(),
+		values: map[string]string{},
+		input:  textinput.New(),
+		validateDomain: func(_ context.Context, domain string) error {
+			if domain != "bad.example" {
+				t.Fatalf("validator domain = %q", domain)
+			}
+			return fmt.Errorf("domain resolves elsewhere")
+		},
+	}
+	w.startForm()
+	w.input.SetValue("bad.example")
+	w.commitField()
+
+	if w.fieldIx != 0 {
+		t.Fatalf("fieldIx = %d, want domain field", w.fieldIx)
+	}
+	if w.values["domain"] != "" {
+		t.Fatalf("domain should not be committed on validation failure")
+	}
+	if !strings.Contains(w.View(), "domain resolves elsewhere") {
+		t.Fatalf("validation error missing from view:\n%s", w.View())
+	}
+}
+
+func TestDryRunSkipsDomainIPValidation(t *testing.T) {
+	w := &wizard{
+		phase:  phaseForm,
+		fields: installFields(),
+		values: map[string]string{},
+		input:  textinput.New(),
+		dryRun: true,
+		validateDomain: func(context.Context, string) error {
+			t.Fatalf("dry-run should not validate domain IP")
+			return nil
+		},
+	}
+	w.startForm()
+	w.input.SetValue("dry-run.example")
+	w.commitField()
+
+	if got := w.values["domain"]; got != "dry-run.example" {
+		t.Fatalf("domain = %q, want dry-run.example", got)
+	}
+	if got := w.fields[w.fieldIx].key; got != "email" {
+		t.Fatalf("current field = %q, want email", got)
+	}
+}
+
+func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
+	w := &wizard{phase: phaseForm, fields: installFields(), values: map[string]string{}, input: textinput.New()}
+	w.startForm()
+	w.input.SetValue("example.com")
+	w.commitField()
+	w.commitField()
+
+	if got := w.fields[w.fieldIx].key; got != "challenge" {
+		t.Fatalf("current field = %q, want challenge", got)
+	}
+	if !strings.Contains(w.View(), "> http-01") {
+		t.Fatalf("challenge should render as a selection:\n%s", w.View())
+	}
+	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if done {
+		t.Fatalf("moving selection should not close wizard")
+	}
+	w.commitField()
+	if got := w.values["challenge"]; got != "dns-01" {
+		t.Fatalf("challenge = %q, want dns-01", got)
+	}
+	if got := w.fields[w.fieldIx].key; got != "dns_provider" {
+		t.Fatalf("current field = %q, want dns_provider", got)
 	}
 }
