@@ -1,6 +1,11 @@
 package system
 
 import (
+	"context"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -165,4 +170,88 @@ func TestHostSupported(t *testing.T) {
 	if bad.Supported() {
 		t.Fatalf("unknown family must be unsupported")
 	}
+}
+
+func TestSingBoxConflictAllowsManagedService(t *testing.T) {
+	root := t.TempDir()
+	unitPath := filepath.Join(root, SingBoxService)
+	expectedBin := filepath.Join(root, "sing-box", "sing-box")
+	expectedConfig := filepath.Join(root, "sing-box", "conf", "config.json")
+	unit := "[Service]\nExecStart=" + expectedBin + " run -c " + expectedConfig + "\n"
+	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+		t.Fatalf("write unit: %v", err)
+	}
+
+	err := SingBoxConflictCheck{
+		ServicePaths:   []string{unitPath},
+		ExpectedBinary: expectedBin,
+		ExpectedConfig: expectedConfig,
+		LookPath:       func(string) (string, error) { return "", exec.ErrNotFound },
+	}.Check()
+	if err != nil {
+		t.Fatalf("Check error: %v", err)
+	}
+}
+
+func TestSingBoxConflictBlocksForeignService(t *testing.T) {
+	root := t.TempDir()
+	unitPath := filepath.Join(root, SingBoxService)
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/usr/bin/sing-box run -c /etc/sing-box/config.json\n"), 0o644); err != nil {
+		t.Fatalf("write unit: %v", err)
+	}
+
+	err := SingBoxConflictCheck{
+		ServicePaths:   []string{unitPath},
+		ExpectedBinary: filepath.Join(root, "managed", "sing-box"),
+		ExpectedConfig: filepath.Join(root, "managed", "config.json"),
+		LookPath:       func(string) (string, error) { return "", exec.ErrNotFound },
+	}.Check()
+	if err == nil || !strings.Contains(err.Error(), "not managed") {
+		t.Fatalf("expected unmanaged service conflict, got %v", err)
+	}
+}
+
+func TestSingBoxConflictBlocksPathBinary(t *testing.T) {
+	root := t.TempDir()
+	err := SingBoxConflictCheck{
+		ServicePaths:   []string{filepath.Join(root, "missing.service")},
+		ExpectedBinary: filepath.Join(root, "managed", "sing-box"),
+		ExpectedConfig: filepath.Join(root, "managed", "config.json"),
+		LookPath:       func(string) (string, error) { return "/usr/local/bin/sing-box", nil },
+	}.Check()
+	if err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("expected PATH binary conflict, got %v", err)
+	}
+}
+
+func TestCheckPortsProbesTCPReachability(t *testing.T) {
+	port := freeTCPPort(t)
+	err := CheckPorts(context.Background(), "127.0.0.1", []Port{{Number: port, Proto: "tcp", Label: "test", Public: true}})
+	if err != nil {
+		t.Fatalf("CheckPorts error: %v", err)
+	}
+}
+
+func TestCheckPortsDetectsOccupiedTCP(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	err = CheckPorts(context.Background(), "127.0.0.1", []Port{{Number: port, Proto: "tcp", Label: "occupied", Public: true}})
+	if err == nil || !strings.Contains(err.Error(), "local bind failed") {
+		t.Fatalf("expected local bind failure, got %v", err)
+	}
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
 }

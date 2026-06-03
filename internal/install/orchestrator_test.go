@@ -110,17 +110,19 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	var events []Event
 
 	o := &Orchestrator{
-		Runner:        runner,
-		Layout:        layout,
-		ACME:          acme.NewManager(fakeIssuer{}),
-		LatestSingBox: func(context.Context) (string, error) { return "v1.12.0", nil },
-		Download:      func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
-		Progress:      func(e Event) { events = append(events, e) },
-		GOOS:          "linux",
-		GOARCH:        "amd64",
-		DeployBin:     "/usr/bin/singbox-deploy",
-		SystemdDir:    filepath.Join(root, "systemd"),
-		NginxConfPath: filepath.Join(root, "nginx", "singbox-deploy.conf"),
+		Runner:         runner,
+		Layout:         layout,
+		ACME:           acme.NewManager(fakeIssuer{}),
+		LatestSingBox:  func(context.Context) (string, error) { return "v1.12.0", nil },
+		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
+		CheckConflicts: func(context.Context, Config) error { return nil },
+		CheckPorts:     func(context.Context, Config) error { return nil },
+		Progress:       func(e Event) { events = append(events, e) },
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		DeployBin:      "/usr/bin/singbox-deploy",
+		SystemdDir:     filepath.Join(root, "systemd"),
+		NginxConfPath:  filepath.Join(root, "nginx", "singbox-deploy.conf"),
 	}
 
 	if err := o.Run(context.Background(), testConfig(t)); err != nil {
@@ -137,8 +139,8 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 			t.Fatalf("step %q failed: %v", e.Label, e.Err)
 		}
 	}
-	if okCount != 11 {
-		t.Fatalf("expected 11 ok steps, got %d", okCount)
+	if okCount != 13 {
+		t.Fatalf("expected 13 ok steps, got %d", okCount)
 	}
 
 	// Key commands were issued.
@@ -275,16 +277,18 @@ func TestOrchestratorSkipsMonitorWhenDisabled(t *testing.T) {
 	cfg.MonitorInterface = ""
 
 	o := &Orchestrator{
-		Runner:        runner,
-		Layout:        layout,
-		ACME:          acme.NewManager(fakeIssuer{}),
-		LatestSingBox: func(context.Context) (string, error) { return "v1.12.0", nil },
-		Download:      func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
-		GOOS:          "linux",
-		GOARCH:        "amd64",
-		DeployBin:     "/usr/bin/singbox-deploy",
-		SystemdDir:    filepath.Join(root, "systemd"),
-		NginxConfPath: filepath.Join(root, "nginx", "singbox-deploy.conf"),
+		Runner:         runner,
+		Layout:         layout,
+		ACME:           acme.NewManager(fakeIssuer{}),
+		LatestSingBox:  func(context.Context) (string, error) { return "v1.12.0", nil },
+		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
+		CheckConflicts: func(context.Context, Config) error { return nil },
+		CheckPorts:     func(context.Context, Config) error { return nil },
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		DeployBin:      "/usr/bin/singbox-deploy",
+		SystemdDir:     filepath.Join(root, "systemd"),
+		NginxConfPath:  filepath.Join(root, "nginx", "singbox-deploy.conf"),
 	}
 
 	if err := o.Run(context.Background(), cfg); err != nil {
@@ -497,13 +501,15 @@ func assertDefaultDomainResolver(t *testing.T, name string, b []byte, wantServer
 func TestOrchestratorStopsOnStepFailure(t *testing.T) {
 	root := t.TempDir()
 	o := &Orchestrator{
-		Runner:        &failingRunner{},
-		Layout:        paths.LayoutForRoot(root),
-		ACME:          acme.NewManager(fakeIssuer{}),
-		LatestSingBox: func(context.Context) (string, error) { return "v1.12.0", nil },
-		Download:      func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
-		SystemdDir:    filepath.Join(root, "systemd"),
-		NginxConfPath: filepath.Join(root, "nginx.conf"),
+		Runner:         &failingRunner{},
+		Layout:         paths.LayoutForRoot(root),
+		ACME:           acme.NewManager(fakeIssuer{}),
+		LatestSingBox:  func(context.Context) (string, error) { return "v1.12.0", nil },
+		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
+		CheckConflicts: func(context.Context, Config) error { return nil },
+		CheckPorts:     func(context.Context, Config) error { return nil },
+		SystemdDir:     filepath.Join(root, "systemd"),
+		NginxConfPath:  filepath.Join(root, "nginx.conf"),
 	}
 	if err := o.Run(context.Background(), testConfig(t)); err == nil {
 		t.Fatalf("expected failure when runner errors")

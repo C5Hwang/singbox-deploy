@@ -148,3 +148,33 @@ func (c Config) firewallPorts() []system.Port {
 	ports = append(ports, system.Port{Number: 80, Proto: "tcp"})
 	return ports
 }
+
+// portChecks returns the ports that must be available before installation. The
+// public protocol and subscription ports are probed through the configured
+// domain; the monitor port only needs to be free locally because it binds to
+// 127.0.0.1 behind Nginx.
+func (c Config) portChecks() []system.Port {
+	checks := make([]system.Port, 0, len(c.enabled())+3)
+	for _, p := range c.enabled() {
+		switch p {
+		case config.ProtocolRealityVision:
+			checks = append(checks, system.Port{Number: c.Ports.RealityVision, Proto: "tcp", Label: "Reality Vision", Public: true})
+		case config.ProtocolRealityGRPC:
+			checks = append(checks, system.Port{Number: c.Ports.RealityGRPC, Proto: "tcp", Label: "Reality gRPC", Public: true})
+		case config.ProtocolHysteria2:
+			checks = append(checks, system.Port{Number: c.Ports.Hysteria2, Proto: "udp", Label: "Hysteria2", Public: true})
+		case config.ProtocolTUIC:
+			checks = append(checks, system.Port{Number: c.Ports.TUIC, Proto: "udp", Label: "TUIC", Public: true})
+		case config.ProtocolAnyTLS:
+			checks = append(checks, system.Port{Number: c.Ports.AnyTLS, Proto: "tcp", Label: "AnyTLS", Public: true})
+		}
+	}
+	checks = append(checks, system.Port{Number: c.SubscribePort, Proto: "tcp", Label: "subscription/Nginx", Public: true})
+	if c.Challenge == acme.ChallengeHTTP01 {
+		checks = append(checks, system.Port{Number: 80, Proto: "tcp", Label: "ACME HTTP-01", Public: true})
+	}
+	if c.DeployMonitor {
+		checks = append(checks, system.Port{Number: c.MonitorPort, Proto: "tcp", Label: "traffic monitor", Public: false})
+	}
+	return checks
+}

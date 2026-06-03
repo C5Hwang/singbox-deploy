@@ -35,9 +35,11 @@ type Orchestrator struct {
 	Releases *release.Client
 
 	// Hooks (nil values fall back to real implementations in Run).
-	Download      func(ctx context.Context, url, dest string) error
-	LatestSingBox func(ctx context.Context) (string, error)
-	Progress      func(Event)
+	Download       func(ctx context.Context, url, dest string) error
+	LatestSingBox  func(ctx context.Context) (string, error)
+	CheckConflicts func(ctx context.Context, cfg Config) error
+	CheckPorts     func(ctx context.Context, cfg Config) error
+	Progress       func(Event)
 
 	GOOS, GOARCH  string
 	DeployBin     string // path to the singbox-deploy binary (for the monitor unit)
@@ -86,11 +88,19 @@ func (o *Orchestrator) defaults() {
 			return o.Releases.LatestStable(ctx, "SagerNet", "sing-box")
 		}
 	}
+	if o.CheckConflicts == nil {
+		o.CheckConflicts = o.checkConflicts
+	}
+	if o.CheckPorts == nil {
+		o.CheckPorts = o.checkPorts
+	}
 }
 
 // steps returns the ordered install steps.
 func (o *Orchestrator) steps(cfg Config) []step {
 	steps := []step{
+		{"Conflict check", "detect existing sing-box service or binary", o.stepConflictCheck},
+		{"Port check", "check required ports are free and publicly reachable", o.stepPortCheck},
 		{"Dependencies", "install base packages", o.stepDependencies},
 		{"Nginx", "install nginx.org mainline", o.stepNginxInstall},
 		{"Firewall", "open required ports", o.stepFirewall},
@@ -141,6 +151,14 @@ func (o *Orchestrator) run(cmds ...system.Command) error {
 }
 
 // --- steps ---
+
+func (o *Orchestrator) stepConflictCheck(ctx context.Context, cfg Config) error {
+	return o.CheckConflicts(ctx, cfg)
+}
+
+func (o *Orchestrator) stepPortCheck(ctx context.Context, cfg Config) error {
+	return o.CheckPorts(ctx, cfg)
+}
 
 func (o *Orchestrator) stepDependencies(_ context.Context, cfg Config) error {
 	return system.RunInstallPlan(o.Runner, system.BuildInstallPlan(cfg.OS))

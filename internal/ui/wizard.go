@@ -766,6 +766,8 @@ func (w *wizard) startRun() tea.Cmd {
 	var latestSingBox func(context.Context) (string, error)
 	var download func(context.Context, string, string) error
 	var systemdDir, nginxConfPath string
+	var checkConflicts func(context.Context, install.Config) error
+	var checkPorts func(context.Context, install.Config) error
 
 	if w.dryRun {
 		root, err := os.MkdirTemp("", "singbox-deploy-dry-run-*")
@@ -789,19 +791,29 @@ func (w *wizard) startRun() tea.Cmd {
 		}
 		systemdDir = filepath.Join(root, "systemd")
 		nginxConfPath = filepath.Join(root, "nginx", "singbox-deploy.conf")
+		checkConflicts = func(context.Context, install.Config) error {
+			ch <- runMsg{logLine: "[dry-run] check existing sing-box service and binary conflicts"}
+			return nil
+		}
+		checkPorts = func(context.Context, install.Config) error {
+			ch <- runMsg{logLine: "[dry-run] check required ports for local bind and public reachability"}
+			return nil
+		}
 	}
 
 	orch := &install.Orchestrator{
-		Runner:        runner,
-		Layout:        layout,
-		ACME:          acmeManager,
-		Releases:      releases,
-		Download:      download,
-		LatestSingBox: latestSingBox,
-		GOOS:          "linux",
-		GOARCH:        w.host.Arch,
-		SystemdDir:    systemdDir,
-		NginxConfPath: nginxConfPath,
+		Runner:         runner,
+		Layout:         layout,
+		ACME:           acmeManager,
+		Releases:       releases,
+		Download:       download,
+		LatestSingBox:  latestSingBox,
+		CheckConflicts: checkConflicts,
+		CheckPorts:     checkPorts,
+		GOOS:           "linux",
+		GOARCH:         w.host.Arch,
+		SystemdDir:     systemdDir,
+		NginxConfPath:  nginxConfPath,
 	}
 	orch.Progress = func(e install.Event) {
 		ev := e

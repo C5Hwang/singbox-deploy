@@ -15,6 +15,8 @@ const (
 type Port struct {
 	Number int
 	Proto  string
+	Label  string
+	Public bool
 }
 
 // FirewallCommands returns the commands to open the given ports for the
