@@ -167,6 +167,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		t.Fatalf("config not valid json: %v", err)
 	}
 	assertNewDNSServerFormat(t, "config.json", cfgBytes)
+	assertDefaultDomainResolver(t, "config.json", cfgBytes, "google")
 	if len(decoded.Inbounds) != 5 {
 		t.Fatalf("expected 5 inbounds, got %d", len(decoded.Inbounds))
 	}
@@ -197,6 +198,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		t.Fatalf("sing-box profile not valid json: %v\n%s", err, profile)
 	}
 	assertNewDNSServerFormat(t, "sing-box profile", profile)
+	assertDefaultDomainResolver(t, "sing-box profile", profile, "local")
 
 	// Units, nginx config, sing-box binary, and account state were written.
 	mustExist(t, filepath.Join(o.SystemdDir, "sing-box.service"))
@@ -360,6 +362,23 @@ func assertNewDNSServerFormat(t *testing.T, name string, b []byte) {
 		if typ, ok := server["type"].(string); !ok || typ == "" {
 			t.Fatalf("%s dns.servers[%d] missing type", name, i)
 		}
+	}
+}
+
+func assertDefaultDomainResolver(t *testing.T, name string, b []byte, wantServer string) {
+	t.Helper()
+	var decoded struct {
+		Route struct {
+			DefaultDomainResolver struct {
+				Server string `json:"server"`
+			} `json:"default_domain_resolver"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("%s not valid json: %v", name, err)
+	}
+	if decoded.Route.DefaultDomainResolver.Server != wantServer {
+		t.Fatalf("%s route.default_domain_resolver server = %q, want %q", name, decoded.Route.DefaultDomainResolver.Server, wantServer)
 	}
 }
 

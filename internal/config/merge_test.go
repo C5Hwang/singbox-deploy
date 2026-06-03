@@ -98,6 +98,30 @@ func TestBuildConfigCredentialsRendered(t *testing.T) {
 	}
 }
 
+func TestBuildConfigSetsDefaultDomainResolver(t *testing.T) {
+	cfg, err := Build(sampleOptions())
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	var decoded struct {
+		Route struct {
+			DefaultDomainResolver struct {
+				Server   string `json:"server"`
+				Strategy string `json:"strategy"`
+			} `json:"default_domain_resolver"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(cfg, &decoded); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if decoded.Route.DefaultDomainResolver.Server != "google" {
+		t.Fatalf("missing route.default_domain_resolver server in %s", cfg)
+	}
+	if decoded.Route.DefaultDomainResolver.Strategy != "prefer_ipv4" {
+		t.Fatalf("missing route.default_domain_resolver strategy in %s", cfg)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
