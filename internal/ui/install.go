@@ -21,7 +21,7 @@ func InstallSteps() []Step {
 		{Label: "Certificates", Summary: "reuse existing cert or obtain via ACME"},
 		{Label: "sing-box core", Summary: "download and install latest stable release"},
 		{Label: "Config", Summary: "generate fragments and final config.json"},
-		{Label: "Services", Summary: "install and start sing-box.service"},
+		{Label: "Services", Summary: "install sing-box.service and certificate renewal timer"},
 		{Label: "Subscriptions", Summary: "generate subscription files"},
 		{Label: "Monitor", Summary: "install and start traffic monitor service"},
 		{Label: "Reload Nginx", Summary: "validate and reload nginx"},

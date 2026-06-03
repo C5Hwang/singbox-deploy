@@ -2,8 +2,10 @@ package system
 
 // Managed systemd unit names.
 const (
-	SingBoxService = "sing-box.service"
-	MonitorService = "singbox-deploy-monitor.service"
+	SingBoxService   = "sing-box.service"
+	MonitorService   = "singbox-deploy-monitor.service"
+	CertRenewService = "singbox-deploy-cert-renew.service"
+	CertRenewTimer   = "singbox-deploy-cert-renew.timer"
 )
 
 // Systemctl returns a systemctl command for the given action and unit, e.g.

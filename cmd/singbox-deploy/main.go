@@ -19,6 +19,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "cert" {
+		if err := runCert(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "cert:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	p := tea.NewProgram(ui.NewModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

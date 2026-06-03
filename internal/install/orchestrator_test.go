@@ -143,6 +143,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	for _, want := range []string{
 		"apt-get update",
 		"systemctl enable --now sing-box.service",
+		"systemctl enable --now singbox-deploy-cert-renew.timer",
 		"check -c " + layout.ConfigJSON,
 		"nginx -t",
 		"systemctl enable --now singbox-deploy-monitor.service",
@@ -202,10 +203,13 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 
 	// Units, nginx config, sing-box binary, and account state were written.
 	mustExist(t, filepath.Join(o.SystemdDir, "sing-box.service"))
+	mustExist(t, filepath.Join(o.SystemdDir, "singbox-deploy-cert-renew.service"))
+	mustExist(t, filepath.Join(o.SystemdDir, "singbox-deploy-cert-renew.timer"))
 	mustExist(t, filepath.Join(o.SystemdDir, "singbox-deploy-monitor.service"))
 	mustExist(t, o.NginxConfPath)
 	mustExist(t, layout.SingBoxBin)
 	mustExist(t, filepath.Join(layout.StateDir, "domain"))
+	mustExist(t, filepath.Join(layout.StateDir, "acme_challenge"))
 	mustExist(t, filepath.Join(layout.WebRoot, "index.html"))
 }
 

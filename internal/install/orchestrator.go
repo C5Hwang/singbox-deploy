@@ -230,7 +230,10 @@ func (o *Orchestrator) stepConfig(_ context.Context, cfg Config) error {
 	return o.run(system.Command{Name: o.Layout.SingBoxBin, Args: []string{"check", "-c", o.Layout.ConfigJSON}})
 }
 
-func (o *Orchestrator) stepServices(_ context.Context, _ Config) error {
+func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
+	if err := o.writeCertificateRenewalState(cfg); err != nil {
+		return err
+	}
 	unit, err := templatefs.Render("service/sing-box.service.tmpl", map[string]any{
 		"SingBoxBin": o.Layout.SingBoxBin,
 		"ConfigPath": o.Layout.ConfigJSON,
@@ -241,9 +244,27 @@ func (o *Orchestrator) stepServices(_ context.Context, _ Config) error {
 	if err := writeFile(filepath.Join(o.SystemdDir, system.SingBoxService), []byte(unit), 0o644); err != nil {
 		return err
 	}
+	renewUnit, err := templatefs.Render("service/singbox-deploy-cert-renew.service.tmpl", map[string]any{
+		"DeployBin":     o.DeployBin,
+		"ThresholdDays": 30,
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(o.SystemdDir, system.CertRenewService), []byte(renewUnit), 0o644); err != nil {
+		return err
+	}
+	renewTimer, err := templatefs.Render("service/singbox-deploy-cert-renew.timer.tmpl", map[string]any{})
+	if err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(o.SystemdDir, system.CertRenewTimer), []byte(renewTimer), 0o644); err != nil {
+		return err
+	}
 	return o.run(
 		system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
 		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.SingBoxService}},
+		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.CertRenewTimer}},
 	)
 }
 
@@ -329,7 +350,10 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 
 func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 	state := map[string]string{
+		"acme_challenge":      string(cfg.Challenge),
 		"domain":              cfg.Domain,
+		"dns_credential":      dnsCredentialForState(cfg),
+		"dns_provider":        cfg.DNSProvider,
 		"email":               cfg.Email,
 		"display_name":        cfg.DisplayName,
 		"reality_public_key":  cfg.Creds.RealityPublicKey,
