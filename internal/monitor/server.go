@@ -30,7 +30,9 @@ type Config struct {
 	Listen           string
 	Interface        string
 	SamplingInterval time.Duration
-	LimitBytes       uint64
+	InLimitBytes     uint64
+	OutLimitBytes    uint64
+	TotalLimitBytes  uint64
 	ResetDay         int
 }
 
@@ -69,11 +71,17 @@ func (m *Monitor) Handler() http.Handler {
 
 // summary is the JSON payload returned by /api/summary.
 type summary struct {
-	UsedBytes      uint64        `json:"usedBytes"`
-	RemainingBytes uint64        `json:"remainingBytes"`
-	LimitBytes     uint64        `json:"limitBytes"`
-	ResetTime      string        `json:"resetTime"`
-	Trend          []HourlyPoint `json:"trend"`
+	InUsedBytes         uint64        `json:"inUsedBytes"`
+	OutUsedBytes        uint64        `json:"outUsedBytes"`
+	TotalUsedBytes      uint64        `json:"totalUsedBytes"`
+	InRemainingBytes    uint64        `json:"inRemainingBytes"`
+	OutRemainingBytes   uint64        `json:"outRemainingBytes"`
+	TotalRemainingBytes uint64        `json:"totalRemainingBytes"`
+	InLimitBytes        uint64        `json:"inLimitBytes"`
+	OutLimitBytes       uint64        `json:"outLimitBytes"`
+	TotalLimitBytes     uint64        `json:"totalLimitBytes"`
+	ResetTime           string        `json:"resetTime"`
+	Trend               []HourlyPoint `json:"trend"`
 }
 
 func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
@@ -83,7 +91,6 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	q := Quota{LimitBytes: m.cfg.LimitBytes, UsedBytes: used, ResetDay: m.cfg.ResetDay}
 	trend, err := m.store.TrendHourly(now.Add(-historyRetention).Unix())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -91,16 +98,22 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary{
-		UsedBytes:      used,
-		RemainingBytes: q.Remaining(),
-		LimitBytes:     m.cfg.LimitBytes,
-		ResetTime:      NextCycleReset(now, m.cfg.ResetDay).Format(time.RFC3339),
-		Trend:          trend,
+		InUsedBytes:         used.InBytes,
+		OutUsedBytes:        used.OutBytes,
+		TotalUsedBytes:      used.Total(),
+		InRemainingBytes:    Remaining(m.cfg.InLimitBytes, used.InBytes),
+		OutRemainingBytes:   Remaining(m.cfg.OutLimitBytes, used.OutBytes),
+		TotalRemainingBytes: Remaining(m.cfg.TotalLimitBytes, used.Total()),
+		InLimitBytes:        m.cfg.InLimitBytes,
+		OutLimitBytes:       m.cfg.OutLimitBytes,
+		TotalLimitBytes:     m.cfg.TotalLimitBytes,
+		ResetTime:           NextCycleReset(now, m.cfg.ResetDay).Format(time.RFC3339),
+		Trend:               trend,
 	})
 }
 
-func (m *Monitor) usedThisCycle(now time.Time) (uint64, error) {
-	return m.store.TotalSince(CycleStart(now, m.cfg.ResetDay).Unix())
+func (m *Monitor) usedThisCycle(now time.Time) (TrafficTotals, error) {
+	return m.store.TotalsSince(CycleStart(now, m.cfg.ResetDay).Unix())
 }
 
 // Run starts the sampling loop and HTTP server until ctx is cancelled.
@@ -152,12 +165,13 @@ func (m *Monitor) sampleOnce(now time.Time) {
 		log.Printf("monitor: read counters: %v", err)
 		return
 	}
-	var delta uint64
+	var deltaIn, deltaOut uint64
 	if m.havePrev {
-		delta = Delta(m.prev.RXBytes, cur.RXBytes) + Delta(m.prev.TXBytes, cur.TXBytes)
+		deltaIn = Delta(m.prev.RXBytes, cur.RXBytes)
+		deltaOut = Delta(m.prev.TXBytes, cur.TXBytes)
 	}
 	m.prev, m.havePrev = cur, true
-	if err := m.store.InsertSample(now.Unix(), cur.Name, cur.RXBytes, cur.TXBytes, delta); err != nil {
+	if err := m.store.InsertSample(now.Unix(), cur.Name, cur.RXBytes, cur.TXBytes, deltaIn, deltaOut); err != nil {
 		log.Printf("monitor: insert sample: %v", err)
 		return
 	}
@@ -166,7 +180,8 @@ func (m *Monitor) sampleOnce(now time.Time) {
 
 // enforceQuota stops sing-box when over quota and restarts it after a reset.
 func (m *Monitor) enforceQuota(now time.Time) {
-	if m.control == nil || m.cfg.LimitBytes == 0 {
+	limits := TrafficLimits{InBytes: m.cfg.InLimitBytes, OutBytes: m.cfg.OutLimitBytes, TotalBytes: m.cfg.TotalLimitBytes}
+	if m.control == nil || limits == (TrafficLimits{}) {
 		return
 	}
 	used, err := m.usedThisCycle(now)
@@ -174,16 +189,15 @@ func (m *Monitor) enforceQuota(now time.Time) {
 		log.Printf("monitor: used this cycle: %v", err)
 		return
 	}
-	q := Quota{LimitBytes: m.cfg.LimitBytes, UsedBytes: used}
 	switch {
-	case q.Exceeded():
+	case limits.Exceeded(used):
 		if active, _ := m.control.IsActive(); active {
 			if err := m.control.Stop(); err != nil {
 				log.Printf("monitor: stop sing-box: %v", err)
 				return
 			}
 			m.stoppedByQuota = true
-			log.Printf("monitor: quota exceeded (%d/%d bytes), stopped sing-box", used, m.cfg.LimitBytes)
+			log.Printf("monitor: quota exceeded (in=%d/%d out=%d/%d total=%d/%d bytes), stopped sing-box", used.InBytes, m.cfg.InLimitBytes, used.OutBytes, m.cfg.OutLimitBytes, used.Total(), m.cfg.TotalLimitBytes)
 		}
 	case m.stoppedByQuota:
 		// New cycle has reduced usage below the limit; restore service.

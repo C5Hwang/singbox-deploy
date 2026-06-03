@@ -5,26 +5,31 @@ package monitor
 
 import "time"
 
-// Quota holds the configured byte limit and current cycle usage.
-type Quota struct {
-	LimitBytes uint64
-	UsedBytes  uint64
-	// ResetDay is the day-of-month (1-31) the cycle resets.
-	ResetDay int
+// TrafficLimits holds configured byte limits for a quota cycle.
+type TrafficLimits struct {
+	InBytes    uint64
+	OutBytes   uint64
+	TotalBytes uint64
 }
 
-// Exceeded reports whether usage has reached the limit. A zero limit means
-// unlimited.
-func (q Quota) Exceeded() bool {
-	return q.LimitBytes > 0 && q.UsedBytes >= q.LimitBytes
+// Exceeded reports whether any configured limit has been reached. A zero limit
+// means unlimited for that direction.
+func (l TrafficLimits) Exceeded(used TrafficTotals) bool {
+	return limitExceeded(l.InBytes, used.InBytes) ||
+		limitExceeded(l.OutBytes, used.OutBytes) ||
+		limitExceeded(l.TotalBytes, used.Total())
 }
 
-// Remaining returns bytes left in the cycle, or 0 if over/unlimited-at-zero.
-func (q Quota) Remaining() uint64 {
-	if q.LimitBytes == 0 || q.UsedBytes >= q.LimitBytes {
+func limitExceeded(limit, used uint64) bool {
+	return limit > 0 && used >= limit
+}
+
+// Remaining returns bytes left for one limit, or 0 if over/unlimited-at-zero.
+func Remaining(limit, used uint64) uint64 {
+	if limit == 0 || used >= limit {
 		return 0
 	}
-	return q.LimitBytes - q.UsedBytes
+	return limit - used
 }
 
 // Delta returns current-previous, treating a counter reset (current < previous,

@@ -75,9 +75,12 @@ type Config struct {
 	SubscribePort int
 	MonitorPort   int
 
-	TrafficLimitBytes uint64
-	ResetDay          int
-	MonitorInterface  string
+	DeployMonitor          bool
+	TrafficInLimitBytes    uint64
+	TrafficOutLimitBytes   uint64
+	TrafficTotalLimitBytes uint64
+	ResetDay               int
+	MonitorInterface       string
 
 	OS       system.OSRelease
 	Firewall system.Firewall

@@ -13,6 +13,7 @@ func TestRenderNginxTemplate(t *testing.T) {
 		"KeyPath":         "/etc/singbox-deploy/tls/example.com.key",
 		"WebRoot":         "/etc/singbox-deploy/www",
 		"SubscribeDir":    "/etc/singbox-deploy/subscribe",
+		"EnableMonitor":   true,
 		"MonitorPort":     19090,
 	})
 	if err != nil {
@@ -22,6 +23,25 @@ func TestRenderNginxTemplate(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rendered output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestRenderNginxTemplateWithoutMonitor(t *testing.T) {
+	out, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
+		"SubscribePort":   443,
+		"Domain":          "example.com",
+		"CertificatePath": "/etc/singbox-deploy/tls/example.com.crt",
+		"KeyPath":         "/etc/singbox-deploy/tls/example.com.key",
+		"WebRoot":         "/etc/singbox-deploy/www",
+		"SubscribeDir":    "/etc/singbox-deploy/subscribe",
+		"EnableMonitor":   false,
+		"MonitorPort":     19090,
+	})
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	if strings.Contains(out, "/traffic/") || strings.Contains(out, "127.0.0.1:19090") {
+		t.Fatalf("rendered output should not include monitor proxy:\n%s", out)
 	}
 }
 

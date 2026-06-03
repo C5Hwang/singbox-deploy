@@ -62,6 +62,7 @@ func installFields() []field {
 	noReality := func(v map[string]string) bool {
 		return !protocolSelected(v, config.ProtocolRealityVision) && !protocolSelected(v, config.ProtocolRealityGRPC)
 	}
+	monitorDisabled := func(v map[string]string) bool { return !trafficMonitorEnabled(v) }
 	return []field{
 		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
 		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
@@ -81,8 +82,11 @@ func installFields() []field {
 		{key: "anytls_password", label: "AnyTLS password (optional)", note: "AnyTLS uses a password credential. Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
 		{key: "anytls_port", label: "AnyTLS port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
 		{key: "display_name", label: "Node display name", def: "Node", note: "Used only in generated node names shown by clients."},
-		{key: "traffic_limit_gb", label: "Monthly traffic limit in GB (0 = unlimited)", def: "0", note: "Used by the traffic monitor quota. When exceeded, sing-box.service is stopped automatically."},
-		{key: "reset_day", label: "Monthly reset day (1-28)", def: "1", note: "Day of month when the traffic quota cycle resets and service can be restored."},
+		{key: "traffic_monitor", label: "Deploy traffic monitor", def: "yes", options: []string{"yes", "no"}, note: "Choose no to skip the traffic monitor service and /traffic/ UI."},
+		{key: "traffic_in_limit_gb", label: "Monthly inbound traffic limit in GB (0 = unlimited)", def: "0", note: "Inbound uses the monitored interface RX counter. When any configured limit is exceeded, sing-box.service is stopped automatically.", skip: monitorDisabled},
+		{key: "traffic_out_limit_gb", label: "Monthly outbound traffic limit in GB (0 = unlimited)", def: "0", note: "Outbound uses the monitored interface TX counter.", skip: monitorDisabled},
+		{key: "traffic_total_limit_gb", label: "Monthly total traffic limit in GB (0 = unlimited)", def: "0", note: "Total traffic is inbound + outbound.", skip: monitorDisabled},
+		{key: "reset_day", label: "Monthly reset day (1-28)", def: "1", note: "Day of month when the traffic quota cycle resets and service can be restored.", skip: monitorDisabled},
 	}
 }
 
@@ -276,6 +280,14 @@ func protocolSelected(vals map[string]string, p config.Protocol) bool {
 	return selectedOptions(value)[string(p)]
 }
 
+func trafficMonitorEnabled(vals map[string]string) bool {
+	value := vals["traffic_monitor"]
+	if value == "" {
+		value = "yes"
+	}
+	return value == "yes"
+}
+
 func hasProtocol(protocols []config.Protocol, want config.Protocol) bool {
 	for _, p := range protocols {
 		if p == want {
@@ -455,6 +467,15 @@ func (w *wizard) validateField(f field, val string) error {
 	case strings.HasSuffix(f.key, "_uuid"):
 		if val != "" && !validUUID(val) {
 			return fmt.Errorf("uuid must be an RFC 4122 value")
+		}
+	case strings.HasPrefix(f.key, "traffic_") && strings.HasSuffix(f.key, "_limit_gb"):
+		if _, err := strconv.ParseUint(val, 10, 64); err != nil {
+			return fmt.Errorf("traffic limit must be a non-negative integer")
+		}
+	case f.key == "reset_day":
+		day, err := strconv.Atoi(val)
+		if err != nil || day < 1 || day > 28 {
+			return fmt.Errorf("reset day must be between 1 and 28")
 		}
 	}
 	return nil
@@ -818,9 +839,17 @@ func (w *wizard) buildConfig() (install.Config, error) {
 	if err != nil {
 		return install.Config{}, err
 	}
-	limitGB, _ := strconv.ParseUint(w.values["traffic_limit_gb"], 10, 64)
+	deployMonitor := trafficMonitorEnabled(w.values)
+	inLimitBytes := parseTrafficLimitGB(w.values["traffic_in_limit_gb"])
+	outLimitBytes := parseTrafficLimitGB(w.values["traffic_out_limit_gb"])
+	totalLimitBytes := parseTrafficLimitGB(w.values["traffic_total_limit_gb"])
+	if !deployMonitor {
+		inLimitBytes = 0
+		outLimitBytes = 0
+		totalLimitBytes = 0
+	}
 	resetDay, _ := strconv.Atoi(w.values["reset_day"])
-	if resetDay < 1 || resetDay > 28 {
+	if !deployMonitor || resetDay < 1 || resetDay > 28 {
 		resetDay = 1
 	}
 
@@ -838,7 +867,10 @@ func (w *wizard) buildConfig() (install.Config, error) {
 		}
 	}
 
-	iface, _ := monitor.DefaultInterface()
+	iface := ""
+	if deployMonitor {
+		iface, _ = monitor.DefaultInterface()
+	}
 	realityServerName := ""
 	if hasProtocol(enabled, config.ProtocolRealityVision) || hasProtocol(enabled, config.ProtocolRealityGRPC) {
 		realityServerName, err = normalizeRealityServerName(w.values["reality_sni"])
@@ -848,26 +880,34 @@ func (w *wizard) buildConfig() (install.Config, error) {
 	}
 
 	return install.Config{
-		Domain:               w.values["domain"],
-		Email:                w.values["email"],
-		Challenge:            challenge,
-		DNSProvider:          w.values["dns_provider"],
-		DNSCredentials:       dnsCreds,
-		Ports:                ports,
-		Enabled:              enabled,
-		DisplayName:          w.values["display_name"],
-		Salt:                 salt,
-		RealityServerName:    realityServerName,
-		RealityHandshakePort: 443,
-		SubscribePort:        2096,
-		MonitorPort:          19090,
-		TrafficLimitBytes:    limitGB << 30,
-		ResetDay:             resetDay,
-		MonitorInterface:     iface,
-		OS:                   w.host.OS,
-		Firewall:             w.host.Firewall,
-		Creds:                creds,
+		Domain:                 w.values["domain"],
+		Email:                  w.values["email"],
+		Challenge:              challenge,
+		DNSProvider:            w.values["dns_provider"],
+		DNSCredentials:         dnsCreds,
+		Ports:                  ports,
+		Enabled:                enabled,
+		DisplayName:            w.values["display_name"],
+		Salt:                   salt,
+		RealityServerName:      realityServerName,
+		RealityHandshakePort:   443,
+		SubscribePort:          2096,
+		MonitorPort:            19090,
+		DeployMonitor:          deployMonitor,
+		TrafficInLimitBytes:    inLimitBytes,
+		TrafficOutLimitBytes:   outLimitBytes,
+		TrafficTotalLimitBytes: totalLimitBytes,
+		ResetDay:               resetDay,
+		MonitorInterface:       iface,
+		OS:                     w.host.OS,
+		Firewall:               w.host.Firewall,
+		Creds:                  creds,
 	}, nil
+}
+
+func parseTrafficLimitGB(value string) uint64 {
+	gb, _ := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+	return gb << 30
 }
 
 func (w *wizard) applyCredentialOverrides(creds *install.Credentials) {
@@ -1323,15 +1363,23 @@ func (w *wizard) summary() string {
 	if len(protocols) == 0 {
 		protocols = config.AllProtocols
 	}
+	deployMonitor := trafficMonitorEnabled(w.values)
 	rows := []string{
 		"Domain:        " + w.values["domain"],
 		"Email:         " + or(w.values["email"], "not set"),
 		"Challenge:     " + w.values["challenge"],
 		"Protocols:     " + protocolLabels(protocols),
 		"Display name:  " + w.values["display_name"],
-		"Traffic limit: " + w.values["traffic_limit_gb"] + " GB",
+		"Traffic mon.:  " + yesNoString(deployMonitor),
 		"OS / Arch:     " + w.host.OS.ID + " / " + w.host.Arch,
 		"Firewall:      " + firewallName(w.host.Firewall),
+	}
+	if deployMonitor {
+		rows = append(rows,
+			"Traffic in:    "+w.values["traffic_in_limit_gb"]+" GB",
+			"Traffic out:   "+w.values["traffic_out_limit_gb"]+" GB",
+			"Traffic total: "+w.values["traffic_total_limit_gb"]+" GB",
+		)
 	}
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
 		rows = append(rows, "Reality URL:   "+w.values["reality_sni"])
@@ -1346,15 +1394,25 @@ func (w *wizard) summary() string {
 func (w *wizard) doneSummary() string {
 	token := install.SubscriptionToken(w.cfg.Salt)
 	base := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.SubscribePort)
-	return strings.Join([]string{
+	rows := []string{
 		"Account:       " + w.cfg.DisplayName,
 		"Protocols:     " + protocolLabels(w.cfg.Enabled),
 		"Ports:         " + installedPortsSummary(w.cfg.Enabled, w.cfg.Ports),
 		"Subscription:  " + base + "/s/default/" + token,
 		"Clash:         " + base + "/s/clashMetaProfiles/" + token,
 		"sing-box:      " + base + "/s/sing-box/" + token,
-		"Traffic UI:    " + base + "/traffic/",
-	}, "\n")
+	}
+	if w.cfg.DeployMonitor {
+		rows = append(rows, "Traffic UI:    "+base+"/traffic/")
+	}
+	return strings.Join(rows, "\n")
+}
+
+func yesNoString(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
 }
 
 // logWriter forwards streamed command output to the UI via the run channel. It

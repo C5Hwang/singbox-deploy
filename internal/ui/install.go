@@ -23,7 +23,7 @@ func InstallSteps() []Step {
 		{Label: "Config", Summary: "generate fragments and final config.json"},
 		{Label: "Services", Summary: "install sing-box.service and certificate renewal timer"},
 		{Label: "Subscriptions", Summary: "generate subscription files"},
-		{Label: "Monitor", Summary: "install and start traffic monitor service"},
+		{Label: "Monitor", Summary: "optionally install and start traffic monitor service"},
 		{Label: "Reload Nginx", Summary: "validate and reload nginx"},
 		{Label: "Summary", Summary: "show account, subscriptions, traffic URL"},
 	}

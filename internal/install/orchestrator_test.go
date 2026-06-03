@@ -81,22 +81,25 @@ func testConfig(t *testing.T) Config {
 		t.Fatalf("GenerateCredentials: %v", err)
 	}
 	return Config{
-		Domain:               "example.com",
-		Email:                "admin@example.com",
-		Challenge:            acme.ChallengeHTTP01,
-		Ports:                config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
-		DisplayName:          "US-vps1",
-		Salt:                 "testsalt",
-		RealityServerName:    "www.microsoft.com",
-		RealityHandshakePort: 443,
-		SubscribePort:        2096,
-		MonitorPort:          19090,
-		TrafficLimitBytes:    100 << 30,
-		ResetDay:             1,
-		MonitorInterface:     "eth0",
-		OS:                   system.OSRelease{Family: system.FamilyDebian, PackageManager: "apt"},
-		Firewall:             system.FirewallUFW,
-		Creds:                creds,
+		Domain:                 "example.com",
+		Email:                  "admin@example.com",
+		Challenge:              acme.ChallengeHTTP01,
+		Ports:                  config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
+		DisplayName:            "US-vps1",
+		Salt:                   "testsalt",
+		RealityServerName:      "www.microsoft.com",
+		RealityHandshakePort:   443,
+		SubscribePort:          2096,
+		MonitorPort:            19090,
+		DeployMonitor:          true,
+		TrafficInLimitBytes:    40 << 30,
+		TrafficOutLimitBytes:   50 << 30,
+		TrafficTotalLimitBytes: 100 << 30,
+		ResetDay:               1,
+		MonitorInterface:       "eth0",
+		OS:                     system.OSRelease{Family: system.FamilyDebian, PackageManager: "apt"},
+		Firewall:               system.FirewallUFW,
+		Creds:                  creds,
 	}
 }
 
@@ -241,17 +244,87 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	mustExist(t, filepath.Join(o.SystemdDir, "singbox-deploy-cert-renew.service"))
 	mustExist(t, filepath.Join(o.SystemdDir, "singbox-deploy-cert-renew.timer"))
 	mustExist(t, filepath.Join(o.SystemdDir, "singbox-deploy-monitor.service"))
+	monitorUnit, err := os.ReadFile(filepath.Join(o.SystemdDir, "singbox-deploy-monitor.service"))
+	if err != nil {
+		t.Fatalf("read monitor unit: %v", err)
+	}
+	for _, want := range []string{"--in-limit-bytes 42949672960", "--out-limit-bytes 53687091200", "--total-limit-bytes 107374182400"} {
+		if !strings.Contains(string(monitorUnit), want) {
+			t.Fatalf("monitor unit missing %q:\n%s", want, monitorUnit)
+		}
+	}
 	mustExist(t, o.NginxConfPath)
 	mustExist(t, layout.SingBoxBin)
 	mustExist(t, filepath.Join(layout.StateDir, "domain"))
 	mustExist(t, filepath.Join(layout.StateDir, "acme_challenge"))
+	mustExist(t, filepath.Join(layout.StateDir, "traffic_in_limit_bytes"))
+	mustExist(t, filepath.Join(layout.StateDir, "traffic_out_limit_bytes"))
+	mustExist(t, filepath.Join(layout.StateDir, "traffic_total_limit_bytes"))
 	mustExist(t, filepath.Join(layout.WebRoot, "index.html"))
+}
+
+func TestOrchestratorSkipsMonitorWhenDisabled(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	runner := &recordingRunner{}
+	cfg := testConfig(t)
+	cfg.DeployMonitor = false
+	cfg.TrafficInLimitBytes = 0
+	cfg.TrafficOutLimitBytes = 0
+	cfg.TrafficTotalLimitBytes = 0
+	cfg.MonitorInterface = ""
+
+	o := &Orchestrator{
+		Runner:        runner,
+		Layout:        layout,
+		ACME:          acme.NewManager(fakeIssuer{}),
+		LatestSingBox: func(context.Context) (string, error) { return "v1.12.0", nil },
+		Download:      func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
+		GOOS:          "linux",
+		GOARCH:        "amd64",
+		DeployBin:     "/usr/bin/singbox-deploy",
+		SystemdDir:    filepath.Join(root, "systemd"),
+		NginxConfPath: filepath.Join(root, "nginx", "singbox-deploy.conf"),
+	}
+
+	if err := o.Run(context.Background(), cfg); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if strings.Contains(joined, system.MonitorService) {
+		t.Fatalf("monitor service should not be enabled when disabled:\n%s", joined)
+	}
+	mustNotExist(t, filepath.Join(o.SystemdDir, system.MonitorService))
+	nginxConf, err := os.ReadFile(o.NginxConfPath)
+	if err != nil {
+		t.Fatalf("read nginx config: %v", err)
+	}
+	if strings.Contains(string(nginxConf), "/traffic/") {
+		t.Fatalf("nginx config should not include traffic locations when monitor is disabled:\n%s", nginxConf)
+	}
+	state, err := os.ReadFile(filepath.Join(layout.StateDir, "traffic_monitor"))
+	if err != nil {
+		t.Fatalf("read traffic_monitor state: %v", err)
+	}
+	if strings.TrimSpace(string(state)) != "no" {
+		t.Fatalf("traffic_monitor state = %q, want no", state)
+	}
+	mustNotExist(t, filepath.Join(layout.StateDir, "traffic_in_limit_bytes"))
 }
 
 func mustExist(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected file %s: %v", path, err)
+	}
+}
+
+func mustNotExist(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("expected file %s not to exist", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", path, err)
 	}
 }
 

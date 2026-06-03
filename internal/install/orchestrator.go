@@ -89,8 +89,8 @@ func (o *Orchestrator) defaults() {
 }
 
 // steps returns the ordered install steps.
-func (o *Orchestrator) steps() []step {
-	return []step{
+func (o *Orchestrator) steps(cfg Config) []step {
+	steps := []step{
 		{"Dependencies", "install base packages", o.stepDependencies},
 		{"Nginx", "install nginx.org mainline", o.stepNginxInstall},
 		{"Firewall", "open required ports", o.stepFirewall},
@@ -100,16 +100,19 @@ func (o *Orchestrator) steps() []step {
 		{"Services", "install and start sing-box.service", o.stepServices},
 		{"Subscriptions", "generate subscription files", o.stepSubscriptions},
 		{"Nginx config", "write managed config and reload", o.stepNginxConfig},
-		{"Monitor", "install and start traffic monitor", o.stepMonitor},
-		{"Finalize", "write account state", o.stepFinalize},
 	}
+	if cfg.DeployMonitor {
+		steps = append(steps, step{"Monitor", "install and start traffic monitor", o.stepMonitor})
+	}
+	steps = append(steps, step{"Finalize", "write account state", o.stepFinalize})
+	return steps
 }
 
 // Run executes every step in order, emitting progress. It stops at the first
 // failing step and returns its error.
 func (o *Orchestrator) Run(ctx context.Context, cfg Config) error {
 	o.defaults()
-	steps := o.steps()
+	steps := o.steps(cfg)
 	total := len(steps)
 	for i, s := range steps {
 		o.emit(Event{Index: i + 1, Total: total, Label: s.label, Detail: s.detail, Status: "running"})
@@ -299,6 +302,7 @@ func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
 		"KeyPath":         keyPath,
 		"WebRoot":         o.Layout.WebRoot,
 		"SubscribeDir":    o.Layout.SubscribeDir,
+		"EnableMonitor":   cfg.DeployMonitor,
 		"MonitorPort":     cfg.MonitorPort,
 	})
 	if err != nil {
@@ -325,12 +329,17 @@ func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
+	if !cfg.DeployMonitor {
+		return nil
+	}
 	unit, err := templatefs.Render("service/singbox-deploy-monitor.service.tmpl", map[string]any{
 		"DeployBin":       o.DeployBin,
 		"MonitorPort":     cfg.MonitorPort,
 		"Interface":       cfg.MonitorInterface,
 		"DB":              o.Layout.TrafficDB,
-		"LimitBytes":      cfg.TrafficLimitBytes,
+		"InLimitBytes":    cfg.TrafficInLimitBytes,
+		"OutLimitBytes":   cfg.TrafficOutLimitBytes,
+		"TotalLimitBytes": cfg.TrafficTotalLimitBytes,
 		"ResetDay":        cfg.ResetDay,
 		"IntervalSeconds": 300,
 	})
@@ -362,10 +371,15 @@ func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 		"reality_short_id":    cfg.Creds.RealityShortID,
 		"reality_server_name": cfg.RealityServerName,
 		"subscribe_token":     subscriptionToken(cfg.Salt),
-		"monitor_port":        itoa(cfg.MonitorPort),
 		"subscribe_port":      itoa(cfg.SubscribePort),
-		"traffic_limit_bytes": fmt.Sprintf("%d", cfg.TrafficLimitBytes),
-		"reset_day":           itoa(cfg.ResetDay),
+		"traffic_monitor":     yesNoString(cfg.DeployMonitor),
+	}
+	if cfg.DeployMonitor {
+		state["monitor_port"] = itoa(cfg.MonitorPort)
+		state["traffic_in_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficInLimitBytes)
+		state["traffic_out_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficOutLimitBytes)
+		state["traffic_total_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficTotalLimitBytes)
+		state["reset_day"] = itoa(cfg.ResetDay)
 	}
 	for name, value := range state {
 		if err := writeFile(filepath.Join(o.Layout.StateDir, name), []byte(value+"\n"), 0o600); err != nil {
@@ -373,6 +387,13 @@ func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 		}
 	}
 	return nil
+}
+
+func yesNoString(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
 }
 
 func protocolStateValue(protocols []config.Protocol) string {

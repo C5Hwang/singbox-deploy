@@ -125,12 +125,15 @@ func confirmWizardForTest() *wizard {
 	return &wizard{
 		phase: phaseConfirm,
 		values: map[string]string{
-			"domain":           "example.com",
-			"challenge":        "http-01",
-			"protocols":        defaultProtocolValue(),
-			"reality_sni":      "www.microsoft.com",
-			"display_name":     "Node",
-			"traffic_limit_gb": "0",
+			"domain":                 "example.com",
+			"challenge":              "http-01",
+			"protocols":              defaultProtocolValue(),
+			"reality_sni":            "www.microsoft.com",
+			"display_name":           "Node",
+			"traffic_monitor":        "yes",
+			"traffic_in_limit_gb":    "0",
+			"traffic_out_limit_gb":   "0",
+			"traffic_total_limit_gb": "0",
 		},
 		host: supportedTestHost(),
 	}
@@ -164,7 +167,10 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	writeStatusState(t, layout.StateDir, "subscribe_port", "2096")
 	writeStatusState(t, layout.StateDir, "subscribe_token", "tok")
 	writeStatusState(t, layout.StateDir, "enabled_protocols", "reality-vision,tuic")
-	writeStatusState(t, layout.StateDir, "traffic_limit_bytes", fmt.Sprintf("%d", uint64(100)<<30))
+	writeStatusState(t, layout.StateDir, "traffic_monitor", "yes")
+	writeStatusState(t, layout.StateDir, "traffic_in_limit_bytes", fmt.Sprintf("%d", uint64(40)<<30))
+	writeStatusState(t, layout.StateDir, "traffic_out_limit_bytes", fmt.Sprintf("%d", uint64(50)<<30))
+	writeStatusState(t, layout.StateDir, "traffic_total_limit_bytes", fmt.Sprintf("%d", uint64(100)<<30))
 	writeStatusState(t, layout.StateDir, "reset_day", "7")
 	if err := os.MkdirAll(filepath.Dir(layout.SingBoxBin), 0o755); err != nil {
 		t.Fatalf("mkdir sing-box dir: %v", err)
@@ -225,7 +231,7 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	if status.Subscription != "https://example.com:2096/s/default/tok" {
 		t.Fatalf("Subscription = %q", status.Subscription)
 	}
-	if status.TrafficQuota != "limit 100 GB, reset day 7" {
+	if status.TrafficQuota != "in limit 40 GB, out limit 50 GB, total limit 100 GB, reset day 7" {
 		t.Fatalf("TrafficQuota = %q", status.TrafficQuota)
 	}
 }
@@ -545,6 +551,17 @@ func TestRealityFieldsHiddenWhenRealityNotSelected(t *testing.T) {
 	}
 }
 
+func TestTrafficMonitorFieldsHiddenWhenDisabled(t *testing.T) {
+	vals := map[string]string{"traffic_monitor": "no"}
+	fields := installFields()
+	for _, key := range []string{"traffic_in_limit_gb", "traffic_out_limit_gb", "traffic_total_limit_gb", "reset_day"} {
+		f := fields[fieldIndex(t, fields, key)]
+		if f.skip == nil || !f.skip(vals) {
+			t.Fatalf("%s should be hidden when traffic monitor is disabled", key)
+		}
+	}
+}
+
 func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 	w := &wizard{
 		phase:  phaseForm,
@@ -563,17 +580,20 @@ func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	w := &wizard{
 		values: map[string]string{
-			"domain":              "example.com",
-			"challenge":           "http-01",
-			"protocols":           "reality-vision,tuic",
-			"reality_sni":         "https://www.cloudflare.com/cdn-cgi/trace",
-			"reality_vision_uuid": "11111111-1111-4111-8111-111111111111",
-			"reality_vision_port": "24443",
-			"tuic_uuid":           "22222222-2222-4222-8222-222222222222",
-			"tuic_port":           "24444",
-			"display_name":        "Node",
-			"traffic_limit_gb":    "0",
-			"reset_day":           "1",
+			"domain":                 "example.com",
+			"challenge":              "http-01",
+			"protocols":              "reality-vision,tuic",
+			"reality_sni":            "https://www.cloudflare.com/cdn-cgi/trace",
+			"reality_vision_uuid":    "11111111-1111-4111-8111-111111111111",
+			"reality_vision_port":    "24443",
+			"tuic_uuid":              "22222222-2222-4222-8222-222222222222",
+			"tuic_port":              "24444",
+			"display_name":           "Node",
+			"traffic_monitor":        "yes",
+			"traffic_in_limit_gb":    "40",
+			"traffic_out_limit_gb":   "50",
+			"traffic_total_limit_gb": "100",
+			"reset_day":              "1",
 		},
 		host: supportedTestHost(),
 	}
@@ -600,17 +620,23 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	if cfg.Ports.Hysteria2 != 0 || cfg.Ports.AnyTLS != 0 {
 		t.Fatalf("unselected protocol ports should stay zero: %#v", cfg.Ports)
 	}
+	if !cfg.DeployMonitor || cfg.TrafficInLimitBytes != 40<<30 || cfg.TrafficOutLimitBytes != 50<<30 || cfg.TrafficTotalLimitBytes != 100<<30 {
+		t.Fatalf("traffic monitor config = enabled %v in %d out %d total %d", cfg.DeployMonitor, cfg.TrafficInLimitBytes, cfg.TrafficOutLimitBytes, cfg.TrafficTotalLimitBytes)
+	}
 }
 
 func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 	w := &wizard{
 		values: map[string]string{
-			"domain":           "example.com",
-			"challenge":        "http-01",
-			"protocols":        "hysteria2,anytls",
-			"display_name":     "Node",
-			"traffic_limit_gb": "0",
-			"reset_day":        "1",
+			"domain":                 "example.com",
+			"challenge":              "http-01",
+			"protocols":              "hysteria2,anytls",
+			"display_name":           "Node",
+			"traffic_monitor":        "yes",
+			"traffic_in_limit_gb":    "0",
+			"traffic_out_limit_gb":   "0",
+			"traffic_total_limit_gb": "0",
+			"reset_day":              "1",
 		},
 		host: supportedTestHost(),
 	}
@@ -633,6 +659,33 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 	}
 	if cfg.Ports.Hysteria2 == cfg.Ports.AnyTLS {
 		t.Fatalf("random ports should be unique: %#v", cfg.Ports)
+	}
+}
+
+func TestBuildConfigDisablesTrafficMonitor(t *testing.T) {
+	w := &wizard{
+		values: map[string]string{
+			"domain":                 "example.com",
+			"challenge":              "http-01",
+			"protocols":              "tuic",
+			"tuic_uuid":              "22222222-2222-4222-8222-222222222222",
+			"display_name":           "Node",
+			"traffic_monitor":        "no",
+			"traffic_in_limit_gb":    "40",
+			"traffic_out_limit_gb":   "50",
+			"traffic_total_limit_gb": "100",
+		},
+		host: supportedTestHost(),
+	}
+	cfg, err := w.buildConfig()
+	if err != nil {
+		t.Fatalf("buildConfig error: %v", err)
+	}
+	if cfg.DeployMonitor {
+		t.Fatalf("DeployMonitor should be false")
+	}
+	if cfg.MonitorInterface != "" || cfg.TrafficInLimitBytes != 0 || cfg.TrafficOutLimitBytes != 0 || cfg.TrafficTotalLimitBytes != 0 {
+		t.Fatalf("monitor fields should stay empty when disabled: %#v", cfg)
 	}
 }
 

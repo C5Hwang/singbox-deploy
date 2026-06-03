@@ -46,6 +46,10 @@ func loadStatus() Status {
 	if subscribePort == "" {
 		subscribePort = "2096"
 	}
+	monitorState := "disabled"
+	if readStatusState(store, "traffic_monitor") != "no" {
+		monitorState = serviceState(system.MonitorService)
+	}
 
 	return Status{
 		Domain:       domain,
@@ -54,7 +58,7 @@ func loadStatus() Status {
 		SingBoxVer:   singBoxVersion(layout.SingBoxBin),
 		SingBoxState: serviceState(system.SingBoxService),
 		NginxState:   serviceState("nginx.service"),
-		MonitorState: serviceState(system.MonitorService),
+		MonitorState: monitorState,
 		CertState:    certificateState(layout, domain),
 		Protocols:    readStatusState(store, "enabled_protocols"),
 		Subscription: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token")),
@@ -162,22 +166,51 @@ func subscriptionStatus(domain, port, token string) string {
 }
 
 func trafficQuotaStatus(store state.Store) string {
-	raw := readStatusState(store, "traffic_limit_bytes")
-	if raw == "" {
+	if readStatusState(store, "traffic_monitor") == "no" {
+		return "disabled"
+	}
+	inRaw := readStatusState(store, "traffic_in_limit_bytes")
+	outRaw := readStatusState(store, "traffic_out_limit_bytes")
+	totalRaw := readStatusState(store, "traffic_total_limit_bytes")
+	if inRaw == "" && outRaw == "" && totalRaw == "" {
 		return ""
 	}
-	limit, err := strconv.ParseUint(raw, 10, 64)
+	inLimit, err := parseStatusLimit(inRaw)
 	if err != nil {
 		return "unknown"
 	}
+	outLimit, err := parseStatusLimit(outRaw)
+	if err != nil {
+		return "unknown"
+	}
+	totalLimit, err := parseStatusLimit(totalRaw)
+	if err != nil {
+		return "unknown"
+	}
+	resetDay := readStatusState(store, "reset_day")
+	parts := []string{
+		"in " + statusLimitLabel(inLimit),
+		"out " + statusLimitLabel(outLimit),
+		"total " + statusLimitLabel(totalLimit),
+	}
+	if resetDay != "" {
+		parts = append(parts, "reset day "+resetDay)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func parseStatusLimit(raw string) (uint64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(raw, 10, 64)
+}
+
+func statusLimitLabel(limit uint64) string {
 	if limit == 0 {
 		return "unlimited"
 	}
-	resetDay := readStatusState(store, "reset_day")
-	if resetDay == "" {
-		return "limit " + byteSize(limit)
-	}
-	return fmt.Sprintf("limit %s, reset day %s", byteSize(limit), resetDay)
+	return "limit " + byteSize(limit)
 }
 
 func byteSize(n uint64) string {

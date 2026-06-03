@@ -27,7 +27,9 @@ func runMonitor(args []string) error {
 	listen := fs.String("listen", "127.0.0.1:19090", "listen address")
 	iface := fs.String("interface", "", "monitored network interface (default: auto-detect)")
 	dbPath := fs.String("db", layout.TrafficDB, "traffic database path")
-	limit := fs.Uint64("limit-bytes", 0, "monthly traffic limit in bytes (0 = unlimited)")
+	inLimit := fs.Uint64("in-limit-bytes", 0, "monthly inbound traffic limit in bytes (0 = unlimited)")
+	outLimit := fs.Uint64("out-limit-bytes", 0, "monthly outbound traffic limit in bytes (0 = unlimited)")
+	totalLimit := fs.Uint64("total-limit-bytes", 0, "monthly total traffic limit in bytes (0 = unlimited)")
 	resetDay := fs.Int("reset-day", 1, "monthly reset day-of-month")
 	intervalSec := fs.Int("interval-seconds", 300, "sampling interval in seconds")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -53,7 +55,9 @@ func runMonitor(args []string) error {
 		Listen:           *listen,
 		Interface:        selectedIface,
 		SamplingInterval: secondsToDuration(*intervalSec),
-		LimitBytes:       *limit,
+		InLimitBytes:     *inLimit,
+		OutLimitBytes:    *outLimit,
+		TotalLimitBytes:  *totalLimit,
 		ResetDay:         *resetDay,
 	}
 	m := monitor.New(store, cfg, systemdSingBox{})

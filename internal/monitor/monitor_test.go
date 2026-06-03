@@ -6,16 +6,18 @@ import (
 	"time"
 )
 
-func TestQuotaExceededStopsService(t *testing.T) {
-	q := Quota{LimitBytes: 100, UsedBytes: 101}
-	if !q.Exceeded() {
+func TestTrafficLimitsExceeded(t *testing.T) {
+	limits := TrafficLimits{InBytes: 100, OutBytes: 200, TotalBytes: 250}
+	used := TrafficTotals{InBytes: 90, OutBytes: 160}
+	if !limits.Exceeded(used) {
 		t.Fatalf("quota should be exceeded")
 	}
 }
 
-func TestQuotaUnlimited(t *testing.T) {
-	q := Quota{LimitBytes: 0, UsedBytes: 1 << 40}
-	if q.Exceeded() {
+func TestTrafficLimitsUnlimited(t *testing.T) {
+	limits := TrafficLimits{}
+	used := TrafficTotals{InBytes: 1 << 40, OutBytes: 1 << 40}
+	if limits.Exceeded(used) {
 		t.Fatalf("zero limit means unlimited")
 	}
 }
@@ -46,7 +48,7 @@ func TestCycleStart(t *testing.T) {
 	}
 }
 
-func TestStoreInsertAndTotal(t *testing.T) {
+func TestStoreInsertAndTotals(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "traffic.db")
 	store, err := OpenStore(path)
 	if err != nil {
@@ -55,17 +57,17 @@ func TestStoreInsertAndTotal(t *testing.T) {
 	defer store.Close()
 
 	base := time.Now().Unix()
-	if err := store.InsertSample(base, "eth0", 100, 50, 150); err != nil {
+	if err := store.InsertSample(base, "eth0", 100, 50, 100, 50); err != nil {
 		t.Fatalf("InsertSample error: %v", err)
 	}
-	if err := store.InsertSample(base+60, "eth0", 200, 100, 250); err != nil {
+	if err := store.InsertSample(base+60, "eth0", 200, 100, 200, 100); err != nil {
 		t.Fatalf("InsertSample error: %v", err)
 	}
-	total, err := store.TotalSince(base - 1)
+	totals, err := store.TotalsSince(base - 1)
 	if err != nil {
-		t.Fatalf("TotalSince error: %v", err)
+		t.Fatalf("TotalsSince error: %v", err)
 	}
-	if total != 400 {
-		t.Fatalf("total = %d, want 400", total)
+	if totals.InBytes != 300 || totals.OutBytes != 150 || totals.Total() != 450 {
+		t.Fatalf("totals = %#v, want in=300 out=150 total=450", totals)
 	}
 }
