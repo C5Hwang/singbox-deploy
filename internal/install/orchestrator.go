@@ -291,24 +291,7 @@ func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepSubscriptions(_ context.Context, cfg Config) error {
-	out, err := cfg.buildSubscriptions()
-	if err != nil {
-		return err
-	}
-	token := subscriptionToken(cfg.Salt)
-	files := map[string]string{
-		"default/" + token:           out.DefaultBase64,
-		"clashMeta/" + token:         out.ClashFragment,
-		"clashMetaProfiles/" + token: out.ClashProfile,
-		"sing-boxProfiles/" + token:  out.SingBoxOutbounds,
-		"sing-box/" + token:          out.SingBoxProfile,
-	}
-	for rel, body := range files {
-		if err := writeFile(filepath.Join(o.Layout.SubscribeDir, rel), []byte(body), 0o644); err != nil {
-			return err
-		}
-	}
-	return writeFile(filepath.Join(o.Layout.StateDir, "subscribe_salt"), []byte(cfg.Salt+"\n"), 0o600)
+	return writeSubscriptions(o.Layout, cfg)
 }
 
 func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
@@ -377,30 +360,49 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
+	return writeInstallState(o.Layout.StateDir, cfg)
+}
+
+func writeInstallState(stateDir string, cfg Config) error {
 	state := map[string]string{
-		"acme_challenge":      string(cfg.Challenge),
-		"domain":              cfg.Domain,
-		"dns_credential":      dnsCredentialForState(cfg),
-		"dns_provider":        cfg.DNSProvider,
-		"email":               cfg.Email,
-		"enabled_protocols":   protocolStateValue(cfg.enabled()),
-		"display_name":        cfg.DisplayName,
-		"reality_public_key":  cfg.Creds.RealityPublicKey,
-		"reality_short_id":    cfg.Creds.RealityShortID,
-		"reality_server_name": cfg.RealityServerName,
-		"subscribe_token":     subscriptionToken(cfg.Salt),
-		"subscribe_port":      itoa(cfg.SubscribePort),
-		"traffic_monitor":     yesNoString(cfg.DeployMonitor),
+		"acme_challenge":         string(cfg.Challenge),
+		"domain":                 cfg.Domain,
+		"dns_credential":         dnsCredentialForState(cfg),
+		"dns_provider":           cfg.DNSProvider,
+		"email":                  cfg.Email,
+		"enabled_protocols":      protocolStateValue(cfg.enabled()),
+		"display_name":           cfg.DisplayName,
+		"subscribe_salt":         cfg.Salt,
+		"reality_public_key":     cfg.Creds.RealityPublicKey,
+		"reality_private_key":    cfg.Creds.RealityPrivateKey,
+		"reality_short_id":       cfg.Creds.RealityShortID,
+		"reality_server_name":    cfg.RealityServerName,
+		"reality_handshake_port": itoa(cfg.RealityHandshakePort),
+		"reality_vision_uuid":    cfg.Creds.RealityVisionUUID,
+		"reality_grpc_uuid":      cfg.Creds.RealityGRPCUUID,
+		"hysteria2_password":     cfg.Creds.HysteriaPassword,
+		"tuic_uuid":              cfg.Creds.TUICUUID,
+		"tuic_password":          cfg.Creds.TUICPassword,
+		"anytls_password":        cfg.Creds.AnyTLSPassword,
+		"reality_vision_port":    itoa(cfg.Ports.RealityVision),
+		"reality_grpc_port":      itoa(cfg.Ports.RealityGRPC),
+		"hysteria2_port":         itoa(cfg.Ports.Hysteria2),
+		"tuic_port":              itoa(cfg.Ports.TUIC),
+		"anytls_port":            itoa(cfg.Ports.AnyTLS),
+		"subscribe_token":        subscriptionToken(cfg.Salt),
+		"subscribe_port":         itoa(cfg.SubscribePort),
+		"monitor_port":           itoa(cfg.MonitorPort),
+		"monitor_interface":      cfg.MonitorInterface,
+		"traffic_monitor":        yesNoString(cfg.DeployMonitor),
 	}
 	if cfg.DeployMonitor {
-		state["monitor_port"] = itoa(cfg.MonitorPort)
 		state["traffic_in_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficInLimitBytes)
 		state["traffic_out_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficOutLimitBytes)
 		state["traffic_total_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficTotalLimitBytes)
 		state["reset_day"] = itoa(cfg.ResetDay)
 	}
 	for name, value := range state {
-		if err := writeFile(filepath.Join(o.Layout.StateDir, name), []byte(value+"\n"), 0o600); err != nil {
+		if err := writeStateFile(stateDir, name, value+"\n"); err != nil {
 			return err
 		}
 	}

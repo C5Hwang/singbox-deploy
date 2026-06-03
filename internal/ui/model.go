@@ -54,13 +54,14 @@ type MenuGroup struct {
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	width  int
-	height int
-	status Status
-	groups []MenuGroup
-	cursor int // flat index across all items
-	wizard *wizard
-	dryRun bool
+	width     int
+	height    int
+	status    Status
+	groups    []MenuGroup
+	cursor    int // flat index across all items
+	wizard    *wizard
+	protocols *protocolManager
+	dryRun    bool
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -123,8 +124,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SetSize(sz.Width, sz.Height)
 	}
 
-	// While a sub-flow (the install wizard) is active, delegate everything to it
-	// so its state machine and async run messages are handled in one place.
+	// While a sub-flow is active, delegate everything to it so its state machine
+	// and async run messages are handled in one place.
 	if m.wizard != nil {
 		w := m.wizard
 		cmd, done := m.wizard.Update(msg)
@@ -133,6 +134,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.RefreshStatus()
 			}
 			m.wizard = nil
+		}
+		return m, cmd
+	}
+	if m.protocols != nil {
+		p := m.protocols
+		cmd, done := m.protocols.Update(msg)
+		if done {
+			if p.phase == protocolPhaseDone && p.runErr == nil && !p.dryRun {
+				m.RefreshStatus()
+			}
+			m.protocols = nil
 		}
 		return m, cmd
 	}
@@ -158,13 +170,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// activate runs the action for the highlighted menu item. Only "Install /
-// reinstall" (the first item) is wired so far.
+// activate runs the action for the highlighted menu item.
 func (m *Model) activate() tea.Cmd {
-	if m.cursor == 0 {
+	switch m.cursor {
+	case 0:
 		w := newWizard(m.dryRun)
 		w.setSize(m.width, m.height)
 		m.wizard = w
+	case 1:
+		p := newProtocolManager(m.dryRun)
+		p.setSize(m.width, m.height)
+		m.protocols = p
 	}
 	return nil
 }
@@ -232,6 +248,10 @@ func (m *Model) contentView(width, height int) string {
 		m.wizard.setSize(width, height)
 		return m.wizard.View()
 	}
+	if m.protocols != nil {
+		m.protocols.setSize(width, height)
+		return m.protocols.View()
+	}
 	return m.statusView()
 }
 
@@ -240,12 +260,18 @@ func (m *Model) footerView() string {
 	dryRun := m.dryRun
 	if m.wizard != nil {
 		dryRun = m.wizard.dryRun
+	} else if m.protocols != nil {
+		dryRun = m.protocols.dryRun
 	}
 	if dryRun {
 		parts = append(parts, "dry-run mode")
 	}
 	if m.wizard == nil {
-		parts = append(parts, "d dry-run", "↑/↓ move", "enter select", "esc/q quit")
+		if m.protocols == nil {
+			parts = append(parts, "d dry-run", "↑/↓ move", "enter select", "esc/q quit")
+		} else {
+			parts = append(parts, m.protocols.footerHints()...)
+		}
 	} else {
 		parts = append(parts, m.wizard.footerHints()...)
 	}

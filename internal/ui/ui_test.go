@@ -159,6 +159,45 @@ func TestDryRunShortcutShowsIndicator(t *testing.T) {
 	}
 }
 
+func TestProtocolManagementMenuOpens(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withProtocolManagerDeps(t, layout)
+	m := NewModel()
+	m.cursor = 1
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.protocols == nil {
+		t.Fatalf("protocol manager was not opened")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Protocol Management") || !strings.Contains(view, "Current:") || !strings.Contains(view, "reality-vision") {
+		t.Fatalf("protocol manager view missing expected content:\n%s", view)
+	}
+}
+
+func TestProtocolManagementAsksRealitySNIWhenEnablingReality(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	withProtocolManagerDeps(t, layout)
+	pm := newProtocolManager(false)
+	pm.setSize(100, 30)
+	if pm.loadErr != nil {
+		t.Fatalf("load protocol manager: %v", pm.loadErr)
+	}
+	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	if done {
+		t.Fatalf("space should not close protocol manager")
+	}
+	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done {
+		t.Fatalf("enter should not close protocol manager")
+	}
+	if pm.phase != protocolPhaseReality {
+		t.Fatalf("phase = %v, want Reality input", pm.phase)
+	}
+	if !strings.Contains(pm.View(), "Reality URL/SNI") {
+		t.Fatalf("missing Reality SNI prompt:\n%s", pm.View())
+	}
+}
+
 func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
@@ -244,6 +283,53 @@ func writeStatusState(t *testing.T, dir, name, value string) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0o600); err != nil {
 		t.Fatalf("write state %s: %v", name, err)
 	}
+}
+
+func protocolManagerState(t *testing.T, enabled, realitySNI string) paths.Layout {
+	t.Helper()
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	values := map[string]string{
+		"domain":                 "example.com",
+		"display_name":           "US-vps1",
+		"subscribe_salt":         "testsalt",
+		"enabled_protocols":      enabled,
+		"subscribe_port":         "2096",
+		"monitor_port":           "19090",
+		"traffic_monitor":        "no",
+		"reality_server_name":    realitySNI,
+		"reality_handshake_port": "443",
+		"reality_private_key":    "private",
+		"reality_public_key":     "public",
+		"reality_short_id":       "0123456789abcdef",
+		"reality_vision_uuid":    "11111111-1111-4111-8111-111111111111",
+		"reality_grpc_uuid":      "22222222-2222-4222-8222-222222222222",
+		"hysteria2_password":     "hypass",
+		"tuic_uuid":              "33333333-3333-4333-8333-333333333333",
+		"tuic_password":          "tuicpass",
+		"anytls_password":        "anypass",
+		"reality_vision_port":    "443",
+		"reality_grpc_port":      "8443",
+		"hysteria2_port":         "9443",
+		"tuic_port":              "10443",
+		"anytls_port":            "11443",
+	}
+	for name, value := range values {
+		writeStatusState(t, layout.StateDir, name, value)
+	}
+	return layout
+}
+
+func withProtocolManagerDeps(t *testing.T, layout paths.Layout) {
+	t.Helper()
+	oldLayout := protocolUILayout
+	oldDetect := detectProtocolHost
+	t.Cleanup(func() {
+		protocolUILayout = oldLayout
+		detectProtocolHost = oldDetect
+	})
+	protocolUILayout = func() paths.Layout { return layout }
+	detectProtocolHost = func() (system.Host, error) { return supportedTestHost(), nil }
 }
 
 func TestRunningStatusLevelClassifiesColors(t *testing.T) {

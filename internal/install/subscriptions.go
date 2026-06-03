@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 )
@@ -322,6 +324,27 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 	}
 	out.SingBoxProfile = singboxProfile
 	return out, nil
+}
+
+func writeSubscriptions(layout paths.Layout, cfg Config) error {
+	out, err := cfg.buildSubscriptions()
+	if err != nil {
+		return err
+	}
+	token := subscriptionToken(cfg.Salt)
+	files := map[string]string{
+		"default/" + token:           out.DefaultBase64,
+		"clashMeta/" + token:         out.ClashFragment,
+		"clashMetaProfiles/" + token: out.ClashProfile,
+		"sing-boxProfiles/" + token:  out.SingBoxOutbounds,
+		"sing-box/" + token:          out.SingBoxProfile,
+	}
+	for rel, body := range files {
+		if err := writeFile(filepath.Join(layout.SubscribeDir, rel), []byte(body), 0o644); err != nil {
+			return err
+		}
+	}
+	return writeStateFile(layout.StateDir, "subscribe_salt", cfg.Salt+"\n")
 }
 
 // protoOf reports the subscription protocol key for a sing-box outbound.

@@ -16,6 +16,16 @@ func writeFile(path string, data []byte, perm os.FileMode) error {
 	return os.WriteFile(path, data, perm)
 }
 
+func writeStateFile(stateDir, name, value string) error {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(stateDir, filepath.Clean(name)), []byte(value), 0o600)
+}
+
 // SubscriptionToken derives the subscription URL token from the salt.
 func SubscriptionToken(salt string) string {
 	return subscription.TokenFromSalt(salt)
