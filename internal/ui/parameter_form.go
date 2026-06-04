@@ -5,6 +5,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
 // field describes one parameter collected by the shared parameter form.
@@ -18,6 +20,42 @@ type field struct {
 	skip      func(vals map[string]string) bool
 	noteFunc  func(vals map[string]string) string
 	badgeFunc func(vals map[string]string) string
+}
+
+func fieldFromParameter(f uiparams.Field) field {
+	return field{
+		key:       f.Key,
+		label:     f.Label,
+		def:       f.Def,
+		note:      f.Note,
+		options:   append([]string(nil), f.Options...),
+		multi:     f.Multi,
+		skip:      f.Skip,
+		noteFunc:  f.NoteFunc,
+		badgeFunc: f.BadgeFunc,
+	}
+}
+
+func fieldsFromParameters(params []uiparams.Field) []field {
+	fields := make([]field, 0, len(params))
+	for _, f := range params {
+		fields = append(fields, fieldFromParameter(f))
+	}
+	return fields
+}
+
+func parameterFromField(f field) uiparams.Field {
+	return uiparams.Field{
+		Key:       f.key,
+		Label:     f.label,
+		Def:       f.def,
+		Note:      f.note,
+		Options:   append([]string(nil), f.options...),
+		Multi:     f.multi,
+		Skip:      f.skip,
+		NoteFunc:  f.noteFunc,
+		BadgeFunc: f.badgeFunc,
+	}
 }
 
 type parameterForm struct {

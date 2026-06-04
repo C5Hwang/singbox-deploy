@@ -12,6 +12,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/install"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
 type protocolPhase int
@@ -324,7 +325,7 @@ func (pm *protocolManager) startRealitySNIForm() {
 		return
 	}
 	pm.action = protocolActionRealitySNI
-	pm.startForm([]field{realitySNIEditField(pm.cfg.RealityServerName)})
+	pm.startForm([]field{fieldFromParameter(uiparams.RealitySNIEditField(pm.cfg.RealityServerName))})
 }
 
 func (pm *protocolManager) startForm(fields []field) {
@@ -334,6 +335,10 @@ func (pm *protocolManager) startForm(fields []field) {
 	if pm.parameterForm.advanceField() {
 		pm.phase = protocolPhaseConfirm
 	}
+}
+
+func validateProtocolParameterField(f field, val string, vals map[string]string) error {
+	return uiparams.ValidateProtocolParameterField(parameterFromField(f), val, vals)
 }
 
 func (pm *protocolManager) previousField() {
@@ -382,20 +387,20 @@ func (pm *protocolManager) installFieldsForAdded(target []config.Protocol) []fie
 	}
 	var fields []field
 	if needsRealityProtocol(target) && pm.cfg.RealityServerName == "" {
-		fields = append(fields, realitySNIField())
+		fields = append(fields, fieldFromParameter(uiparams.RealitySNIField()))
 	}
 	for _, proto := range config.AllProtocols {
 		if addedSet[proto] {
-			fields = append(fields, protocolInstallFieldsForProtocol(proto)...)
+			fields = append(fields, fieldsFromParameters(uiparams.ProtocolInstallFieldsForProtocol(proto))...)
 		}
 	}
 	return fields
 }
 
 func (pm *protocolManager) editFields(proto config.Protocol) []field {
-	fields := protocolEditFieldsForProtocol(pm.cfg, proto)
+	fields := fieldsFromParameters(uiparams.ProtocolEditFieldsForProtocol(pm.cfg, proto))
 	if (proto == config.ProtocolRealityVision || proto == config.ProtocolRealityGRPC) && pm.cfg.RealityServerName == "" {
-		fields = append([]field{realitySNIField()}, fields...)
+		fields = append([]field{fieldFromParameter(uiparams.RealitySNIField())}, fields...)
 	}
 	return fields
 }
@@ -447,7 +452,7 @@ func (pm *protocolManager) updateOptions() install.ProtocolUpdateOptions {
 	}
 	opts := install.ProtocolUpdateOptions{Selected: selected}
 	if v := strings.TrimSpace(pm.values["reality_sni"]); v != "" {
-		if host, err := normalizeRealityServerName(v); err == nil {
+		if host, err := uiparams.NormalizeRealityServerName(v); err == nil {
 			opts.RealityServerName = host
 		}
 	}
@@ -558,7 +563,7 @@ func (pm *protocolManager) editPickView() string {
 	}
 	b.WriteString("\n")
 	for i, proto := range pm.cfg.Enabled {
-		label := string(proto) + "  " + dimStyle.Render("port "+portDefault(installedPort(proto, pm.cfg.Ports)))
+		label := string(proto) + "  " + dimStyle.Render("port "+uiparams.PortDefault(installedPort(proto, pm.cfg.Ports)))
 		row := "  " + label
 		if i == pm.cursor {
 			row = selStyle.Render("> " + label)

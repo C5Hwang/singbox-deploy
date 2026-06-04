@@ -11,6 +11,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/install"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
 type subscriptionPhase int
@@ -279,14 +280,11 @@ func (sm *subscriptionManager) startForm(fields []field) {
 }
 
 func (sm *subscriptionManager) displayNameFields() []field {
-	return []field{{key: "display_name", label: "Account display name", def: sm.cfg.DisplayName, note: "Used only for generated node names shown by clients."}}
+	return []field{fieldFromParameter(uiparams.SubscriptionDisplayNameField(sm.cfg))}
 }
 
 func (sm *subscriptionManager) localFields() []field {
-	return []field{
-		{key: "subscribe_salt", label: "Subscription salt", def: sm.cfg.Salt, note: "Changing salt changes all subscription URLs. Token is md5(salt + newline)."},
-		{key: "subscribe_port", label: "Subscription/Nginx HTTPS port", def: strconv.Itoa(sm.cfg.SubscribePort), note: "Changing this rewrites Nginx config and restarts Nginx."},
-	}
+	return fieldsFromParameters(uiparams.SubscriptionLocalFields(sm.cfg))
 }
 
 func (sm *subscriptionManager) remoteFields() []field {
@@ -313,14 +311,6 @@ func (sm *subscriptionManager) deleteRemoteFields() []field {
 
 func validateSubscriptionField(f field, val string, _ map[string]string) error {
 	switch f.key {
-	case "display_name":
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("display name is required")
-		}
-	case "subscribe_salt", "remote_salt":
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("salt is required")
-		}
 	case "remote_domain":
 		if strings.TrimSpace(val) == "" {
 			return fmt.Errorf("remote domain is required")
@@ -329,13 +319,8 @@ func validateSubscriptionField(f field, val string, _ map[string]string) error {
 		if strings.TrimSpace(val) == "" {
 			return fmt.Errorf("select at least one remote entry to delete")
 		}
-	case "subscribe_port", "remote_subscribe_port":
-		port, err := strconv.Atoi(strings.TrimSpace(val))
-		if err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("port must be between 1 and 65535")
-		}
 	}
-	return nil
+	return uiparams.ValidateSubscriptionParameterValue(f.key, val)
 }
 
 func (sm *subscriptionManager) canApply() bool {

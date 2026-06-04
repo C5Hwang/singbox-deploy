@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
-	"net"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -21,6 +19,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
 // installPhase is the install flow's current screen.
@@ -53,10 +52,8 @@ func installFields() []field {
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
 	}
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
+	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)
 	fields = append(fields, []field{
-		{key: "display_name", label: "Node display name", def: "Node", note: "Used only in generated node names shown by clients."},
-		{key: "subscribe_port", label: "Subscription/Nginx HTTPS port", def: "2096", note: "Nginx listens on this public HTTPS port for /s subscriptions and the masquerade site."},
-		{key: "subscribe_salt", label: "Subscription salt (optional)", note: "Blank generates a random salt. The URL token is md5(salt + newline)."},
 		{key: "traffic_monitor", label: "Deploy traffic monitor", def: "yes", options: []string{"yes", "no"}, note: "Choose no to skip the traffic monitor service and /traffic/ UI."},
 		{key: "traffic_port", label: "Traffic monitor public HTTPS port", def: "2097", note: "Nginx listens on this public HTTPS port for /traffic.", skip: monitorDisabled},
 		{key: "monitor_port", label: "Traffic monitor local port", def: "19090", note: "The monitor listens on 127.0.0.1 and Nginx proxies /traffic to this port.", skip: monitorDisabled},
@@ -69,11 +66,11 @@ func installFields() []field {
 }
 
 func installProtocolParameterFields(missingProtocol func(config.Protocol) func(map[string]string) bool, noReality func(map[string]string) bool) []field {
-	fields := []field{realitySNIField()}
+	fields := []field{fieldFromParameter(uiparams.RealitySNIField())}
 	fields[0].skip = noReality
 	fields[0].badgeFunc = protocolParameterBadge(config.ProtocolRealityVision, config.ProtocolRealityGRPC)
 	for _, proto := range config.AllProtocols {
-		for _, field := range protocolInstallFieldsForProtocol(proto) {
+		for _, field := range fieldsFromParameters(uiparams.ProtocolInstallFieldsForProtocol(proto)) {
 			field.skip = missingProtocol(proto)
 			field.badgeFunc = protocolParameterBadge(proto)
 			fields = append(fields, field)
@@ -252,54 +249,6 @@ func protocolLabels(protocols []config.Protocol) string {
 	return protocolStrings(protocols)
 }
 
-func validUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		switch i {
-		case 8, 13, 18, 23:
-			if s[i] != '-' {
-				return false
-			}
-		default:
-			if !isHex(s[i]) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func isHex(b byte) bool {
-	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
-}
-
-func normalizeRealityServerName(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", fmt.Errorf("reality URL/SNI is required")
-	}
-	if !strings.Contains(raw, "://") && strings.Contains(raw, "/") {
-		raw = "https://" + raw
-	}
-	if u, err := url.Parse(raw); err == nil && u.Host != "" {
-		host := u.Hostname()
-		if host == "" {
-			return "", fmt.Errorf("reality URL/SNI host is required")
-		}
-		return host, nil
-	}
-	if host, _, err := net.SplitHostPort(raw); err == nil {
-		raw = host
-	}
-	raw = strings.Trim(raw, "[]")
-	if raw == "" || strings.ContainsAny(raw, "/?#") {
-		return "", fmt.Errorf("reality URL/SNI must be a URL or host")
-	}
-	return raw, nil
-}
-
 func (f *installForm) startForm() {
 	f.parameterForm.validate = f.validateField
 	f.parameterForm.startForm()
@@ -330,7 +279,7 @@ func (f *installForm) validateField(field field, val string, _ map[string]string
 			return fmt.Errorf("select at least one protocol")
 		}
 	}
-	if err := validateSharedParameterValue(field.key, val); err != nil {
+	if err := uiparams.ValidateSharedParameterValue(field.key, val); err != nil {
 		return err
 	}
 	switch {
@@ -642,7 +591,7 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 	}
 	realityServerName := ""
 	if hasProtocol(enabled, config.ProtocolRealityVision) || hasProtocol(enabled, config.ProtocolRealityGRPC) {
-		realityServerName, err = normalizeRealityServerName(vals["reality_sni"])
+		realityServerName, err = uiparams.NormalizeRealityServerName(vals["reality_sni"])
 		if err != nil {
 			return install.Config{}, err
 		}
