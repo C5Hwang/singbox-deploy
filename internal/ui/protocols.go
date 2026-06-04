@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
@@ -42,13 +41,6 @@ var (
 	updateProtocolsRun = install.UpdateProtocols
 )
 
-type protocolField struct {
-	key   string
-	label string
-	def   string
-	note  string
-}
-
 type protocolActionItem struct {
 	action protocolAction
 	label  string
@@ -68,12 +60,7 @@ type protocolManager struct {
 
 	cursor   int
 	selected map[string]bool
-	fieldErr string
-
-	fields  []protocolField
-	fieldIx int
-	values  map[string]string
-	input   textinput.Model
+	parameterForm
 
 	editProto config.Protocol
 
@@ -82,16 +69,11 @@ type protocolManager struct {
 }
 
 func newProtocolManager() *protocolManager {
-	input := textinput.New()
-	input.CharLimit = 256
-	input.Prompt = "› "
-
 	pm := &protocolManager{
-		phase:      protocolPhaseAction,
-		selected:   map[string]bool{},
-		values:     map[string]string{},
-		input:      input,
-		commandRun: newCommandRun(),
+		phase:         protocolPhaseAction,
+		selected:      map[string]bool{},
+		parameterForm: newParameterForm(nil),
+		commandRun:    newCommandRun(),
 	}
 	host, err := detectProtocolHost()
 	pm.host = host
@@ -109,6 +91,7 @@ func newProtocolManager() *protocolManager {
 func (pm *protocolManager) setSize(width, height int) {
 	pm.width = width
 	pm.height = height
+	pm.parameterForm.setSize(width, height)
 	pm.commandRun.setSize(width, height)
 }
 
@@ -183,10 +166,7 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		case "esc":
 			return nil, true
 		default:
-			pm.fieldErr = ""
-			var cmd tea.Cmd
-			pm.input, cmd = pm.input.Update(msg)
-			return cmd, false
+			return pm.updateInput(msg), false
 		}
 	case protocolPhaseConfirm:
 		switch msg.String() {
@@ -317,7 +297,7 @@ func (pm *protocolManager) prepareChangeConfirm() {
 	}
 	fields := pm.installFieldsForAdded(target)
 	if len(fields) == 0 {
-		pm.values = map[string]string{}
+		pm.parameterForm.setFields(nil)
 		pm.phase = protocolPhaseConfirm
 		return
 	}
@@ -344,108 +324,43 @@ func (pm *protocolManager) startRealitySNIForm() {
 		return
 	}
 	pm.action = protocolActionRealitySNI
-	pm.startForm([]protocolField{realitySNIEditField(pm.cfg.RealityServerName)})
+	pm.startForm([]field{realitySNIEditField(pm.cfg.RealityServerName)})
 }
 
-func (pm *protocolManager) startForm(fields []protocolField) {
-	pm.fields = fields
-	pm.values = map[string]string{}
-	pm.fieldIx = -1
+func (pm *protocolManager) startForm(fields []field) {
+	pm.parameterForm.setFields(fields)
+	pm.parameterForm.validate = validateProtocolParameterField
 	pm.phase = protocolPhaseForm
-	pm.advanceField()
-}
-
-func (pm *protocolManager) advanceField() {
-	pm.fieldIx++
-	if pm.fieldIx >= len(pm.fields) {
-		pm.fieldErr = ""
+	if pm.parameterForm.advanceField() {
 		pm.phase = protocolPhaseConfirm
-		return
 	}
-	f := pm.fields[pm.fieldIx]
-	pm.input.SetValue(pm.values[f.key])
-	pm.input.Placeholder = f.def
-	pm.input.Focus()
-	pm.fieldErr = ""
 }
 
 func (pm *protocolManager) previousField() {
-	if pm.fieldIx <= 0 {
-		if pm.action == protocolActionEdit {
-			pm.phase = protocolPhaseEditPick
-		} else {
-			pm.phase = protocolPhaseAction
-			if pm.action == protocolActionChange {
-				pm.phase = protocolPhaseSelect
-			}
-		}
+	if pm.parameterForm.previousField() {
 		return
 	}
-	pm.saveFieldDraft()
-	pm.fieldIx--
-	f := pm.fields[pm.fieldIx]
-	pm.input.SetValue(pm.values[f.key])
-	pm.input.Placeholder = f.def
-	pm.input.Focus()
-	pm.fieldErr = ""
-}
-
-func (pm *protocolManager) saveFieldDraft() {
-	if pm.fieldIx < 0 || pm.fieldIx >= len(pm.fields) {
+	if pm.action == protocolActionEdit {
+		pm.phase = protocolPhaseEditPick
 		return
 	}
-	f := pm.fields[pm.fieldIx]
-	pm.values[f.key] = pm.fieldValue(f)
+	pm.phase = protocolPhaseAction
+	if pm.action == protocolActionChange {
+		pm.phase = protocolPhaseSelect
+	}
 }
 
 func (pm *protocolManager) commitField() {
-	f := pm.fields[pm.fieldIx]
-	val := pm.fieldValue(f)
-	if err := validateProtocolField(f, val); err != nil {
-		pm.fieldErr = err.Error()
-		return
+	pm.parameterForm.validate = validateProtocolParameterField
+	if pm.parameterForm.commitField() {
+		pm.phase = protocolPhaseConfirm
 	}
-	pm.values[f.key] = val
-	pm.advanceField()
-}
-
-func (pm *protocolManager) fieldValue(f protocolField) string {
-	val := strings.TrimSpace(pm.input.Value())
-	if val == "" {
-		return f.def
-	}
-	return val
-}
-
-func validateProtocolField(f protocolField, val string) error {
-	switch {
-	case f.key == "reality_sni":
-		_, err := normalizeRealityServerName(val)
-		return err
-	case strings.HasSuffix(f.key, "_port"):
-		if val == "" {
-			return nil
-		}
-		port, err := strconv.Atoi(val)
-		if err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("port must be between 1 and 65535")
-		}
-	case strings.HasSuffix(f.key, "_uuid"):
-		if val != "" && !validUUID(val) {
-			return fmt.Errorf("uuid must be an RFC 4122 value")
-		}
-	}
-	return nil
 }
 
 func (pm *protocolManager) backFromConfirm() {
 	if len(pm.fields) > 0 {
 		pm.phase = protocolPhaseForm
-		pm.fieldIx = len(pm.fields) - 1
-		f := pm.fields[pm.fieldIx]
-		pm.input.SetValue(pm.values[f.key])
-		pm.input.Placeholder = f.def
-		pm.input.Focus()
+		pm.parameterForm.setField(len(pm.fields) - 1)
 		return
 	}
 	if pm.action == protocolActionEdit {
@@ -459,123 +374,30 @@ func (pm *protocolManager) backFromConfirm() {
 	pm.phase = protocolPhaseSelect
 }
 
-func (pm *protocolManager) installFieldsForAdded(target []config.Protocol) []protocolField {
+func (pm *protocolManager) installFieldsForAdded(target []config.Protocol) []field {
 	added, _ := protocolDiff(pm.cfg.Enabled, target)
 	addedSet := map[config.Protocol]bool{}
 	for _, p := range added {
 		addedSet[p] = true
 	}
-	var fields []protocolField
+	var fields []field
 	if needsRealityProtocol(target) && pm.cfg.RealityServerName == "" {
 		fields = append(fields, realitySNIField())
 	}
 	for _, proto := range config.AllProtocols {
 		if addedSet[proto] {
-			fields = append(fields, installFieldsForProtocol(proto)...)
+			fields = append(fields, protocolInstallFieldsForProtocol(proto)...)
 		}
 	}
 	return fields
 }
 
-func (pm *protocolManager) editFields(proto config.Protocol) []protocolField {
-	fields := editFieldsForProtocol(pm.cfg, proto)
+func (pm *protocolManager) editFields(proto config.Protocol) []field {
+	fields := protocolEditFieldsForProtocol(pm.cfg, proto)
 	if (proto == config.ProtocolRealityVision || proto == config.ProtocolRealityGRPC) && pm.cfg.RealityServerName == "" {
-		fields = append([]protocolField{realitySNIField()}, fields...)
+		fields = append([]field{realitySNIField()}, fields...)
 	}
 	return fields
-}
-
-func realitySNIField() protocolField {
-	return protocolField{
-		key:   "reality_sni",
-		label: "Reality URL/SNI (camouflage server)",
-		def:   "www.microsoft.com",
-		note:  "You may enter a URL or host; the host is used for the Reality handshake.",
-	}
-}
-
-func realitySNIEditField(current string) protocolField {
-	f := realitySNIField()
-	f.label = "Reality URL/SNI (camouflage server)"
-	f.def = current
-	if f.def == "" {
-		f.def = "www.microsoft.com"
-	}
-	f.note = "Updates the shared Reality handshake SNI for Reality Vision and Reality gRPC."
-	return f
-}
-
-func installFieldsForProtocol(proto config.Protocol) []protocolField {
-	switch proto {
-	case config.ProtocolRealityVision:
-		return []protocolField{
-			{key: "reality_vision_uuid", label: "Reality Vision UUID (optional)", note: "Blank generates a random UUID."},
-			{key: "reality_vision_port", label: "Reality Vision port (optional)", note: "Blank chooses a random listen port."},
-		}
-	case config.ProtocolRealityGRPC:
-		return []protocolField{
-			{key: "reality_grpc_uuid", label: "Reality gRPC UUID (optional)", note: "Blank generates a random UUID."},
-			{key: "reality_grpc_port", label: "Reality gRPC port (optional)", note: "Blank chooses a random listen port."},
-		}
-	case config.ProtocolHysteria2:
-		return []protocolField{
-			{key: "hysteria2_password", label: "Hysteria2 password (optional)", note: "Blank generates a random password."},
-			{key: "hysteria2_port", label: "Hysteria2 port (optional)", note: "Blank chooses a random listen port."},
-		}
-	case config.ProtocolTUIC:
-		return []protocolField{
-			{key: "tuic_uuid", label: "TUIC UUID (optional)", note: "Blank generates a random UUID."},
-			{key: "tuic_password", label: "TUIC password (optional)", note: "Blank generates a random password."},
-			{key: "tuic_port", label: "TUIC port (optional)", note: "Blank chooses a random listen port."},
-		}
-	case config.ProtocolAnyTLS:
-		return []protocolField{
-			{key: "anytls_password", label: "AnyTLS password (optional)", note: "Blank generates a random password."},
-			{key: "anytls_port", label: "AnyTLS port (optional)", note: "Blank chooses a random listen port."},
-		}
-	default:
-		return nil
-	}
-}
-
-func editFieldsForProtocol(cfg install.Config, proto config.Protocol) []protocolField {
-	switch proto {
-	case config.ProtocolRealityVision:
-		return []protocolField{
-			{key: "reality_vision_uuid", label: "Reality Vision UUID", def: cfg.Creds.RealityVisionUUID},
-			{key: "reality_vision_port", label: "Reality Vision port", def: portDefault(installedPort(proto, cfg.Ports))},
-		}
-	case config.ProtocolRealityGRPC:
-		return []protocolField{
-			{key: "reality_grpc_uuid", label: "Reality gRPC UUID", def: cfg.Creds.RealityGRPCUUID},
-			{key: "reality_grpc_port", label: "Reality gRPC port", def: portDefault(installedPort(proto, cfg.Ports))},
-		}
-	case config.ProtocolHysteria2:
-		return []protocolField{
-			{key: "hysteria2_password", label: "Hysteria2 password", def: cfg.Creds.HysteriaPassword},
-			{key: "hysteria2_port", label: "Hysteria2 port", def: portDefault(installedPort(proto, cfg.Ports))},
-		}
-	case config.ProtocolTUIC:
-		return []protocolField{
-			{key: "tuic_uuid", label: "TUIC UUID", def: cfg.Creds.TUICUUID},
-			{key: "tuic_password", label: "TUIC password", def: cfg.Creds.TUICPassword},
-			{key: "tuic_port", label: "TUIC port", def: portDefault(installedPort(proto, cfg.Ports))},
-		}
-	case config.ProtocolAnyTLS:
-		return []protocolField{
-			{key: "anytls_password", label: "AnyTLS password", def: cfg.Creds.AnyTLSPassword},
-			{key: "anytls_port", label: "AnyTLS port", def: portDefault(installedPort(proto, cfg.Ports))},
-		}
-	default:
-		return nil
-	}
-}
-
-func portDefault(port int) string {
-	if port <= 0 {
-		return ""
-	}
-	return strconv.Itoa(port)
 }
 
 func (pm *protocolManager) canApply() bool {
@@ -748,28 +570,11 @@ func (pm *protocolManager) editPickView() string {
 }
 
 func (pm *protocolManager) formView() string {
-	f := pm.fields[pm.fieldIx]
-	var b strings.Builder
 	title := "Protocol Management · Parameters"
 	if pm.action == protocolActionEdit {
 		title = "Protocol Management · Edit " + string(pm.editProto)
 	}
-	b.WriteString(flowTitle.Render(title) + "\n\n")
-	b.WriteString(f.label + "\n")
-	if f.note != "" {
-		for _, line := range wrapFieldNote(f.note, pm.width) {
-			b.WriteString(dimStyle.Render(line) + "\n")
-		}
-	}
-	if f.def != "" {
-		b.WriteString(dimStyle.Render("default: "+f.def) + "\n")
-	}
-	if pm.fieldErr != "" {
-		b.WriteString(flowErr.Render(pm.fieldErr) + "\n")
-	}
-	b.WriteString(pm.input.View() + "\n\n")
-	b.WriteString(dimStyle.Render("enter continue · shift+tab back · esc cancel"))
-	return b.String()
+	return pm.parameterForm.View(title)
 }
 
 func (pm *protocolManager) protocolOptionsView() string {

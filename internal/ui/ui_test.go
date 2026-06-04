@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -17,23 +16,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
-
-func TestProgressPercent(t *testing.T) {
-	p := Progress{Current: 4, Total: 10, Label: "Install sing-box"}
-	if p.Percent() != 0.4 {
-		t.Fatalf("Percent = %v", p.Percent())
-	}
-	if p.Title() != "4/10 Install sing-box" {
-		t.Fatalf("Title = %q", p.Title())
-	}
-}
-
-func TestProgressZeroTotal(t *testing.T) {
-	p := Progress{Current: 0, Total: 0, Label: "Init"}
-	if p.Percent() != 0 {
-		t.Fatalf("Percent = %v", p.Percent())
-	}
-}
 
 func TestNarrowLayoutMode(t *testing.T) {
 	m := NewModel()
@@ -44,16 +26,6 @@ func TestNarrowLayoutMode(t *testing.T) {
 	m.SetSize(120, 30)
 	if m.LayoutMode() != LayoutWide {
 		t.Fatalf("mode = %v", m.LayoutMode())
-	}
-}
-
-func TestInstallStepsLabeled(t *testing.T) {
-	steps := InstallSteps()
-	if len(steps) == 0 {
-		t.Fatalf("expected install steps")
-	}
-	if steps[0].Label == "" {
-		t.Fatalf("first step has no label")
 	}
 }
 
@@ -124,7 +96,7 @@ func supportedTestHost() system.Host {
 func confirmInstallFlowForTest() *installFlow {
 	return &installFlow{
 		phase: phaseConfirm,
-		form: installForm{values: map[string]string{
+		form: installFormWithValuesForTest(map[string]string{
 			"domain":                 "example.com",
 			"challenge":              "http-01",
 			"protocols":              defaultProtocolValue(),
@@ -134,13 +106,26 @@ func confirmInstallFlowForTest() *installFlow {
 			"traffic_in_limit_gb":    "0",
 			"traffic_out_limit_gb":   "0",
 			"traffic_total_limit_gb": "0",
-		}},
+		}),
 		host: supportedTestHost(),
 	}
 }
 
+func installFormForTest() installForm {
+	w := newInstallForm()
+	w.validateDomain = nil
+	return w
+}
+
+func installFormWithValuesForTest(values map[string]string) installForm {
+	w := installFormForTest()
+	w.values = values
+	return w
+}
+
 func TestInstallFieldShowsUsageNote(t *testing.T) {
-	w := &installForm{fields: installFields(), values: map[string]string{}, input: textinput.New(), width: 80}
+	w := installFormForTest()
+	w.width = 80
 	w.startForm()
 	view := w.View()
 	if !strings.Contains(view, "Used for certificate issuance") {
@@ -385,23 +370,6 @@ func withProtocolManagerDeps(t *testing.T, layout paths.Layout) {
 	detectProtocolHost = func() (system.Host, error) { return supportedTestHost(), nil }
 }
 
-func TestRunningStatusLevelClassifiesColors(t *testing.T) {
-	for _, tc := range []struct {
-		value string
-		want  statusLevel
-	}{
-		{value: "running", want: statusLevelRunning},
-		{value: "active", want: statusLevelRunning},
-		{value: "not running", want: statusLevelStopped},
-		{value: "failed", want: statusLevelStopped},
-		{value: "unknown", want: statusLevelUnknown},
-	} {
-		if got := runningStatusLevel(tc.value); got != tc.want {
-			t.Fatalf("runningStatusLevel(%q) = %v, want %v", tc.value, got, tc.want)
-		}
-	}
-}
-
 func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
 	w := &installFlow{phase: phaseRunning, run: commandRun{ch: make(chan runMsg, 1), bar: progressBarForTest()}}
 	cmd := w.handleRun(runMsg{done: true})
@@ -535,7 +503,7 @@ func progressBarForTest() progress.Model {
 }
 
 func TestInstallFormCanGoBackToPreviousField(t *testing.T) {
-	w := &installForm{fields: installFields(), values: map[string]string{}, input: textinput.New()}
+	w := installFormForTest()
 	w.startForm()
 	w.input.SetValue("example.com")
 	w.commitField()
@@ -550,16 +518,12 @@ func TestInstallFormCanGoBackToPreviousField(t *testing.T) {
 }
 
 func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
-	w := &installForm{
-		fields: installFields(),
-		values: map[string]string{},
-		input:  textinput.New(),
-		validateDomain: func(_ context.Context, domain string) error {
-			if domain != "bad.example" {
-				t.Fatalf("validator domain = %q", domain)
-			}
-			return fmt.Errorf("domain resolves elsewhere")
-		},
+	w := installFormForTest()
+	w.validateDomain = func(_ context.Context, domain string) error {
+		if domain != "bad.example" {
+			t.Fatalf("validator domain = %q", domain)
+		}
+		return fmt.Errorf("domain resolves elsewhere")
 	}
 	w.startForm()
 	w.input.SetValue("bad.example")
@@ -577,7 +541,7 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 }
 
 func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
-	w := &installForm{fields: installFields(), values: map[string]string{}, input: textinput.New()}
+	w := installFormForTest()
 	w.startForm()
 	w.input.SetValue("example.com")
 	w.commitField()
@@ -610,12 +574,9 @@ func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
 		{provider: "cloudflare", want: "Cloudflare uses an API token.", link: "https://dash.cloudflare.com/profile/api-tokens", avoid: "Aliyun uses"},
 		{provider: "aliyun", want: "Aliyun uses accessKey:secretKey", link: "https://ram.console.aliyun.com/manage/ak", avoid: "Cloudflare uses"},
 	} {
-		w := &installForm{
-			fields: fields,
-			values: map[string]string{"dns_provider": tc.provider},
-			input:  textinput.New(),
-			width:  100,
-		}
+		w := installFormWithValuesForTest(map[string]string{"dns_provider": tc.provider})
+		w.fields = fields
+		w.width = 100
 		w.setField(fieldIndex(t, fields, "dns_credential"))
 		view := w.View()
 		if !strings.Contains(view, tc.want) || !strings.Contains(view, tc.link) {
@@ -631,7 +592,7 @@ func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
 }
 
 func TestProtocolMultiSelectRequiresAtLeastOne(t *testing.T) {
-	w := &installForm{fields: installFields(), values: map[string]string{}, input: textinput.New()}
+	w := installFormForTest()
 	w.setField(fieldIndex(t, w.fields, "protocols"))
 	for _, opt := range w.fields[w.fieldIx].options {
 		w.optionIx = optionIndex(w.fields[w.fieldIx].options, opt)
@@ -676,12 +637,8 @@ func TestTrafficMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 }
 
 func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
-	w := &installForm{
-		fields: installFields(),
-		values: map[string]string{"protocols": string(config.ProtocolRealityVision)},
-		input:  textinput.New(),
-		width:  80,
-	}
+	w := installFormWithValuesForTest(map[string]string{"protocols": string(config.ProtocolRealityVision)})
+	w.width = 80
 	w.setField(fieldIndex(t, w.fields, "reality_vision_uuid"))
 	view := w.View()
 	if !strings.Contains(view, "Setting parameters for: reality-vision") {
@@ -695,9 +652,6 @@ func TestSummaryHighlightsRandomValues(t *testing.T) {
 	highlightedRandom := flowRandom.Render("random")
 	if !strings.Contains(summary, highlightedRandom) {
 		t.Fatalf("summary should include highlighted random value:\n%s", summary)
-	}
-	if got := subscriptionSaltSummary(""); got != highlightedRandom {
-		t.Fatalf("blank salt summary = %q, want highlighted random %q", got, highlightedRandom)
 	}
 }
 
@@ -738,7 +692,7 @@ func TestProtocolLabelsAddSpacesForDisplay(t *testing.T) {
 
 func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	w := &installFlow{
-		form: installForm{values: map[string]string{
+		form: installFormWithValuesForTest(map[string]string{
 			"domain":                 "example.com",
 			"challenge":              "http-01",
 			"protocols":              "reality-vision,tuic",
@@ -758,7 +712,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 			"traffic_out_limit_gb":   "50",
 			"traffic_total_limit_gb": "100",
 			"reset_day":              "1",
-		}},
+		}),
 		host: supportedTestHost(),
 	}
 	cfg, err := w.buildConfig()
@@ -800,7 +754,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 
 func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 	w := &installFlow{
-		form: installForm{values: map[string]string{
+		form: installFormWithValuesForTest(map[string]string{
 			"domain":          "example.com",
 			"challenge":       "http-01",
 			"protocols":       "tuic",
@@ -808,7 +762,7 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 			"display_name":    "Node",
 			"subscribe_port":  "24444",
 			"traffic_monitor": "no",
-		}},
+		}),
 		host: supportedTestHost(),
 	}
 	_, err := w.buildConfig()
@@ -835,7 +789,7 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 
 func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 	w := &installFlow{
-		form: installForm{values: map[string]string{
+		form: installFormWithValuesForTest(map[string]string{
 			"domain":                 "example.com",
 			"challenge":              "http-01",
 			"protocols":              "hysteria2,anytls",
@@ -845,7 +799,7 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 			"traffic_out_limit_gb":   "0",
 			"traffic_total_limit_gb": "0",
 			"reset_day":              "1",
-		}},
+		}),
 		host: supportedTestHost(),
 	}
 	cfg, err := w.buildConfig()
@@ -878,7 +832,7 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 
 func TestBuildConfigDisablesTrafficMonitor(t *testing.T) {
 	w := &installFlow{
-		form: installForm{values: map[string]string{
+		form: installFormWithValuesForTest(map[string]string{
 			"domain":                 "example.com",
 			"challenge":              "http-01",
 			"protocols":              "tuic",
@@ -888,7 +842,7 @@ func TestBuildConfigDisablesTrafficMonitor(t *testing.T) {
 			"traffic_in_limit_gb":    "40",
 			"traffic_out_limit_gb":   "50",
 			"traffic_total_limit_gb": "100",
-		}},
+		}),
 		host: supportedTestHost(),
 	}
 	cfg, err := w.buildConfig()

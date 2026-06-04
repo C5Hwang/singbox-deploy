@@ -18,14 +18,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
-type statusLevel int
-
-const (
-	statusLevelUnknown statusLevel = iota
-	statusLevelRunning
-	statusLevelStopped
-)
-
 var (
 	defaultStatusLayout = paths.DefaultLayout
 	detectStatusHost    = system.DetectHost
@@ -240,15 +232,4 @@ func byteSize(n uint64) string {
 		return fmt.Sprintf("%d MB", n/mib)
 	}
 	return fmt.Sprintf("%d bytes", n)
-}
-
-func runningStatusLevel(value string) statusLevel {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "running", "active", "ok", "healthy":
-		return statusLevelRunning
-	case "not running", "inactive", "failed", "stopped", "dead":
-		return statusLevelStopped
-	default:
-		return statusLevelUnknown
-	}
 }

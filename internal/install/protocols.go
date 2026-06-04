@@ -323,17 +323,6 @@ func protocolKnown(proto config.Protocol) bool {
 	return false
 }
 
-func addedProtocols(old, selected []config.Protocol) []config.Protocol {
-	oldSet := selectedProtocolSet(old)
-	var added []config.Protocol
-	for _, p := range canonicalProtocols(selected) {
-		if !oldSet[p] {
-			added = append(added, p)
-		}
-	}
-	return added
-}
-
 func applyProtocolOverrides(cfg *Config, opts ProtocolUpdateOptions) {
 	for _, p := range cfg.Enabled {
 		switch p {

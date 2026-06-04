@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -35,19 +34,6 @@ const (
 	phaseDone
 )
 
-// field is one collected input.
-type field struct {
-	key       string
-	label     string
-	def       string
-	note      string
-	options   []string
-	multi     bool
-	paramsFor []config.Protocol
-	// skip reports whether this field is hidden given the values so far.
-	skip func(vals map[string]string) bool
-}
-
 // installFields defines the install form's input sequence.
 func installFields() []field {
 	isDNS := func(v map[string]string) bool { return v["challenge"] != "dns-01" }
@@ -58,25 +44,16 @@ func installFields() []field {
 		return !protocolSelected(v, config.ProtocolRealityVision) && !protocolSelected(v, config.ProtocolRealityGRPC)
 	}
 	monitorDisabled := func(v map[string]string) bool { return !trafficMonitorEnabled(v) }
-	return []field{
+	fields := []field{
 		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
 		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
 		{key: "challenge", label: "ACME challenge", def: "http-01", options: []string{"http-01", "dns-01"}, note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
 		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
-		{key: "dns_credential", label: "DNS API credential", skip: isDNS},
+		{key: "dns_credential", label: "DNS API credential", skip: isDNS, noteFunc: dnsCredentialNote},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
-		{key: "reality_sni", label: "Reality URL/SNI (camouflage server)", def: "www.microsoft.com", note: "You may enter a URL or host; the host is used for the Reality handshake.", paramsFor: []config.Protocol{config.ProtocolRealityVision, config.ProtocolRealityGRPC}, skip: noReality},
-		{key: "reality_vision_uuid", label: "Reality Vision UUID (optional)", note: "Blank generates a random UUID.", paramsFor: []config.Protocol{config.ProtocolRealityVision}, skip: missingProtocol(config.ProtocolRealityVision)},
-		{key: "reality_vision_port", label: "Reality Vision port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolRealityVision}, skip: missingProtocol(config.ProtocolRealityVision)},
-		{key: "reality_grpc_uuid", label: "Reality gRPC UUID (optional)", note: "Blank generates a random UUID.", paramsFor: []config.Protocol{config.ProtocolRealityGRPC}, skip: missingProtocol(config.ProtocolRealityGRPC)},
-		{key: "reality_grpc_port", label: "Reality gRPC port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolRealityGRPC}, skip: missingProtocol(config.ProtocolRealityGRPC)},
-		{key: "hysteria2_password", label: "Hysteria2 password (optional)", note: "Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolHysteria2}, skip: missingProtocol(config.ProtocolHysteria2)},
-		{key: "hysteria2_port", label: "Hysteria2 port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolHysteria2}, skip: missingProtocol(config.ProtocolHysteria2)},
-		{key: "tuic_uuid", label: "TUIC UUID (optional)", note: "Blank generates a random UUID.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
-		{key: "tuic_password", label: "TUIC password (optional)", note: "Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
-		{key: "tuic_port", label: "TUIC port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolTUIC}, skip: missingProtocol(config.ProtocolTUIC)},
-		{key: "anytls_password", label: "AnyTLS password (optional)", note: "Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
-		{key: "anytls_port", label: "AnyTLS port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
+	}
+	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
+	fields = append(fields, []field{
 		{key: "display_name", label: "Node display name", def: "Node", note: "Used only in generated node names shown by clients."},
 		{key: "subscribe_port", label: "Subscription/Nginx HTTPS port", def: "2096", note: "Nginx listens on this public HTTPS port for /s subscriptions and the masquerade site."},
 		{key: "subscribe_salt", label: "Subscription salt (optional)", note: "Blank generates a random salt. The URL token is md5(salt + newline)."},
@@ -87,7 +64,44 @@ func installFields() []field {
 		{key: "traffic_out_limit_gb", label: "Monthly outbound traffic limit in GB (0 = unlimited)", def: "0", note: "Outbound uses the monitored interface TX counter.", skip: monitorDisabled},
 		{key: "traffic_total_limit_gb", label: "Monthly total traffic limit in GB (0 = unlimited)", def: "0", note: "Total traffic is inbound + outbound.", skip: monitorDisabled},
 		{key: "reset_day", label: "Monthly reset day (1-28)", def: "1", note: "Day of month when the traffic quota cycle resets and service can be restored.", skip: monitorDisabled},
+	}...)
+	return fields
+}
+
+func installProtocolParameterFields(missingProtocol func(config.Protocol) func(map[string]string) bool, noReality func(map[string]string) bool) []field {
+	fields := []field{realitySNIField()}
+	fields[0].skip = noReality
+	fields[0].badgeFunc = protocolParameterBadge(config.ProtocolRealityVision, config.ProtocolRealityGRPC)
+	for _, proto := range config.AllProtocols {
+		for _, field := range protocolInstallFieldsForProtocol(proto) {
+			field.skip = missingProtocol(proto)
+			field.badgeFunc = protocolParameterBadge(proto)
+			fields = append(fields, field)
+		}
 	}
+	return fields
+}
+
+func protocolParameterBadge(protocols ...config.Protocol) func(map[string]string) string {
+	return func(vals map[string]string) string {
+		selected := make([]config.Protocol, 0, len(protocols))
+		for _, p := range protocols {
+			if protocolSelected(vals, p) {
+				selected = append(selected, p)
+			}
+		}
+		if len(selected) == 0 {
+			selected = protocols
+		}
+		return "Setting parameters for: " + protocolLabels(selected)
+	}
+}
+
+func dnsCredentialNote(vals map[string]string) string {
+	if vals["dns_provider"] == "aliyun" {
+		return "Aliyun uses accessKey:secretKey (AccessKey ID:AccessKey Secret).\nYou can apply at https://ram.console.aliyun.com/manage/ak"
+	}
+	return "Cloudflare uses an API token.\nYou can apply at https://dash.cloudflare.com/profile/api-tokens"
 }
 
 // runMsg carries an orchestrator progress event, a streamed log line, or
@@ -102,15 +116,7 @@ type runMsg struct {
 
 // installForm owns only install input collection and confirmation rendering.
 type installForm struct {
-	width          int
-	height         int
-	fields         []field
-	fieldIx        int
-	values         map[string]string
-	input          textinput.Model
-	optionIx       int
-	optionSelected map[string]bool
-	fieldErr       string
+	parameterForm
 
 	validateDomain func(context.Context, string) error
 	confirmScroll  int
@@ -129,13 +135,8 @@ type installFlow struct {
 }
 
 func newInstallForm() installForm {
-	ti := textinput.New()
-	ti.CharLimit = 256
-	ti.Prompt = "› "
 	return installForm{
-		fields:         installFields(),
-		values:         map[string]string{},
-		input:          ti,
+		parameterForm:  newParameterForm(installFields()),
 		validateDomain: validateDomainResolvesToCurrentIP,
 	}
 }
@@ -186,41 +187,6 @@ func (f *installForm) setSize(width, height int) {
 	f.height = height
 }
 
-func (f *installForm) setField(index int) {
-	field := f.fields[index]
-	f.fieldIx = index
-	f.fieldErr = ""
-	if len(field.options) > 0 {
-		value := f.values[field.key]
-		if value == "" {
-			value = field.def
-		}
-		if field.multi {
-			f.optionSelected = selectedOptions(value)
-			f.optionIx = 0
-			f.input.Blur()
-			return
-		}
-		f.optionSelected = nil
-		f.optionIx = optionIndex(field.options, value)
-		f.input.Blur()
-		return
-	}
-	f.optionSelected = nil
-	f.input.SetValue(f.values[field.key])
-	f.input.Placeholder = field.def
-	f.input.Focus()
-}
-
-func optionIndex(options []string, value string) int {
-	for i, opt := range options {
-		if opt == value {
-			return i
-		}
-	}
-	return 0
-}
-
 func protocolOptions() []string {
 	options := make([]string, 0, len(config.AllProtocols))
 	for _, p := range config.AllProtocols {
@@ -241,27 +207,6 @@ func protocolSelectionValue(protocols []config.Protocol) string {
 		parts = append(parts, string(p))
 	}
 	return strings.Join(parts, ",")
-}
-
-func selectedOptions(value string) map[string]bool {
-	selected := map[string]bool{}
-	for _, part := range strings.Split(value, ",") {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			selected[part] = true
-		}
-	}
-	return selected
-}
-
-func selectedOptionsValue(options []string, selected map[string]bool) string {
-	values := make([]string, 0, len(options))
-	for _, opt := range options {
-		if selected[opt] {
-			values = append(values, opt)
-		}
-	}
-	return strings.Join(values, ",")
 }
 
 func protocolsFromValue(value string) []config.Protocol {
@@ -355,90 +300,24 @@ func normalizeRealityServerName(raw string) (string, error) {
 	return raw, nil
 }
 
-// startForm activates the first visible field.
 func (f *installForm) startForm() {
-	f.fieldIx = -1
-	f.advanceField()
-}
-
-// advanceField moves to the next visible field, or to confirm at the end.
-func (f *installForm) advanceField() bool {
-	for i := f.fieldIx + 1; i < len(f.fields); i++ {
-		field := f.fields[i]
-		if field.skip != nil && field.skip(f.values) {
-			continue
-		}
-		f.setField(i)
-		return false
-	}
-	f.confirmScroll = 0
-	return true
-}
-
-func (f *installForm) previousField() {
-	if f.fieldIx < 0 {
-		return
-	}
-	f.saveFieldDraft()
-	for i := f.fieldIx - 1; i >= 0; i-- {
-		field := f.fields[i]
-		if field.skip != nil && field.skip(f.values) {
-			continue
-		}
-		f.setField(i)
-		return
-	}
-}
-
-func (f *installForm) backToLastField() {
-	for i := len(f.fields) - 1; i >= 0; i-- {
-		field := f.fields[i]
-		if field.skip != nil && field.skip(f.values) {
-			continue
-		}
-		f.setField(i)
-		return
-	}
-}
-
-func (f *installForm) saveFieldDraft() {
-	if f.fieldIx < 0 || f.fieldIx >= len(f.fields) {
-		return
-	}
-	field := f.fields[f.fieldIx]
-	f.values[field.key] = f.fieldValue(field)
+	f.parameterForm.validate = f.validateField
+	f.parameterForm.startForm()
 }
 
 // commitField stores the current field value (or its default) and advances.
 func (f *installForm) commitField() bool {
-	field := f.fields[f.fieldIx]
-	val := f.fieldValue(field)
-	if err := f.validateField(field, val); err != nil {
-		f.fieldErr = err.Error()
-		return false
+	f.parameterForm.validate = f.validateField
+	done := f.parameterForm.commitField()
+	if done {
+		f.confirmScroll = 0
 	}
-	f.fieldErr = ""
-	f.values[field.key] = val
-	return f.advanceField()
+	return done
 }
 
-func (f *installForm) fieldValue(field field) string {
-	if len(field.options) > 0 {
-		if field.multi {
-			return selectedOptionsValue(field.options, f.optionSelected)
-		}
-		return field.options[min(max(0, f.optionIx), len(field.options)-1)]
-	}
-	val := strings.TrimSpace(f.input.Value())
-	if val == "" {
-		return field.def
-	}
-	return val
-}
-
-func (f *installForm) validateField(field field, val string) error {
-	switch {
-	case field.key == "domain":
+func (f *installForm) validateField(field field, val string, _ map[string]string) error {
+	switch field.key {
+	case "domain":
 		if val == "" {
 			return fmt.Errorf("domain is required")
 		}
@@ -446,26 +325,15 @@ func (f *installForm) validateField(field field, val string) error {
 			return nil
 		}
 		return f.validateDomain(context.Background(), val)
-	case field.key == "protocols":
+	case "protocols":
 		if len(protocolsFromValue(val)) == 0 {
 			return fmt.Errorf("select at least one protocol")
 		}
-	case field.key == "reality_sni":
-		if _, err := normalizeRealityServerName(val); err != nil {
-			return err
-		}
-	case strings.HasSuffix(field.key, "_port"):
-		if val == "" {
-			return nil
-		}
-		port, err := strconv.Atoi(val)
-		if err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("port must be between 1 and 65535")
-		}
-	case strings.HasSuffix(field.key, "_uuid"):
-		if val != "" && !validUUID(val) {
-			return fmt.Errorf("uuid must be an RFC 4122 value")
-		}
+	}
+	if err := validateSharedParameterValue(field.key, val); err != nil {
+		return err
+	}
+	switch {
 	case strings.HasPrefix(field.key, "traffic_") && strings.HasSuffix(field.key, "_limit_gb"):
 		if _, err := strconv.ParseUint(val, 10, 64); err != nil {
 			return fmt.Errorf("traffic limit must be a non-negative integer")
@@ -493,9 +361,7 @@ func (f *installFlow) Update(msg tea.Msg) (tea.Cmd, bool) {
 		return f.handleMouse(msg), false
 	}
 	if f.phase == phaseForm && !f.form.currentFieldHasOptions() {
-		var cmd tea.Cmd
-		f.form.input, cmd = f.form.input.Update(msg)
-		return cmd, false
+		return f.form.updateInput(msg), false
 	}
 	return nil, false
 }
@@ -653,56 +519,6 @@ func (f *installFlow) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	return nil
-}
-
-func (w *installForm) updateInput(msg tea.Msg) tea.Cmd {
-	w.fieldErr = ""
-	var cmd tea.Cmd
-	w.input, cmd = w.input.Update(msg)
-	return cmd
-}
-
-func (w *installForm) currentFieldHasOptions() bool {
-	if w.fieldIx < 0 || w.fieldIx >= len(w.fields) {
-		return false
-	}
-	return len(w.fields[w.fieldIx].options) > 0
-}
-
-func (w *installForm) currentFieldIsMulti() bool {
-	if w.fieldIx < 0 || w.fieldIx >= len(w.fields) {
-		return false
-	}
-	return w.fields[w.fieldIx].multi
-}
-
-func (w *installForm) moveOption(delta int) {
-	if !w.currentFieldHasOptions() {
-		return
-	}
-	options := w.fields[w.fieldIx].options
-	w.optionIx = (w.optionIx + delta + len(options)) % len(options)
-	w.fieldErr = ""
-}
-
-func (w *installForm) toggleOption() {
-	if !w.currentFieldIsMulti() {
-		return
-	}
-	options := w.fields[w.fieldIx].options
-	if len(options) == 0 {
-		return
-	}
-	if w.optionSelected == nil {
-		w.optionSelected = map[string]bool{}
-	}
-	opt := options[min(max(0, w.optionIx), len(options)-1)]
-	if w.optionSelected[opt] {
-		delete(w.optionSelected, opt)
-	} else {
-		w.optionSelected[opt] = true
-	}
-	w.fieldErr = ""
 }
 
 func (w *installFlow) handleRun(msg runMsg) tea.Cmd {
@@ -1015,32 +831,6 @@ var (
 	flowRandom = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 )
 
-func (w *installForm) parameterProtocolLabel(f field) string {
-	if len(f.paramsFor) == 0 {
-		return ""
-	}
-	selected := make([]config.Protocol, 0, len(f.paramsFor))
-	for _, p := range f.paramsFor {
-		if protocolSelected(w.values, p) {
-			selected = append(selected, p)
-		}
-	}
-	if len(selected) == 0 {
-		selected = f.paramsFor
-	}
-	return protocolLabels(selected)
-}
-
-func (w *installForm) fieldNote(f field) string {
-	if f.key != "dns_credential" {
-		return f.note
-	}
-	if w.values["dns_provider"] == "aliyun" {
-		return "Aliyun uses accessKey:secretKey (AccessKey ID:AccessKey Secret).\nYou can apply at https://ram.console.aliyun.com/manage/ak"
-	}
-	return "Cloudflare uses an API token.\nYou can apply at https://dash.cloudflare.com/profile/api-tokens"
-}
-
 // View renders the install flow.
 func (w *installFlow) View() string {
 	switch w.phase {
@@ -1069,36 +859,7 @@ func (w *installFlow) View() string {
 }
 
 func (w *installForm) View() string {
-	f := w.fields[w.fieldIx]
-	var b strings.Builder
-	b.WriteString(flowTitle.Render("Install · Configuration") + "\n\n")
-	b.WriteString(f.label + "\n")
-	if label := w.parameterProtocolLabel(f); label != "" {
-		b.WriteString(flowOK.Render("Setting parameters for: "+label) + "\n")
-	}
-	if note := w.fieldNote(f); note != "" {
-		for _, line := range wrapFieldNote(note, w.width) {
-			b.WriteString(dimStyle.Render(line) + "\n")
-		}
-	}
-	if f.def != "" {
-		b.WriteString(dimStyle.Render("default: "+f.def) + "\n")
-	}
-	if w.fieldErr != "" {
-		b.WriteString(flowErr.Render(w.fieldErr) + "\n")
-	}
-	if len(f.options) > 0 {
-		b.WriteString(w.optionsView(f) + "\n\n")
-		if f.multi {
-			b.WriteString(dimStyle.Render("space toggle · enter to continue · ↑/↓ or ←/→ move · shift+tab/ctrl+b back · esc to cancel"))
-			return b.String()
-		}
-		b.WriteString(dimStyle.Render("enter to continue · ↑/↓ or ←/→ select · shift+tab/ctrl+b back · esc to cancel"))
-		return b.String()
-	}
-	b.WriteString(w.input.View() + "\n\n")
-	b.WriteString(dimStyle.Render("enter to continue · shift+tab/ctrl+b back · esc to cancel"))
-	return b.String()
+	return w.parameterForm.View("Install · Configuration")
 }
 
 func (w *installFlow) footerHints() []string {
@@ -1181,65 +942,12 @@ func (w *installForm) confirmWrapWidth() int {
 	return max(1, w.width)
 }
 
-func (w *installForm) optionsView(f field) string {
-	var rows []string
-	for i, opt := range f.options {
-		label := opt
-		if f.multi {
-			mark := "[ ]"
-			if w.optionSelected[opt] {
-				mark = "[x]"
-			}
-			label = mark + " " + opt
-		}
-		row := "  " + label
-		if i == w.optionIx {
-			row = selStyle.Render("> " + label)
-		}
-		rows = append(rows, row)
-	}
-	return strings.Join(rows, "\n")
-}
-
 func (w *installFlow) runningView() string {
 	return commandRunningView(w, "Install · Running")
 }
 
 func (w *installFlow) failedView() string {
 	return commandFailedView(w, "Install failed")
-}
-
-func wrapFieldNote(s string, width int) []string {
-	if width <= 0 {
-		width = 80
-	}
-	wrapWidth := max(24, width-4)
-	var lines []string
-	for _, part := range strings.Split(s, "\n") {
-		lines = append(lines, wrapWords(part, wrapWidth)...)
-	}
-	return lines
-}
-
-func wrapWords(s string, width int) []string {
-	words := strings.Fields(s)
-	if len(words) == 0 {
-		return nil
-	}
-	if width <= 0 {
-		return []string{s}
-	}
-	var lines []string
-	line := words[0]
-	for _, word := range words[1:] {
-		if len(line)+1+len(word) > width {
-			lines = append(lines, line)
-			line = word
-			continue
-		}
-		line += " " + word
-	}
-	return append(lines, line)
 }
 
 func (w *installForm) summary(host system.Host) string {
@@ -1285,10 +993,6 @@ func summaryValueOrRandom(value string) string {
 		return "random"
 	}
 	return value
-}
-
-func subscriptionSaltSummary(value string) string {
-	return highlightSummaryText(summaryValueOrRandom(value))
 }
 
 func (w *installFlow) doneSummary() string {
