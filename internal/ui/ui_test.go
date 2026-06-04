@@ -69,24 +69,24 @@ func TestViewUsesInternalPanels(t *testing.T) {
 func TestInstallViewKeepsMenuVisible(t *testing.T) {
 	m := NewModel()
 	m.SetSize(120, 40)
-	m.wizard = &wizard{phase: phasePreflight, hosts: "ready", host: supportedTestHost()}
+	m.install = &installFlow{phase: phasePreflight, hosts: "ready", host: supportedTestHost()}
 	view := m.View()
 	if !strings.Contains(view, "Menu") {
-		t.Fatalf("install view should keep menu and wizard visible:\n%s", view)
+		t.Fatalf("install view should keep menu and install flow visible:\n%s", view)
 	}
 }
 
 func TestWideInstallContentUsesAvailableHeightAndMenuAdapts(t *testing.T) {
 	m := NewModel()
 	m.SetSize(160, 60)
-	w := &wizard{phase: phaseRunning, bar: progressBarForTest()}
-	m.wizard = w
+	w := &installFlow{phase: phaseRunning, run: commandRun{bar: progressBarForTest()}}
+	m.install = w
 	view := m.View()
 	if got := lipgloss.Height(view); got != 60 {
 		t.Fatalf("view height = %d, want 60:\n%s", got, view)
 	}
-	if want := 60 - 1 - panelStyle.GetVerticalFrameSize(); w.height != want {
-		t.Fatalf("wizard height = %d, want available content height %d", w.height, want)
+	if want := 60 - 1 - panelStyle.GetVerticalFrameSize(); w.form.height != want {
+		t.Fatalf("install flow height = %d, want available content height %d", w.form.height, want)
 	}
 
 	body := m.bodyView(160, 59)
@@ -106,7 +106,7 @@ func TestWideInstallContentUsesAvailableHeightAndMenuAdapts(t *testing.T) {
 func TestViewKeepsFooterAtConfiguredBottom(t *testing.T) {
 	m := NewModel()
 	m.SetSize(120, 12)
-	m.wizard = confirmWizardForTest()
+	m.install = confirmInstallFlowForTest()
 	view := m.View()
 	if got := lipgloss.Height(view); got != 12 {
 		t.Fatalf("view height = %d, want 12:\n%s", got, view)
@@ -121,10 +121,10 @@ func supportedTestHost() system.Host {
 	return system.Host{OS: system.OSRelease{Family: system.FamilyDebian, ID: "ubuntu"}, Arch: "amd64", IsRoot: true}
 }
 
-func confirmWizardForTest() *wizard {
-	return &wizard{
+func confirmInstallFlowForTest() *installFlow {
+	return &installFlow{
 		phase: phaseConfirm,
-		values: map[string]string{
+		form: installForm{values: map[string]string{
 			"domain":                 "example.com",
 			"challenge":              "http-01",
 			"protocols":              defaultProtocolValue(),
@@ -134,13 +134,13 @@ func confirmWizardForTest() *wizard {
 			"traffic_in_limit_gb":    "0",
 			"traffic_out_limit_gb":   "0",
 			"traffic_total_limit_gb": "0",
-		},
+		}},
 		host: supportedTestHost(),
 	}
 }
 
 func TestInstallFieldShowsUsageNote(t *testing.T) {
-	w := &wizard{phase: phaseForm, fields: installFields(), values: map[string]string{}, input: textinput.New(), width: 80}
+	w := &installForm{fields: installFields(), values: map[string]string{}, input: textinput.New(), width: 80}
 	w.startForm()
 	view := w.View()
 	if !strings.Contains(view, "Used for certificate issuance") {
@@ -403,13 +403,13 @@ func TestRunningStatusLevelClassifiesColors(t *testing.T) {
 }
 
 func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
-	w := &wizard{phase: phaseRunning, ch: make(chan runMsg, 1), bar: progressBarForTest()}
+	w := &installFlow{phase: phaseRunning, run: commandRun{ch: make(chan runMsg, 1), bar: progressBarForTest()}}
 	cmd := w.handleRun(runMsg{done: true})
 	if cmd != nil {
 		t.Fatalf("completion should not wait for another run message")
 	}
-	if w.phase != phaseRunning || !w.runComplete {
-		t.Fatalf("completion should stay on running phase, phase=%v complete=%v", w.phase, w.runComplete)
+	if w.phase != phaseRunning || !w.run.runComplete {
+		t.Fatalf("completion should stay on running phase, phase=%v complete=%v", w.phase, w.run.runComplete)
 	}
 	if !strings.Contains(w.View(), "press enter to show summary") {
 		t.Fatalf("running view missing enter summary prompt:\n%s", w.View())
@@ -421,7 +421,7 @@ func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
 }
 
 func TestProtocolRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
-	pm := &protocolManager{phase: protocolPhaseRunning, ch: make(chan runMsg, 1), bar: progressBarForTest()}
+	pm := &protocolManager{phase: protocolPhaseRunning, commandRun: commandRun{ch: make(chan runMsg, 1), bar: progressBarForTest()}}
 	cmd := pm.handleRun(runMsg{done: true})
 	if cmd != nil {
 		t.Fatalf("completion should not wait for another protocol run message")
@@ -458,12 +458,13 @@ func TestLogWriterSanitizesTerminalControlOutput(t *testing.T) {
 }
 
 func TestRunningLogKeepsHistoryAndScrolls(t *testing.T) {
-	w := &wizard{phase: phaseRunning, height: 10, bar: progressBarForTest()}
+	w := &installFlow{phase: phaseRunning, run: commandRun{bar: progressBarForTest()}}
+	w.setSize(80, 10)
 	for i := 1; i <= 20; i++ {
-		w.appendLog(fmt.Sprintf("line-%02d", i))
+		w.run.appendLog(fmt.Sprintf("line-%02d", i))
 	}
-	if len(w.logBuf) != 20 {
-		t.Fatalf("log lines = %d, want 20", len(w.logBuf))
+	if len(w.run.logBuf) != 20 {
+		t.Fatalf("log lines = %d, want 20", len(w.run.logBuf))
 	}
 	view := w.View()
 	if !strings.Contains(view, "line-20") || strings.Contains(view, "line-01") {
@@ -472,7 +473,7 @@ func TestRunningLogKeepsHistoryAndScrolls(t *testing.T) {
 	for range 20 {
 		_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyUp})
 		if done {
-			t.Fatalf("scrolling log should not close wizard")
+			t.Fatalf("scrolling log should not close install flow")
 		}
 	}
 	view = w.View()
@@ -481,7 +482,7 @@ func TestRunningLogKeepsHistoryAndScrolls(t *testing.T) {
 	}
 	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyEnd})
 	if done {
-		t.Fatalf("jumping to latest log should not close wizard")
+		t.Fatalf("jumping to latest log should not close install flow")
 	}
 	view = w.View()
 	if !strings.Contains(view, "line-20") {
@@ -490,42 +491,42 @@ func TestRunningLogKeepsHistoryAndScrolls(t *testing.T) {
 }
 
 func TestRunningViewFitsAssignedHeightWithWrappedLog(t *testing.T) {
-	w := &wizard{phase: phaseRunning, bar: progressBarForTest()}
+	w := &installFlow{phase: phaseRunning, run: commandRun{bar: progressBarForTest()}}
 	w.setSize(32, 10)
-	w.appendLog(strings.Repeat("long-command ", 20))
-	if got := lipgloss.Height(w.View()); got > w.height {
-		t.Fatalf("running view height = %d, want <= %d:\n%s", got, w.height, w.View())
+	w.run.appendLog(strings.Repeat("long-command ", 20))
+	if got := lipgloss.Height(w.View()); got > w.form.height {
+		t.Fatalf("running view height = %d, want <= %d:\n%s", got, w.form.height, w.View())
 	}
 }
 
 func TestConfirmViewScrollsWithKeysAndMouse(t *testing.T) {
-	w := confirmWizardForTest()
+	w := confirmInstallFlowForTest()
 	w.setSize(60, 8)
 	if strings.Contains(w.View(), "anytls port") {
 		t.Fatalf("confirm view should start at the top:\n%s", w.View())
 	}
 	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyEnd})
 	if done {
-		t.Fatalf("scrolling confirm view should not close wizard")
+		t.Fatalf("scrolling confirm view should not close install flow")
 	}
 	if !strings.Contains(w.View(), "anytls port") {
 		t.Fatalf("confirm view should scroll to the bottom:\n%s", w.View())
 	}
 
-	w.confirmScroll = 0
+	w.form.confirmScroll = 0
 	_, done = w.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
 	if done {
-		t.Fatalf("mouse wheel should not close wizard")
+		t.Fatalf("mouse wheel should not close install flow")
 	}
-	if w.confirmScroll == 0 {
+	if w.form.confirmScroll == 0 {
 		t.Fatalf("mouse wheel down should scroll confirm view")
 	}
 	_, done = w.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
 	if done {
-		t.Fatalf("mouse wheel should not close wizard")
+		t.Fatalf("mouse wheel should not close install flow")
 	}
-	if w.confirmScroll != 0 {
-		t.Fatalf("mouse wheel up should scroll back to top, got %d", w.confirmScroll)
+	if w.form.confirmScroll != 0 {
+		t.Fatalf("mouse wheel up should scroll back to top, got %d", w.form.confirmScroll)
 	}
 }
 
@@ -534,15 +535,12 @@ func progressBarForTest() progress.Model {
 }
 
 func TestInstallFormCanGoBackToPreviousField(t *testing.T) {
-	w := &wizard{phase: phaseForm, fields: installFields(), values: map[string]string{}, input: textinput.New()}
+	w := &installForm{fields: installFields(), values: map[string]string{}, input: textinput.New()}
 	w.startForm()
 	w.input.SetValue("example.com")
 	w.commitField()
 	w.input.SetValue("admin@example.com")
-	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyCtrlB})
-	if done {
-		t.Fatalf("back should not close wizard")
-	}
+	w.previousField()
 	if w.fieldIx != 0 {
 		t.Fatalf("fieldIx = %d, want 0", w.fieldIx)
 	}
@@ -552,8 +550,7 @@ func TestInstallFormCanGoBackToPreviousField(t *testing.T) {
 }
 
 func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
-	w := &wizard{
-		phase:  phaseForm,
+	w := &installForm{
 		fields: installFields(),
 		values: map[string]string{},
 		input:  textinput.New(),
@@ -580,7 +577,7 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 }
 
 func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
-	w := &wizard{phase: phaseForm, fields: installFields(), values: map[string]string{}, input: textinput.New()}
+	w := &installForm{fields: installFields(), values: map[string]string{}, input: textinput.New()}
 	w.startForm()
 	w.input.SetValue("example.com")
 	w.commitField()
@@ -592,10 +589,7 @@ func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
 	if !strings.Contains(w.View(), "> http-01") {
 		t.Fatalf("challenge should render as a selection:\n%s", w.View())
 	}
-	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyDown})
-	if done {
-		t.Fatalf("moving selection should not close wizard")
-	}
+	w.moveOption(1)
 	w.commitField()
 	if got := w.values["challenge"]; got != "dns-01" {
 		t.Fatalf("challenge = %q, want dns-01", got)
@@ -616,8 +610,7 @@ func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
 		{provider: "cloudflare", want: "Cloudflare uses an API token.", link: "https://dash.cloudflare.com/profile/api-tokens", avoid: "Aliyun uses"},
 		{provider: "aliyun", want: "Aliyun uses accessKey:secretKey", link: "https://ram.console.aliyun.com/manage/ak", avoid: "Cloudflare uses"},
 	} {
-		w := &wizard{
-			phase:  phaseForm,
+		w := &installForm{
 			fields: fields,
 			values: map[string]string{"dns_provider": tc.provider},
 			input:  textinput.New(),
@@ -638,7 +631,7 @@ func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
 }
 
 func TestProtocolMultiSelectRequiresAtLeastOne(t *testing.T) {
-	w := &wizard{phase: phaseForm, fields: installFields(), values: map[string]string{}, input: textinput.New()}
+	w := &installForm{fields: installFields(), values: map[string]string{}, input: textinput.New()}
 	w.setField(fieldIndex(t, w.fields, "protocols"))
 	for _, opt := range w.fields[w.fieldIx].options {
 		w.optionIx = optionIndex(w.fields[w.fieldIx].options, opt)
@@ -683,8 +676,7 @@ func TestTrafficMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 }
 
 func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
-	w := &wizard{
-		phase:  phaseForm,
+	w := &installForm{
 		fields: installFields(),
 		values: map[string]string{"protocols": string(config.ProtocolRealityVision)},
 		input:  textinput.New(),
@@ -698,9 +690,9 @@ func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 }
 
 func TestSummaryHighlightsRandomValues(t *testing.T) {
-	w := confirmWizardForTest()
-	summary := w.summary()
-	highlightedRandom := wizardRandom.Render("random")
+	w := confirmInstallFlowForTest()
+	summary := w.form.summary(w.host)
+	highlightedRandom := flowRandom.Render("random")
 	if !strings.Contains(summary, highlightedRandom) {
 		t.Fatalf("summary should include highlighted random value:\n%s", summary)
 	}
@@ -745,8 +737,8 @@ func TestProtocolLabelsAddSpacesForDisplay(t *testing.T) {
 }
 
 func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
-	w := &wizard{
-		values: map[string]string{
+	w := &installFlow{
+		form: installForm{values: map[string]string{
 			"domain":                 "example.com",
 			"challenge":              "http-01",
 			"protocols":              "reality-vision,tuic",
@@ -766,7 +758,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 			"traffic_out_limit_gb":   "50",
 			"traffic_total_limit_gb": "100",
 			"reset_day":              "1",
-		},
+		}},
 		host: supportedTestHost(),
 	}
 	cfg, err := w.buildConfig()
@@ -807,8 +799,8 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 }
 
 func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
-	w := &wizard{
-		values: map[string]string{
+	w := &installFlow{
+		form: installForm{values: map[string]string{
 			"domain":          "example.com",
 			"challenge":       "http-01",
 			"protocols":       "tuic",
@@ -816,7 +808,7 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 			"display_name":    "Node",
 			"subscribe_port":  "24444",
 			"traffic_monitor": "no",
-		},
+		}},
 		host: supportedTestHost(),
 	}
 	_, err := w.buildConfig()
@@ -824,17 +816,17 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 		t.Fatalf("expected subscribe/protocol port conflict, got %v", err)
 	}
 
-	w.values["tuic_port"] = "24445"
-	w.values["traffic_monitor"] = "yes"
-	w.values["traffic_port"] = "24444"
-	w.values["monitor_port"] = "24446"
+	w.form.values["tuic_port"] = "24445"
+	w.form.values["traffic_monitor"] = "yes"
+	w.form.values["traffic_port"] = "24444"
+	w.form.values["monitor_port"] = "24446"
 	_, err = w.buildConfig()
 	if err == nil || !strings.Contains(err.Error(), "traffic monitor public port 24444 conflicts") {
 		t.Fatalf("expected subscribe/traffic port conflict, got %v", err)
 	}
 
-	w.values["traffic_port"] = "24446"
-	w.values["monitor_port"] = "24444"
+	w.form.values["traffic_port"] = "24446"
+	w.form.values["monitor_port"] = "24444"
 	_, err = w.buildConfig()
 	if err == nil || !strings.Contains(err.Error(), "traffic monitor port 24444 conflicts") {
 		t.Fatalf("expected subscribe/monitor local port conflict, got %v", err)
@@ -842,8 +834,8 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 }
 
 func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
-	w := &wizard{
-		values: map[string]string{
+	w := &installFlow{
+		form: installForm{values: map[string]string{
 			"domain":                 "example.com",
 			"challenge":              "http-01",
 			"protocols":              "hysteria2,anytls",
@@ -853,7 +845,7 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 			"traffic_out_limit_gb":   "0",
 			"traffic_total_limit_gb": "0",
 			"reset_day":              "1",
-		},
+		}},
 		host: supportedTestHost(),
 	}
 	cfg, err := w.buildConfig()
@@ -885,8 +877,8 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 }
 
 func TestBuildConfigDisablesTrafficMonitor(t *testing.T) {
-	w := &wizard{
-		values: map[string]string{
+	w := &installFlow{
+		form: installForm{values: map[string]string{
 			"domain":                 "example.com",
 			"challenge":              "http-01",
 			"protocols":              "tuic",
@@ -896,7 +888,7 @@ func TestBuildConfigDisablesTrafficMonitor(t *testing.T) {
 			"traffic_in_limit_gb":    "40",
 			"traffic_out_limit_gb":   "50",
 			"traffic_total_limit_gb": "100",
-		},
+		}},
 		host: supportedTestHost(),
 	}
 	cfg, err := w.buildConfig()

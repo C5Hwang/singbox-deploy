@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -25,11 +24,11 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
-// wizardPhase is the install wizard's current screen.
-type wizardPhase int
+// installPhase is the install flow's current screen.
+type installPhase int
 
 const (
-	phasePreflight wizardPhase = iota
+	phasePreflight installPhase = iota
 	phaseForm
 	phaseConfirm
 	phaseRunning
@@ -49,7 +48,7 @@ type field struct {
 	skip func(vals map[string]string) bool
 }
 
-// installFields defines the wizard's input sequence.
+// installFields defines the install form's input sequence.
 func installFields() []field {
 	isDNS := func(v map[string]string) bool { return v["challenge"] != "dns-01" }
 	missingProtocol := func(p config.Protocol) func(map[string]string) bool {
@@ -93,7 +92,7 @@ func installFields() []field {
 
 // runMsg carries an orchestrator progress event, a streamed log line, or
 // completion into the UI. It is the only channel the orchestrator goroutine
-// uses to communicate, so all wizard state stays mutated on the UI goroutine.
+// uses to communicate, so all UI state stays mutated on the UI goroutine.
 type runMsg struct {
 	event   *install.Event
 	logLine string
@@ -101,14 +100,10 @@ type runMsg struct {
 	err     error
 }
 
-// wizard is the interactive install flow.
-type wizard struct {
-	phase  wizardPhase
-	host   system.Host
-	hosts  string // preflight summary / error text
-	width  int
-	height int
-
+// installForm owns only install input collection and confirmation rendering.
+type installForm struct {
+	width          int
+	height         int
 	fields         []field
 	fieldIx        int
 	values         map[string]string
@@ -118,48 +113,55 @@ type wizard struct {
 	fieldErr       string
 
 	validateDomain func(context.Context, string) error
-
-	bar           progress.Model
-	events        []install.Event
-	logBuf        []string
-	logScroll     int
-	confirmScroll int
-	runErr        error
-	cfg           install.Config
-	runComplete   bool
-
-	ch chan runMsg
+	confirmScroll  int
 }
 
-// newWizard builds the wizard, running host preflight immediately.
-func newWizard() *wizard {
+// installFlow owns the install lifecycle and delegates input collection to form
+// and command execution UI to commandRun.
+type installFlow struct {
+	phase installPhase
+	host  system.Host
+	hosts string // preflight summary / error text
+
+	form installForm
+	run  commandRun
+	cfg  install.Config
+}
+
+func newInstallForm() installForm {
 	ti := textinput.New()
 	ti.CharLimit = 256
 	ti.Prompt = "› "
-
-	w := &wizard{
-		phase:          phasePreflight,
+	return installForm{
 		fields:         installFields(),
 		values:         map[string]string{},
 		input:          ti,
-		bar:            progress.New(progress.WithDefaultGradient()),
 		validateDomain: validateDomainResolvesToCurrentIP,
 	}
+}
+
+// newInstallFlow builds the install flow, running host preflight immediately.
+func newInstallFlow() *installFlow {
+	flow := &installFlow{
+		phase: phasePreflight,
+		form:  newInstallForm(),
+		run:   newCommandRun(),
+	}
 	host, err := system.DetectHost()
-	w.host = host
+	flow.host = host
 	switch {
 	case err != nil:
-		w.hosts = "Failed to detect host: " + err.Error()
+		flow.hosts = "Failed to detect host: " + err.Error()
 	case !host.IsRoot:
-		w.hosts = "This installer must be run as root."
+		flow.hosts = "This installer must be run as root."
 	case !host.Supported():
-		w.hosts = fmt.Sprintf("Unsupported system: family=%q arch=%q", host.OS.Family, host.Arch)
+		flow.hosts = fmt.Sprintf("Unsupported system: family=%q arch=%q", host.OS.Family, host.Arch)
 	case host.SELinux:
-		w.hosts = "SELinux is enforcing; installation is blocked. Set it permissive and retry."
+		flow.hosts = "SELinux is enforcing; installation is blocked. Set it permissive and retry."
 	default:
-		w.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s — ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
+		flow.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s — ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
 	}
-	return w
+	return flow
 }
 
 func firewallName(f system.Firewall) string {
@@ -170,40 +172,44 @@ func firewallName(f system.Firewall) string {
 }
 
 // canProceed reports whether preflight passed.
-func (w *wizard) canProceed() bool {
-	return w.host.IsRoot && w.host.Supported() && !w.host.SELinux
+func (f *installFlow) canProceed() bool {
+	return f.host.IsRoot && f.host.Supported() && !f.host.SELinux
 }
 
-func (w *wizard) setSize(width, height int) {
-	w.width = width
-	w.height = height
-	w.bar.Width = min(width-4, 60)
+func (f *installFlow) setSize(width, height int) {
+	f.form.setSize(width, height)
+	f.run.setSize(width, height)
 }
 
-func (w *wizard) setField(index int) {
-	f := w.fields[index]
-	w.fieldIx = index
-	w.fieldErr = ""
-	if len(f.options) > 0 {
-		value := w.values[f.key]
+func (f *installForm) setSize(width, height int) {
+	f.width = width
+	f.height = height
+}
+
+func (f *installForm) setField(index int) {
+	field := f.fields[index]
+	f.fieldIx = index
+	f.fieldErr = ""
+	if len(field.options) > 0 {
+		value := f.values[field.key]
 		if value == "" {
-			value = f.def
+			value = field.def
 		}
-		if f.multi {
-			w.optionSelected = selectedOptions(value)
-			w.optionIx = 0
-			w.input.Blur()
+		if field.multi {
+			f.optionSelected = selectedOptions(value)
+			f.optionIx = 0
+			f.input.Blur()
 			return
 		}
-		w.optionSelected = nil
-		w.optionIx = optionIndex(f.options, value)
-		w.input.Blur()
+		f.optionSelected = nil
+		f.optionIx = optionIndex(field.options, value)
+		f.input.Blur()
 		return
 	}
-	w.optionSelected = nil
-	w.input.SetValue(w.values[f.key])
-	w.input.Placeholder = f.def
-	w.input.Focus()
+	f.optionSelected = nil
+	f.input.SetValue(f.values[field.key])
+	f.input.Placeholder = field.def
+	f.input.Focus()
 }
 
 func optionIndex(options []string, value string) int {
@@ -350,107 +356,105 @@ func normalizeRealityServerName(raw string) (string, error) {
 }
 
 // startForm activates the first visible field.
-func (w *wizard) startForm() {
-	w.phase = phaseForm
-	w.fieldIx = -1
-	w.advanceField()
+func (f *installForm) startForm() {
+	f.fieldIx = -1
+	f.advanceField()
 }
 
 // advanceField moves to the next visible field, or to confirm at the end.
-func (w *wizard) advanceField() {
-	for i := w.fieldIx + 1; i < len(w.fields); i++ {
-		f := w.fields[i]
-		if f.skip != nil && f.skip(w.values) {
+func (f *installForm) advanceField() bool {
+	for i := f.fieldIx + 1; i < len(f.fields); i++ {
+		field := f.fields[i]
+		if field.skip != nil && field.skip(f.values) {
 			continue
 		}
-		w.setField(i)
-		return
+		f.setField(i)
+		return false
 	}
-	w.confirmScroll = 0
-	w.phase = phaseConfirm
+	f.confirmScroll = 0
+	return true
 }
 
-func (w *wizard) previousField() {
-	if w.fieldIx < 0 {
+func (f *installForm) previousField() {
+	if f.fieldIx < 0 {
 		return
 	}
-	w.saveFieldDraft()
-	for i := w.fieldIx - 1; i >= 0; i-- {
-		f := w.fields[i]
-		if f.skip != nil && f.skip(w.values) {
+	f.saveFieldDraft()
+	for i := f.fieldIx - 1; i >= 0; i-- {
+		field := f.fields[i]
+		if field.skip != nil && field.skip(f.values) {
 			continue
 		}
-		w.setField(i)
-		return
-	}
-}
-
-func (w *wizard) backToLastField() {
-	w.phase = phaseForm
-	for i := len(w.fields) - 1; i >= 0; i-- {
-		f := w.fields[i]
-		if f.skip != nil && f.skip(w.values) {
-			continue
-		}
-		w.setField(i)
+		f.setField(i)
 		return
 	}
 }
 
-func (w *wizard) saveFieldDraft() {
-	if w.fieldIx < 0 || w.fieldIx >= len(w.fields) {
+func (f *installForm) backToLastField() {
+	for i := len(f.fields) - 1; i >= 0; i-- {
+		field := f.fields[i]
+		if field.skip != nil && field.skip(f.values) {
+			continue
+		}
+		f.setField(i)
 		return
 	}
-	f := w.fields[w.fieldIx]
-	w.values[f.key] = w.fieldValue(f)
+}
+
+func (f *installForm) saveFieldDraft() {
+	if f.fieldIx < 0 || f.fieldIx >= len(f.fields) {
+		return
+	}
+	field := f.fields[f.fieldIx]
+	f.values[field.key] = f.fieldValue(field)
 }
 
 // commitField stores the current field value (or its default) and advances.
-func (w *wizard) commitField() {
-	f := w.fields[w.fieldIx]
-	val := w.fieldValue(f)
-	if err := w.validateField(f, val); err != nil {
-		w.fieldErr = err.Error()
-		return
+func (f *installForm) commitField() bool {
+	field := f.fields[f.fieldIx]
+	val := f.fieldValue(field)
+	if err := f.validateField(field, val); err != nil {
+		f.fieldErr = err.Error()
+		return false
 	}
-	w.fieldErr = ""
-	w.values[f.key] = val
-	w.advanceField()
+	f.fieldErr = ""
+	f.values[field.key] = val
+	return f.advanceField()
 }
 
-func (w *wizard) fieldValue(f field) string {
-	if len(f.options) > 0 {
-		if f.multi {
-			return selectedOptionsValue(f.options, w.optionSelected)
+func (f *installForm) fieldValue(field field) string {
+	if len(field.options) > 0 {
+		if field.multi {
+			return selectedOptionsValue(field.options, f.optionSelected)
 		}
-		return f.options[min(max(0, w.optionIx), len(f.options)-1)]
+		return field.options[min(max(0, f.optionIx), len(field.options)-1)]
 	}
-	val := strings.TrimSpace(w.input.Value())
+	val := strings.TrimSpace(f.input.Value())
 	if val == "" {
-		return f.def
+		return field.def
 	}
 	return val
 }
 
-func (w *wizard) validateField(f field, val string) error {
+func (f *installForm) validateField(field field, val string) error {
 	switch {
-	case f.key == "domain":
+	case field.key == "domain":
 		if val == "" {
 			return fmt.Errorf("domain is required")
 		}
-		if w.validateDomain == nil {
+		if f.validateDomain == nil {
 			return nil
 		}
-		return w.validateDomain(context.Background(), val)
-	case f.key == "protocols":
+		return f.validateDomain(context.Background(), val)
+	case field.key == "protocols":
 		if len(protocolsFromValue(val)) == 0 {
 			return fmt.Errorf("select at least one protocol")
 		}
-	case f.key == "reality_sni":
+	case field.key == "reality_sni":
 		if _, err := normalizeRealityServerName(val); err != nil {
 			return err
 		}
-	case strings.HasSuffix(f.key, "_port"):
+	case strings.HasSuffix(field.key, "_port"):
 		if val == "" {
 			return nil
 		}
@@ -458,15 +462,15 @@ func (w *wizard) validateField(f field, val string) error {
 		if err != nil || port < 1 || port > 65535 {
 			return fmt.Errorf("port must be between 1 and 65535")
 		}
-	case strings.HasSuffix(f.key, "_uuid"):
+	case strings.HasSuffix(field.key, "_uuid"):
 		if val != "" && !validUUID(val) {
 			return fmt.Errorf("uuid must be an RFC 4122 value")
 		}
-	case strings.HasPrefix(f.key, "traffic_") && strings.HasSuffix(f.key, "_limit_gb"):
+	case strings.HasPrefix(field.key, "traffic_") && strings.HasSuffix(field.key, "_limit_gb"):
 		if _, err := strconv.ParseUint(val, 10, 64); err != nil {
 			return fmt.Errorf("traffic limit must be a non-negative integer")
 		}
-	case f.key == "reset_day":
+	case field.key == "reset_day":
 		day, err := strconv.Atoi(val)
 		if err != nil || day < 1 || day > 28 {
 			return fmt.Errorf("reset day must be between 1 and 28")
@@ -475,34 +479,35 @@ func (w *wizard) validateField(f field, val string) error {
 	return nil
 }
 
-// Update handles wizard messages. The bool return reports whether the wizard is
+// Update handles install flow messages. The bool return reports whether the flow is
 // finished and the caller should return to the menu.
-func (w *wizard) Update(msg tea.Msg) (tea.Cmd, bool) {
+func (f *installFlow) Update(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		w.setSize(msg.Width, msg.Height)
+		f.setSize(msg.Width, msg.Height)
 	case runMsg:
-		return w.handleRun(msg), false
+		return f.handleRun(msg), false
 	case tea.KeyMsg:
-		return w.handleKey(msg)
+		return f.handleKey(msg)
 	case tea.MouseMsg:
-		return w.handleMouse(msg), false
+		return f.handleMouse(msg), false
 	}
-	if w.phase == phaseForm && !w.currentFieldHasOptions() {
+	if f.phase == phaseForm && !f.form.currentFieldHasOptions() {
 		var cmd tea.Cmd
-		w.input, cmd = w.input.Update(msg)
+		f.form.input, cmd = f.form.input.Update(msg)
 		return cmd, false
 	}
 	return nil, false
 }
 
-func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
-	switch w.phase {
+func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	switch f.phase {
 	case phasePreflight:
 		switch msg.String() {
 		case "enter":
-			if w.canProceed() {
-				w.startForm()
+			if f.canProceed() {
+				f.phase = phaseForm
+				f.form.startForm()
 			}
 		case "esc", "q":
 			return nil, true
@@ -510,107 +515,110 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case phaseForm:
 		switch msg.String() {
 		case "enter":
-			w.commitField()
+			if f.form.commitField() {
+				f.phase = phaseConfirm
+			}
 		case " ", "space":
-			if w.currentFieldIsMulti() {
-				w.toggleOption()
+			if f.form.currentFieldIsMulti() {
+				f.form.toggleOption()
 				break
 			}
-			return w.updateInput(msg), false
+			return f.form.updateInput(msg), false
 		case "up", "k", "left", "h":
-			if w.currentFieldHasOptions() {
-				w.moveOption(-1)
+			if f.form.currentFieldHasOptions() {
+				f.form.moveOption(-1)
 				break
 			}
-			return w.updateInput(msg), false
+			return f.form.updateInput(msg), false
 		case "down", "j", "right", "l":
-			if w.currentFieldHasOptions() {
-				w.moveOption(1)
+			if f.form.currentFieldHasOptions() {
+				f.form.moveOption(1)
 				break
 			}
-			return w.updateInput(msg), false
+			return f.form.updateInput(msg), false
 		case "shift+tab", "ctrl+b":
-			w.previousField()
+			f.form.previousField()
 		case "esc":
 			return nil, true
 		default:
-			if w.currentFieldHasOptions() {
+			if f.form.currentFieldHasOptions() {
 				return nil, false
 			}
-			return w.updateInput(msg), false
+			return f.form.updateInput(msg), false
 		}
 	case phaseConfirm:
 		switch msg.String() {
 		case "up", "k":
-			w.scrollConfirm(-1, w.confirmViewportHeight())
+			f.form.scrollConfirm(-1, f.form.confirmViewportHeight(), f.host)
 			return nil, false
 		case "down", "j":
-			w.scrollConfirm(1, w.confirmViewportHeight())
+			f.form.scrollConfirm(1, f.form.confirmViewportHeight(), f.host)
 			return nil, false
 		case "pgup":
-			w.scrollConfirm(-w.confirmViewportHeight(), w.confirmViewportHeight())
+			f.form.scrollConfirm(-f.form.confirmViewportHeight(), f.form.confirmViewportHeight(), f.host)
 			return nil, false
 		case "pgdown":
-			w.scrollConfirm(w.confirmViewportHeight(), w.confirmViewportHeight())
+			f.form.scrollConfirm(f.form.confirmViewportHeight(), f.form.confirmViewportHeight(), f.host)
 			return nil, false
 		case "home":
-			w.confirmScroll = 0
+			f.form.confirmScroll = 0
 			return nil, false
 		case "end":
-			w.confirmScroll = w.maxConfirmScroll(w.confirmViewportHeight())
+			f.form.confirmScroll = f.form.maxConfirmScroll(f.form.confirmViewportHeight(), f.host)
 			return nil, false
 		case "enter", "y":
-			return w.startRun(), false
+			return f.startRun(), false
 		case "shift+tab", "ctrl+b":
-			w.backToLastField()
+			f.phase = phaseForm
+			f.form.backToLastField()
 		case "esc", "n":
 			return nil, true
 		}
 	case phaseRunning:
 		switch msg.String() {
 		case "enter":
-			if w.runComplete {
-				w.phase = phaseDone
+			if f.run.runComplete {
+				f.phase = phaseDone
 			}
 		case "up", "k":
-			w.scrollLog(1, w.logViewportHeight())
+			f.run.scrollLog(1, f.run.logViewportHeight())
 			return nil, false
 		case "down", "j":
-			w.scrollLog(-1, w.logViewportHeight())
+			f.run.scrollLog(-1, f.run.logViewportHeight())
 			return nil, false
 		case "pgup":
-			w.scrollLog(w.logViewportHeight(), w.logViewportHeight())
+			f.run.scrollLog(f.run.logViewportHeight(), f.run.logViewportHeight())
 			return nil, false
 		case "pgdown":
-			w.scrollLog(-w.logViewportHeight(), w.logViewportHeight())
+			f.run.scrollLog(-f.run.logViewportHeight(), f.run.logViewportHeight())
 			return nil, false
 		case "home":
-			w.logScroll = w.maxLogScroll(w.logViewportHeight())
+			f.run.logScroll = f.run.maxLogScroll(f.run.logViewportHeight())
 			return nil, false
 		case "end":
-			w.logScroll = 0
+			f.run.logScroll = 0
 			return nil, false
 		}
 	case phaseDone:
-		if w.runErr != nil {
+		if f.run.runErr != nil {
 			switch msg.String() {
 			case "up", "k":
-				w.scrollLog(1, w.doneLogHeight())
+				f.run.scrollLog(1, f.run.doneLogHeight())
 				return nil, false
 			case "down", "j":
-				w.scrollLog(-1, w.doneLogHeight())
+				f.run.scrollLog(-1, f.run.doneLogHeight())
 				return nil, false
 			case "pgup":
-				w.scrollLog(w.doneLogHeight(), w.doneLogHeight())
+				f.run.scrollLog(f.run.doneLogHeight(), f.run.doneLogHeight())
 				return nil, false
 			case "pgdown":
-				w.scrollLog(-w.doneLogHeight(), w.doneLogHeight())
+				f.run.scrollLog(-f.run.doneLogHeight(), f.run.doneLogHeight())
 				return nil, false
 			case "home":
-				w.logScroll = w.maxLogScroll(w.doneLogHeight())
+				f.run.logScroll = f.run.maxLogScroll(f.run.doneLogHeight())
 				return nil, false
 			case "end":
-				w.logScroll = 0
+				f.run.logScroll = 0
 				return nil, false
 			}
 		}
@@ -619,56 +627,56 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-func (w *wizard) handleMouse(msg tea.MouseMsg) tea.Cmd {
+func (f *installFlow) handleMouse(msg tea.MouseMsg) tea.Cmd {
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
-		switch w.phase {
+		switch f.phase {
 		case phaseConfirm:
-			w.scrollConfirm(-3, w.confirmViewportHeight())
+			f.form.scrollConfirm(-3, f.form.confirmViewportHeight(), f.host)
 		case phaseRunning:
-			w.scrollLog(3, w.logViewportHeight())
+			f.run.scrollLog(3, f.run.logViewportHeight())
 		case phaseDone:
-			if w.runErr != nil {
-				w.scrollLog(3, w.doneLogHeight())
+			if f.run.runErr != nil {
+				f.run.scrollLog(3, f.run.doneLogHeight())
 			}
 		}
 	case tea.MouseButtonWheelDown:
-		switch w.phase {
+		switch f.phase {
 		case phaseConfirm:
-			w.scrollConfirm(3, w.confirmViewportHeight())
+			f.form.scrollConfirm(3, f.form.confirmViewportHeight(), f.host)
 		case phaseRunning:
-			w.scrollLog(-3, w.logViewportHeight())
+			f.run.scrollLog(-3, f.run.logViewportHeight())
 		case phaseDone:
-			if w.runErr != nil {
-				w.scrollLog(-3, w.doneLogHeight())
+			if f.run.runErr != nil {
+				f.run.scrollLog(-3, f.run.doneLogHeight())
 			}
 		}
 	}
 	return nil
 }
 
-func (w *wizard) updateInput(msg tea.Msg) tea.Cmd {
+func (w *installForm) updateInput(msg tea.Msg) tea.Cmd {
 	w.fieldErr = ""
 	var cmd tea.Cmd
 	w.input, cmd = w.input.Update(msg)
 	return cmd
 }
 
-func (w *wizard) currentFieldHasOptions() bool {
+func (w *installForm) currentFieldHasOptions() bool {
 	if w.fieldIx < 0 || w.fieldIx >= len(w.fields) {
 		return false
 	}
 	return len(w.fields[w.fieldIx].options) > 0
 }
 
-func (w *wizard) currentFieldIsMulti() bool {
+func (w *installForm) currentFieldIsMulti() bool {
 	if w.fieldIx < 0 || w.fieldIx >= len(w.fields) {
 		return false
 	}
 	return w.fields[w.fieldIx].multi
 }
 
-func (w *wizard) moveOption(delta int) {
+func (w *installForm) moveOption(delta int) {
 	if !w.currentFieldHasOptions() {
 		return
 	}
@@ -677,7 +685,7 @@ func (w *wizard) moveOption(delta int) {
 	w.fieldErr = ""
 }
 
-func (w *wizard) toggleOption() {
+func (w *installForm) toggleOption() {
 	if !w.currentFieldIsMulti() {
 		return
 	}
@@ -697,54 +705,31 @@ func (w *wizard) toggleOption() {
 	w.fieldErr = ""
 }
 
-func (w *wizard) handleRun(msg runMsg) tea.Cmd {
-	if msg.event != nil {
-		w.events = append(w.events, *msg.event)
-		e := *msg.event
-		line := fmt.Sprintf("[%d/%d] %s — %s", e.Index, e.Total, e.Label, e.Status)
-		if e.Err != nil {
-			line += ": " + e.Err.Error()
-		}
-		w.appendLog(line)
-	}
-	if msg.logLine != "" {
-		w.appendLog(dimStyle.Render(msg.logLine))
-	}
-	if msg.done {
-		w.runErr = msg.err
-		if msg.err != nil {
-			w.phase = phaseDone
-			return nil
-		}
-		w.runComplete = true
-		w.logScroll = 0
-		return nil
-	}
-	return w.waitForRun()
+func (w *installFlow) handleRun(msg runMsg) tea.Cmd {
+	return handleCommandRun(w, msg)
 }
 
-func (w *wizard) appendLog(line string) {
-	if w.logScroll > 0 {
-		w.logScroll += w.logLineHeight(line)
-	}
-	w.logBuf = append(w.logBuf, line)
-	w.clampLogScroll(w.logViewportHeight())
+func (w *installFlow) runState() *commandRun {
+	return &w.run
+}
+
+func (w *installFlow) markRunFailed() {
+	w.phase = phaseDone
 }
 
 // startRun builds the config and launches the orchestrator goroutine.
-func (w *wizard) startRun() tea.Cmd {
+func (w *installFlow) startRun() tea.Cmd {
 	cfg, err := w.buildConfig()
 	if err != nil {
-		w.runErr = err
+		w.run.runErr = err
 		w.phase = phaseDone
 		return nil
 	}
 	w.cfg = cfg
 	w.phase = phaseRunning
-	w.runComplete = false
-	w.ch = make(chan runMsg, 64)
+	w.run.resetRun(make(chan runMsg, 64))
 
-	ch := w.ch
+	ch := w.run.ch
 	logs := &logWriter{ch: ch}
 	runner := system.Runner(system.NewExecRunner(logs))
 	layout := paths.DefaultLayout()
@@ -769,71 +754,66 @@ func (w *wizard) startRun() tea.Cmd {
 		err := orch.Run(context.Background(), cfg)
 		ch <- runMsg{done: true, err: err}
 	}()
-	return w.waitForRun()
-}
-
-// waitForRun returns a command that reads the next orchestrator message.
-func (w *wizard) waitForRun() tea.Cmd {
-	ch := w.ch
-	return func() tea.Msg { return <-ch }
+	return w.run.waitForRun()
 }
 
 // buildConfig assembles install.Config from the collected values and host.
-func (w *wizard) buildConfig() (install.Config, error) {
+func (w *installFlow) buildConfig() (install.Config, error) {
 	creds, err := install.GenerateCredentials()
 	if err != nil {
 		return install.Config{}, err
 	}
-	w.applyCredentialOverrides(&creds)
-	enabled := protocolsFromValue(w.values["protocols"])
+	vals := w.form.values
+	w.form.applyCredentialOverrides(&creds)
+	enabled := protocolsFromValue(vals["protocols"])
 	if len(enabled) == 0 {
 		enabled = config.AllProtocols
 	}
-	deployMonitor := trafficMonitorEnabled(w.values)
-	subscribePort, err := parseInstallPort(w.values["subscribe_port"], 2096, "subscription port")
+	deployMonitor := trafficMonitorEnabled(vals)
+	subscribePort, err := parseInstallPort(vals["subscribe_port"], 2096, "subscription port")
 	if err != nil {
 		return install.Config{}, err
 	}
-	trafficPort, err := parseInstallPort(w.values["traffic_port"], 2097, "traffic monitor public port")
+	trafficPort, err := parseInstallPort(vals["traffic_port"], 2097, "traffic monitor public port")
 	if err != nil {
 		return install.Config{}, err
 	}
-	monitorPort, err := parseInstallPort(w.values["monitor_port"], 19090, "traffic monitor port")
+	monitorPort, err := parseInstallPort(vals["monitor_port"], 19090, "traffic monitor port")
 	if err != nil {
 		return install.Config{}, err
 	}
-	ports, err := w.protocolPorts(enabled, subscribePort, trafficPort, monitorPort, deployMonitor)
+	ports, err := w.form.protocolPorts(enabled, subscribePort, trafficPort, monitorPort, deployMonitor)
 	if err != nil {
 		return install.Config{}, err
 	}
-	salt := strings.TrimSpace(w.values["subscribe_salt"])
+	salt := strings.TrimSpace(vals["subscribe_salt"])
 	if salt == "" {
 		salt, err = credentials.Salt()
 		if err != nil {
 			return install.Config{}, err
 		}
 	}
-	inLimitBytes := parseTrafficLimitGB(w.values["traffic_in_limit_gb"])
-	outLimitBytes := parseTrafficLimitGB(w.values["traffic_out_limit_gb"])
-	totalLimitBytes := parseTrafficLimitGB(w.values["traffic_total_limit_gb"])
+	inLimitBytes := parseTrafficLimitGB(vals["traffic_in_limit_gb"])
+	outLimitBytes := parseTrafficLimitGB(vals["traffic_out_limit_gb"])
+	totalLimitBytes := parseTrafficLimitGB(vals["traffic_total_limit_gb"])
 	if !deployMonitor {
 		inLimitBytes = 0
 		outLimitBytes = 0
 		totalLimitBytes = 0
 	}
-	resetDay, _ := strconv.Atoi(w.values["reset_day"])
+	resetDay, _ := strconv.Atoi(vals["reset_day"])
 	if !deployMonitor || resetDay < 1 || resetDay > 28 {
 		resetDay = 1
 	}
 
-	challenge := acme.Challenge(w.values["challenge"])
+	challenge := acme.Challenge(vals["challenge"])
 	dnsCreds := map[string]string{}
 	if challenge == acme.ChallengeDNS01 {
-		switch w.values["dns_provider"] {
+		switch vals["dns_provider"] {
 		case "cloudflare":
-			dnsCreds["CF_API_TOKEN"] = w.values["dns_credential"]
+			dnsCreds["CF_API_TOKEN"] = vals["dns_credential"]
 		case "aliyun":
-			if key, secret, ok := strings.Cut(w.values["dns_credential"], ":"); ok {
+			if key, secret, ok := strings.Cut(vals["dns_credential"], ":"); ok {
 				dnsCreds["ALICLOUD_ACCESS_KEY"] = key
 				dnsCreds["ALICLOUD_SECRET_KEY"] = secret
 			}
@@ -846,21 +826,21 @@ func (w *wizard) buildConfig() (install.Config, error) {
 	}
 	realityServerName := ""
 	if hasProtocol(enabled, config.ProtocolRealityVision) || hasProtocol(enabled, config.ProtocolRealityGRPC) {
-		realityServerName, err = normalizeRealityServerName(w.values["reality_sni"])
+		realityServerName, err = normalizeRealityServerName(vals["reality_sni"])
 		if err != nil {
 			return install.Config{}, err
 		}
 	}
 
 	return install.Config{
-		Domain:                 w.values["domain"],
-		Email:                  w.values["email"],
+		Domain:                 vals["domain"],
+		Email:                  vals["email"],
 		Challenge:              challenge,
-		DNSProvider:            w.values["dns_provider"],
+		DNSProvider:            vals["dns_provider"],
 		DNSCredentials:         dnsCreds,
 		Ports:                  ports,
 		Enabled:                enabled,
-		DisplayName:            w.values["display_name"],
+		DisplayName:            vals["display_name"],
 		Salt:                   salt,
 		RealityServerName:      realityServerName,
 		RealityHandshakePort:   443,
@@ -896,7 +876,7 @@ func parseInstallPort(value string, fallback int, label string) (int, error) {
 	return port, nil
 }
 
-func (w *wizard) applyCredentialOverrides(creds *install.Credentials) {
+func (w *installForm) applyCredentialOverrides(creds *install.Credentials) {
 	if v := strings.TrimSpace(w.values["reality_vision_uuid"]); v != "" {
 		creds.RealityVisionUUID = v
 	}
@@ -917,7 +897,7 @@ func (w *wizard) applyCredentialOverrides(creds *install.Credentials) {
 	}
 }
 
-func (w *wizard) protocolPorts(enabled []config.Protocol, subscribePort, trafficPort, monitorPort int, deployMonitor bool) (config.Ports, error) {
+func (w *installForm) protocolPorts(enabled []config.Protocol, subscribePort, trafficPort, monitorPort int, deployMonitor bool) (config.Ports, error) {
 	used := map[int]bool{80: true, subscribePort: true}
 	if deployMonitor {
 		if used[trafficPort] {
@@ -951,7 +931,7 @@ func (w *wizard) protocolPorts(enabled []config.Protocol, subscribePort, traffic
 	return ports, nil
 }
 
-func (w *wizard) portForProtocol(proto config.Protocol, used map[int]bool) (int, error) {
+func (w *installForm) portForProtocol(proto config.Protocol, used map[int]bool) (int, error) {
 	key := portFieldKey(proto)
 	raw := strings.TrimSpace(w.values[key])
 	if raw == "" {
@@ -1029,13 +1009,13 @@ func randomListenPort(used map[int]bool) (int, error) {
 }
 
 var (
-	wizardTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	wizardOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	wizardErr    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	wizardRandom = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
+	flowTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	flowOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	flowErr    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	flowRandom = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 )
 
-func (w *wizard) parameterProtocolLabel(f field) string {
+func (w *installForm) parameterProtocolLabel(f field) string {
 	if len(f.paramsFor) == 0 {
 		return ""
 	}
@@ -1051,7 +1031,7 @@ func (w *wizard) parameterProtocolLabel(f field) string {
 	return protocolLabels(selected)
 }
 
-func (w *wizard) fieldNote(f field) string {
+func (w *installForm) fieldNote(f field) string {
 	if f.key != "dns_credential" {
 		return f.note
 	}
@@ -1061,63 +1041,67 @@ func (w *wizard) fieldNote(f field) string {
 	return "Cloudflare uses an API token.\nYou can apply at https://dash.cloudflare.com/profile/api-tokens"
 }
 
-// View renders the wizard.
-func (w *wizard) View() string {
+// View renders the install flow.
+func (w *installFlow) View() string {
 	switch w.phase {
 	case phasePreflight:
 		body := w.hosts + "\n\n"
 		if w.canProceed() {
 			body += dimStyle.Render("enter to begin · esc to cancel")
 		} else {
-			body += wizardErr.Render("Cannot proceed. ") + dimStyle.Render("esc to go back")
+			body += flowErr.Render("Cannot proceed. ") + dimStyle.Render("esc to go back")
 		}
-		return wizardTitle.Render("Install · Preflight") + "\n\n" + body
+		return flowTitle.Render("Install · Preflight") + "\n\n" + body
 	case phaseForm:
-		f := w.fields[w.fieldIx]
-		var b strings.Builder
-		b.WriteString(wizardTitle.Render("Install · Configuration") + "\n\n")
-		b.WriteString(f.label + "\n")
-		if label := w.parameterProtocolLabel(f); label != "" {
-			b.WriteString(wizardOK.Render("Setting parameters for: "+label) + "\n")
-		}
-		if note := w.fieldNote(f); note != "" {
-			for _, line := range wrapFieldNote(note, w.width) {
-				b.WriteString(dimStyle.Render(line) + "\n")
-			}
-		}
-		if f.def != "" {
-			b.WriteString(dimStyle.Render("default: "+f.def) + "\n")
-		}
-		if w.fieldErr != "" {
-			b.WriteString(wizardErr.Render(w.fieldErr) + "\n")
-		}
-		if len(f.options) > 0 {
-			b.WriteString(w.optionsView(f) + "\n\n")
-			if f.multi {
-				b.WriteString(dimStyle.Render("space toggle · enter to continue · ↑/↓ or ←/→ move · shift+tab/ctrl+b back · esc to cancel"))
-				return b.String()
-			}
-			b.WriteString(dimStyle.Render("enter to continue · ↑/↓ or ←/→ select · shift+tab/ctrl+b back · esc to cancel"))
-			return b.String()
-		}
-		b.WriteString(w.input.View() + "\n\n")
-		b.WriteString(dimStyle.Render("enter to continue · shift+tab/ctrl+b back · esc to cancel"))
-		return b.String()
+		return w.form.View()
 	case phaseConfirm:
-		return w.confirmView()
+		return w.form.confirmView(w.host)
 	case phaseRunning:
 		return w.runningView()
 	case phaseDone:
-		if w.runErr != nil {
+		if w.run.runErr != nil {
 			return w.failedView()
 		}
-		return wizardOK.Render("Install complete") + "\n\n" + w.doneSummary() + "\n\n" +
+		return flowOK.Render("Install complete") + "\n\n" + w.doneSummary() + "\n\n" +
 			dimStyle.Render("press any key to return")
 	}
 	return ""
 }
 
-func (w *wizard) footerHints() []string {
+func (w *installForm) View() string {
+	f := w.fields[w.fieldIx]
+	var b strings.Builder
+	b.WriteString(flowTitle.Render("Install · Configuration") + "\n\n")
+	b.WriteString(f.label + "\n")
+	if label := w.parameterProtocolLabel(f); label != "" {
+		b.WriteString(flowOK.Render("Setting parameters for: "+label) + "\n")
+	}
+	if note := w.fieldNote(f); note != "" {
+		for _, line := range wrapFieldNote(note, w.width) {
+			b.WriteString(dimStyle.Render(line) + "\n")
+		}
+	}
+	if f.def != "" {
+		b.WriteString(dimStyle.Render("default: "+f.def) + "\n")
+	}
+	if w.fieldErr != "" {
+		b.WriteString(flowErr.Render(w.fieldErr) + "\n")
+	}
+	if len(f.options) > 0 {
+		b.WriteString(w.optionsView(f) + "\n\n")
+		if f.multi {
+			b.WriteString(dimStyle.Render("space toggle · enter to continue · ↑/↓ or ←/→ move · shift+tab/ctrl+b back · esc to cancel"))
+			return b.String()
+		}
+		b.WriteString(dimStyle.Render("enter to continue · ↑/↓ or ←/→ select · shift+tab/ctrl+b back · esc to cancel"))
+		return b.String()
+	}
+	b.WriteString(w.input.View() + "\n\n")
+	b.WriteString(dimStyle.Render("enter to continue · shift+tab/ctrl+b back · esc to cancel"))
+	return b.String()
+}
+
+func (w *installFlow) footerHints() []string {
 	switch w.phase {
 	case phasePreflight:
 		return []string{"enter continue", "esc/q cancel"}
@@ -1126,12 +1110,12 @@ func (w *wizard) footerHints() []string {
 	case phaseConfirm:
 		return []string{"↑/↓ scroll", "enter install", "esc cancel"}
 	case phaseRunning:
-		if w.runComplete {
+		if w.run.runComplete {
 			return []string{"enter summary", "↑/↓ scroll log"}
 		}
 		return []string{"↑/↓ scroll log"}
 	case phaseDone:
-		if w.runErr != nil {
+		if w.run.runErr != nil {
 			return []string{"↑/↓ scroll log", "any other key return"}
 		}
 		return []string{"any key return"}
@@ -1140,42 +1124,42 @@ func (w *wizard) footerHints() []string {
 	}
 }
 
-func (w *wizard) confirmView() string {
+func (w *installForm) confirmView(host system.Host) string {
 	viewportHeight := w.confirmViewportHeight()
-	lines := w.visibleConfirmLines(viewportHeight)
-	return wizardTitle.Render("Install · Confirm") + "\n\n" + strings.Join(lines, "\n") + "\n\n" +
+	lines := w.visibleConfirmLines(viewportHeight, host)
+	return flowTitle.Render("Install · Confirm") + "\n\n" + strings.Join(lines, "\n") + "\n\n" +
 		dimStyle.Render("↑/↓ or mouse wheel scroll · enter/y to install · shift+tab/ctrl+b back · esc/n to cancel")
 }
 
-func (w *wizard) visibleConfirmLines(height int) []string {
-	rows := w.confirmRows()
+func (w *installForm) visibleConfirmLines(height int, host system.Host) []string {
+	rows := w.confirmRows(host)
 	if height <= 0 || len(rows) == 0 {
 		return nil
 	}
-	w.clampConfirmScroll(height)
+	w.clampConfirmScroll(height, host)
 	start := min(w.confirmScroll, max(0, len(rows)-height))
 	end := min(start+height, len(rows))
 	return rows[start:end]
 }
 
-func (w *wizard) scrollConfirm(delta, height int) {
+func (w *installForm) scrollConfirm(delta, height int, host system.Host) {
 	w.confirmScroll += delta
-	w.clampConfirmScroll(height)
+	w.clampConfirmScroll(height, host)
 }
 
-func (w *wizard) clampConfirmScroll(height int) {
-	w.confirmScroll = min(max(0, w.confirmScroll), w.maxConfirmScroll(height))
+func (w *installForm) clampConfirmScroll(height int, host system.Host) {
+	w.confirmScroll = min(max(0, w.confirmScroll), w.maxConfirmScroll(height, host))
 }
 
-func (w *wizard) maxConfirmScroll(height int) int {
+func (w *installForm) maxConfirmScroll(height int, host system.Host) int {
 	if height <= 0 {
 		return 0
 	}
-	return max(0, len(w.confirmRows())-height)
+	return max(0, len(w.confirmRows(host))-height)
 }
 
-func (w *wizard) confirmRows() []string {
-	summary := strings.TrimRight(w.summary(), "\n")
+func (w *installForm) confirmRows(host system.Host) []string {
+	summary := strings.TrimRight(w.summary(host), "\n")
 	if summary == "" {
 		return nil
 	}
@@ -1183,21 +1167,21 @@ func (w *wizard) confirmRows() []string {
 	return strings.Split(strings.TrimRight(wrapped, "\n"), "\n")
 }
 
-func (w *wizard) confirmViewportHeight() int {
+func (w *installForm) confirmViewportHeight() int {
 	if w.height <= 0 {
 		return 12
 	}
 	return max(1, w.height-4)
 }
 
-func (w *wizard) confirmWrapWidth() int {
+func (w *installForm) confirmWrapWidth() int {
 	if w.width <= 0 {
 		return 80
 	}
 	return max(1, w.width)
 }
 
-func (w *wizard) optionsView(f field) string {
+func (w *installForm) optionsView(f field) string {
 	var rows []string
 	for i, opt := range f.options {
 		label := opt
@@ -1217,99 +1201,12 @@ func (w *wizard) optionsView(f field) string {
 	return strings.Join(rows, "\n")
 }
 
-func (w *wizard) runningView() string {
-	logs := w.logView(w.logViewportHeight())
-	hint := "↑/↓ scroll log"
-	if w.runComplete {
-		hint = "complete · press enter to show summary · " + hint
-	}
-	body := wizardTitle.Render("Install · Running") + "\n\n" + w.bar.ViewAs(w.percent())
-	if logs != "" {
-		body += "\n\n" + logs
-	}
-	return body + "\n\n" + dimStyle.Render(hint)
+func (w *installFlow) runningView() string {
+	return commandRunningView(w, "Install · Running")
 }
 
-func (w *wizard) failedView() string {
-	body := wizardErr.Render("Install failed") + "\n\n" + w.runErr.Error()
-	if logs := w.logView(w.doneLogHeight()); logs != "" {
-		body += "\n\n" + logs + "\n\n" + dimStyle.Render("↑/↓ scroll log · any other key to return")
-		return body
-	}
-	return body + "\n\n" + dimStyle.Render("press any key to return")
-}
-
-func (w *wizard) logView(height int) string {
-	lines := w.visibleLogLines(height)
-	if len(lines) == 0 {
-		return ""
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (w *wizard) visibleLogLines(height int) []string {
-	rows := w.logRows()
-	if height <= 0 || len(rows) == 0 {
-		return nil
-	}
-	visible := min(height, len(rows))
-	w.clampLogScroll(height)
-	start := len(rows) - visible - w.logScroll
-	return rows[start : start+visible]
-}
-
-func (w *wizard) scrollLog(delta, height int) {
-	w.logScroll += delta
-	w.clampLogScroll(height)
-}
-
-func (w *wizard) clampLogScroll(height int) {
-	w.logScroll = min(max(0, w.logScroll), w.maxLogScroll(height))
-}
-
-func (w *wizard) maxLogScroll(height int) int {
-	if height <= 0 {
-		return 0
-	}
-	return max(0, len(w.logRows())-height)
-}
-
-func (w *wizard) logRows() []string {
-	var rows []string
-	for _, line := range w.logBuf {
-		rows = append(rows, w.wrapLogLine(line)...)
-	}
-	return rows
-}
-
-func (w *wizard) wrapLogLine(line string) []string {
-	wrapped := lipgloss.NewStyle().Width(w.logWrapWidth()).Render(line)
-	return strings.Split(wrapped, "\n")
-}
-
-func (w *wizard) logLineHeight(line string) int {
-	return max(1, lipgloss.Height(lipgloss.NewStyle().Width(w.logWrapWidth()).Render(line)))
-}
-
-func (w *wizard) logWrapWidth() int {
-	if w.width <= 0 {
-		return 80
-	}
-	return max(1, w.width)
-}
-
-func (w *wizard) logViewportHeight() int {
-	if w.height <= 0 {
-		return 12
-	}
-	return max(1, w.height-6)
-}
-
-func (w *wizard) doneLogHeight() int {
-	if w.height <= 0 {
-		return 12
-	}
-	return max(1, w.height-7)
+func (w *installFlow) failedView() string {
+	return commandFailedView(w, "Install failed")
 }
 
 func wrapFieldNote(s string, width int) []string {
@@ -1345,18 +1242,7 @@ func wrapWords(s string, width int) []string {
 	return append(lines, line)
 }
 
-func (w *wizard) percent() float64 {
-	if len(w.events) == 0 {
-		return 0
-	}
-	last := w.events[len(w.events)-1]
-	if last.Total == 0 {
-		return 0
-	}
-	return float64(last.Index) / float64(last.Total)
-}
-
-func (w *wizard) summary() string {
+func (w *installForm) summary(host system.Host) string {
 	protocols := protocolsFromValue(w.values["protocols"])
 	if len(protocols) == 0 {
 		protocols = config.AllProtocols
@@ -1371,8 +1257,8 @@ func (w *wizard) summary() string {
 		summaryRow("Subscription port", or(w.values["subscribe_port"], "2096")),
 		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
 		summaryRow("Traffic monitor", yesNoString(deployMonitor)),
-		summaryRow("Operating system / architecture", w.host.OS.ID+" / "+w.host.Arch),
-		summaryRow("Firewall", firewallName(w.host.Firewall)),
+		summaryRow("Operating system / architecture", host.OS.ID+" / "+host.Arch),
+		summaryRow("Firewall", firewallName(host.Firewall)),
 	}
 	if deployMonitor {
 		rows = append(rows,
@@ -1405,7 +1291,7 @@ func subscriptionSaltSummary(value string) string {
 	return highlightSummaryText(summaryValueOrRandom(value))
 }
 
-func (w *wizard) doneSummary() string {
+func (w *installFlow) doneSummary() string {
 	token := install.SubscriptionToken(w.cfg.Salt)
 	subscriptionBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.SubscribePort)
 	rows := []summaryLine{
@@ -1431,7 +1317,7 @@ func yesNoString(v bool) string {
 }
 
 // logWriter forwards streamed command output to the UI via the run channel. It
-// runs on the orchestrator goroutine, so it must not touch wizard state directly.
+// runs on the orchestrator goroutine, so it must not touch UI state directly.
 type logWriter struct {
 	ch chan runMsg
 }

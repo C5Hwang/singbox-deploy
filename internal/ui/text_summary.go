@@ -89,7 +89,7 @@ type summaryHighlightSpan struct {
 
 var summaryHighlightRules = []summaryHighlightRule{
 	{pattern: regexp.MustCompile(`(?i)\b(?:not running|not valid yet|failed|failure|error|expired|invalid|inactive|stopped|dead)\b`), style: statusBad},
-	{pattern: regexp.MustCompile(`(?i)\brandom\b`), style: wizardRandom},
+	{pattern: regexp.MustCompile(`(?i)\brandom\b`), style: flowRandom},
 	{pattern: regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b`), style: summaryDate},
 	{pattern: regexp.MustCompile(`(?i)\breset day \d{1,2}\b`), style: summaryDate},
 	{pattern: regexp.MustCompile(`\bv?\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?\b`), style: summaryInfo, keep: isLikelyVersion},

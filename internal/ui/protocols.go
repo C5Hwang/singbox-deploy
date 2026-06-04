@@ -6,10 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/install"
@@ -79,14 +77,8 @@ type protocolManager struct {
 
 	editProto config.Protocol
 
-	bar         progress.Model
-	events      []install.Event
-	logBuf      []string
-	logScroll   int
-	runErr      error
-	runComplete bool
-	result      install.Config
-	ch          chan runMsg
+	commandRun
+	result install.Config
 }
 
 func newProtocolManager() *protocolManager {
@@ -95,11 +87,11 @@ func newProtocolManager() *protocolManager {
 	input.Prompt = "› "
 
 	pm := &protocolManager{
-		phase:    protocolPhaseAction,
-		selected: map[string]bool{},
-		values:   map[string]string{},
-		input:    input,
-		bar:      progress.New(progress.WithDefaultGradient()),
+		phase:      protocolPhaseAction,
+		selected:   map[string]bool{},
+		values:     map[string]string{},
+		input:      input,
+		commandRun: newCommandRun(),
 	}
 	host, err := detectProtocolHost()
 	pm.host = host
@@ -117,7 +109,7 @@ func newProtocolManager() *protocolManager {
 func (pm *protocolManager) setSize(width, height int) {
 	pm.width = width
 	pm.height = height
-	pm.bar.Width = min(width-4, 60)
+	pm.commandRun.setSize(width, height)
 }
 
 func (pm *protocolManager) Update(msg tea.Msg) (tea.Cmd, bool) {
@@ -608,12 +600,7 @@ func (pm *protocolManager) applyBlocker() string {
 
 func (pm *protocolManager) startRun() tea.Cmd {
 	pm.phase = protocolPhaseRunning
-	pm.events = nil
-	pm.logBuf = nil
-	pm.logScroll = 0
-	pm.runErr = nil
-	pm.runComplete = false
-	pm.ch = make(chan runMsg, 64)
+	pm.resetRun(make(chan runMsg, 64))
 	ch := pm.ch
 	opts := pm.updateOptions()
 	logs := &logWriter{ch: ch}
@@ -666,40 +653,21 @@ func (pm *protocolManager) updateOptions() install.ProtocolUpdateOptions {
 	return opts
 }
 
-func (pm *protocolManager) waitForRun() tea.Cmd {
-	ch := pm.ch
-	return func() tea.Msg { return <-ch }
+func (pm *protocolManager) handleRun(msg runMsg) tea.Cmd {
+	return handleCommandRun(pm, msg)
 }
 
-func (pm *protocolManager) handleRun(msg runMsg) tea.Cmd {
-	if msg.event != nil {
-		pm.events = append(pm.events, *msg.event)
-		e := *msg.event
-		line := fmt.Sprintf("[%d/%d] %s - %s", e.Index, e.Total, e.Label, e.Status)
-		if e.Err != nil {
-			line += ": " + e.Err.Error()
-		}
-		pm.appendLog(line)
-	}
-	if msg.logLine != "" {
-		pm.appendLog(dimStyle.Render(msg.logLine))
-	}
-	if msg.done {
-		pm.runErr = msg.err
-		if msg.err != nil {
-			pm.phase = protocolPhaseDone
-			return nil
-		}
-		pm.runComplete = true
-		pm.logScroll = 0
-		return nil
-	}
-	return pm.waitForRun()
+func (pm *protocolManager) runState() *commandRun {
+	return &pm.commandRun
+}
+
+func (pm *protocolManager) markRunFailed() {
+	pm.phase = protocolPhaseDone
 }
 
 func (pm *protocolManager) View() string {
 	if pm.loadErr != nil {
-		return wizardTitle.Render("Protocol Management") + "\n\n" + wizardErr.Render(pm.loadErr.Error()) + "\n\n" + dimStyle.Render("run install first · press enter/esc to return")
+		return flowTitle.Render("Protocol Management") + "\n\n" + flowErr.Render(pm.loadErr.Error()) + "\n\n" + dimStyle.Render("run install first · press enter/esc to return")
 	}
 	switch pm.phase {
 	case protocolPhaseAction:
@@ -718,7 +686,7 @@ func (pm *protocolManager) View() string {
 		if pm.runErr != nil {
 			return pm.failedView()
 		}
-		return wizardOK.Render("Protocol management complete") + "\n\n" + pm.doneSummary() + "\n\n" + dimStyle.Render("press any key to return")
+		return flowOK.Render("Protocol management complete") + "\n\n" + pm.doneSummary() + "\n\n" + dimStyle.Render("press any key to return")
 	default:
 		return ""
 	}
@@ -726,13 +694,13 @@ func (pm *protocolManager) View() string {
 
 func (pm *protocolManager) actionView() string {
 	var b strings.Builder
-	b.WriteString(wizardTitle.Render("Protocol Management") + "\n\n")
+	b.WriteString(flowTitle.Render("Protocol Management") + "\n\n")
 	b.WriteString(dimStyle.Render("Current: ") + protocolLabels(pm.cfg.Enabled) + "\n")
 	if !pm.canApply() {
-		b.WriteString(wizardErr.Render(pm.applyBlocker()) + "\n")
+		b.WriteString(flowErr.Render(pm.applyBlocker()) + "\n")
 	}
 	if pm.fieldErr != "" {
-		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
+		b.WriteString(flowErr.Render(pm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
 	for i, action := range pm.actions() {
@@ -748,11 +716,11 @@ func (pm *protocolManager) actionView() string {
 
 func (pm *protocolManager) selectView() string {
 	var b strings.Builder
-	b.WriteString(wizardTitle.Render("Protocol Management · Install / Remove") + "\n\n")
+	b.WriteString(flowTitle.Render("Protocol Management · Install / Remove") + "\n\n")
 	b.WriteString(dimStyle.Render("Current: ") + protocolLabels(pm.cfg.Enabled) + "\n")
 	b.WriteString(dimStyle.Render("Target:  ") + protocolLabels(pm.targetProtocols()) + "\n")
 	if pm.fieldErr != "" {
-		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
+		b.WriteString(flowErr.Render(pm.fieldErr) + "\n")
 	}
 	b.WriteString("\n" + pm.protocolOptionsView() + "\n\n")
 	b.WriteString(dimStyle.Render("space toggle · enter continue · shift+tab back · esc cancel"))
@@ -761,10 +729,10 @@ func (pm *protocolManager) selectView() string {
 
 func (pm *protocolManager) editPickView() string {
 	var b strings.Builder
-	b.WriteString(wizardTitle.Render("Protocol Management · Edit") + "\n\n")
+	b.WriteString(flowTitle.Render("Protocol Management · Edit") + "\n\n")
 	b.WriteString(dimStyle.Render("Choose an installed protocol to edit its uuid/password and port.") + "\n")
 	if pm.fieldErr != "" {
-		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
+		b.WriteString(flowErr.Render(pm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
 	for i, proto := range pm.cfg.Enabled {
@@ -786,7 +754,7 @@ func (pm *protocolManager) formView() string {
 	if pm.action == protocolActionEdit {
 		title = "Protocol Management · Edit " + string(pm.editProto)
 	}
-	b.WriteString(wizardTitle.Render(title) + "\n\n")
+	b.WriteString(flowTitle.Render(title) + "\n\n")
 	b.WriteString(f.label + "\n")
 	if f.note != "" {
 		for _, line := range wrapFieldNote(f.note, pm.width) {
@@ -797,7 +765,7 @@ func (pm *protocolManager) formView() string {
 		b.WriteString(dimStyle.Render("default: "+f.def) + "\n")
 	}
 	if pm.fieldErr != "" {
-		b.WriteString(wizardErr.Render(pm.fieldErr) + "\n")
+		b.WriteString(flowErr.Render(pm.fieldErr) + "\n")
 	}
 	b.WriteString(pm.input.View() + "\n\n")
 	b.WriteString(dimStyle.Render("enter continue · shift+tab back · esc cancel"))
@@ -860,28 +828,15 @@ func (pm *protocolManager) confirmView() string {
 		summaryBlank(),
 		summaryText("This will regenerate sing-box config and all subscription files."),
 	)
-	return wizardTitle.Render("Protocol Management · Confirm") + "\n\n" + renderSummary(rows) + "\n\n" + dimStyle.Render("enter/y apply · shift+tab back · esc/n cancel")
+	return flowTitle.Render("Protocol Management · Confirm") + "\n\n" + renderSummary(rows) + "\n\n" + dimStyle.Render("enter/y apply · shift+tab back · esc/n cancel")
 }
 
 func (pm *protocolManager) runningView() string {
-	body := wizardTitle.Render("Protocol Management · Running") + "\n\n" + pm.bar.ViewAs(pm.percent())
-	if logs := pm.logView(pm.logViewportHeight()); logs != "" {
-		body += "\n\n" + logs
-	}
-	hint := "↑/↓ scroll log"
-	if pm.runComplete {
-		hint = "complete · press enter to show summary · " + hint
-	}
-	return body + "\n\n" + dimStyle.Render(hint)
+	return commandRunningView(pm, "Protocol Management · Running")
 }
 
 func (pm *protocolManager) failedView() string {
-	body := wizardErr.Render("Protocol management failed") + "\n\n" + pm.runErr.Error()
-	if logs := pm.logView(pm.doneLogHeight()); logs != "" {
-		body += "\n\n" + logs + "\n\n" + dimStyle.Render("↑/↓ scroll log · any other key to return")
-		return body
-	}
-	return body + "\n\n" + dimStyle.Render("press any key to return")
+	return commandFailedView(pm, "Protocol management failed")
 }
 
 func (pm *protocolManager) doneSummary() string {
@@ -998,96 +953,4 @@ func needsRealityProtocol(protocols []config.Protocol) bool {
 		}
 	}
 	return false
-}
-
-func (pm *protocolManager) percent() float64 {
-	if len(pm.events) == 0 {
-		return 0
-	}
-	last := pm.events[len(pm.events)-1]
-	if last.Total == 0 {
-		return 0
-	}
-	return float64(last.Index) / float64(last.Total)
-}
-
-func (pm *protocolManager) appendLog(line string) {
-	if pm.logScroll > 0 {
-		pm.logScroll += pm.logLineHeight(line)
-	}
-	pm.logBuf = append(pm.logBuf, line)
-	pm.clampLogScroll(pm.logViewportHeight())
-}
-
-func (pm *protocolManager) logView(height int) string {
-	lines := pm.visibleLogLines(height)
-	if len(lines) == 0 {
-		return ""
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (pm *protocolManager) visibleLogLines(height int) []string {
-	rows := pm.logRows()
-	if height <= 0 || len(rows) == 0 {
-		return nil
-	}
-	visible := min(height, len(rows))
-	pm.clampLogScroll(height)
-	start := len(rows) - visible - pm.logScroll
-	return rows[start : start+visible]
-}
-
-func (pm *protocolManager) scrollLog(delta, height int) {
-	pm.logScroll += delta
-	pm.clampLogScroll(height)
-}
-
-func (pm *protocolManager) clampLogScroll(height int) {
-	pm.logScroll = min(max(0, pm.logScroll), pm.maxLogScroll(height))
-}
-
-func (pm *protocolManager) maxLogScroll(height int) int {
-	if height <= 0 {
-		return 0
-	}
-	return max(0, len(pm.logRows())-height)
-}
-
-func (pm *protocolManager) logRows() []string {
-	var rows []string
-	for _, line := range pm.logBuf {
-		rows = append(rows, pm.wrapLogLine(line)...)
-	}
-	return rows
-}
-
-func (pm *protocolManager) wrapLogLine(line string) []string {
-	wrapped := lipgloss.NewStyle().Width(pm.logWrapWidth()).Render(line)
-	return strings.Split(wrapped, "\n")
-}
-
-func (pm *protocolManager) logLineHeight(line string) int {
-	return max(1, lipgloss.Height(lipgloss.NewStyle().Width(pm.logWrapWidth()).Render(line)))
-}
-
-func (pm *protocolManager) logWrapWidth() int {
-	if pm.width <= 0 {
-		return 80
-	}
-	return max(1, pm.width)
-}
-
-func (pm *protocolManager) logViewportHeight() int {
-	if pm.height <= 0 {
-		return 12
-	}
-	return max(1, pm.height-6)
-}
-
-func (pm *protocolManager) doneLogHeight() int {
-	if pm.height <= 0 {
-		return 12
-	}
-	return max(1, pm.height-7)
 }

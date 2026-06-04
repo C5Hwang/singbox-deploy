@@ -62,7 +62,7 @@ type Model struct {
 	status    Status
 	groups    []MenuGroup
 	cursor    int // flat index across all items
-	wizard    *wizard
+	install   *installFlow
 	protocols *protocolManager
 }
 
@@ -128,14 +128,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// While a sub-flow is active, delegate everything to it so its state machine
 	// and async run messages are handled in one place.
-	if m.wizard != nil {
-		w := m.wizard
-		cmd, done := m.wizard.Update(msg)
+	if m.install != nil {
+		flow := m.install
+		cmd, done := m.install.Update(msg)
 		if done {
-			if w.phase == phaseDone && w.runErr == nil {
+			if flow.phase == phaseDone && flow.run.runErr == nil {
 				m.RefreshStatus()
 			}
-			m.wizard = nil
+			m.install = nil
 		}
 		return m, cmd
 	}
@@ -174,9 +174,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) activate() tea.Cmd {
 	switch m.cursor {
 	case 0:
-		w := newWizard()
-		w.setSize(m.width, m.height)
-		m.wizard = w
+		flow := newInstallFlow()
+		flow.setSize(m.width, m.height)
+		m.install = flow
 	case 1:
 		p := newProtocolManager()
 		p.setSize(m.width, m.height)
@@ -246,9 +246,9 @@ func (m *Model) bodyView(width, height int) string {
 }
 
 func (m *Model) contentView(width, height int) string {
-	if m.wizard != nil {
-		m.wizard.setSize(width, height)
-		return m.wizard.View()
+	if m.install != nil {
+		m.install.setSize(width, height)
+		return m.install.View()
 	}
 	if m.protocols != nil {
 		m.protocols.setSize(width, height)
@@ -259,14 +259,14 @@ func (m *Model) contentView(width, height int) string {
 
 func (m *Model) footerView() string {
 	var parts []string
-	if m.wizard == nil {
+	if m.install == nil {
 		if m.protocols == nil {
 			parts = append(parts, "↑/↓ move", "enter select", "esc/q quit")
 		} else {
 			parts = append(parts, m.protocols.footerHints()...)
 		}
 	} else {
-		parts = append(parts, m.wizard.footerHints()...)
+		parts = append(parts, m.install.footerHints()...)
 	}
 	return dimStyle.Render(strings.Join(parts, " · "))
 }
