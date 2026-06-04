@@ -6,7 +6,6 @@ package system
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -67,37 +66,4 @@ func (r *ExecRunner) Run(c Command) error {
 		cmd.Stderr = r.Output
 	}
 	return cmd.Run()
-}
-
-// DryRunRunner prints commands instead of executing them. It is used by the UI
-// dry-run mode so operators can review the exact system interactions first.
-type DryRunRunner struct {
-	Output    io.Writer
-	OnCommand func(Command)
-}
-
-// NewDryRunRunner returns a runner that writes commands to out and never
-// invokes the operating system.
-func NewDryRunRunner(out io.Writer) *DryRunRunner {
-	return &DryRunRunner{Output: out}
-}
-
-// Run prints c and reports success without executing it.
-func (r *DryRunRunner) Run(c Command) error {
-	if r.OnCommand != nil {
-		r.OnCommand(c)
-	}
-	if r.Output == nil {
-		return nil
-	}
-	_, err := fmt.Fprint(r.Output, prefixDryRunLines(c.String()))
-	return err
-}
-
-func prefixDryRunLines(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	for i, line := range lines {
-		lines[i] = "[dry-run] " + line
-	}
-	return strings.Join(lines, "\n") + "\n"
 }

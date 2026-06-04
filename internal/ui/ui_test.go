@@ -148,17 +148,6 @@ func TestInstallFieldShowsUsageNote(t *testing.T) {
 	}
 }
 
-func TestDryRunShortcutShowsIndicator(t *testing.T) {
-	m := NewModel()
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	if !m.dryRun {
-		t.Fatalf("dry-run shortcut did not enable mode")
-	}
-	if !strings.Contains(m.View(), "dry-run mode") {
-		t.Fatalf("view missing dry-run indicator:\n%s", m.View())
-	}
-}
-
 func TestProtocolManagementMenuOpens(t *testing.T) {
 	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
 	withProtocolManagerDeps(t, layout)
@@ -177,7 +166,7 @@ func TestProtocolManagementMenuOpens(t *testing.T) {
 func TestProtocolManagementAsksRealitySNIWhenEnablingReality(t *testing.T) {
 	layout := protocolManagerState(t, "hysteria2", "")
 	withProtocolManagerDeps(t, layout)
-	pm := newProtocolManager(false)
+	pm := newProtocolManager()
 	pm.setSize(100, 30)
 	if pm.loadErr != nil {
 		t.Fatalf("load protocol manager: %v", pm.loadErr)
@@ -205,7 +194,7 @@ func TestProtocolManagementAsksRealitySNIWhenEnablingReality(t *testing.T) {
 func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T) {
 	layout := protocolManagerState(t, "hysteria2", "")
 	withProtocolManagerDeps(t, layout)
-	pm := newProtocolManager(false)
+	pm := newProtocolManager()
 	pm.setSize(100, 30)
 	pm.cursor = 1
 	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -229,14 +218,14 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 func TestProtocolManagementRealitySNIEntryOnlyForRealityProtocols(t *testing.T) {
 	layout := protocolManagerState(t, "hysteria2", "")
 	withProtocolManagerDeps(t, layout)
-	pm := newProtocolManager(false)
+	pm := newProtocolManager()
 	if strings.Contains(pm.View(), "Edit Reality SNI") {
 		t.Fatalf("Reality SNI entry should be hidden without Reality protocols:\n%s", pm.View())
 	}
 
 	realityLayout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
 	withProtocolManagerDeps(t, realityLayout)
-	pm = newProtocolManager(false)
+	pm = newProtocolManager()
 	view := pm.View()
 	if !strings.Contains(view, "Edit Reality SNI") {
 		t.Fatalf("Reality SNI entry missing for Reality protocols:\n%s", view)
@@ -323,6 +312,12 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	if status.Subscription != "https://example.com:2096/s/default/tok" {
 		t.Fatalf("Subscription = %q", status.Subscription)
 	}
+	if status.ClashMetaSub != "https://example.com:2096/s/clashMetaProfiles/tok" {
+		t.Fatalf("ClashMetaSub = %q", status.ClashMetaSub)
+	}
+	if status.SingBoxSub != "https://example.com:2096/s/sing-box/tok" {
+		t.Fatalf("SingBoxSub = %q", status.SingBoxSub)
+	}
 	if status.TrafficQuota != "in limit 40 GB, out limit 50 GB, total limit 100 GB, reset day 7" {
 		t.Fatalf("TrafficQuota = %q", status.TrafficQuota)
 	}
@@ -402,44 +397,45 @@ func TestRunningStatusLevelClassifiesColors(t *testing.T) {
 	}
 }
 
-func TestDryRunRunningPausesAfterVisibleUpdate(t *testing.T) {
-	w := &wizard{phase: phaseRunning, dryRun: true, ch: make(chan runMsg, 1)}
-	cmd := w.handleRun(runMsg{logLine: "[dry-run] apt-get update"})
+func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
+	w := &wizard{phase: phaseRunning, ch: make(chan runMsg, 1), bar: progressBarForTest()}
+	cmd := w.handleRun(runMsg{done: true})
 	if cmd != nil {
-		t.Fatalf("dry-run visible update should wait for enter")
+		t.Fatalf("completion should not wait for another run message")
 	}
-	if !w.dryRunAwaitingEnter {
-		t.Fatalf("dry-run should wait for enter after visible update")
+	if w.phase != phaseRunning || !w.runComplete {
+		t.Fatalf("completion should stay on running phase, phase=%v complete=%v", w.phase, w.runComplete)
 	}
-	if !strings.Contains(w.View(), "enter to show next dry-run update") {
-		t.Fatalf("running view missing dry-run prompt:\n%s", w.View())
+	if !strings.Contains(w.View(), "press enter to show summary") {
+		t.Fatalf("running view missing enter summary prompt:\n%s", w.View())
+	}
+	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || w.phase != phaseDone {
+		t.Fatalf("enter should move to summary without closing, phase=%v done=%v", w.phase, done)
 	}
 }
 
-func TestDryRunRunningEnterReadsNextUpdate(t *testing.T) {
-	w := &wizard{phase: phaseRunning, dryRun: true, ch: make(chan runMsg, 1)}
-	w.handleRun(runMsg{logLine: "first"})
-	w.ch <- runMsg{logLine: "second"}
-	cmd, done := w.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done {
-		t.Fatalf("enter should continue dry-run, not close wizard")
+func TestProtocolRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
+	pm := &protocolManager{phase: protocolPhaseRunning, ch: make(chan runMsg, 1), bar: progressBarForTest()}
+	cmd := pm.handleRun(runMsg{done: true})
+	if cmd != nil {
+		t.Fatalf("completion should not wait for another protocol run message")
 	}
-	if cmd == nil {
-		t.Fatalf("enter should read next dry-run update")
+	if pm.phase != protocolPhaseRunning || !pm.runComplete {
+		t.Fatalf("completion should stay on running phase, phase=%v complete=%v", pm.phase, pm.runComplete)
 	}
-	msg, ok := cmd().(runMsg)
-	if !ok || msg.logLine != "second" {
-		t.Fatalf("next message = %#v", msg)
+	if !strings.Contains(pm.View(), "press enter to show summary") {
+		t.Fatalf("protocol running view missing enter summary prompt:\n%s", pm.View())
 	}
-	w.handleRun(msg)
-	if !strings.Contains(strings.Join(w.logBuf, "\n"), "second") {
-		t.Fatalf("log buffer missing next update: %#v", w.logBuf)
+	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || pm.phase != protocolPhaseDone {
+		t.Fatalf("enter should move protocol manager to summary, phase=%v done=%v", pm.phase, done)
 	}
 }
 
 func TestLogWriterSanitizesTerminalControlOutput(t *testing.T) {
 	ch := make(chan runMsg, 4)
-	lw := &logWriter{ch: ch, block: true}
+	lw := &logWriter{ch: ch}
 	input := "Downloading 10%\r\x1b[2KDownloading 20%\n\x1b[?25lsecret\x1b[?25h\n"
 	if _, err := lw.Write([]byte(input)); err != nil {
 		t.Fatalf("Write error: %v", err)
@@ -491,7 +487,7 @@ func TestRunningLogKeepsHistoryAndScrolls(t *testing.T) {
 func TestRunningViewFitsAssignedHeightWithWrappedLog(t *testing.T) {
 	w := &wizard{phase: phaseRunning, bar: progressBarForTest()}
 	w.setSize(32, 10)
-	w.appendLog("[dry-run] " + strings.Repeat("long-command ", 20))
+	w.appendLog(strings.Repeat("long-command ", 20))
 	if got := lipgloss.Height(w.View()); got > w.height {
 		t.Fatalf("running view height = %d, want <= %d:\n%s", got, w.height, w.View())
 	}
@@ -575,30 +571,6 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 	}
 	if !strings.Contains(w.View(), "domain resolves elsewhere") {
 		t.Fatalf("validation error missing from view:\n%s", w.View())
-	}
-}
-
-func TestDryRunSkipsDomainIPValidation(t *testing.T) {
-	w := &wizard{
-		phase:  phaseForm,
-		fields: installFields(),
-		values: map[string]string{},
-		input:  textinput.New(),
-		dryRun: true,
-		validateDomain: func(context.Context, string) error {
-			t.Fatalf("dry-run should not validate domain IP")
-			return nil
-		},
-	}
-	w.startForm()
-	w.input.SetValue("dry-run.example")
-	w.commitField()
-
-	if got := w.values["domain"]; got != "dry-run.example" {
-		t.Fatalf("domain = %q, want dry-run.example", got)
-	}
-	if got := w.fields[w.fieldIx].key; got != "email" {
-		t.Fatalf("current field = %q, want email", got)
 	}
 }
 

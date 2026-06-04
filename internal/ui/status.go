@@ -61,7 +61,9 @@ func loadStatus() Status {
 		MonitorState: monitorState,
 		CertState:    certificateState(layout, domain),
 		Protocols:    readStatusState(store, "enabled_protocols"),
-		Subscription: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token")),
+		Subscription: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "default"),
+		ClashMetaSub: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "clashMetaProfiles"),
+		SingBoxSub:   subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "sing-box"),
 		TrafficQuota: trafficQuotaStatus(store),
 	}
 }
@@ -158,11 +160,11 @@ func certificateState(layout paths.Layout, domain string) string {
 	}
 }
 
-func subscriptionStatus(domain, port, token string) string {
+func subscriptionStatus(domain, port, token, kind string) string {
 	if domain == "" || token == "" {
 		return ""
 	}
-	return fmt.Sprintf("https://%s:%s/s/default/%s", domain, port, token)
+	return fmt.Sprintf("https://%s:%s/s/%s/%s", domain, port, kind, token)
 }
 
 func trafficQuotaStatus(store state.Store) string {

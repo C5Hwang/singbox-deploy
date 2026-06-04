@@ -59,7 +59,6 @@ type protocolActionItem struct {
 type protocolManager struct {
 	phase  protocolPhase
 	action protocolAction
-	dryRun bool
 
 	width  int
 	height int
@@ -80,23 +79,23 @@ type protocolManager struct {
 
 	editProto config.Protocol
 
-	bar       progress.Model
-	events    []install.Event
-	logBuf    []string
-	logScroll int
-	runErr    error
-	result    install.Config
-	ch        chan runMsg
+	bar         progress.Model
+	events      []install.Event
+	logBuf      []string
+	logScroll   int
+	runErr      error
+	runComplete bool
+	result      install.Config
+	ch          chan runMsg
 }
 
-func newProtocolManager(dryRun bool) *protocolManager {
+func newProtocolManager() *protocolManager {
 	input := textinput.New()
 	input.CharLimit = 256
 	input.Prompt = "› "
 
 	pm := &protocolManager{
 		phase:    protocolPhaseAction,
-		dryRun:   dryRun,
 		selected: map[string]bool{},
 		values:   map[string]string{},
 		input:    input,
@@ -208,6 +207,15 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 	case protocolPhaseRunning:
 		switch msg.String() {
+		case "enter":
+			if pm.runComplete {
+				if cfg, err := install.LoadProtocolConfig(protocolUILayout()); err == nil {
+					pm.cfg = cfg
+					pm.result = cfg
+					pm.selected = selectedOptions(protocolsValue(cfg.Enabled))
+				}
+				pm.phase = protocolPhaseDone
+			}
 		case "up", "k":
 			pm.scrollLog(1, pm.logViewportHeight())
 		case "down", "j":
@@ -579,9 +587,6 @@ func portDefault(port int) string {
 }
 
 func (pm *protocolManager) canApply() bool {
-	if pm.dryRun {
-		return true
-	}
 	return pm.hostErr == nil && pm.host.IsRoot && pm.host.Supported() && !pm.host.SELinux
 }
 
@@ -607,13 +612,10 @@ func (pm *protocolManager) startRun() tea.Cmd {
 	pm.logBuf = nil
 	pm.logScroll = 0
 	pm.runErr = nil
+	pm.runComplete = false
 	pm.ch = make(chan runMsg, 64)
 	ch := pm.ch
 	opts := pm.updateOptions()
-	if pm.dryRun {
-		go simulateProtocolDryRun(ch, pm.cfg.Enabled, opts.Selected, pm.values)
-		return pm.waitForRun()
-	}
 	logs := &logWriter{ch: ch}
 	opts.Layout = protocolUILayout()
 	opts.Runner = system.NewExecRunner(logs)
@@ -664,28 +666,6 @@ func (pm *protocolManager) updateOptions() install.ProtocolUpdateOptions {
 	return opts
 }
 
-func simulateProtocolDryRun(ch chan runMsg, current, target []config.Protocol, values map[string]string) {
-	steps := []install.Event{
-		{Index: 1, Total: 3, Label: "Plan", Detail: "compute protocol changes", Status: "running"},
-		{Index: 1, Total: 3, Label: "Plan", Detail: "compute protocol changes", Status: "ok"},
-		{Index: 2, Total: 3, Label: "Config", Detail: "would render and validate config.json", Status: "running"},
-		{Index: 2, Total: 3, Label: "Config", Detail: "would render and validate config.json", Status: "ok"},
-		{Index: 3, Total: 3, Label: "Restart", Detail: "would restart sing-box.service", Status: "running"},
-		{Index: 3, Total: 3, Label: "Restart", Detail: "would restart sing-box.service", Status: "ok"},
-	}
-	ch <- runMsg{logLine: "[dry-run] current protocols: " + protocolLabels(current)}
-	ch <- runMsg{logLine: "[dry-run] target protocols: " + protocolLabels(target)}
-	if len(values) > 0 {
-		ch <- runMsg{logLine: "[dry-run] explicit protocol parameters were collected"}
-	}
-	for _, e := range steps {
-		ev := e
-		ch <- runMsg{event: &ev}
-	}
-	ch <- runMsg{logLine: "[dry-run] no files, firewall rules, or services were changed"}
-	ch <- runMsg{done: true}
-}
-
 func (pm *protocolManager) waitForRun() tea.Cmd {
 	ch := pm.ch
 	return func() tea.Msg { return <-ch }
@@ -706,17 +686,12 @@ func (pm *protocolManager) handleRun(msg runMsg) tea.Cmd {
 	}
 	if msg.done {
 		pm.runErr = msg.err
-		if msg.err == nil && !pm.dryRun {
-			if cfg, err := install.LoadProtocolConfig(protocolUILayout()); err == nil {
-				pm.cfg = cfg
-				pm.result = cfg
-				pm.selected = selectedOptions(protocolsValue(cfg.Enabled))
-			}
-		} else if msg.err == nil {
-			pm.result = pm.cfg
-			pm.result.Enabled = pm.updateOptions().Selected
+		if msg.err != nil {
+			pm.phase = protocolPhaseDone
+			return nil
 		}
-		pm.phase = protocolPhaseDone
+		pm.runComplete = true
+		pm.logScroll = 0
 		return nil
 	}
 	return pm.waitForRun()
@@ -893,7 +868,11 @@ func (pm *protocolManager) runningView() string {
 	if logs := pm.logView(pm.logViewportHeight()); logs != "" {
 		body += "\n\n" + logs
 	}
-	return body + "\n\n" + dimStyle.Render("↑/↓ scroll log")
+	hint := "↑/↓ scroll log"
+	if pm.runComplete {
+		hint = "complete · press enter to show summary · " + hint
+	}
+	return body + "\n\n" + dimStyle.Render(hint)
 }
 
 func (pm *protocolManager) failedView() string {
@@ -933,6 +912,9 @@ func (pm *protocolManager) footerHints() []string {
 	case protocolPhaseConfirm:
 		return []string{"enter apply", "shift+tab back", "esc cancel"}
 	case protocolPhaseRunning:
+		if pm.runComplete {
+			return []string{"enter summary", "↑/↓ scroll log"}
+		}
 		return []string{"↑/↓ scroll log"}
 	case protocolPhaseDone:
 		if pm.runErr != nil {

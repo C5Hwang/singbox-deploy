@@ -123,35 +123,6 @@ func TestExecRunnerStreamsOutput(t *testing.T) {
 	}
 }
 
-func TestDryRunRunnerPrintsWithoutExecuting(t *testing.T) {
-	var buf strings.Builder
-	var captured string
-	r := NewDryRunRunner(&buf)
-	r.OnCommand = func(c Command) { captured = c.String() }
-	if err := r.Run(Command{Name: "sh", Args: []string{"-c", "exit 7"}}); err != nil {
-		t.Fatalf("Run error: %v", err)
-	}
-	if !strings.Contains(buf.String(), "[dry-run] sh -c exit 7") {
-		t.Fatalf("dry-run output = %q", buf.String())
-	}
-	if captured != "sh -c exit 7" {
-		t.Fatalf("captured command = %q", captured)
-	}
-}
-
-func TestDryRunRunnerPrefixesEachMultilineCommandLine(t *testing.T) {
-	var buf strings.Builder
-	r := NewDryRunRunner(&buf)
-	cmd := Command{Name: "bash", Args: []string{"-c", "set -e\napt-get update\napt-get install -y nginx"}}
-	if err := r.Run(cmd); err != nil {
-		t.Fatalf("Run error: %v", err)
-	}
-	want := "[dry-run] bash -c set -e\n[dry-run] apt-get update\n[dry-run] apt-get install -y nginx\n"
-	if buf.String() != want {
-		t.Fatalf("dry-run output = %q, want %q", buf.String(), want)
-	}
-}
-
 func TestNormalizeArch(t *testing.T) {
 	cases := map[string]string{"amd64": "amd64", "x86_64": "amd64", "arm64": "arm64", "aarch64": "arm64"}
 	for in, want := range cases {

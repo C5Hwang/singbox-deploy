@@ -1,16 +1,12 @@
 package ui
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"fmt"
 	"math/big"
 	"net"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -119,21 +115,20 @@ type wizard struct {
 
 	validateDomain func(context.Context, string) error
 
-	bar                 progress.Model
-	events              []install.Event
-	logBuf              []string
-	logScroll           int
-	confirmScroll       int
-	runErr              error
-	cfg                 install.Config
-	dryRun              bool
-	dryRunAwaitingEnter bool
+	bar           progress.Model
+	events        []install.Event
+	logBuf        []string
+	logScroll     int
+	confirmScroll int
+	runErr        error
+	cfg           install.Config
+	runComplete   bool
 
 	ch chan runMsg
 }
 
 // newWizard builds the wizard, running host preflight immediately.
-func newWizard(dryRun bool) *wizard {
+func newWizard() *wizard {
 	ti := textinput.New()
 	ti.CharLimit = 256
 	ti.Prompt = "› "
@@ -144,7 +139,6 @@ func newWizard(dryRun bool) *wizard {
 		values:         map[string]string{},
 		input:          ti,
 		bar:            progress.New(progress.WithDefaultGradient()),
-		dryRun:         dryRun,
 		validateDomain: validateDomainResolvesToCurrentIP,
 	}
 	host, err := system.DetectHost()
@@ -152,18 +146,14 @@ func newWizard(dryRun bool) *wizard {
 	switch {
 	case err != nil:
 		w.hosts = "Failed to detect host: " + err.Error()
-	case !host.IsRoot && !dryRun:
+	case !host.IsRoot:
 		w.hosts = "This installer must be run as root."
 	case !host.Supported():
 		w.hosts = fmt.Sprintf("Unsupported system: family=%q arch=%q", host.OS.Family, host.Arch)
-	case host.SELinux && !dryRun:
+	case host.SELinux:
 		w.hosts = "SELinux is enforcing; installation is blocked. Set it permissive and retry."
 	default:
-		if dryRun {
-			w.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s - dry-run ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
-		} else {
-			w.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s — ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
-		}
+		w.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s — ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
 	}
 	return w
 }
@@ -177,7 +167,7 @@ func firewallName(f system.Firewall) string {
 
 // canProceed reports whether preflight passed.
 func (w *wizard) canProceed() bool {
-	return (w.dryRun || w.host.IsRoot) && w.host.Supported() && (w.dryRun || !w.host.SELinux)
+	return w.host.IsRoot && w.host.Supported() && !w.host.SELinux
 }
 
 func (w *wizard) setSize(width, height int) {
@@ -442,9 +432,6 @@ func (w *wizard) validateField(f field, val string) error {
 		if val == "" {
 			return fmt.Errorf("domain is required")
 		}
-		if w.dryRun {
-			return nil
-		}
 		if w.validateDomain == nil {
 			return nil
 		}
@@ -575,6 +562,10 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 	case phaseRunning:
 		switch msg.String() {
+		case "enter":
+			if w.runComplete {
+				w.phase = phaseDone
+			}
 		case "up", "k":
 			w.scrollLog(1, w.logViewportHeight())
 			return nil, false
@@ -593,13 +584,6 @@ func (w *wizard) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		case "end":
 			w.logScroll = 0
 			return nil, false
-		case "enter":
-			if !w.dryRun || !w.dryRunAwaitingEnter {
-				break
-			}
-			w.dryRunAwaitingEnter = false
-			w.logScroll = 0
-			return w.waitForRun(), false
 		}
 	case phaseDone:
 		if w.runErr != nil {
@@ -708,9 +692,7 @@ func (w *wizard) toggleOption() {
 }
 
 func (w *wizard) handleRun(msg runMsg) tea.Cmd {
-	visible := false
 	if msg.event != nil {
-		visible = true
 		w.events = append(w.events, *msg.event)
 		e := *msg.event
 		line := fmt.Sprintf("[%d/%d] %s — %s", e.Index, e.Total, e.Label, e.Status)
@@ -720,17 +702,16 @@ func (w *wizard) handleRun(msg runMsg) tea.Cmd {
 		w.appendLog(line)
 	}
 	if msg.logLine != "" {
-		visible = true
 		w.appendLog(dimStyle.Render(msg.logLine))
 	}
 	if msg.done {
-		w.dryRunAwaitingEnter = false
 		w.runErr = msg.err
-		w.phase = phaseDone
-		return nil
-	}
-	if w.dryRun && visible {
-		w.dryRunAwaitingEnter = true
+		if msg.err != nil {
+			w.phase = phaseDone
+			return nil
+		}
+		w.runComplete = true
+		w.logScroll = 0
 		return nil
 	}
 	return w.waitForRun()
@@ -754,67 +735,25 @@ func (w *wizard) startRun() tea.Cmd {
 	}
 	w.cfg = cfg
 	w.phase = phaseRunning
+	w.runComplete = false
 	w.ch = make(chan runMsg, 64)
 
 	ch := w.ch
-	logs := &logWriter{ch: ch, block: w.dryRun}
+	logs := &logWriter{ch: ch}
 	runner := system.Runner(system.NewExecRunner(logs))
 	layout := paths.DefaultLayout()
 	issuer := acme.NewLegoIssuer()
 	issuer.Output = logs
 	acmeManager := acme.NewManager(issuer)
 	releases := release.NewClient("", nil)
-	var latestSingBox func(context.Context) (string, error)
-	var download func(context.Context, string, string) error
-	var systemdDir, nginxConfPath string
-	var checkConflicts func(context.Context, install.Config) error
-	var checkPorts func(context.Context, install.Config) error
-
-	if w.dryRun {
-		root, err := os.MkdirTemp("", "singbox-deploy-dry-run-*")
-		if err != nil {
-			w.runErr = err
-			w.phase = phaseDone
-			return nil
-		}
-		ch <- runMsg{logLine: "dry-run mode: system commands will be printed only"}
-		ch <- runMsg{logLine: "dry-run output root: " + root}
-		dryRunner := system.NewDryRunRunner(logs)
-		runner = dryRunner
-		layout = paths.LayoutForRoot(root)
-		acmeManager = acme.NewManager(dryRunIssuer{})
-		releases = nil
-		latestSingBox = func(context.Context) (string, error) { return "v1.12.0", nil }
-		download = func(_ context.Context, url, dest string) error {
-			cmd := "download " + url + " -> " + dest
-			ch <- runMsg{logLine: "[dry-run] " + cmd}
-			return writeDryRunSingBoxArchive(dest)
-		}
-		systemdDir = filepath.Join(root, "systemd")
-		nginxConfPath = filepath.Join(root, "nginx", "singbox-deploy.conf")
-		checkConflicts = func(context.Context, install.Config) error {
-			ch <- runMsg{logLine: "[dry-run] check existing sing-box service and binary conflicts"}
-			return nil
-		}
-		checkPorts = func(context.Context, install.Config) error {
-			ch <- runMsg{logLine: "[dry-run] check required ports for local bind and public reachability"}
-			return nil
-		}
-	}
 
 	orch := &install.Orchestrator{
-		Runner:         runner,
-		Layout:         layout,
-		ACME:           acmeManager,
-		Releases:       releases,
-		Download:       download,
-		LatestSingBox:  latestSingBox,
-		CheckConflicts: checkConflicts,
-		CheckPorts:     checkPorts,
-		GOOS:           "linux",
-		GOARCH:         w.host.Arch,
-		SystemdDir:     systemdDir,
-		NginxConfPath:  nginxConfPath,
+		Runner:   runner,
+		Layout:   layout,
+		ACME:     acmeManager,
+		Releases: releases,
+		GOOS:     "linux",
+		GOARCH:   w.host.Arch,
 	}
 	orch.Progress = func(e install.Event) {
 		ev := e
@@ -1142,8 +1081,8 @@ func (w *wizard) footerHints() []string {
 	case phaseConfirm:
 		return []string{"↑/↓ scroll", "enter install", "esc cancel"}
 	case phaseRunning:
-		if w.dryRunAwaitingEnter {
-			return []string{"enter next", "↑/↓ scroll log"}
+		if w.runComplete {
+			return []string{"enter summary", "↑/↓ scroll log"}
 		}
 		return []string{"↑/↓ scroll log"}
 	case phaseDone:
@@ -1236,10 +1175,8 @@ func (w *wizard) optionsView(f field) string {
 func (w *wizard) runningView() string {
 	logs := w.logView(w.logViewportHeight())
 	hint := "↑/↓ scroll log"
-	if w.dryRunAwaitingEnter {
-		hint = "enter to show next dry-run update · " + hint
-	} else if w.dryRun {
-		hint = "waiting for next dry-run update · " + hint
+	if w.runComplete {
+		hint = "complete · press enter to show summary · " + hint
 	}
 	body := wizardTitle.Render("Install · Running") + "\n\n" + w.bar.ViewAs(w.percent())
 	if logs != "" {
@@ -1434,8 +1371,7 @@ func yesNoString(v bool) string {
 // logWriter forwards streamed command output to the UI via the run channel. It
 // runs on the orchestrator goroutine, so it must not touch wizard state directly.
 type logWriter struct {
-	ch    chan runMsg
-	block bool
+	ch chan runMsg
 }
 
 func (lw *logWriter) Write(p []byte) (int, error) {
@@ -1445,10 +1381,6 @@ func (lw *logWriter) Write(p []byte) (int, error) {
 			continue
 		}
 		msg := runMsg{logLine: line}
-		if lw.block {
-			lw.ch <- msg
-			continue
-		}
 		select {
 		case lw.ch <- msg:
 		default:
@@ -1504,44 +1436,4 @@ func skipANSIEscape(s string, i int) int {
 		}
 	}
 	return i
-}
-
-type dryRunIssuer struct{}
-
-func (dryRunIssuer) Issue(context.Context, acme.Request) (acme.Certificate, error) {
-	return acme.Certificate{
-		CertificatePEM: []byte("-----BEGIN CERTIFICATE-----\ndry-run\n-----END CERTIFICATE-----\n"),
-		PrivateKeyPEM:  []byte("-----BEGIN PRIVATE KEY-----\ndry-run\n-----END PRIVATE KEY-----\n"),
-	}, nil
-}
-
-func writeDryRunSingBoxArchive(dest string) error {
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
-	}
-	f, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	gz := gzip.NewWriter(f)
-	tw := tar.NewWriter(gz)
-	content := "#!/bin/sh\nexit 0\n"
-	hdr := &tar.Header{
-		Name:     "sing-box-dry-run/sing-box",
-		Mode:     0o755,
-		Size:     int64(len(content)),
-		Typeflag: tar.TypeReg,
-	}
-	if err := tw.WriteHeader(hdr); err != nil {
-		return err
-	}
-	if _, err := tw.Write([]byte(content)); err != nil {
-		return err
-	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-	return gz.Close()
 }

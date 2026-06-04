@@ -38,6 +38,8 @@ type Status struct {
 	CertState    string
 	Protocols    string
 	Subscription string
+	ClashMetaSub string
+	SingBoxSub   string
 	TrafficQuota string
 }
 
@@ -61,7 +63,6 @@ type Model struct {
 	cursor    int // flat index across all items
 	wizard    *wizard
 	protocols *protocolManager
-	dryRun    bool
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -130,7 +131,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		w := m.wizard
 		cmd, done := m.wizard.Update(msg)
 		if done {
-			if w.phase == phaseDone && w.runErr == nil && !w.dryRun {
+			if w.phase == phaseDone && w.runErr == nil {
 				m.RefreshStatus()
 			}
 			m.wizard = nil
@@ -141,7 +142,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p := m.protocols
 		cmd, done := m.protocols.Update(msg)
 		if done {
-			if p.phase == protocolPhaseDone && p.runErr == nil && !p.dryRun {
+			if p.phase == protocolPhaseDone && p.runErr == nil {
 				m.RefreshStatus()
 			}
 			m.protocols = nil
@@ -153,8 +154,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
-		case "d":
-			m.dryRun = !m.dryRun
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -174,11 +173,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) activate() tea.Cmd {
 	switch m.cursor {
 	case 0:
-		w := newWizard(m.dryRun)
+		w := newWizard()
 		w.setSize(m.width, m.height)
 		m.wizard = w
 	case 1:
-		p := newProtocolManager(m.dryRun)
+		p := newProtocolManager()
 		p.setSize(m.width, m.height)
 		m.protocols = p
 	}
@@ -257,18 +256,9 @@ func (m *Model) contentView(width, height int) string {
 
 func (m *Model) footerView() string {
 	var parts []string
-	dryRun := m.dryRun
-	if m.wizard != nil {
-		dryRun = m.wizard.dryRun
-	} else if m.protocols != nil {
-		dryRun = m.protocols.dryRun
-	}
-	if dryRun {
-		parts = append(parts, "dry-run mode")
-	}
 	if m.wizard == nil {
 		if m.protocols == nil {
-			parts = append(parts, "d dry-run", "↑/↓ move", "enter select", "esc/q quit")
+			parts = append(parts, "↑/↓ move", "enter select", "esc/q quit")
 		} else {
 			parts = append(parts, m.protocols.footerHints()...)
 		}
@@ -313,6 +303,8 @@ func (m *Model) statusView() string {
 		{"Certificate", or(s.CertState, "unknown")},
 		{"Protocols", or(s.Protocols, "none")},
 		{"Subscription", or(s.Subscription, "none")},
+		{"Clash Meta", or(s.ClashMetaSub, "none")},
+		{"sing-box Sub", or(s.SingBoxSub, "none")},
 		{"Traffic", or(s.TrafficQuota, "unknown")},
 	}
 	var b strings.Builder
