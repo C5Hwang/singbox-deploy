@@ -73,6 +73,7 @@ type Config struct {
 	RealityHandshakePort int
 
 	SubscribePort int
+	TrafficPort   int
 	MonitorPort   int
 
 	DeployMonitor          bool
@@ -143,18 +144,21 @@ func (c Config) firewallPorts() []system.Port {
 			ports = append(ports, system.Port{Number: spec.port, Proto: spec.proto})
 		}
 	}
-	// Subscriptions and ACME HTTP-01 need the web port(s).
+	// Subscriptions, the traffic UI, and ACME HTTP-01 need the public web ports.
 	ports = append(ports, system.Port{Number: c.SubscribePort, Proto: "tcp"})
+	if c.DeployMonitor {
+		ports = append(ports, system.Port{Number: c.TrafficPort, Proto: "tcp"})
+	}
 	ports = append(ports, system.Port{Number: 80, Proto: "tcp"})
 	return ports
 }
 
 // portChecks returns the ports that must be available before installation. The
-// public protocol and subscription ports are probed through the configured
-// domain; the monitor port only needs to be free locally because it binds to
-// 127.0.0.1 behind Nginx.
+// public protocol, subscription, and traffic UI ports are probed through the
+// configured domain; the monitor service port only needs to be free locally
+// because it binds to 127.0.0.1 behind Nginx.
 func (c Config) portChecks() []system.Port {
-	checks := make([]system.Port, 0, len(c.enabled())+3)
+	checks := make([]system.Port, 0, len(c.enabled())+4)
 	for _, p := range c.enabled() {
 		switch p {
 		case config.ProtocolRealityVision:
@@ -170,11 +174,14 @@ func (c Config) portChecks() []system.Port {
 		}
 	}
 	checks = append(checks, system.Port{Number: c.SubscribePort, Proto: "tcp", Label: "subscription/Nginx", Public: true})
+	if c.DeployMonitor {
+		checks = append(checks, system.Port{Number: c.TrafficPort, Proto: "tcp", Label: "traffic monitor/Nginx", Public: true})
+	}
 	if c.Challenge == acme.ChallengeHTTP01 {
 		checks = append(checks, system.Port{Number: 80, Proto: "tcp", Label: "ACME HTTP-01", Public: true})
 	}
 	if c.DeployMonitor {
-		checks = append(checks, system.Port{Number: c.MonitorPort, Proto: "tcp", Label: "traffic monitor", Public: false})
+		checks = append(checks, system.Port{Number: c.MonitorPort, Proto: "tcp", Label: "traffic monitor service", Public: false})
 	}
 	return checks
 }

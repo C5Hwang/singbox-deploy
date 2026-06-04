@@ -13,7 +13,23 @@ server {
         charset utf-8;
     }
 
-    {{ if .EnableMonitor }}location /traffic/ {
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+{{ if .EnableMonitor }}server {
+    listen {{ .TrafficPort }} ssl http2;
+    server_name {{ .Domain }};
+
+    ssl_certificate {{ .CertificatePath }};
+    ssl_certificate_key {{ .KeyPath }};
+
+    location = / {
+        return 302 /traffic/;
+    }
+
+    location /traffic/ {
         proxy_pass http://127.0.0.1:{{ .MonitorPort }}/;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -26,9 +42,5 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Real-IP $remote_addr;
     }
-    {{ end }}
-
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
 }
+{{ end }}

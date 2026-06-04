@@ -298,6 +298,7 @@ func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
 	certPath, keyPath := o.certPaths(cfg)
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
 		"SubscribePort":   cfg.SubscribePort,
+		"TrafficPort":     cfg.TrafficPort,
 		"Domain":          cfg.Domain,
 		"CertificatePath": certPath,
 		"KeyPath":         keyPath,
@@ -391,6 +392,7 @@ func writeInstallState(stateDir string, cfg Config) error {
 		"anytls_port":            itoa(cfg.Ports.AnyTLS),
 		"subscribe_token":        subscriptionToken(cfg.Salt),
 		"subscribe_port":         itoa(cfg.SubscribePort),
+		"traffic_port":           itoa(cfg.TrafficPort),
 		"monitor_port":           itoa(cfg.MonitorPort),
 		"monitor_interface":      cfg.MonitorInterface,
 		"traffic_monitor":        yesNoString(cfg.DeployMonitor),

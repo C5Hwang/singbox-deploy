@@ -40,6 +40,7 @@ type Status struct {
 	Subscription string
 	ClashMetaSub string
 	SingBoxSub   string
+	TrafficUI    string
 	TrafficQuota string
 }
 
@@ -305,6 +306,7 @@ func (m *Model) statusView() string {
 		{"Subscription", or(s.Subscription, "none")},
 		{"Clash Meta", or(s.ClashMetaSub, "none")},
 		{"sing-box Sub", or(s.SingBoxSub, "none")},
+		{"Traffic UI", or(s.TrafficUI, "none")},
 		{"Traffic", or(s.TrafficQuota, "unknown")},
 	}
 	var b strings.Builder

@@ -59,6 +59,11 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	subscribePort := readProtocolStateIntDefault(store, "subscribe_port", 2096)
+	trafficPort := readProtocolStateIntDefault(store, "traffic_port", 0)
+	if trafficPort == 0 {
+		trafficPort = subscribePort
+	}
 
 	cfg := Config{
 		Domain:                 domain,
@@ -71,7 +76,8 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		Salt:                   salt,
 		RealityServerName:      readProtocolStateDefault(store, "reality_server_name", ""),
 		RealityHandshakePort:   readProtocolStateIntDefault(store, "reality_handshake_port", 443),
-		SubscribePort:          readProtocolStateIntDefault(store, "subscribe_port", 2096),
+		SubscribePort:          subscribePort,
+		TrafficPort:            trafficPort,
 		MonitorPort:            readProtocolStateIntDefault(store, "monitor_port", 19090),
 		DeployMonitor:          readProtocolStateDefault(store, "traffic_monitor", "yes") != "no",
 		TrafficInLimitBytes:    readProtocolStateUintDefault(store, "traffic_in_limit_bytes", 0),
@@ -386,7 +392,11 @@ func protocolsNeedingPortChanges(oldCfg, newCfg Config) []config.Protocol {
 
 func ensureProtocolMaterial(cfg *Config, old, selected []config.Protocol) error {
 	oldSet := selectedProtocolSet(old)
-	used := map[int]bool{80: true, cfg.SubscribePort: true, cfg.MonitorPort: true}
+	used := map[int]bool{80: true, cfg.SubscribePort: true}
+	if cfg.DeployMonitor {
+		used[cfg.TrafficPort] = true
+		used[cfg.MonitorPort] = true
+	}
 	for _, p := range selected {
 		port := protocolPort(*cfg, p)
 		if port <= 0 {

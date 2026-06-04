@@ -90,6 +90,7 @@ func testConfig(t *testing.T) Config {
 		RealityServerName:      "www.microsoft.com",
 		RealityHandshakePort:   443,
 		SubscribePort:          2096,
+		TrafficPort:            2097,
 		MonitorPort:            19090,
 		DeployMonitor:          true,
 		TrafficInLimitBytes:    40 << 30,
@@ -152,6 +153,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		"check -c " + layout.ConfigJSON,
 		"nginx -t",
 		"systemctl enable --now singbox-deploy-monitor.service",
+		"ufw allow 2097/tcp",
 		"ufw allow 9443/udp",
 	} {
 		if !strings.Contains(joined, want) {
@@ -256,12 +258,22 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		}
 	}
 	mustExist(t, o.NginxConfPath)
+	nginxConf, err := os.ReadFile(o.NginxConfPath)
+	if err != nil {
+		t.Fatalf("read nginx config: %v", err)
+	}
+	for _, want := range []string{"listen 2096 ssl http2;", "listen 2097 ssl http2;", "proxy_pass http://127.0.0.1:19090/"} {
+		if !strings.Contains(string(nginxConf), want) {
+			t.Fatalf("nginx config missing %q:\n%s", want, nginxConf)
+		}
+	}
 	mustExist(t, layout.SingBoxBin)
 	mustExist(t, filepath.Join(layout.StateDir, "domain"))
 	mustExist(t, filepath.Join(layout.StateDir, "acme_challenge"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_in_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_out_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_total_limit_bytes"))
+	mustExist(t, filepath.Join(layout.StateDir, "traffic_port"))
 	mustExist(t, filepath.Join(layout.WebRoot, "index.html"))
 }
 

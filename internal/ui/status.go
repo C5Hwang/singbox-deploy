@@ -46,8 +46,13 @@ func loadStatus() Status {
 	if subscribePort == "" {
 		subscribePort = "2096"
 	}
+	trafficPort := readStatusState(store, "traffic_port")
+	if trafficPort == "" {
+		trafficPort = subscribePort
+	}
+	monitorEnabled := readStatusState(store, "traffic_monitor") != "no"
 	monitorState := "disabled"
-	if readStatusState(store, "traffic_monitor") != "no" {
+	if monitorEnabled {
 		monitorState = serviceState(system.MonitorService)
 	}
 
@@ -64,6 +69,7 @@ func loadStatus() Status {
 		Subscription: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "default"),
 		ClashMetaSub: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "clashMetaProfiles"),
 		SingBoxSub:   subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "sing-box"),
+		TrafficUI:    trafficUIStatus(domain, trafficPort, monitorEnabled),
 		TrafficQuota: trafficQuotaStatus(store),
 	}
 }
@@ -165,6 +171,13 @@ func subscriptionStatus(domain, port, token, kind string) string {
 		return ""
 	}
 	return fmt.Sprintf("https://%s:%s/s/%s/%s", domain, port, kind, token)
+}
+
+func trafficUIStatus(domain, port string, enabled bool) string {
+	if !enabled || domain == "" || port == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://%s:%s/traffic/", domain, port)
 }
 
 func trafficQuotaStatus(store state.Store) string {

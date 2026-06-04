@@ -246,6 +246,7 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	writeStatusState(t, layout.StateDir, "domain", "example.com")
 	writeStatusState(t, layout.StateDir, "public_ip", "203.0.113.10")
 	writeStatusState(t, layout.StateDir, "subscribe_port", "2096")
+	writeStatusState(t, layout.StateDir, "traffic_port", "2097")
 	writeStatusState(t, layout.StateDir, "subscribe_token", "tok")
 	writeStatusState(t, layout.StateDir, "enabled_protocols", "reality-vision,tuic")
 	writeStatusState(t, layout.StateDir, "traffic_monitor", "yes")
@@ -318,6 +319,9 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	if status.SingBoxSub != "https://example.com:2096/s/sing-box/tok" {
 		t.Fatalf("SingBoxSub = %q", status.SingBoxSub)
 	}
+	if status.TrafficUI != "https://example.com:2097/traffic/" {
+		t.Fatalf("TrafficUI = %q", status.TrafficUI)
+	}
 	if status.TrafficQuota != "in limit 40 GB, out limit 50 GB, total limit 100 GB, reset day 7" {
 		t.Fatalf("TrafficQuota = %q", status.TrafficQuota)
 	}
@@ -343,6 +347,7 @@ func protocolManagerState(t *testing.T, enabled, realitySNI string) paths.Layout
 		"subscribe_salt":         "testsalt",
 		"enabled_protocols":      enabled,
 		"subscribe_port":         "2096",
+		"traffic_port":           "2097",
 		"monitor_port":           "19090",
 		"traffic_monitor":        "no",
 		"reality_server_name":    realitySNI,
@@ -669,7 +674,7 @@ func TestRealityFieldsHiddenWhenRealityNotSelected(t *testing.T) {
 func TestTrafficMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 	vals := map[string]string{"traffic_monitor": "no"}
 	fields := installFields()
-	for _, key := range []string{"traffic_in_limit_gb", "traffic_out_limit_gb", "traffic_total_limit_gb", "reset_day"} {
+	for _, key := range []string{"traffic_port", "monitor_port", "traffic_in_limit_gb", "traffic_out_limit_gb", "traffic_total_limit_gb", "reset_day"} {
 		f := fields[fieldIndex(t, fields, key)]
 		if f.skip == nil || !f.skip(vals) {
 			t.Fatalf("%s should be hidden when traffic monitor is disabled", key)
@@ -692,6 +697,18 @@ func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 	}
 }
 
+func TestSummaryHighlightsRandomValues(t *testing.T) {
+	w := confirmWizardForTest()
+	summary := w.summary()
+	highlightedRandom := wizardRandom.Render("random")
+	if !strings.Contains(summary, highlightedRandom) {
+		t.Fatalf("summary should include highlighted random value:\n%s", summary)
+	}
+	if got := subscriptionSaltSummary(""); got != highlightedRandom {
+		t.Fatalf("blank salt summary = %q, want highlighted random %q", got, highlightedRandom)
+	}
+}
+
 func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	w := &wizard{
 		values: map[string]string{
@@ -705,7 +722,11 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 			"tuic_password":          "tuic-secret",
 			"tuic_port":              "24444",
 			"display_name":           "Node",
+			"subscribe_port":         "24445",
+			"subscribe_salt":         "abc",
 			"traffic_monitor":        "yes",
+			"traffic_port":           "24447",
+			"monitor_port":           "24446",
 			"traffic_in_limit_gb":    "40",
 			"traffic_out_limit_gb":   "50",
 			"traffic_total_limit_gb": "100",
@@ -727,6 +748,12 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	if cfg.Ports.RealityVision != 24443 || cfg.Ports.TUIC != 24444 {
 		t.Fatalf("ports = %#v", cfg.Ports)
 	}
+	if cfg.SubscribePort != 24445 || cfg.TrafficPort != 24447 || cfg.MonitorPort != 24446 {
+		t.Fatalf("managed ports = subscribe %d traffic %d monitor %d", cfg.SubscribePort, cfg.TrafficPort, cfg.MonitorPort)
+	}
+	if cfg.Salt != "abc" {
+		t.Fatalf("Salt = %q", cfg.Salt)
+	}
 	if cfg.Creds.RealityVisionUUID != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("RealityVisionUUID = %q", cfg.Creds.RealityVisionUUID)
 	}
@@ -741,6 +768,41 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	}
 	if !cfg.DeployMonitor || cfg.TrafficInLimitBytes != 40<<30 || cfg.TrafficOutLimitBytes != 50<<30 || cfg.TrafficTotalLimitBytes != 100<<30 {
 		t.Fatalf("traffic monitor config = enabled %v in %d out %d total %d", cfg.DeployMonitor, cfg.TrafficInLimitBytes, cfg.TrafficOutLimitBytes, cfg.TrafficTotalLimitBytes)
+	}
+}
+
+func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
+	w := &wizard{
+		values: map[string]string{
+			"domain":          "example.com",
+			"challenge":       "http-01",
+			"protocols":       "tuic",
+			"tuic_port":       "24444",
+			"display_name":    "Node",
+			"subscribe_port":  "24444",
+			"traffic_monitor": "no",
+		},
+		host: supportedTestHost(),
+	}
+	_, err := w.buildConfig()
+	if err == nil || !strings.Contains(err.Error(), "tuic port 24444 conflicts") {
+		t.Fatalf("expected subscribe/protocol port conflict, got %v", err)
+	}
+
+	w.values["tuic_port"] = "24445"
+	w.values["traffic_monitor"] = "yes"
+	w.values["traffic_port"] = "24444"
+	w.values["monitor_port"] = "24446"
+	_, err = w.buildConfig()
+	if err == nil || !strings.Contains(err.Error(), "traffic monitor public port 24444 conflicts") {
+		t.Fatalf("expected subscribe/traffic port conflict, got %v", err)
+	}
+
+	w.values["traffic_port"] = "24446"
+	w.values["monitor_port"] = "24444"
+	_, err = w.buildConfig()
+	if err == nil || !strings.Contains(err.Error(), "traffic monitor port 24444 conflicts") {
+		t.Fatalf("expected subscribe/monitor local port conflict, got %v", err)
 	}
 }
 
@@ -766,6 +828,12 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 
 	if got := protocolsValue(cfg.Enabled); got != "hysteria2,anytls" {
 		t.Fatalf("enabled = %q", got)
+	}
+	if cfg.SubscribePort != 2096 || cfg.TrafficPort != 2097 || cfg.MonitorPort != 19090 {
+		t.Fatalf("default managed ports = subscribe %d traffic %d monitor %d", cfg.SubscribePort, cfg.TrafficPort, cfg.MonitorPort)
+	}
+	if cfg.Salt == "" {
+		t.Fatalf("blank subscription salt should generate a random salt")
 	}
 	if cfg.RealityServerName != "" {
 		t.Fatalf("RealityServerName should be empty without reality, got %q", cfg.RealityServerName)

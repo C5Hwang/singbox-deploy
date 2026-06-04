@@ -79,7 +79,11 @@ func installFields() []field {
 		{key: "anytls_password", label: "AnyTLS password (optional)", note: "Blank generates a random password.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
 		{key: "anytls_port", label: "AnyTLS port (optional)", note: "Blank chooses a random listen port.", paramsFor: []config.Protocol{config.ProtocolAnyTLS}, skip: missingProtocol(config.ProtocolAnyTLS)},
 		{key: "display_name", label: "Node display name", def: "Node", note: "Used only in generated node names shown by clients."},
+		{key: "subscribe_port", label: "Subscription/Nginx HTTPS port", def: "2096", note: "Nginx listens on this public HTTPS port for /s subscriptions and the masquerade site."},
+		{key: "subscribe_salt", label: "Subscription salt (optional)", note: "Blank generates a random salt. The URL token is md5(salt + newline)."},
 		{key: "traffic_monitor", label: "Deploy traffic monitor", def: "yes", options: []string{"yes", "no"}, note: "Choose no to skip the traffic monitor service and /traffic/ UI."},
+		{key: "traffic_port", label: "Traffic monitor public HTTPS port", def: "2097", note: "Nginx listens on this public HTTPS port for /traffic.", skip: monitorDisabled},
+		{key: "monitor_port", label: "Traffic monitor local port", def: "19090", note: "The monitor listens on 127.0.0.1 and Nginx proxies /traffic to this port.", skip: monitorDisabled},
 		{key: "traffic_in_limit_gb", label: "Monthly inbound traffic limit in GB (0 = unlimited)", def: "0", note: "Inbound uses the monitored interface RX counter. When any configured limit is exceeded, sing-box.service is stopped automatically.", skip: monitorDisabled},
 		{key: "traffic_out_limit_gb", label: "Monthly outbound traffic limit in GB (0 = unlimited)", def: "0", note: "Outbound uses the monitored interface TX counter.", skip: monitorDisabled},
 		{key: "traffic_total_limit_gb", label: "Monthly total traffic limit in GB (0 = unlimited)", def: "0", note: "Total traffic is inbound + outbound.", skip: monitorDisabled},
@@ -783,15 +787,30 @@ func (w *wizard) buildConfig() (install.Config, error) {
 	if len(enabled) == 0 {
 		enabled = config.AllProtocols
 	}
-	ports, err := w.protocolPorts(enabled)
-	if err != nil {
-		return install.Config{}, err
-	}
-	salt, err := credentials.Salt()
-	if err != nil {
-		return install.Config{}, err
-	}
 	deployMonitor := trafficMonitorEnabled(w.values)
+	subscribePort, err := parseInstallPort(w.values["subscribe_port"], 2096, "subscription port")
+	if err != nil {
+		return install.Config{}, err
+	}
+	trafficPort, err := parseInstallPort(w.values["traffic_port"], 2097, "traffic monitor public port")
+	if err != nil {
+		return install.Config{}, err
+	}
+	monitorPort, err := parseInstallPort(w.values["monitor_port"], 19090, "traffic monitor port")
+	if err != nil {
+		return install.Config{}, err
+	}
+	ports, err := w.protocolPorts(enabled, subscribePort, trafficPort, monitorPort, deployMonitor)
+	if err != nil {
+		return install.Config{}, err
+	}
+	salt := strings.TrimSpace(w.values["subscribe_salt"])
+	if salt == "" {
+		salt, err = credentials.Salt()
+		if err != nil {
+			return install.Config{}, err
+		}
+	}
 	inLimitBytes := parseTrafficLimitGB(w.values["traffic_in_limit_gb"])
 	outLimitBytes := parseTrafficLimitGB(w.values["traffic_out_limit_gb"])
 	totalLimitBytes := parseTrafficLimitGB(w.values["traffic_total_limit_gb"])
@@ -843,8 +862,9 @@ func (w *wizard) buildConfig() (install.Config, error) {
 		Salt:                   salt,
 		RealityServerName:      realityServerName,
 		RealityHandshakePort:   443,
-		SubscribePort:          2096,
-		MonitorPort:            19090,
+		SubscribePort:          subscribePort,
+		TrafficPort:            trafficPort,
+		MonitorPort:            monitorPort,
 		DeployMonitor:          deployMonitor,
 		TrafficInLimitBytes:    inLimitBytes,
 		TrafficOutLimitBytes:   outLimitBytes,
@@ -860,6 +880,18 @@ func (w *wizard) buildConfig() (install.Config, error) {
 func parseTrafficLimitGB(value string) uint64 {
 	gb, _ := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
 	return gb << 30
+}
+
+func parseInstallPort(value string, fallback int, label string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("%s must be between 1 and 65535", label)
+	}
+	return port, nil
 }
 
 func (w *wizard) applyCredentialOverrides(creds *install.Credentials) {
@@ -883,8 +915,18 @@ func (w *wizard) applyCredentialOverrides(creds *install.Credentials) {
 	}
 }
 
-func (w *wizard) protocolPorts(enabled []config.Protocol) (config.Ports, error) {
-	used := map[int]bool{80: true, 2096: true, 19090: true}
+func (w *wizard) protocolPorts(enabled []config.Protocol, subscribePort, trafficPort, monitorPort int, deployMonitor bool) (config.Ports, error) {
+	used := map[int]bool{80: true, subscribePort: true}
+	if deployMonitor {
+		if used[trafficPort] {
+			return config.Ports{}, fmt.Errorf("traffic monitor public port %d conflicts with another required port", trafficPort)
+		}
+		used[trafficPort] = true
+		if used[monitorPort] {
+			return config.Ports{}, fmt.Errorf("traffic monitor port %d conflicts with another required port", monitorPort)
+		}
+		used[monitorPort] = true
+	}
 	var ports config.Ports
 	for _, proto := range enabled {
 		port, err := w.portForProtocol(proto, used)
@@ -985,9 +1027,10 @@ func randomListenPort(used map[int]bool) (int, error) {
 }
 
 var (
-	wizardTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	wizardOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	wizardErr   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	wizardTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	wizardOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	wizardErr    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	wizardRandom = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 )
 
 func (w *wizard) parameterProtocolLabel(f field) string {
@@ -1318,45 +1361,62 @@ func (w *wizard) summary() string {
 	}
 	deployMonitor := trafficMonitorEnabled(w.values)
 	rows := []string{
-		"Domain:        " + w.values["domain"],
-		"Email:         " + or(w.values["email"], "not set"),
-		"Challenge:     " + w.values["challenge"],
-		"Protocols:     " + protocolLabels(protocols),
-		"Display name:  " + w.values["display_name"],
-		"Traffic mon.:  " + yesNoString(deployMonitor),
-		"OS / Arch:     " + w.host.OS.ID + " / " + w.host.Arch,
-		"Firewall:      " + firewallName(w.host.Firewall),
+		summaryRow("Domain", w.values["domain"]),
+		summaryRow("Email", or(w.values["email"], "not set")),
+		summaryRow("ACME challenge", w.values["challenge"]),
+		summaryRow("Protocols", protocolLabels(protocols)),
+		summaryRow("Display name", w.values["display_name"]),
+		summaryRow("Subscription port", or(w.values["subscribe_port"], "2096")),
+		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
+		summaryRow("Traffic monitor", yesNoString(deployMonitor)),
+		summaryRow("Operating system / architecture", w.host.OS.ID+" / "+w.host.Arch),
+		summaryRow("Firewall", firewallName(w.host.Firewall)),
 	}
 	if deployMonitor {
 		rows = append(rows,
-			"Traffic in:    "+w.values["traffic_in_limit_gb"]+" GB",
-			"Traffic out:   "+w.values["traffic_out_limit_gb"]+" GB",
-			"Traffic total: "+w.values["traffic_total_limit_gb"]+" GB",
+			summaryRow("Traffic monitor public port", or(w.values["traffic_port"], "2097")),
+			summaryRow("Traffic monitor local port", or(w.values["monitor_port"], "19090")),
+			summaryRow("Inbound traffic limit", w.values["traffic_in_limit_gb"]+" GB"),
+			summaryRow("Outbound traffic limit", w.values["traffic_out_limit_gb"]+" GB"),
+			summaryRow("Total traffic limit", w.values["traffic_total_limit_gb"]+" GB"),
 		)
 	}
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
-		rows = append(rows, "Reality URL:   "+w.values["reality_sni"])
+		rows = append(rows, summaryRow("Reality URL/SNI", w.values["reality_sni"]))
 	}
-	rows = append(rows, "Protocol params:")
+	rows = append(rows, "Protocol parameters:")
 	for _, proto := range protocols {
-		rows = append(rows, fmt.Sprintf("  %s port: %s", proto, or(w.values[portFieldKey(proto)], "random")))
+		rows = append(rows, fmt.Sprintf("  %s port: %s", proto, summaryValueOrRandom(w.values[portFieldKey(proto)])))
 	}
 	return strings.Join(rows, "\n") + "\n"
 }
 
+func summaryRow(label, value string) string {
+	return fmt.Sprintf("%-32s %s", label+":", value)
+}
+
+func summaryValueOrRandom(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return wizardRandom.Render("random")
+	}
+	return value
+}
+
 func (w *wizard) doneSummary() string {
 	token := install.SubscriptionToken(w.cfg.Salt)
-	base := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.SubscribePort)
+	subscriptionBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.SubscribePort)
 	rows := []string{
 		"Account:       " + w.cfg.DisplayName,
 		"Protocols:     " + protocolLabels(w.cfg.Enabled),
 		"Ports:         " + installedPortsSummary(w.cfg.Enabled, w.cfg.Ports),
-		"Subscription:  " + base + "/s/default/" + token,
-		"Clash:         " + base + "/s/clashMetaProfiles/" + token,
-		"sing-box:      " + base + "/s/sing-box/" + token,
+		"Subscription:  " + subscriptionBase + "/s/default/" + token,
+		"Clash:         " + subscriptionBase + "/s/clashMetaProfiles/" + token,
+		"sing-box:      " + subscriptionBase + "/s/sing-box/" + token,
 	}
 	if w.cfg.DeployMonitor {
-		rows = append(rows, "Traffic UI:    "+base+"/traffic/")
+		trafficBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.TrafficPort)
+		rows = append(rows, "Traffic UI:    "+trafficBase+"/traffic/")
 	}
 	return strings.Join(rows, "\n")
 }
