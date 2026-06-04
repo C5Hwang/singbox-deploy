@@ -110,7 +110,7 @@ func newProtocolManager() *protocolManager {
 		return pm
 	}
 	pm.cfg = cfg
-	pm.selected = selectedOptions(protocolsValue(cfg.Enabled))
+	pm.selected = selectedOptions(protocolSelectionValue(cfg.Enabled))
 	return pm
 }
 
@@ -212,7 +212,7 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				if cfg, err := install.LoadProtocolConfig(protocolUILayout()); err == nil {
 					pm.cfg = cfg
 					pm.result = cfg
-					pm.selected = selectedOptions(protocolsValue(cfg.Enabled))
+					pm.selected = selectedOptions(protocolSelectionValue(cfg.Enabled))
 				}
 				pm.phase = protocolPhaseDone
 			}
@@ -276,7 +276,7 @@ func (pm *protocolManager) activateAction() {
 		pm.action = protocolActionChange
 		pm.phase = protocolPhaseSelect
 		pm.cursor = 0
-		pm.selected = selectedOptions(protocolsValue(pm.cfg.Enabled))
+		pm.selected = selectedOptions(protocolSelectionValue(pm.cfg.Enabled))
 	case protocolActionEdit:
 		pm.action = protocolActionEdit
 		pm.phase = protocolPhaseEditPick
@@ -828,39 +828,39 @@ func (pm *protocolManager) protocolOptionsView() string {
 }
 
 func (pm *protocolManager) confirmView() string {
-	var rows []string
+	var rows []summaryLine
 	switch pm.action {
 	case protocolActionRealitySNI:
 		rows = append(rows,
-			"Edit: Reality SNI",
-			"Current: "+or(pm.cfg.RealityServerName, "not set"),
-			"Target:  "+or(pm.values["reality_sni"], "not set"),
+			summaryRow("Edit", "Reality SNI"),
+			summaryRow("Current", or(pm.cfg.RealityServerName, "not set")),
+			summaryRow("Target", or(pm.values["reality_sni"], "not set")),
 		)
 	case protocolActionEdit:
-		rows = append(rows, "Edit: "+string(pm.editProto))
+		rows = append(rows, summaryRow("Edit", string(pm.editProto)))
 		for _, f := range pm.fields {
-			rows = append(rows, f.label+": "+or(pm.values[f.key], "generate/keep current"))
+			rows = append(rows, summaryRow(f.label, or(pm.values[f.key], "generate/keep current")))
 		}
 	default:
 		added, removed := protocolDiff(pm.cfg.Enabled, pm.targetProtocols())
 		rows = append(rows,
-			"Current: "+protocolLabels(pm.cfg.Enabled),
-			"Target:  "+protocolLabels(pm.targetProtocols()),
-			"Add:     "+or(protocolStrings(added), "none"),
-			"Remove:  "+or(protocolStrings(removed), "none"),
+			summaryRow("Current", protocolLabels(pm.cfg.Enabled)),
+			summaryRow("Target", protocolLabels(pm.targetProtocols())),
+			summaryRow("Add", or(protocolStrings(added), "none")),
+			summaryRow("Remove", or(protocolStrings(removed), "none")),
 		)
 		if len(pm.fields) > 0 {
-			rows = append(rows, "", "New protocol parameters:")
+			rows = append(rows, summaryBlank(), summaryText("New protocol parameters:"))
 			for _, f := range pm.fields {
-				rows = append(rows, "  "+f.label+": "+or(pm.values[f.key], "generate/default"))
+				rows = append(rows, summaryIndentedRow(2, f.label, or(pm.values[f.key], "generate/default")))
 			}
 		}
 	}
 	rows = append(rows,
-		"",
-		"This will regenerate sing-box config and all subscription files.",
+		summaryBlank(),
+		summaryText("This will regenerate sing-box config and all subscription files."),
 	)
-	return wizardTitle.Render("Protocol Management · Confirm") + "\n\n" + strings.Join(rows, "\n") + "\n\n" + dimStyle.Render("enter/y apply · shift+tab back · esc/n cancel")
+	return wizardTitle.Render("Protocol Management · Confirm") + "\n\n" + renderSummary(rows) + "\n\n" + dimStyle.Render("enter/y apply · shift+tab back · esc/n cancel")
 }
 
 func (pm *protocolManager) runningView() string {
@@ -889,11 +889,11 @@ func (pm *protocolManager) doneSummary() string {
 	if len(cfg.Enabled) == 0 {
 		cfg = pm.cfg
 	}
-	return strings.Join([]string{
-		"Protocols:     " + protocolLabels(cfg.Enabled),
-		"Ports:         " + installedPortsSummary(cfg.Enabled, cfg.Ports),
-		"Subscriptions: refreshed",
-	}, "\n")
+	return renderSummary([]summaryLine{
+		summaryRow("Protocols", protocolLabels(cfg.Enabled)),
+		summaryRow("Ports", installedPortsSummary(cfg.Enabled, cfg.Ports)),
+		summaryRow("Subscriptions", "refreshed"),
+	})
 }
 
 func (pm *protocolManager) footerHints() []string {
@@ -988,7 +988,7 @@ func protocolStrings(protocols []config.Protocol) string {
 	for _, p := range protocols {
 		parts = append(parts, string(p))
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(parts, ", ")
 }
 
 func needsRealityProtocol(protocols []config.Protocol) bool {

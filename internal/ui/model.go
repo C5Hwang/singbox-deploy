@@ -186,13 +186,15 @@ func (m *Model) activate() tea.Cmd {
 }
 
 var (
-	panelStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-	titleStyle = lipgloss.NewStyle().Bold(true)
-	selStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	dimStyle   = lipgloss.NewStyle().Faint(true)
-	statusOK   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	statusBad  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	statusWarn = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	panelStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	titleStyle  = lipgloss.NewStyle().Bold(true)
+	selStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	dimStyle    = lipgloss.NewStyle().Faint(true)
+	statusOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	statusBad   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	statusWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	summaryInfo = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	summaryDate = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
 // View implements tea.Model.
@@ -293,51 +295,23 @@ func or(v, fallback string) string {
 
 func (m *Model) statusView() string {
 	s := m.status
-	rows := [][2]string{
-		{"Domain", or(s.Domain, "unknown")},
-		{"Public IP", or(s.PublicIP, "unknown")},
-		{"OS/Arch", or(s.OSArch, "unknown")},
-		{"sing-box", or(s.SingBoxVer, "not installed")},
-		{"Service", or(s.SingBoxState, "unknown")},
-		{"Nginx", or(s.NginxState, "unknown")},
-		{"Monitor", or(s.MonitorState, "unknown")},
-		{"Certificate", or(s.CertState, "unknown")},
-		{"Protocols", or(s.Protocols, "none")},
-		{"Subscription", or(s.Subscription, "none")},
-		{"Clash Meta", or(s.ClashMetaSub, "none")},
-		{"sing-box Sub", or(s.SingBoxSub, "none")},
-		{"Traffic UI", or(s.TrafficUI, "none")},
-		{"Traffic", or(s.TrafficQuota, "unknown")},
+	rows := []summaryLine{
+		summaryRow("Domain", or(s.Domain, "unknown")),
+		summaryRow("Public IP", or(s.PublicIP, "unknown")),
+		summaryRow("OS/Arch", or(s.OSArch, "unknown")),
+		summaryRow("sing-box", or(s.SingBoxVer, "not installed")),
+		summaryRow("Service", or(s.SingBoxState, "unknown")),
+		summaryRow("Nginx", or(s.NginxState, "unknown")),
+		summaryRow("Monitor", or(s.MonitorState, "unknown")),
+		summaryRow("Certificate", or(s.CertState, "unknown")),
+		summaryRow("Protocols", or(s.Protocols, "none")),
+		summaryRow("Subscription", or(s.Subscription, "none")),
+		summaryRow("Clash Meta", or(s.ClashMetaSub, "none")),
+		summaryRow("sing-box Sub", or(s.SingBoxSub, "none")),
+		summaryRow("Traffic UI", or(s.TrafficUI, "none")),
+		summaryRow("Traffic", or(s.TrafficQuota, "unknown")),
 	}
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Status") + "\n")
-	for _, r := range rows {
-		b.WriteString(dimStyle.Render(r[0]+": ") + renderStatusField(r[0], r[1]) + "\n")
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func renderStatusField(label, value string) string {
-	if !isRunningStatusField(label) {
-		return value
-	}
-	switch runningStatusLevel(value) {
-	case statusLevelRunning:
-		return statusOK.Render(value)
-	case statusLevelStopped:
-		return statusBad.Render(value)
-	default:
-		return statusWarn.Render(value)
-	}
-}
-
-func isRunningStatusField(label string) bool {
-	switch label {
-	case "Service", "Nginx", "Monitor":
-		return true
-	default:
-		return false
-	}
+	return titleStyle.Render("Status") + "\n" + renderSummary(rows)
 }
 
 func (m *Model) menuView(width int) string {

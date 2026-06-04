@@ -709,6 +709,41 @@ func TestSummaryHighlightsRandomValues(t *testing.T) {
 	}
 }
 
+func TestSummaryRendererAlignsAndHighlightsTokens(t *testing.T) {
+	summary := renderSummary([]summaryLine{
+		summaryRow("Short", "running"),
+		summaryRow("Longer label", "sing-box version 1.12.0"),
+		summaryRow("Certificate", "valid until 2026-06-04"),
+		summaryRow("Traffic", "in unlimited, reset day 7"),
+	})
+	if !strings.Contains(summary, dimStyle.Render("Short:       ")) {
+		t.Fatalf("summary labels should align:\n%s", summary)
+	}
+	for _, want := range []string{
+		statusOK.Render("running"),
+		summaryInfo.Render("1.12.0"),
+		summaryDate.Render("2026-06-04"),
+		summaryDate.Render("reset day 7"),
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary missing highlighted token %q:\n%s", want, summary)
+		}
+	}
+	if got := highlightSummaryText("203.0.113.10"); got != "203.0.113.10" {
+		t.Fatalf("IP address should not be highlighted: %q", got)
+	}
+}
+
+func TestProtocolLabelsAddSpacesForDisplay(t *testing.T) {
+	protocols := []config.Protocol{config.ProtocolRealityVision, config.ProtocolTUIC}
+	if got := protocolSelectionValue(protocols); got != "reality-vision,tuic" {
+		t.Fatalf("protocolSelectionValue = %q", got)
+	}
+	if got := protocolLabels(protocols); got != "reality-vision, tuic" {
+		t.Fatalf("protocolLabels = %q", got)
+	}
+}
+
 func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	w := &wizard{
 		values: map[string]string{
@@ -739,7 +774,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 		t.Fatalf("buildConfig error: %v", err)
 	}
 
-	if got := protocolsValue(cfg.Enabled); got != "reality-vision,tuic" {
+	if got := protocolSelectionValue(cfg.Enabled); got != "reality-vision,tuic" {
 		t.Fatalf("enabled = %q", got)
 	}
 	if cfg.RealityServerName != "www.cloudflare.com" {
@@ -826,7 +861,7 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 		t.Fatalf("buildConfig error: %v", err)
 	}
 
-	if got := protocolsValue(cfg.Enabled); got != "hysteria2,anytls" {
+	if got := protocolSelectionValue(cfg.Enabled); got != "hysteria2,anytls" {
 		t.Fatalf("enabled = %q", got)
 	}
 	if cfg.SubscribePort != 2096 || cfg.TrafficPort != 2097 || cfg.MonitorPort != 19090 {

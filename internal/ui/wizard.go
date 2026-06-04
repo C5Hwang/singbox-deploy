@@ -224,10 +224,12 @@ func protocolOptions() []string {
 }
 
 func defaultProtocolValue() string {
-	return protocolsValue(config.AllProtocols)
+	return protocolSelectionValue(config.AllProtocols)
 }
 
-func protocolsValue(protocols []config.Protocol) string {
+// protocolSelectionValue is the machine-readable value used by form state.
+// Display text must use protocolLabels instead.
+func protocolSelectionValue(protocols []config.Protocol) string {
 	parts := make([]string, 0, len(protocols))
 	for _, p := range protocols {
 		parts = append(parts, string(p))
@@ -296,7 +298,7 @@ func protocolLabels(protocols []config.Protocol) string {
 	if len(protocols) == 0 {
 		return "none"
 	}
-	return protocolsValue(protocols)
+	return protocolStrings(protocols)
 }
 
 func validUUID(s string) bool {
@@ -1360,7 +1362,7 @@ func (w *wizard) summary() string {
 		protocols = config.AllProtocols
 	}
 	deployMonitor := trafficMonitorEnabled(w.values)
-	rows := []string{
+	rows := []summaryLine{
 		summaryRow("Domain", w.values["domain"]),
 		summaryRow("Email", or(w.values["email"], "not set")),
 		summaryRow("ACME challenge", w.values["challenge"]),
@@ -1384,41 +1386,41 @@ func (w *wizard) summary() string {
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
 		rows = append(rows, summaryRow("Reality URL/SNI", w.values["reality_sni"]))
 	}
-	rows = append(rows, "Protocol parameters:")
+	rows = append(rows, summaryText("Protocol parameters:"))
 	for _, proto := range protocols {
-		rows = append(rows, fmt.Sprintf("  %s port: %s", proto, summaryValueOrRandom(w.values[portFieldKey(proto)])))
+		rows = append(rows, summaryIndentedRow(2, fmt.Sprintf("%s port", proto), summaryValueOrRandom(w.values[portFieldKey(proto)])))
 	}
-	return strings.Join(rows, "\n") + "\n"
-}
-
-func summaryRow(label, value string) string {
-	return fmt.Sprintf("%-32s %s", label+":", value)
+	return renderSummary(rows) + "\n"
 }
 
 func summaryValueOrRandom(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return wizardRandom.Render("random")
+		return "random"
 	}
 	return value
+}
+
+func subscriptionSaltSummary(value string) string {
+	return highlightSummaryText(summaryValueOrRandom(value))
 }
 
 func (w *wizard) doneSummary() string {
 	token := install.SubscriptionToken(w.cfg.Salt)
 	subscriptionBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.SubscribePort)
-	rows := []string{
-		"Account:       " + w.cfg.DisplayName,
-		"Protocols:     " + protocolLabels(w.cfg.Enabled),
-		"Ports:         " + installedPortsSummary(w.cfg.Enabled, w.cfg.Ports),
-		"Subscription:  " + subscriptionBase + "/s/default/" + token,
-		"Clash:         " + subscriptionBase + "/s/clashMetaProfiles/" + token,
-		"sing-box:      " + subscriptionBase + "/s/sing-box/" + token,
+	rows := []summaryLine{
+		summaryRow("Account", w.cfg.DisplayName),
+		summaryRow("Protocols", protocolLabels(w.cfg.Enabled)),
+		summaryRow("Ports", installedPortsSummary(w.cfg.Enabled, w.cfg.Ports)),
+		summaryRow("Subscription", subscriptionBase+"/s/default/"+token),
+		summaryRow("Clash", subscriptionBase+"/s/clashMetaProfiles/"+token),
+		summaryRow("sing-box", subscriptionBase+"/s/sing-box/"+token),
 	}
 	if w.cfg.DeployMonitor {
 		trafficBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.TrafficPort)
-		rows = append(rows, "Traffic UI:    "+trafficBase+"/traffic/")
+		rows = append(rows, summaryRow("Traffic UI", trafficBase+"/traffic/"))
 	}
-	return strings.Join(rows, "\n")
+	return renderSummary(rows)
 }
 
 func yesNoString(v bool) string {
