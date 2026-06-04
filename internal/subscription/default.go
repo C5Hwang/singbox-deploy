@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"net/url"
 	"strings"
 )
 
@@ -37,6 +38,55 @@ func GenerateDefault(nodes []Node) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// FilterDefaultLinks keeps supported universal links and preserves their
+// original node names unchanged.
+func FilterDefaultLinks(body string) string {
+	var lines []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		u, err := url.Parse(line)
+		if err == nil && u.Scheme != "" && Supported(u.Scheme) {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RenameDefaultLinks filters unsupported remote universal links and rewrites
+// the fragment/node name with alias while preserving each link's protocol data.
+func RenameDefaultLinks(body, alias string) string {
+	var lines []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		rewritten := RewriteDefaultLinkName(line, alias)
+		if rewritten != "" {
+			lines = append(lines, rewritten)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RewriteDefaultLinkName rewrites one universal link's node name. Unsupported
+// schemes return an empty string so callers can filter them out.
+func RewriteDefaultLinkName(link, alias string) string {
+	u, err := url.Parse(link)
+	if err != nil || u.Scheme == "" || !Supported(u.Scheme) {
+		return ""
+	}
+	name := u.Fragment
+	if name == "" {
+		name = alias
+	}
+	u.Fragment = RewriteRemoteNodeName(name, alias)
+	return u.String()
 }
 
 // EncodeBase64 standard-base64-encodes a subscription body.

@@ -262,7 +262,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read nginx config: %v", err)
 	}
-	for _, want := range []string{"listen 2096 ssl http2;", "listen 2097 ssl http2;", "proxy_pass http://127.0.0.1:19090/"} {
+	for _, want := range []string{"listen 2096 ssl;", "listen 2097 ssl;", "http2 on;", "proxy_pass http://127.0.0.1:19090/"} {
 		if !strings.Contains(string(nginxConf), want) {
 			t.Fatalf("nginx config missing %q:\n%s", want, nginxConf)
 		}

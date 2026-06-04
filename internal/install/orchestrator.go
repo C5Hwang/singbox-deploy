@@ -295,22 +295,7 @@ func (o *Orchestrator) stepSubscriptions(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
-	certPath, keyPath := o.certPaths(cfg)
-	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":   cfg.SubscribePort,
-		"TrafficPort":     cfg.TrafficPort,
-		"Domain":          cfg.Domain,
-		"CertificatePath": certPath,
-		"KeyPath":         keyPath,
-		"WebRoot":         o.Layout.WebRoot,
-		"SubscribeDir":    o.Layout.SubscribeDir,
-		"EnableMonitor":   cfg.DeployMonitor,
-		"MonitorPort":     cfg.MonitorPort,
-	})
-	if err != nil {
-		return err
-	}
-	if err := writeFile(o.NginxConfPath, []byte(conf), 0o644); err != nil {
+	if err := writeManagedNginxConfig(o.Layout, cfg, o.NginxConfPath); err != nil {
 		return err
 	}
 	index, err := templatefs.Render("site/default/index.html.tmpl", map[string]any{

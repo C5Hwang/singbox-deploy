@@ -8,7 +8,9 @@ interface HourlyPoint {
   totalBytes: number;
 }
 
-interface Summary {
+interface SourceSummary {
+  name: string;
+  fetchedAt?: string;
   inUsedBytes: number;
   outUsedBytes: number;
   totalUsedBytes: number;
@@ -20,6 +22,10 @@ interface Summary {
   totalLimitBytes: number;
   resetTime: string;
   trend: HourlyPoint[];
+}
+
+interface Summary extends SourceSummary {
+  sources?: SourceSummary[];
 }
 
 interface UsageRow {
@@ -76,6 +82,27 @@ function rowText(row: UsageRow): string {
   return row.limit > 0 ? `${formatBytes(row.used)} / ${formatBytes(row.limit)}` : formatBytes(row.used);
 }
 
+function rowsForSource(source: SourceSummary): UsageRow[] {
+  return [
+    { label: "IN", key: "in", used: source.inUsedBytes, limit: source.inLimitBytes, color: "var(--blue)" },
+    { label: "OUT", key: "out", used: source.outUsedBytes, limit: source.outLimitBytes, color: "var(--cyan)" },
+    { label: "Total", key: "total", used: source.totalUsedBytes, limit: source.totalLimitBytes, color: "var(--green)" },
+  ];
+}
+
+function percentsForSource(source: SourceSummary) {
+  return rowsForSource(source).map((row) => ({ row, percent: percentFor(row.used, row.limit) }));
+}
+
+function peakForSource(source: SourceSummary): number | null {
+  const configured = percentsForSource(source).filter((item) => item.percent !== null) as Array<{
+    row: UsageRow;
+    percent: number;
+  }>;
+  if (configured.length === 0) return null;
+  return configured.reduce((best, item) => (item.percent > best.percent ? item : best), configured[0]).percent;
+}
+
 function tone(percent: number | null): string {
   if (percent !== null && percent >= 90) return " danger";
   if (percent !== null && percent >= 75) return " warn";
@@ -93,10 +120,6 @@ const clockLabel = computed(() =>
   now.value.toLocaleTimeString("en-US", { hour12: false }),
 );
 
-const resetLabel = computed(() =>
-  summary.value ? new Date(summary.value.resetTime).toLocaleString("en-US") : "NA",
-);
-
 const rows = computed<UsageRow[]>(() => {
   const s = summary.value;
   return [
@@ -104,6 +127,13 @@ const rows = computed<UsageRow[]>(() => {
     { label: "OUT", key: "out", used: s?.outUsedBytes ?? 0, limit: s?.outLimitBytes ?? 0, color: "var(--cyan)" },
     { label: "Total", key: "total", used: s?.totalUsedBytes ?? 0, limit: s?.totalLimitBytes ?? 0, color: "var(--green)" },
   ];
+});
+
+const sources = computed<SourceSummary[]>(() => {
+  const s = summary.value;
+  if (!s) return [];
+  if (s.sources && s.sources.length > 0) return s.sources;
+  return [{ ...s, name: "Local Server" }];
 });
 
 const rowPercents = computed(() =>
@@ -133,7 +163,7 @@ const statusLabel = computed(() => {
   return "Running";
 });
 
-const sourceChip = computed(() => (summary.value ? "Source 1/1" : "Source 0/1"));
+const sourceChip = computed(() => (summary.value ? `Sources ${sources.value.length}` : "Sources 0"));
 const subtitle = computed(() => {
   if (error.value) return `Failed to load data: ${error.value}`;
   if (!summary.value) return "Loading local traffic data";
@@ -144,7 +174,13 @@ const sideSummary = computed(() => {
   const s = summary.value;
   return `IN ${formatBytes(s?.inUsedBytes)} | OUT ${formatBytes(s?.outUsedBytes)} | Total ${formatBytes(s?.totalUsedBytes)}`;
 });
-const trendCount = computed(() => summary.value?.trend.length ?? 0);
+function sourceResetLabel(source: SourceSummary): string {
+  return source.resetTime ? new Date(source.resetTime).toLocaleString("en-US") : "NA";
+}
+
+function sourceFreshLabel(source: SourceSummary): string {
+  return source.fetchedAt ? `Fetched: ${new Date(source.fetchedAt).toLocaleString("en-US")}` : "Live local data";
+}
 
 onMounted(() => {
   load();
@@ -242,26 +278,27 @@ onUnmounted(() => {
       </section>
 
       <section class="grid sources" aria-label="traffic sources">
-        <article class="card source-card">
+        <article v-for="source in sources" :key="source.name" class="card source-card">
           <div class="source-head">
             <div>
               <p class="eyebrow">Traffic Source</p>
-              <h2 class="source-name">Local Server</h2>
+              <h2 class="source-name">{{ source.name }}</h2>
               <div class="source-meta">
-                <span>Reset Time: {{ resetLabel }}</span>
-                <span>Trend Points: {{ trendCount }}</span>
+                <span>Reset Time: {{ sourceResetLabel(source) }}</span>
+                <span>{{ sourceFreshLabel(source) }}</span>
+                <span>Trend Points: {{ source.trend?.length ?? 0 }}</span>
               </div>
             </div>
             <div>
-              <div class="source-score">{{ percentText(sourcePercent) }}<span>MAX USAGE</span></div>
+              <div class="source-score">{{ percentText(peakForSource(source)) }}<span>MAX USAGE</span></div>
             </div>
           </div>
           <div class="card-head">
-            <span :class="`status${statusClass}`"><span class="dot"></span>{{ statusLabel }}</span>
-            <span v-if="isLimited" class="tag red">Quota</span>
+            <span :class="`status${source.fetchedAt ? ' gray' : statusClass}`"><span class="dot"></span>{{ source.fetchedAt ? 'Remote snapshot' : statusLabel }}</span>
+            <span v-if="peakForSource(source) !== null && (peakForSource(source) ?? 0) >= 100" class="tag red">Quota</span>
           </div>
           <div class="source-rows">
-            <div v-for="item in rowPercents" :key="item.row.key" class="progress-row">
+            <div v-for="item in percentsForSource(source)" :key="item.row.key" class="progress-row">
               <div class="row-label">
                 <strong>{{ item.row.label }}</strong>
                 <span>{{ rowText(item.row) }}</span>

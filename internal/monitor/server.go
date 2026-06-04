@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	assets "github.com/C5Hwang/singbox-deploy/template"
@@ -27,13 +29,14 @@ type ServiceController interface {
 
 // Config configures the monitor service.
 type Config struct {
-	Listen           string
-	Interface        string
-	SamplingInterval time.Duration
-	InLimitBytes     uint64
-	OutLimitBytes    uint64
-	TotalLimitBytes  uint64
-	ResetDay         int
+	Listen            string
+	Interface         string
+	SamplingInterval  time.Duration
+	InLimitBytes      uint64
+	OutLimitBytes     uint64
+	TotalLimitBytes   uint64
+	ResetDay          int
+	RemoteTrafficPath string
 }
 
 // Monitor samples interface counters, enforces the quota, and serves the API/UI.
@@ -71,6 +74,25 @@ func (m *Monitor) Handler() http.Handler {
 
 // summary is the JSON payload returned by /api/summary.
 type summary struct {
+	InUsedBytes         uint64          `json:"inUsedBytes"`
+	OutUsedBytes        uint64          `json:"outUsedBytes"`
+	TotalUsedBytes      uint64          `json:"totalUsedBytes"`
+	InRemainingBytes    uint64          `json:"inRemainingBytes"`
+	OutRemainingBytes   uint64          `json:"outRemainingBytes"`
+	TotalRemainingBytes uint64          `json:"totalRemainingBytes"`
+	InLimitBytes        uint64          `json:"inLimitBytes"`
+	OutLimitBytes       uint64          `json:"outLimitBytes"`
+	TotalLimitBytes     uint64          `json:"totalLimitBytes"`
+	ResetTime           string          `json:"resetTime"`
+	Trend               []HourlyPoint   `json:"trend"`
+	Sources             []SourceSummary `json:"sources"`
+}
+
+// SourceSummary is one traffic source shown by the traffic UI. Local data is
+// live; remote data is a low-pressure snapshot refreshed by subscription sync.
+type SourceSummary struct {
+	Name                string        `json:"name"`
+	FetchedAt           string        `json:"fetchedAt,omitempty"`
 	InUsedBytes         uint64        `json:"inUsedBytes"`
 	OutUsedBytes        uint64        `json:"outUsedBytes"`
 	TotalUsedBytes      uint64        `json:"totalUsedBytes"`
@@ -96,8 +118,8 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(summary{
+	local := SourceSummary{
+		Name:                "Local Server",
 		InUsedBytes:         used.InBytes,
 		OutUsedBytes:        used.OutBytes,
 		TotalUsedBytes:      used.Total(),
@@ -109,7 +131,62 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		TotalLimitBytes:     m.cfg.TotalLimitBytes,
 		ResetTime:           NextCycleReset(now, m.cfg.ResetDay).Format(time.RFC3339),
 		Trend:               trend,
+	}
+	remote, err := ReadRemoteSources(m.cfg.RemoteTrafficPath)
+	if err != nil {
+		log.Printf("monitor: read remote traffic: %v", err)
+	}
+	sources := append([]SourceSummary{local}, remote...)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(summary{
+		InUsedBytes:         local.InUsedBytes,
+		OutUsedBytes:        local.OutUsedBytes,
+		TotalUsedBytes:      local.TotalUsedBytes,
+		InRemainingBytes:    local.InRemainingBytes,
+		OutRemainingBytes:   local.OutRemainingBytes,
+		TotalRemainingBytes: local.TotalRemainingBytes,
+		InLimitBytes:        local.InLimitBytes,
+		OutLimitBytes:       local.OutLimitBytes,
+		TotalLimitBytes:     local.TotalLimitBytes,
+		ResetTime:           local.ResetTime,
+		Trend:               local.Trend,
+		Sources:             sources,
 	})
+}
+
+// ReadRemoteSources reads remote traffic snapshots. Missing files mean no
+// configured remote traffic sources.
+func ReadRemoteSources(path string) ([]SourceSummary, error) {
+	if path == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var sources []SourceSummary
+	if err := json.Unmarshal(b, &sources); err != nil {
+		return nil, err
+	}
+	return sources, nil
+}
+
+// WriteRemoteSources writes remote traffic snapshots for the monitor API.
+func WriteRemoteSources(path string, sources []SourceSummary) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(sources, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
 }
 
 func (m *Monitor) usedThisCycle(now time.Time) (TrafficTotals, error) {

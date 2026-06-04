@@ -64,6 +64,7 @@ type Model struct {
 	cursor    int // flat index across all items
 	install   *installFlow
 	protocols *protocolManager
+	subscribe *subscriptionManager
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -75,7 +76,7 @@ func defaultGroups() []MenuGroup {
 	return []MenuGroup{
 		{Title: "Install", Items: []MenuItem{{Label: "Install / reinstall"}}},
 		{Title: "Protocols", Items: []MenuItem{{Label: "Manage protocols"}}},
-		{Title: "User & Subscription", Items: []MenuItem{{Label: "Account & subscriptions"}}},
+		{Title: "Subscription", Items: []MenuItem{{Label: "Manage subscriptions"}}},
 		{Title: "Certificate & Nginx", Items: []MenuItem{{Label: "Certificate / site management"}}},
 		{Title: "Traffic", Items: []MenuItem{{Label: "Traffic monitor"}}},
 		{Title: "Routing", Items: []MenuItem{{Label: "Domain/IP blacklist"}}},
@@ -150,6 +151,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.subscribe != nil {
+		s := m.subscribe
+		cmd, done := m.subscribe.Update(msg)
+		if done {
+			if s.phase == subscriptionPhaseDone && s.runErr == nil {
+				m.RefreshStatus()
+			}
+			m.subscribe = nil
+		}
+		return m, cmd
+	}
 
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
@@ -181,6 +193,10 @@ func (m *Model) activate() tea.Cmd {
 		p := newProtocolManager()
 		p.setSize(m.width, m.height)
 		m.protocols = p
+	case 2:
+		s := newSubscriptionManager()
+		s.setSize(m.width, m.height)
+		m.subscribe = s
 	}
 	return nil
 }
@@ -254,16 +270,22 @@ func (m *Model) contentView(width, height int) string {
 		m.protocols.setSize(width, height)
 		return m.protocols.View()
 	}
+	if m.subscribe != nil {
+		m.subscribe.setSize(width, height)
+		return m.subscribe.View()
+	}
 	return m.statusView()
 }
 
 func (m *Model) footerView() string {
 	var parts []string
 	if m.install == nil {
-		if m.protocols == nil {
+		if m.protocols == nil && m.subscribe == nil {
 			parts = append(parts, "↑/↓ move", "enter select", "esc/q quit")
-		} else {
+		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
+		} else if m.subscribe != nil {
+			parts = append(parts, m.subscribe.footerHints()...)
 		}
 	} else {
 		parts = append(parts, m.install.footerHints()...)
@@ -305,9 +327,9 @@ func (m *Model) statusView() string {
 		summaryRow("Monitor", or(s.MonitorState, "unknown")),
 		summaryRow("Certificate", or(s.CertState, "unknown")),
 		summaryRow("Protocols", or(s.Protocols, "none")),
-		summaryRow("Subscription", or(s.Subscription, "none")),
-		summaryRow("Clash Meta", or(s.ClashMetaSub, "none")),
-		summaryRow("sing-box Sub", or(s.SingBoxSub, "none")),
+		summaryRow("Default subscription", or(s.Subscription, "none")),
+		summaryRow("Clash Meta subscription", or(s.ClashMetaSub, "none")),
+		summaryRow("sing-box subscription", or(s.SingBoxSub, "none")),
 		summaryRow("Traffic UI", or(s.TrafficUI, "none")),
 		summaryRow("Traffic", or(s.TrafficQuota, "unknown")),
 	}

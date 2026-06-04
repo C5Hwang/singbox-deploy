@@ -71,3 +71,18 @@ func TestStoreInsertAndTotals(t *testing.T) {
 		t.Fatalf("totals = %#v, want in=300 out=150 total=450", totals)
 	}
 }
+
+func TestRemoteSourcesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "remote_traffic.json")
+	want := []SourceSummary{{Name: "remote.example.com", TotalUsedBytes: 300, ResetTime: "2026-06-01T00:00:00Z"}}
+	if err := WriteRemoteSources(path, want); err != nil {
+		t.Fatalf("WriteRemoteSources error: %v", err)
+	}
+	got, err := ReadRemoteSources(path)
+	if err != nil {
+		t.Fatalf("ReadRemoteSources error: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != want[0].Name || got[0].TotalUsedBytes != want[0].TotalUsedBytes {
+		t.Fatalf("remote sources = %#v", got)
+	}
+}

@@ -85,6 +85,40 @@ func TestMergeSingBoxOutboundsRenamesRemoteTags(t *testing.T) {
 	}
 }
 
+func TestRenameDefaultLinksFiltersAndRenames(t *testing.T) {
+	body := strings.Join([]string{
+		"vless://11111111-1111-4111-8111-111111111111@example.com:443?security=reality#JP-01",
+		"vmess://unsupported",
+		"hysteria2://pass@example.com:8443#HK-02",
+	}, "\n")
+	out := RenameDefaultLinks(body, "remote.example.com")
+	if !strings.Contains(out, "#remote.example.com-01") || !strings.Contains(out, "#remote.example.com-02") {
+		t.Fatalf("renamed links missing domain prefix:\n%s", out)
+	}
+	if strings.Contains(out, "vmess") {
+		t.Fatalf("unsupported vmess link should be filtered:\n%s", out)
+	}
+}
+
+func TestExtractSingBoxNodeOutboundsFiltersProfile(t *testing.T) {
+	profile := []byte(`{"outbounds":[{"type":"selector","tag":"PROXY"},{"type":"vless","tag":"JP-01"},{"type":"direct","tag":"direct"}]}`)
+	extracted, err := ExtractSingBoxNodeOutbounds(profile)
+	if err != nil {
+		t.Fatalf("ExtractSingBoxNodeOutbounds error: %v", err)
+	}
+	renamed, err := RenameSingBoxOutbounds(extracted, "remote.example.com")
+	if err != nil {
+		t.Fatalf("RenameSingBoxOutbounds error: %v", err)
+	}
+	var outbounds []map[string]any
+	if err := json.Unmarshal(renamed, &outbounds); err != nil {
+		t.Fatalf("invalid outbounds json: %v", err)
+	}
+	if len(outbounds) != 1 || outbounds[0]["tag"] != "remote.example.com-01" {
+		t.Fatalf("outbounds = %#v", outbounds)
+	}
+}
+
 func TestRemoteEntryTokenAndURLs(t *testing.T) {
 	e := RemoteEntry{Domain: "node.example.com", Port: 443, Alias: "US-vps1", Salt: "abc"}
 	if e.Token() != "0bee89b07a248e27c83fc3d5951213c1" {

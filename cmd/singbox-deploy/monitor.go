@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -32,6 +33,7 @@ func runMonitor(args []string) error {
 	totalLimit := fs.Uint64("total-limit-bytes", 0, "monthly total traffic limit in bytes (0 = unlimited)")
 	resetDay := fs.Int("reset-day", 1, "monthly reset day-of-month")
 	intervalSec := fs.Int("interval-seconds", 300, "sampling interval in seconds")
+	remoteTrafficPath := fs.String("remote-traffic", filepath.Join(layout.StateDir, "remote_traffic.json"), "remote traffic snapshot JSON path")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -52,13 +54,14 @@ func runMonitor(args []string) error {
 	defer store.Close()
 
 	cfg := monitor.Config{
-		Listen:           *listen,
-		Interface:        selectedIface,
-		SamplingInterval: secondsToDuration(*intervalSec),
-		InLimitBytes:     *inLimit,
-		OutLimitBytes:    *outLimit,
-		TotalLimitBytes:  *totalLimit,
-		ResetDay:         *resetDay,
+		Listen:            *listen,
+		Interface:         selectedIface,
+		SamplingInterval:  secondsToDuration(*intervalSec),
+		InLimitBytes:      *inLimit,
+		OutLimitBytes:     *outLimit,
+		TotalLimitBytes:   *totalLimit,
+		ResetDay:          *resetDay,
+		RemoteTrafficPath: *remoteTrafficPath,
 	}
 	m := monitor.New(store, cfg, systemdSingBox{})
 

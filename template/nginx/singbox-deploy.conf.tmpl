@@ -1,5 +1,6 @@
 server {
-    listen {{ .SubscribePort }} ssl http2;
+    listen {{ .SubscribePort }} ssl;
+    http2 on;
     server_name {{ .Domain }};
 
     ssl_certificate {{ .CertificatePath }};
@@ -19,7 +20,8 @@ server {
 }
 
 {{ if .EnableMonitor }}server {
-    listen {{ .TrafficPort }} ssl http2;
+    listen {{ .TrafficPort }} ssl;
+    http2 on;
     server_name {{ .Domain }};
 
     ssl_certificate {{ .CertificatePath }};

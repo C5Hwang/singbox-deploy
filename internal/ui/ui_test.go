@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/install"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
@@ -145,6 +146,101 @@ func TestProtocolManagementMenuOpens(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "Protocol Management") || !strings.Contains(view, "Current:") || !strings.Contains(view, "reality-vision") {
 		t.Fatalf("protocol manager view missing expected content:\n%s", view)
+	}
+}
+
+func TestSubscriptionMenuEntryOpens(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withSubscriptionDeps(t, layout)
+
+	m := NewModel()
+	m.cursor = 2
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.subscribe == nil {
+		t.Fatalf("subscription manager was not opened")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Manage Subscriptions") || !strings.Contains(view, "Remote subscriptions") || !strings.Contains(view, "Edit display name") {
+		t.Fatalf("subscription manager view missing expected content:\n%s", view)
+	}
+	if !strings.Contains(view, "Delete remote subscription") || strings.Contains(strings.ToLower(view), "aggregation") {
+		t.Fatalf("subscription manager should use remote subscription wording:\n%s", view)
+	}
+}
+
+func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	remotes := []install.RemoteSubscription{
+		{Domain: "one.example.com", Port: 9443, Salt: "salt-one"},
+		{Domain: "two.example.com", Port: 9444, Salt: "salt-two", Traffic: true, TrafficPort: 9445},
+	}
+	if err := install.SaveRemoteSubscriptions(layout, remotes); err != nil {
+		t.Fatalf("save remotes: %v", err)
+	}
+	withSubscriptionDeps(t, layout)
+
+	sm := newSubscriptionManager()
+	sm.setSize(100, 30)
+	if sm.loadErr != nil {
+		t.Fatalf("load subscription manager: %v", sm.loadErr)
+	}
+	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDeleteRemotes)
+	_, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || sm.phase != subscriptionPhaseForm {
+		t.Fatalf("enter should open delete multi-select, phase=%v done=%v", sm.phase, done)
+	}
+	view := sm.View()
+	for _, want := range []string{"Remote subscriptions to delete", "[ ] one.example.com:9443", "[ ] two.example.com:9444", "space toggle"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("delete multi-select missing %q:\n%s", want, view)
+		}
+	}
+
+	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	if done || !strings.Contains(sm.View(), "[x] one.example.com:9443") {
+		t.Fatalf("space should select first remote, done=%v:\n%s", done, sm.View())
+	}
+	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || sm.phase != subscriptionPhaseConfirm {
+		t.Fatalf("enter should confirm selected delete, phase=%v done=%v", sm.phase, done)
+	}
+	view = sm.View()
+	for _, want := range []string{"Delete remote subscriptions", "Remaining remote subscriptions", "Delete", "one.example.com:9443", "Keep", "two.example.com:9444"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("delete confirm missing %q:\n%s", want, view)
+		}
+	}
+	target := sm.targetRemotes()
+	if len(target) != 1 || target[0].Domain != "two.example.com" {
+		t.Fatalf("target remotes = %#v, want only two.example.com", target)
+	}
+}
+
+func TestSubscriptionDeleteRemoteRequiresConfiguredRemote(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withSubscriptionDeps(t, layout)
+
+	sm := newSubscriptionManager()
+	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDeleteRemotes)
+	_, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || sm.phase != subscriptionPhaseAction {
+		t.Fatalf("empty delete should stay on action phase, phase=%v done=%v", sm.phase, done)
+	}
+	if !strings.Contains(sm.View(), "no remote subscriptions to delete") {
+		t.Fatalf("missing empty delete warning:\n%s", sm.View())
+	}
+}
+
+func TestMenuUsesSubscriptionGroup(t *testing.T) {
+	m := NewModel()
+	view := m.menuView(40)
+	if !strings.Contains(view, "Subscription") || !strings.Contains(view, "Manage subscriptions") {
+		t.Fatalf("menu should contain subscription group and manager:\n%s", view)
+	}
+	for _, avoid := range []string{"User & Subscription", "Manage account", "Account & subscriptions"} {
+		if strings.Contains(view, avoid) {
+			t.Fatalf("old account/subscription wording %q should be removed:\n%s", avoid, view)
+		}
 	}
 }
 
@@ -368,6 +464,29 @@ func withProtocolManagerDeps(t *testing.T, layout paths.Layout) {
 	})
 	protocolUILayout = func() paths.Layout { return layout }
 	detectProtocolHost = func() (system.Host, error) { return supportedTestHost(), nil }
+}
+
+func withSubscriptionDeps(t *testing.T, layout paths.Layout) {
+	t.Helper()
+	oldLayout := subscriptionUILayout
+	oldDetect := detectSubscriptionHost
+	t.Cleanup(func() {
+		subscriptionUILayout = oldLayout
+		detectSubscriptionHost = oldDetect
+	})
+	subscriptionUILayout = func() paths.Layout { return layout }
+	detectSubscriptionHost = func() (system.Host, error) { return supportedTestHost(), nil }
+}
+
+func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subscriptionAction) int {
+	t.Helper()
+	for i, item := range sm.actions() {
+		if item.action == action {
+			return i
+		}
+	}
+	t.Fatalf("subscription action %v not found", action)
+	return 0
 }
 
 func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {

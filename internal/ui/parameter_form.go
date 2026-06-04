@@ -52,6 +52,7 @@ func newParameterInput() textinput.Model {
 func (f *parameterForm) setSize(width, height int) {
 	f.width = width
 	f.height = height
+	f.input.Width = max(1, width-4)
 }
 
 func (f *parameterForm) setFields(fields []field) {

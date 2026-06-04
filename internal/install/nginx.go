@@ -2,8 +2,11 @@ package install
 
 import (
 	"fmt"
+	"path/filepath"
 
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 )
 
 // aptNginxScript sets up the nginx.org mainline apt repository and installs
@@ -46,4 +49,24 @@ func NginxInstallCommands(osr system.OSRelease) []system.Command {
 	default:
 		return nil
 	}
+}
+
+func writeManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath string) error {
+	certPath := filepath.Join(layout.TLSDir, cfg.Domain+".crt")
+	keyPath := filepath.Join(layout.TLSDir, cfg.Domain+".key")
+	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
+		"SubscribePort":   cfg.SubscribePort,
+		"TrafficPort":     cfg.TrafficPort,
+		"Domain":          cfg.Domain,
+		"CertificatePath": certPath,
+		"KeyPath":         keyPath,
+		"WebRoot":         layout.WebRoot,
+		"SubscribeDir":    layout.SubscribeDir,
+		"EnableMonitor":   cfg.DeployMonitor,
+		"MonitorPort":     cfg.MonitorPort,
+	})
+	if err != nil {
+		return err
+	}
+	return writeFile(nginxConfPath, []byte(conf), 0o644)
 }

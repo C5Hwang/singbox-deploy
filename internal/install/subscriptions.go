@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -270,12 +269,11 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 	nodes := c.buildNodes()
 
 	var links []subscription.Node
-	var clashItems, tagsList []string
+	var clashItems []string
 	var outbounds []map[string]any
 	for _, n := range nodes {
 		links = append(links, subscription.Node{Name: n.Name, Protocol: protoOf(n.SingBoxOutbound), Link: n.DefaultLink})
 		clashItems = append(clashItems, n.ClashYAML)
-		tagsList = append(tagsList, n.Name)
 		outbounds = append(outbounds, n.SingBoxOutbound)
 	}
 
@@ -294,16 +292,24 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 	}
 	out.ClashProfile = clashProfile
 
+	if err := fillSingBoxOutputs(&out, outbounds); err != nil {
+		return subscriptionOutputs{}, err
+	}
+	return out, nil
+}
+
+func fillSingBoxOutputs(out *subscriptionOutputs, outbounds []map[string]any) error {
 	// sing-box outbounds array + full profile.
 	obJSON, err := json.MarshalIndent(outbounds, "", "  ")
 	if err != nil {
-		return subscriptionOutputs{}, err
+		return err
 	}
 	out.SingBoxOutbounds = string(obJSON)
+	tagsList := outboundTags(outbounds)
 
 	tagsJSON, err := json.Marshal(tagsList)
 	if err != nil {
-		return subscriptionOutputs{}, err
+		return err
 	}
 	// The OutboundsJSON injection expects comma-joined objects without the outer
 	// brackets; strip them from the marshaled array.
@@ -320,10 +326,20 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 		"OutboundsJSON":   strings.TrimSpace(inner),
 	})
 	if err != nil {
-		return subscriptionOutputs{}, err
+		return err
 	}
 	out.SingBoxProfile = singboxProfile
-	return out, nil
+	return nil
+}
+
+func outboundTags(outbounds []map[string]any) []string {
+	tags := make([]string, 0, len(outbounds))
+	for _, ob := range outbounds {
+		if tag, ok := ob["tag"].(string); ok && tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
 }
 
 func writeSubscriptions(layout paths.Layout, cfg Config) error {
@@ -331,20 +347,7 @@ func writeSubscriptions(layout paths.Layout, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	token := subscriptionToken(cfg.Salt)
-	files := map[string]string{
-		"default/" + token:           out.DefaultBase64,
-		"clashMeta/" + token:         out.ClashFragment,
-		"clashMetaProfiles/" + token: out.ClashProfile,
-		"sing-boxProfiles/" + token:  out.SingBoxOutbounds,
-		"sing-box/" + token:          out.SingBoxProfile,
-	}
-	for rel, body := range files {
-		if err := writeFile(filepath.Join(layout.SubscribeDir, rel), []byte(body), 0o644); err != nil {
-			return err
-		}
-	}
-	return writeStateFile(layout.StateDir, "subscribe_salt", cfg.Salt+"\n")
+	return writeSubscriptionOutputs(layout, cfg, out)
 }
 
 // protoOf reports the subscription protocol key for a sing-box outbound.

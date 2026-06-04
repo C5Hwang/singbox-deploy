@@ -20,7 +20,7 @@ func TestRenderNginxTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
-	for _, want := range []string{"listen 443 ssl http2;", "listen 2097 ssl http2;", "server_name example.com;", "location /s/", "charset utf-8;", "proxy_pass http://127.0.0.1:19090/"} {
+	for _, want := range []string{"listen 443 ssl;", "listen 2097 ssl;", "http2 on;", "server_name example.com;", "location /s/", "charset utf-8;", "proxy_pass http://127.0.0.1:19090/"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rendered output missing %q:\n%s", want, out)
 		}
