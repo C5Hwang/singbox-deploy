@@ -189,6 +189,50 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 	}
 }
 
+func TestUninstallMenuEntryOpens(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withUninstallDeps(t, layout)
+
+	m := NewModel()
+	m.SetSize(180, 40)
+	m.cursor = 8
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.uninstall == nil {
+		t.Fatalf("uninstall manager was not opened")
+	}
+	view := m.View()
+	for _, want := range []string{"Uninstall · Confirm", "sing-box.service", "singbox-deploy-monitor.service", "Certificates", "SQLite traffic database", "Masquerade site files", "Subscription outputs"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("uninstall view missing %q:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(view, "Unrelated Nginx configs") {
+		t.Fatalf("uninstall view should state unrelated Nginx configs are kept:\n%s", view)
+	}
+}
+
+func TestUninstallConfirmTogglesOptionalData(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withUninstallDeps(t, layout)
+
+	um := newUninstallManager()
+	if !um.selected(uninstallRuntimeKey) {
+		t.Fatalf("runtime state/config should be selected by default")
+	}
+	if um.selected(uninstallCertificatesKey) {
+		t.Fatalf("certificates should be kept by default")
+	}
+	um.cursor = 1
+	_, done := um.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	if done || !um.selected(uninstallCertificatesKey) {
+		t.Fatalf("space should toggle certificates, done=%v selected=%v", done, um.selected(uninstallCertificatesKey))
+	}
+	view := um.View()
+	if !strings.Contains(view, "[x] Certificates") {
+		t.Fatalf("certificates should render selected after toggle:\n%s", view)
+	}
+}
+
 func TestCoreManagementNonRootShowsBlockerOnlyAfterSelection(t *testing.T) {
 	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
 	withCoreDeps(t, layout)
@@ -614,6 +658,21 @@ func withCoreDeps(t *testing.T, layout paths.Layout) {
 	coreCurrentVersion = func(paths.Layout) string { return "sing-box version 1.12.0" }
 	coreServiceSnapshot = func() string { return "running" }
 	coreLogOutput = func(context.Context, int) (string, error) { return "log line\n", nil }
+}
+
+func withUninstallDeps(t *testing.T, layout paths.Layout) {
+	t.Helper()
+	oldLayout := uninstallUILayout
+	oldDetect := detectUninstallHost
+	oldRun := uninstallRun
+	t.Cleanup(func() {
+		uninstallUILayout = oldLayout
+		detectUninstallHost = oldDetect
+		uninstallRun = oldRun
+	})
+	uninstallUILayout = func() paths.Layout { return layout }
+	detectUninstallHost = func() (system.Host, error) { return supportedTestHost(), nil }
+	uninstallRun = func(context.Context, install.UninstallOptions) error { return nil }
 }
 
 func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subscriptionAction) int {

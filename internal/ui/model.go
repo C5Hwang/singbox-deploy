@@ -66,6 +66,7 @@ type Model struct {
 	protocols *protocolManager
 	subscribe *subscriptionManager
 	core      *coreManager
+	uninstall *uninstallManager
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -174,6 +175,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.uninstall != nil {
+		u := m.uninstall
+		cmd, done := m.uninstall.Update(msg)
+		if done {
+			if u.phase == uninstallPhaseDone && u.runErr == nil {
+				m.RefreshStatus()
+			}
+			m.uninstall = nil
+		}
+		return m, cmd
+	}
 
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
@@ -213,6 +225,10 @@ func (m *Model) activate() tea.Cmd {
 		c := newCoreManager()
 		c.setSize(m.width, m.height)
 		m.core = c
+	case 8:
+		u := newUninstallManager()
+		u.setSize(m.width, m.height)
+		m.uninstall = u
 	}
 	return nil
 }
@@ -294,13 +310,17 @@ func (m *Model) contentView(width, height int) string {
 		m.core.setSize(width, height)
 		return m.core.View()
 	}
+	if m.uninstall != nil {
+		m.uninstall.setSize(width, height)
+		return m.uninstall.View()
+	}
 	return m.statusView()
 }
 
 func (m *Model) footerView() string {
 	var parts []string
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil && m.core == nil {
+		if m.protocols == nil && m.subscribe == nil && m.core == nil && m.uninstall == nil {
 			parts = append(parts, "↑/↓ move", "enter select", "esc/q quit")
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
@@ -308,6 +328,8 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.subscribe.footerHints()...)
 		} else if m.core != nil {
 			parts = append(parts, m.core.footerHints()...)
+		} else if m.uninstall != nil {
+			parts = append(parts, m.uninstall.footerHints()...)
 		}
 	} else {
 		parts = append(parts, m.install.footerHints()...)
