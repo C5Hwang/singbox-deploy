@@ -98,7 +98,7 @@ func (c *Client) LatestStable(ctx context.Context, owner, repo string) (string, 
 	return tags[0], nil
 }
 
-// StableReleases returns up to n newest stable tags (for rollback selection).
+// StableReleases returns up to n newest stable tags.
 func (c *Client) StableReleases(ctx context.Context, owner, repo string, n int) ([]string, error) {
 	tags, err := c.stableTags(ctx, owner, repo)
 	if err != nil {

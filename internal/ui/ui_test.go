@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/install"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -165,6 +168,95 @@ func TestSubscriptionMenuEntryOpens(t *testing.T) {
 	}
 	if !strings.Contains(view, "Delete remote subscription") || strings.Contains(strings.ToLower(view), "aggregation") {
 		t.Fatalf("subscription manager should use remote subscription wording:\n%s", view)
+	}
+}
+
+func TestCoreManagementMenuEntryOpens(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withCoreDeps(t, layout)
+
+	m := NewModel()
+	m.cursor = 6
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.core == nil {
+		t.Fatalf("core manager was not opened")
+	}
+	view := m.View()
+	for _, want := range []string{"sing-box Core Management", "Current version", "sing-box version 1.12.0", "Change to recent stable core", "View sing-box.service logs"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("core manager view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestCoreManagementNonRootShowsBlockerOnlyAfterSelection(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withCoreDeps(t, layout)
+	detectCoreHost = func() (system.Host, error) {
+		host := supportedTestHost()
+		host.IsRoot = false
+		return host, nil
+	}
+
+	cm := newCoreManager()
+	msg := "core management must be run as root"
+	if strings.Contains(cm.View(), msg) {
+		t.Fatalf("core action view should not show initial blocker:\n%s", cm.View())
+	}
+
+	cm.activateAction()
+	view := cm.View()
+	if cm.phase != corePhaseAction || strings.Count(view, msg) != 1 {
+		t.Fatalf("core action selection should show one blocker, phase=%v:\n%s", cm.phase, view)
+	}
+}
+
+func TestCoreChangeStableListsEightReleases(t *testing.T) {
+	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	withCoreDeps(t, layout)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/SagerNet/sing-box/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"tag_name":"v1.12.9","prerelease":false,"draft":false},
+			{"tag_name":"v1.12.8","prerelease":false,"draft":false},
+			{"tag_name":"v1.12.7","prerelease":false,"draft":false},
+			{"tag_name":"v1.12.6","prerelease":false,"draft":false},
+			{"tag_name":"v1.12.5","prerelease":false,"draft":false},
+			{"tag_name":"v1.12.4","prerelease":false,"draft":false},
+			{"tag_name":"v1.12.3","prerelease":false,"draft":false},
+			{"tag_name":"v1.12.2","prerelease":false,"draft":false},
+			{"tag_name":"v1.12.1","prerelease":false,"draft":false}
+		]`))
+	}))
+	t.Cleanup(srv.Close)
+	coreReleaseClient = func() *release.Client { return release.NewClient(srv.URL, srv.Client()) }
+
+	cm := newCoreManager()
+	cm.activateAction()
+	if cm.phase != corePhaseStableSelect {
+		t.Fatalf("phase = %v, want stable select; err=%q", cm.phase, cm.fieldErr)
+	}
+	if len(cm.stableTags) != 8 {
+		t.Fatalf("stable tags = %v, want 8 releases", cm.stableTags)
+	}
+	view := cm.View()
+	for _, want := range []string{"Change Version", "latest 8 stable", "v1.12.9", "v1.12.2"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("stable selection view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "v1.12.1") {
+		t.Fatalf("stable selection should exclude ninth release:\n%s", view)
+	}
+
+	cm.cursor = 7
+	_, done := cm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || cm.phase != corePhaseConfirm || cm.targetTag != "v1.12.2" {
+		t.Fatalf("select eighth release: done=%v phase=%v target=%q", done, cm.phase, cm.targetTag)
 	}
 }
 
@@ -476,6 +568,29 @@ func withSubscriptionDeps(t *testing.T, layout paths.Layout) {
 	})
 	subscriptionUILayout = func() paths.Layout { return layout }
 	detectSubscriptionHost = func() (system.Host, error) { return supportedTestHost(), nil }
+}
+
+func withCoreDeps(t *testing.T, layout paths.Layout) {
+	t.Helper()
+	oldLayout := coreUILayout
+	oldDetect := detectCoreHost
+	oldVersion := coreCurrentVersion
+	oldService := coreServiceSnapshot
+	oldLogs := coreLogOutput
+	oldRelease := coreReleaseClient
+	t.Cleanup(func() {
+		coreUILayout = oldLayout
+		detectCoreHost = oldDetect
+		coreCurrentVersion = oldVersion
+		coreServiceSnapshot = oldService
+		coreLogOutput = oldLogs
+		coreReleaseClient = oldRelease
+	})
+	coreUILayout = func() paths.Layout { return layout }
+	detectCoreHost = func() (system.Host, error) { return supportedTestHost(), nil }
+	coreCurrentVersion = func(paths.Layout) string { return "sing-box version 1.12.0" }
+	coreServiceSnapshot = func() string { return "running" }
+	coreLogOutput = func(context.Context, int) (string, error) { return "log line\n", nil }
 }
 
 func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subscriptionAction) int {

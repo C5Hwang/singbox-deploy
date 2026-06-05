@@ -105,10 +105,11 @@ func dnsCredentialNote(vals map[string]string) string {
 // completion into the UI. It is the only channel the orchestrator goroutine
 // uses to communicate, so all UI state stays mutated on the UI goroutine.
 type runMsg struct {
-	event   *install.Event
-	logLine string
-	done    bool
-	err     error
+	event     *install.Event
+	logLine   string
+	done      bool
+	err       error
+	resultTag string
 }
 
 // installForm owns only install input collection and confirmation rendering.

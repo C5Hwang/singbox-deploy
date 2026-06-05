@@ -65,6 +65,7 @@ type Model struct {
 	install   *installFlow
 	protocols *protocolManager
 	subscribe *subscriptionManager
+	core      *coreManager
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -162,6 +163,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.core != nil {
+		c := m.core
+		cmd, done := m.core.Update(msg)
+		if done {
+			if c.phase == corePhaseDone && c.runErr == nil {
+				m.RefreshStatus()
+			}
+			m.core = nil
+		}
+		return m, cmd
+	}
 
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
@@ -197,6 +209,10 @@ func (m *Model) activate() tea.Cmd {
 		s := newSubscriptionManager()
 		s.setSize(m.width, m.height)
 		m.subscribe = s
+	case 6:
+		c := newCoreManager()
+		c.setSize(m.width, m.height)
+		m.core = c
 	}
 	return nil
 }
@@ -274,18 +290,24 @@ func (m *Model) contentView(width, height int) string {
 		m.subscribe.setSize(width, height)
 		return m.subscribe.View()
 	}
+	if m.core != nil {
+		m.core.setSize(width, height)
+		return m.core.View()
+	}
 	return m.statusView()
 }
 
 func (m *Model) footerView() string {
 	var parts []string
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil {
+		if m.protocols == nil && m.subscribe == nil && m.core == nil {
 			parts = append(parts, "↑/↓ move", "enter select", "esc/q quit")
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
 		} else if m.subscribe != nil {
 			parts = append(parts, m.subscribe.footerHints()...)
+		} else if m.core != nil {
+			parts = append(parts, m.core.footerHints()...)
 		}
 	} else {
 		parts = append(parts, m.install.footerHints()...)
