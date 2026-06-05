@@ -396,6 +396,21 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 	}
 }
 
+func TestParameterInputShowsTwoCharacterDefaultWhenUnsized(t *testing.T) {
+	form := newParameterForm([]field{{key: "hysteria2_up_mbps", label: "Hysteria2 up limit", def: "50"}})
+	form.startForm()
+	form.input.Cursor.Blink = true
+	if got := form.input.View(); !strings.Contains(got, "50") {
+		t.Fatalf("unsized placeholder = %q, want full default 50", got)
+	}
+
+	form.setSize(0, 0)
+	form.input.Cursor.Blink = true
+	if got := form.input.View(); !strings.Contains(got, "50") {
+		t.Fatalf("zero-width placeholder = %q, want full default 50", got)
+	}
+}
+
 func TestProtocolManagementRealitySNIEntryOnlyForRealityProtocols(t *testing.T) {
 	layout := protocolManagerState(t, "hysteria2", "")
 	withProtocolManagerDeps(t, layout)
@@ -888,6 +903,35 @@ func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 	}
 }
 
+func TestInstallFieldsIncludeSiteTemplates(t *testing.T) {
+	fields := installFields()
+	field := fields[fieldIndex(t, fields, "site_template")]
+	if field.def != install.DefaultSiteTemplate {
+		t.Fatalf("site template default = %q", field.def)
+	}
+	if strings.Join(field.options, ",") != strings.Join(install.SiteTemplateOptions(), ",") {
+		t.Fatalf("site template options = %#v", field.options)
+	}
+}
+
+func TestBuildConfigRejectsInvalidSiteTemplate(t *testing.T) {
+	w := &installFlow{
+		form: installFormWithValuesForTest(map[string]string{
+			"domain":          "example.com",
+			"challenge":       "http-01",
+			"protocols":       "tuic",
+			"display_name":    "Node",
+			"site_template":   "unknown",
+			"traffic_monitor": "no",
+		}),
+		host: supportedTestHost(),
+	}
+	_, err := w.buildConfig()
+	if err == nil || !strings.Contains(err.Error(), "unsupported masquerade site template") {
+		t.Fatalf("expected invalid site template error, got %v", err)
+	}
+}
+
 func TestSummaryHighlightsRandomValues(t *testing.T) {
 	w := confirmInstallFlowForTest()
 	summary := w.form.summary(w.host)
@@ -945,6 +989,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 			"tuic_password":          "tuic-secret",
 			"tuic_port":              "24444",
 			"display_name":           "Node",
+			"site_template":          "forty",
 			"subscribe_port":         "24445",
 			"subscribe_salt":         "abc",
 			"traffic_monitor":        "yes",
@@ -976,6 +1021,9 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	}
 	if cfg.Salt != "abc" {
 		t.Fatalf("Salt = %q", cfg.Salt)
+	}
+	if cfg.SiteTemplate != "forty" {
+		t.Fatalf("SiteTemplate = %q", cfg.SiteTemplate)
 	}
 	if cfg.Creds.RealityVisionUUID != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("RealityVisionUUID = %q", cfg.Creds.RealityVisionUUID)

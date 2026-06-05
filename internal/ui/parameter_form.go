@@ -9,6 +9,13 @@ import (
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
+const (
+	// bubbles/textinput truncates two-character placeholders to the first
+	// character when Width is unset, so keep a real fallback before sizing.
+	defaultParameterInputWidth = 80
+	minParameterInputWidth     = 4
+)
+
 // field describes one parameter collected by the shared parameter form.
 type field struct {
 	key       string
@@ -84,13 +91,21 @@ func newParameterInput() textinput.Model {
 	ti := textinput.New()
 	ti.CharLimit = 256
 	ti.Prompt = "› "
+	ti.Width = defaultParameterInputWidth
 	return ti
 }
 
 func (f *parameterForm) setSize(width, height int) {
 	f.width = width
 	f.height = height
-	f.input.Width = max(1, width-4)
+	f.input.Width = parameterInputWidth(width)
+}
+
+func parameterInputWidth(width int) int {
+	if width <= 0 {
+		return defaultParameterInputWidth
+	}
+	return max(minParameterInputWidth, width-4)
 }
 
 func (f *parameterForm) setFields(fields []field) {

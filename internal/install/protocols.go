@@ -77,6 +77,7 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		Enabled:                enabled,
 		DisplayName:            readProtocolStateDefault(store, "display_name", DefaultDisplayName),
 		Salt:                   salt,
+		SiteTemplate:           readProtocolStateDefault(store, "site_template", DefaultSiteTemplate),
 		RealityServerName:      readProtocolStateDefault(store, "reality_server_name", ""),
 		RealityHandshakePort:   readProtocolStateIntDefault(store, "reality_handshake_port", config.DefaultRealityHandshakePort),
 		Hysteria2UpMbps:        readProtocolStateIntDefault(store, "hysteria2_up_mbps", config.DefaultHysteria2UpMbps),

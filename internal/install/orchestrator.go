@@ -109,7 +109,7 @@ func (o *Orchestrator) steps(cfg Config) []step {
 		{"Config", "generate and validate config.json", o.stepConfig},
 		{"Services", "install and start sing-box.service", o.stepServices},
 		{"Subscriptions", "generate subscription files", o.stepSubscriptions},
-		{"Nginx config", "write managed config and reload", o.stepNginxConfig},
+		{"Nginx config", "write managed config, deploy site, and reload", o.stepNginxConfig},
 	}
 	if cfg.DeployMonitor {
 		steps = append(steps, step{"Monitor", "install and start traffic monitor", o.stepMonitor})
@@ -298,14 +298,7 @@ func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
 	if err := writeManagedNginxConfig(o.Layout, cfg, o.NginxConfPath); err != nil {
 		return err
 	}
-	index, err := templatefs.Render("site/default/index.html.tmpl", map[string]any{
-		"Title":    cfg.Domain,
-		"Subtitle": "It works.",
-	})
-	if err != nil {
-		return err
-	}
-	if err := writeFile(filepath.Join(o.Layout.WebRoot, "index.html"), []byte(index), 0o644); err != nil {
+	if err := deploySiteTemplate(o.Layout, cfg.SiteTemplate); err != nil {
 		return err
 	}
 	return o.run(
@@ -359,6 +352,7 @@ func writeInstallState(stateDir string, cfg Config) error {
 		"enabled_protocols":      protocolStateValue(cfg.enabled()),
 		"display_name":           cfg.DisplayName,
 		"subscribe_salt":         cfg.Salt,
+		"site_template":          cfg.siteTemplate(),
 		"reality_public_key":     cfg.Creds.RealityPublicKey,
 		"reality_private_key":    cfg.Creds.RealityPrivateKey,
 		"reality_short_id":       cfg.Creds.RealityShortID,
@@ -411,4 +405,12 @@ func protocolStateValue(protocols []config.Protocol) string {
 		parts = append(parts, string(proto))
 	}
 	return strings.Join(parts, ",")
+}
+
+func (c Config) siteTemplate() string {
+	name, err := NormalizeSiteTemplate(c.SiteTemplate)
+	if err != nil {
+		return DefaultSiteTemplate
+	}
+	return name
 }

@@ -75,8 +75,9 @@ type Config struct {
 	Ports   config.Ports
 	Enabled []config.Protocol
 
-	DisplayName string
-	Salt        string
+	DisplayName  string
+	Salt         string
+	SiteTemplate string
 
 	RealityServerName    string
 	RealityHandshakePort int

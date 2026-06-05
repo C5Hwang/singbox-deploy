@@ -15,6 +15,7 @@ The project is inspired by [`mack-a/v2ray-agent`](https://github.com/mack-a/v2ra
 - Automated sing-box, Nginx, certificate, subscription, and service deployment.
 - Let's Encrypt certificate issuance with HTTP-01 and DNS-01 support.
 - Subscription output for default links, Clash Meta, and sing-box clients.
+- Selectable HTML5 UP masquerade site templates served by Nginx.
 - Traffic monitoring with a web dashboard and quota enforcement.
 
 ## Supported Protocols

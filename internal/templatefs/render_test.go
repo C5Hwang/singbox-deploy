@@ -48,8 +48,8 @@ func TestRenderNginxTemplateWithoutMonitor(t *testing.T) {
 }
 
 func TestRenderMissingKeyFails(t *testing.T) {
-	_, err := Render("site/default/index.html.tmpl", map[string]any{"Title": "Hi"})
+	_, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{"Domain": "example.com"})
 	if err == nil {
-		t.Fatalf("expected error for missing Subtitle key")
+		t.Fatalf("expected error for missing template key")
 	}
 }

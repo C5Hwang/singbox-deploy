@@ -87,6 +87,7 @@ func testConfig(t *testing.T) Config {
 		Ports:                  config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
 		DisplayName:            "US-vps1",
 		Salt:                   "testsalt",
+		SiteTemplate:           "massively",
 		RealityServerName:      "www.microsoft.com",
 		RealityHandshakePort:   config.DefaultRealityHandshakePort,
 		SubscribePort:          DefaultSubscribePort,
@@ -274,7 +275,10 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_out_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_total_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_port"))
+	mustExist(t, filepath.Join(layout.StateDir, "site_template"))
 	mustExist(t, filepath.Join(layout.WebRoot, "index.html"))
+	mustExist(t, filepath.Join(layout.WebRoot, "LICENSE.txt"))
+	mustExist(t, filepath.Join(layout.WebRoot, "assets", "css", "main.css"))
 }
 
 func TestOrchestratorSkipsMonitorWhenDisabled(t *testing.T) {

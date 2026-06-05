@@ -50,6 +50,7 @@ func installFields() []field {
 		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
 		{key: "dns_credential", label: "DNS API credential", skip: isDNS, noteFunc: dnsCredentialNote},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
+		{key: "site_template", label: "Masquerade site template", def: install.DefaultSiteTemplate, options: install.SiteTemplateOptions(), note: "HTML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)
@@ -279,6 +280,9 @@ func (f *installForm) validateField(field field, val string, _ map[string]string
 		if len(protocolsFromValue(val)) == 0 {
 			return fmt.Errorf("select at least one protocol")
 		}
+	case "site_template":
+		_, err := install.NormalizeSiteTemplate(val)
+		return err
 	}
 	if err := uiparams.ValidateSharedParameterValue(field.key, val); err != nil {
 		return err
@@ -536,6 +540,10 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 		enabled = config.AllProtocols
 	}
 	deployMonitor := trafficMonitorEnabled(vals)
+	siteTemplate, err := install.NormalizeSiteTemplate(vals["site_template"])
+	if err != nil {
+		return install.Config{}, err
+	}
 	subscribePort, err := parseInstallPort(vals["subscribe_port"], install.DefaultSubscribePort, "subscription port")
 	if err != nil {
 		return install.Config{}, err
@@ -620,6 +628,7 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 		Enabled:                enabled,
 		DisplayName:            vals["display_name"],
 		Salt:                   salt,
+		SiteTemplate:           siteTemplate,
 		RealityServerName:      realityServerName,
 		RealityHandshakePort:   config.DefaultRealityHandshakePort,
 		Hysteria2UpMbps:        hysteria2UpMbps,
@@ -938,6 +947,7 @@ func (w *installForm) summary(host system.Host) string {
 		summaryRow("ACME challenge", w.values["challenge"]),
 		summaryRow("Protocols", protocolLabels(protocols)),
 		summaryRow("Display name", w.values["display_name"]),
+		summaryRow("Masquerade site", or(w.values["site_template"], install.DefaultSiteTemplate)),
 		summaryRow("Subscription port", or(w.values["subscribe_port"], strconv.Itoa(install.DefaultSubscribePort))),
 		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
 		summaryRow("Traffic monitor", yesNoString(deployMonitor)),
@@ -977,6 +987,7 @@ func (w *installFlow) doneSummary() string {
 	rows := []summaryLine{
 		summaryRow("Account", w.cfg.DisplayName),
 		summaryRow("Protocols", protocolLabels(w.cfg.Enabled)),
+		summaryRow("Masquerade site", or(w.cfg.SiteTemplate, install.DefaultSiteTemplate)),
 		summaryRow("Ports", installedPortsSummary(w.cfg.Enabled, w.cfg.Ports)),
 		summaryRow("Subscription", subscriptionBase+"/s/default/"+token),
 		summaryRow("Clash", subscriptionBase+"/s/clashMetaProfiles/"+token),
