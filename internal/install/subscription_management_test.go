@@ -144,6 +144,9 @@ func TestUpdateSubscriptionsAggregatesRemoteAndTraffic(t *testing.T) {
 	if !strings.Contains(string(clashBody), "name: \"JP-01\"") {
 		t.Fatalf("clash subscription missing original remote node name:\n%s", clashBody)
 	}
+	if strings.Contains(string(clashBody), "proxies:\n- name:") || !strings.HasPrefix(string(clashBody), "proxies:\n  - name:") {
+		t.Fatalf("clash subscription first proxy should stay indented:\n%s", clashBody)
+	}
 	singBoxOutbounds, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "sing-boxProfiles", token))
 	if err != nil {
 		t.Fatalf("read sing-box outbounds: %v", err)

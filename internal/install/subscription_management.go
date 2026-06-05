@@ -437,9 +437,9 @@ func splitNonEmptyLines(s string) []string {
 }
 
 func stripClashHeader(fragment string) string {
-	fragment = strings.TrimSpace(fragment)
+	fragment = strings.Trim(fragment, "\r\n")
 	if strings.HasPrefix(fragment, "proxies:") {
-		fragment = strings.TrimSpace(strings.TrimPrefix(fragment, "proxies:"))
+		fragment = strings.Trim(strings.TrimPrefix(fragment, "proxies:"), "\r\n")
 	}
 	return fragment
 }
@@ -447,7 +447,7 @@ func stripClashHeader(fragment string) string {
 func nonEmptyStrings(values []string) []string {
 	var out []string
 	for _, value := range values {
-		value = strings.TrimSpace(value)
+		value = strings.Trim(value, "\r\n")
 		if value != "" {
 			out = append(out, value)
 		}
