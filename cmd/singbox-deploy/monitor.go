@@ -6,9 +6,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/install"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 )
@@ -25,14 +27,14 @@ func runMonitor(args []string) error {
 	layout := paths.DefaultLayout()
 
 	fs := flag.NewFlagSet("monitor serve", flag.ContinueOnError)
-	listen := fs.String("listen", "127.0.0.1:19090", "listen address")
+	listen := fs.String("listen", "127.0.0.1:"+strconv.Itoa(install.DefaultMonitorPort), "listen address")
 	iface := fs.String("interface", "", "monitored network interface (default: auto-detect)")
 	dbPath := fs.String("db", layout.TrafficDB, "traffic database path")
 	inLimit := fs.Uint64("in-limit-bytes", 0, "monthly inbound traffic limit in bytes (0 = unlimited)")
 	outLimit := fs.Uint64("out-limit-bytes", 0, "monthly outbound traffic limit in bytes (0 = unlimited)")
 	totalLimit := fs.Uint64("total-limit-bytes", 0, "monthly total traffic limit in bytes (0 = unlimited)")
-	resetDay := fs.Int("reset-day", 1, "monthly reset day-of-month")
-	intervalSec := fs.Int("interval-seconds", 300, "sampling interval in seconds")
+	resetDay := fs.Int("reset-day", install.DefaultResetDay, "monthly reset day-of-month")
+	intervalSec := fs.Int("interval-seconds", install.DefaultMonitorIntervalSeconds, "sampling interval in seconds")
 	remoteTrafficPath := fs.String("remote-traffic", filepath.Join(layout.StateDir, "remote_traffic.json"), "remote traffic snapshot JSON path")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err

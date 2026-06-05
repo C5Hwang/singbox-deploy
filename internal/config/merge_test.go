@@ -87,6 +87,8 @@ func TestBuildConfigCredentialsRendered(t *testing.T) {
 	for _, want := range []string{
 		"11111111-1111-1111-1111-111111111111", // reality vision uuid
 		"xtls-rprx-vision",
+		`"up_mbps": 50`,
+		`"down_mbps": 100`,
 		"hy-pass",
 		"tuic-pass",
 		"any-pass",

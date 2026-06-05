@@ -328,7 +328,7 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 		"OutLimitBytes":   cfg.TrafficOutLimitBytes,
 		"TotalLimitBytes": cfg.TrafficTotalLimitBytes,
 		"ResetDay":        cfg.ResetDay,
-		"IntervalSeconds": 300,
+		"IntervalSeconds": DefaultMonitorIntervalSeconds,
 	})
 	if err != nil {
 		return err
@@ -363,7 +363,9 @@ func writeInstallState(stateDir string, cfg Config) error {
 		"reality_private_key":    cfg.Creds.RealityPrivateKey,
 		"reality_short_id":       cfg.Creds.RealityShortID,
 		"reality_server_name":    cfg.RealityServerName,
-		"reality_handshake_port": itoa(cfg.RealityHandshakePort),
+		"reality_handshake_port": itoa(cfg.realityHandshakePort()),
+		"hysteria2_up_mbps":      itoa(cfg.hysteria2UpMbps()),
+		"hysteria2_down_mbps":    itoa(cfg.hysteria2DownMbps()),
 		"reality_vision_uuid":    cfg.Creds.RealityVisionUUID,
 		"reality_grpc_uuid":      cfg.Creds.RealityGRPCUUID,
 		"hysteria2_password":     cfg.Creds.HysteriaPassword,

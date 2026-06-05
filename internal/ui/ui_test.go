@@ -386,6 +386,14 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 	if done || !strings.Contains(pm.View(), "Hysteria2 port") || !strings.Contains(pm.View(), "default: 9443") {
 		t.Fatalf("missing port edit field:\n%s", pm.View())
 	}
+	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || !strings.Contains(pm.View(), "Hysteria2 up limit") || !strings.Contains(pm.View(), "default: 50") {
+		t.Fatalf("missing up limit edit field:\n%s", pm.View())
+	}
+	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || !strings.Contains(pm.View(), "Hysteria2 down limit") || !strings.Contains(pm.View(), "default: 100") {
+		t.Fatalf("missing down limit edit field:\n%s", pm.View())
+	}
 }
 
 func TestProtocolManagementRealitySNIEntryOnlyForRealityProtocols(t *testing.T) {
@@ -1044,7 +1052,7 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 	if got := protocolSelectionValue(cfg.Enabled); got != "hysteria2,anytls" {
 		t.Fatalf("enabled = %q", got)
 	}
-	if cfg.SubscribePort != 2096 || cfg.TrafficPort != 2097 || cfg.MonitorPort != 19090 {
+	if cfg.SubscribePort != install.DefaultSubscribePort || cfg.TrafficPort != install.DefaultTrafficPort || cfg.MonitorPort != install.DefaultMonitorPort {
 		t.Fatalf("default managed ports = subscribe %d traffic %d monitor %d", cfg.SubscribePort, cfg.TrafficPort, cfg.MonitorPort)
 	}
 	if cfg.Salt == "" {

@@ -12,6 +12,15 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
+const (
+	DefaultDisplayName            = "Node"
+	DefaultSubscribePort          = 2096
+	DefaultTrafficPort            = 2097
+	DefaultMonitorPort            = 19090
+	DefaultResetDay               = 1
+	DefaultMonitorIntervalSeconds = 300
+)
+
 // Credentials holds every generated secret for the single user.
 type Credentials struct {
 	RealityVisionUUID string
@@ -71,6 +80,8 @@ type Config struct {
 
 	RealityServerName    string
 	RealityHandshakePort int
+	Hysteria2UpMbps      int
+	Hysteria2DownMbps    int
 
 	SubscribePort int
 	TrafficPort   int
@@ -118,12 +129,35 @@ func (c Config) serverOptions(tlsCert, tlsKey string) config.ServerOptions {
 		TLSKey:            tlsKey,
 		RealityPrivateKey: c.Creds.RealityPrivateKey,
 		RealityServerName: c.RealityServerName,
-		RealityPort:       c.RealityHandshakePort,
+		RealityPort:       c.realityHandshakePort(),
 		RealityShortID:    c.Creds.RealityShortID,
+		Hysteria2UpMbps:   c.hysteria2UpMbps(),
+		Hysteria2DownMbps: c.hysteria2DownMbps(),
 		User:              c.userCredentials(),
 		Ports:             c.Ports,
 		Enabled:           c.enabled(),
 	}
+}
+
+func (c Config) realityHandshakePort() int {
+	if c.RealityHandshakePort > 0 {
+		return c.RealityHandshakePort
+	}
+	return config.DefaultRealityHandshakePort
+}
+
+func (c Config) hysteria2UpMbps() int {
+	if c.Hysteria2UpMbps > 0 {
+		return c.Hysteria2UpMbps
+	}
+	return config.DefaultHysteria2UpMbps
+}
+
+func (c Config) hysteria2DownMbps() int {
+	if c.Hysteria2DownMbps > 0 {
+		return c.Hysteria2DownMbps
+	}
+	return config.DefaultHysteria2DownMbps
 }
 
 // firewallPorts returns the TCP/UDP ports to open for the enabled protocols.

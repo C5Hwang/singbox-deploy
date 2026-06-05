@@ -118,6 +118,8 @@ func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Enabled = []config.Protocol{config.ProtocolHysteria2}
 	cfg.Ports.Hysteria2 = 9443
+	cfg.Hysteria2UpMbps = 50
+	cfg.Hysteria2DownMbps = 100
 	cfg.Creds.HysteriaPassword = "oldpass"
 	if err := writeInstallState(layout.StateDir, cfg); err != nil {
 		t.Fatalf("writeInstallState: %v", err)
@@ -126,12 +128,14 @@ func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
 	runner := &recordingRunner{}
 	var checked []config.Protocol
 	updated, err := UpdateProtocols(context.Background(), ProtocolUpdateOptions{
-		Layout:   layout,
-		Runner:   runner,
-		Firewall: system.FirewallUFW,
-		Selected: []config.Protocol{config.ProtocolHysteria2},
-		Ports:    config.Ports{Hysteria2: 18443},
-		Creds:    Credentials{HysteriaPassword: "newpass"},
+		Layout:            layout,
+		Runner:            runner,
+		Firewall:          system.FirewallUFW,
+		Selected:          []config.Protocol{config.ProtocolHysteria2},
+		Ports:             config.Ports{Hysteria2: 18443},
+		Creds:             Credentials{HysteriaPassword: "newpass"},
+		Hysteria2UpMbps:   80,
+		Hysteria2DownMbps: 160,
 		CheckPorts: func(_ context.Context, _ Config, changed []config.Protocol) error {
 			checked = append([]config.Protocol(nil), changed...)
 			return nil
@@ -140,8 +144,8 @@ func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateProtocols error: %v", err)
 	}
-	if updated.Ports.Hysteria2 != 18443 || updated.Creds.HysteriaPassword != "newpass" {
-		t.Fatalf("override not applied: port=%d password=%q", updated.Ports.Hysteria2, updated.Creds.HysteriaPassword)
+	if updated.Ports.Hysteria2 != 18443 || updated.Creds.HysteriaPassword != "newpass" || updated.Hysteria2UpMbps != 80 || updated.Hysteria2DownMbps != 160 {
+		t.Fatalf("override not applied: port=%d password=%q up=%d down=%d", updated.Ports.Hysteria2, updated.Creds.HysteriaPassword, updated.Hysteria2UpMbps, updated.Hysteria2DownMbps)
 	}
 	if !sameProtocols(checked, []config.Protocol{config.ProtocolHysteria2}) {
 		t.Fatalf("changed port protocols = %#v", checked)
@@ -151,7 +155,7 @@ func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	if !strings.Contains(string(configBody), `"listen_port": 18443`) || !strings.Contains(string(configBody), `"password": "newpass"`) {
+	if !strings.Contains(string(configBody), `"listen_port": 18443`) || !strings.Contains(string(configBody), `"up_mbps": 80`) || !strings.Contains(string(configBody), `"down_mbps": 160`) || !strings.Contains(string(configBody), `"password": "newpass"`) {
 		t.Fatalf("config did not include overrides:\n%s", configBody)
 	}
 	statePassword, err := os.ReadFile(filepath.Join(layout.StateDir, "hysteria2_password"))
@@ -160,6 +164,17 @@ func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
 	}
 	if strings.TrimSpace(string(statePassword)) != "newpass" {
 		t.Fatalf("password state = %q", statePassword)
+	}
+	stateUp, err := os.ReadFile(filepath.Join(layout.StateDir, "hysteria2_up_mbps"))
+	if err != nil {
+		t.Fatalf("read up state: %v", err)
+	}
+	stateDown, err := os.ReadFile(filepath.Join(layout.StateDir, "hysteria2_down_mbps"))
+	if err != nil {
+		t.Fatalf("read down state: %v", err)
+	}
+	if strings.TrimSpace(string(stateUp)) != "80" || strings.TrimSpace(string(stateDown)) != "160" {
+		t.Fatalf("bandwidth state up=%q down=%q", stateUp, stateDown)
 	}
 	joined := strings.Join(runner.commands, "\n")
 	if !strings.Contains(joined, "ufw allow 18443/udp") {

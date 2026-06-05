@@ -60,7 +60,7 @@ func (o ServerOptions) fragmentFor(proto Protocol, shortID string) (string, map[
 			"UUID":          o.User.RealityVisionUUID,
 			"Name":          name("-Reality-Vision"),
 			"ServerName":    o.RealityServerName,
-			"HandshakePort": o.RealityPort,
+			"HandshakePort": positiveOrDefault(o.RealityPort, DefaultRealityHandshakePort),
 			"PrivateKey":    o.RealityPrivateKey,
 			"ShortID":       shortID,
 		}
@@ -70,13 +70,15 @@ func (o ServerOptions) fragmentFor(proto Protocol, shortID string) (string, map[
 			"UUID":          o.User.RealityGRPCUUID,
 			"Name":          name("-Reality-gRPC"),
 			"ServerName":    o.RealityServerName,
-			"HandshakePort": o.RealityPort,
+			"HandshakePort": positiveOrDefault(o.RealityPort, DefaultRealityHandshakePort),
 			"PrivateKey":    o.RealityPrivateKey,
 			"ShortID":       shortID,
 		}
 	case ProtocolHysteria2:
 		return "sing-box/hysteria2.json.tmpl", map[string]any{
 			"Port":     o.Ports.Hysteria2,
+			"UpMbps":   positiveOrDefault(o.Hysteria2UpMbps, DefaultHysteria2UpMbps),
+			"DownMbps": positiveOrDefault(o.Hysteria2DownMbps, DefaultHysteria2DownMbps),
 			"Password": o.User.HysteriaPassword,
 			"Name":     name("-Hysteria2"),
 			"Domain":   o.Domain,
@@ -105,4 +107,11 @@ func (o ServerOptions) fragmentFor(proto Protocol, shortID string) (string, map[
 	default:
 		return "", nil
 	}
+}
+
+func positiveOrDefault(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }

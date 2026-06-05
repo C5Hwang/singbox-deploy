@@ -3,6 +3,8 @@
   "tag": "hysteria2",
   "listen": "::",
   "listen_port": {{ .Port }},
+  "up_mbps": {{ .UpMbps }},
+  "down_mbps": {{ .DownMbps }},
   "users": [
     {
       "password": {{ .Password | json }},

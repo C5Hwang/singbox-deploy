@@ -11,6 +11,12 @@ const (
 	ProtocolAnyTLS        Protocol = "anytls"
 )
 
+const (
+	DefaultRealityHandshakePort = 443
+	DefaultHysteria2UpMbps      = 50
+	DefaultHysteria2DownMbps    = 100
+)
+
 // AllProtocols is the full, ordered set of supported protocols. "All install"
 // enables every entry; custom install selects a subset.
 var AllProtocols = []Protocol{
@@ -50,6 +56,8 @@ type ServerOptions struct {
 	RealityServerName string
 	RealityPort       int
 	RealityShortID    string
+	Hysteria2UpMbps   int
+	Hysteria2DownMbps int
 	User              UserCredentials
 	Ports             Ports
 	// Enabled selects which protocols to render. Empty means all supported

@@ -471,6 +471,18 @@ func (pm *protocolManager) updateOptions() install.ProtocolUpdateOptions {
 	applyPortOverride("hysteria2_port", func(p int) { opts.Ports.Hysteria2 = p })
 	applyPortOverride("tuic_port", func(p int) { opts.Ports.TUIC = p })
 	applyPortOverride("anytls_port", func(p int) { opts.Ports.AnyTLS = p })
+	applyMbpsOverride := func(key string, set func(int)) {
+		v := strings.TrimSpace(pm.values[key])
+		if v == "" {
+			return
+		}
+		mbps, err := strconv.Atoi(v)
+		if err == nil && mbps > 0 {
+			set(mbps)
+		}
+	}
+	applyMbpsOverride("hysteria2_up_mbps", func(mbps int) { opts.Hysteria2UpMbps = mbps })
+	applyMbpsOverride("hysteria2_down_mbps", func(mbps int) { opts.Hysteria2DownMbps = mbps })
 	opts.Creds.RealityVisionUUID = strings.TrimSpace(pm.values["reality_vision_uuid"])
 	opts.Creds.RealityGRPCUUID = strings.TrimSpace(pm.values["reality_grpc_uuid"])
 	opts.Creds.HysteriaPassword = strings.TrimSpace(pm.values["hysteria2_password"])

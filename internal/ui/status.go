@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/install"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -36,7 +37,7 @@ func loadStatus() Status {
 	domain := readStatusState(store, "domain")
 	subscribePort := readStatusState(store, "subscribe_port")
 	if subscribePort == "" {
-		subscribePort = "2096"
+		subscribePort = strconv.Itoa(install.DefaultSubscribePort)
 	}
 	trafficPort := readStatusState(store, "traffic_port")
 	if trafficPort == "" {

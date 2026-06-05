@@ -10,8 +10,8 @@ import (
 
 func SubscriptionInstallFields() []Field {
 	return []Field{
-		{Key: "display_name", Label: "Node display name", Def: "Node", Note: "Used only in generated node names shown by clients."},
-		{Key: "subscribe_port", Label: "Subscription/Nginx HTTPS port", Def: "2096", Note: "Nginx listens on this public HTTPS port for /s subscriptions and the masquerade site."},
+		{Key: "display_name", Label: "Node display name", Def: install.DefaultDisplayName, Note: "Used only in generated node names shown by clients."},
+		{Key: "subscribe_port", Label: "Subscription/Nginx HTTPS port", Def: strconv.Itoa(install.DefaultSubscribePort), Note: "Nginx listens on this public HTTPS port for /s subscriptions and the masquerade site."},
 		{Key: "subscribe_salt", Label: "Subscription salt (optional)", Note: "Blank generates a random salt. The URL token is md5(salt + newline)."},
 	}
 }

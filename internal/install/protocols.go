@@ -29,6 +29,9 @@ type ProtocolUpdateOptions struct {
 	Ports    config.Ports
 	Creds    Credentials
 
+	Hysteria2UpMbps   int
+	Hysteria2DownMbps int
+
 	// RealityServerName overrides the stored Reality camouflage host when Reality
 	// is newly enabled and no stored value exists yet.
 	RealityServerName string
@@ -59,7 +62,7 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	subscribePort := readProtocolStateIntDefault(store, "subscribe_port", 2096)
+	subscribePort := readProtocolStateIntDefault(store, "subscribe_port", DefaultSubscribePort)
 	trafficPort := readProtocolStateIntDefault(store, "traffic_port", 0)
 	if trafficPort == 0 {
 		trafficPort = subscribePort
@@ -72,18 +75,20 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		DNSProvider:            readProtocolStateDefault(store, "dns_provider", ""),
 		DNSCredentials:         map[string]string{},
 		Enabled:                enabled,
-		DisplayName:            readProtocolStateDefault(store, "display_name", "Node"),
+		DisplayName:            readProtocolStateDefault(store, "display_name", DefaultDisplayName),
 		Salt:                   salt,
 		RealityServerName:      readProtocolStateDefault(store, "reality_server_name", ""),
-		RealityHandshakePort:   readProtocolStateIntDefault(store, "reality_handshake_port", 443),
+		RealityHandshakePort:   readProtocolStateIntDefault(store, "reality_handshake_port", config.DefaultRealityHandshakePort),
+		Hysteria2UpMbps:        readProtocolStateIntDefault(store, "hysteria2_up_mbps", config.DefaultHysteria2UpMbps),
+		Hysteria2DownMbps:      readProtocolStateIntDefault(store, "hysteria2_down_mbps", config.DefaultHysteria2DownMbps),
 		SubscribePort:          subscribePort,
 		TrafficPort:            trafficPort,
-		MonitorPort:            readProtocolStateIntDefault(store, "monitor_port", 19090),
+		MonitorPort:            readProtocolStateIntDefault(store, "monitor_port", DefaultMonitorPort),
 		DeployMonitor:          readProtocolStateDefault(store, "traffic_monitor", "yes") != "no",
 		TrafficInLimitBytes:    readProtocolStateUintDefault(store, "traffic_in_limit_bytes", 0),
 		TrafficOutLimitBytes:   readProtocolStateUintDefault(store, "traffic_out_limit_bytes", 0),
 		TrafficTotalLimitBytes: readProtocolStateUintDefault(store, "traffic_total_limit_bytes", 0),
-		ResetDay:               readProtocolStateIntDefault(store, "reset_day", 1),
+		ResetDay:               readProtocolStateIntDefault(store, "reset_day", DefaultResetDay),
 		MonitorInterface:       readProtocolStateDefault(store, "monitor_interface", ""),
 		Ports: config.Ports{
 			RealityVision: readProtocolStateIntDefault(store, "reality_vision_port", 0),
@@ -343,6 +348,12 @@ func applyProtocolOverrides(cfg *Config, opts ProtocolUpdateOptions) {
 		case config.ProtocolHysteria2:
 			if opts.Ports.Hysteria2 > 0 {
 				cfg.Ports.Hysteria2 = opts.Ports.Hysteria2
+			}
+			if opts.Hysteria2UpMbps > 0 {
+				cfg.Hysteria2UpMbps = opts.Hysteria2UpMbps
+			}
+			if opts.Hysteria2DownMbps > 0 {
+				cfg.Hysteria2DownMbps = opts.Hysteria2DownMbps
 			}
 			if strings.TrimSpace(opts.Creds.HysteriaPassword) != "" {
 				cfg.Creds.HysteriaPassword = strings.TrimSpace(opts.Creds.HysteriaPassword)

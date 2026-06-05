@@ -55,12 +55,12 @@ func installFields() []field {
 	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)
 	fields = append(fields, []field{
 		{key: "traffic_monitor", label: "Deploy traffic monitor", def: "yes", options: []string{"yes", "no"}, note: "Choose no to skip the traffic monitor service and /traffic/ UI."},
-		{key: "traffic_port", label: "Traffic monitor public HTTPS port", def: "2097", note: "Nginx listens on this public HTTPS port for /traffic.", skip: monitorDisabled},
-		{key: "monitor_port", label: "Traffic monitor local port", def: "19090", note: "The monitor listens on 127.0.0.1 and Nginx proxies /traffic to this port.", skip: monitorDisabled},
+		{key: "traffic_port", label: "Traffic monitor public HTTPS port", def: strconv.Itoa(install.DefaultTrafficPort), note: "Nginx listens on this public HTTPS port for /traffic.", skip: monitorDisabled},
+		{key: "monitor_port", label: "Traffic monitor local port", def: strconv.Itoa(install.DefaultMonitorPort), note: "The monitor listens on 127.0.0.1 and Nginx proxies /traffic to this port.", skip: monitorDisabled},
 		{key: "traffic_in_limit_gb", label: "Monthly inbound traffic limit in GB (0 = unlimited)", def: "0", note: "Inbound uses the monitored interface RX counter. When any configured limit is exceeded, sing-box.service is stopped automatically.", skip: monitorDisabled},
 		{key: "traffic_out_limit_gb", label: "Monthly outbound traffic limit in GB (0 = unlimited)", def: "0", note: "Outbound uses the monitored interface TX counter.", skip: monitorDisabled},
 		{key: "traffic_total_limit_gb", label: "Monthly total traffic limit in GB (0 = unlimited)", def: "0", note: "Total traffic is inbound + outbound.", skip: monitorDisabled},
-		{key: "reset_day", label: "Monthly reset day (1-28)", def: "1", note: "Day of month when the traffic quota cycle resets and service can be restored.", skip: monitorDisabled},
+		{key: "reset_day", label: "Monthly reset day (1-28)", def: strconv.Itoa(install.DefaultResetDay), note: "Day of month when the traffic quota cycle resets and service can be restored.", skip: monitorDisabled},
 	}...)
 	return fields
 }
@@ -536,21 +536,33 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 		enabled = config.AllProtocols
 	}
 	deployMonitor := trafficMonitorEnabled(vals)
-	subscribePort, err := parseInstallPort(vals["subscribe_port"], 2096, "subscription port")
+	subscribePort, err := parseInstallPort(vals["subscribe_port"], install.DefaultSubscribePort, "subscription port")
 	if err != nil {
 		return install.Config{}, err
 	}
-	trafficPort, err := parseInstallPort(vals["traffic_port"], 2097, "traffic monitor public port")
+	trafficPort, err := parseInstallPort(vals["traffic_port"], install.DefaultTrafficPort, "traffic monitor public port")
 	if err != nil {
 		return install.Config{}, err
 	}
-	monitorPort, err := parseInstallPort(vals["monitor_port"], 19090, "traffic monitor port")
+	monitorPort, err := parseInstallPort(vals["monitor_port"], install.DefaultMonitorPort, "traffic monitor port")
 	if err != nil {
 		return install.Config{}, err
 	}
 	ports, err := w.form.protocolPorts(enabled, subscribePort, trafficPort, monitorPort, deployMonitor)
 	if err != nil {
 		return install.Config{}, err
+	}
+	hysteria2UpMbps := config.DefaultHysteria2UpMbps
+	hysteria2DownMbps := config.DefaultHysteria2DownMbps
+	if hasProtocol(enabled, config.ProtocolHysteria2) {
+		hysteria2UpMbps, err = parseHysteria2Mbps(vals["hysteria2_up_mbps"], config.DefaultHysteria2UpMbps, "hysteria2 up limit")
+		if err != nil {
+			return install.Config{}, err
+		}
+		hysteria2DownMbps, err = parseHysteria2Mbps(vals["hysteria2_down_mbps"], config.DefaultHysteria2DownMbps, "hysteria2 down limit")
+		if err != nil {
+			return install.Config{}, err
+		}
 	}
 	salt := strings.TrimSpace(vals["subscribe_salt"])
 	if salt == "" {
@@ -569,7 +581,7 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 	}
 	resetDay, _ := strconv.Atoi(vals["reset_day"])
 	if !deployMonitor || resetDay < 1 || resetDay > 28 {
-		resetDay = 1
+		resetDay = install.DefaultResetDay
 	}
 
 	challenge := acme.Challenge(vals["challenge"])
@@ -609,7 +621,9 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 		DisplayName:            vals["display_name"],
 		Salt:                   salt,
 		RealityServerName:      realityServerName,
-		RealityHandshakePort:   443,
+		RealityHandshakePort:   config.DefaultRealityHandshakePort,
+		Hysteria2UpMbps:        hysteria2UpMbps,
+		Hysteria2DownMbps:      hysteria2DownMbps,
 		SubscribePort:          subscribePort,
 		TrafficPort:            trafficPort,
 		MonitorPort:            monitorPort,
@@ -640,6 +654,18 @@ func parseInstallPort(value string, fallback int, label string) (int, error) {
 		return 0, fmt.Errorf("%s must be between 1 and 65535", label)
 	}
 	return port, nil
+}
+
+func parseHysteria2Mbps(value string, fallback int, label string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil
+	}
+	mbps, err := strconv.Atoi(value)
+	if err != nil || mbps <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer Mbps value", label)
+	}
+	return mbps, nil
 }
 
 func (w *installForm) applyCredentialOverrides(creds *install.Credentials) {
@@ -912,7 +938,7 @@ func (w *installForm) summary(host system.Host) string {
 		summaryRow("ACME challenge", w.values["challenge"]),
 		summaryRow("Protocols", protocolLabels(protocols)),
 		summaryRow("Display name", w.values["display_name"]),
-		summaryRow("Subscription port", or(w.values["subscribe_port"], "2096")),
+		summaryRow("Subscription port", or(w.values["subscribe_port"], strconv.Itoa(install.DefaultSubscribePort))),
 		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
 		summaryRow("Traffic monitor", yesNoString(deployMonitor)),
 		summaryRow("Operating system / architecture", host.OS.ID+" / "+host.Arch),
@@ -920,8 +946,8 @@ func (w *installForm) summary(host system.Host) string {
 	}
 	if deployMonitor {
 		rows = append(rows,
-			summaryRow("Traffic monitor public port", or(w.values["traffic_port"], "2097")),
-			summaryRow("Traffic monitor local port", or(w.values["monitor_port"], "19090")),
+			summaryRow("Traffic monitor public port", or(w.values["traffic_port"], strconv.Itoa(install.DefaultTrafficPort))),
+			summaryRow("Traffic monitor local port", or(w.values["monitor_port"], strconv.Itoa(install.DefaultMonitorPort))),
 			summaryRow("Inbound traffic limit", w.values["traffic_in_limit_gb"]+" GB"),
 			summaryRow("Outbound traffic limit", w.values["traffic_out_limit_gb"]+" GB"),
 			summaryRow("Total traffic limit", w.values["traffic_total_limit_gb"]+" GB"),
