@@ -115,44 +115,52 @@ func (cm *coreManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 func (cm *coreManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch cm.phase {
 	case corePhaseAction:
-		switch msg.String() {
-		case "up", "k", "left", "h":
-			cm.moveAction(-1)
-		case "down", "j", "right", "l":
-			cm.moveAction(1)
-		case "enter":
-			cm.activateAction()
-		case "esc", "q":
-			return nil, true
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move: cm.moveAction,
+			Confirm: func() (tea.Cmd, bool) {
+				cm.activateAction()
+				return nil, false
+			},
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case corePhaseStableSelect:
-		switch msg.String() {
-		case "up", "k", "left", "h":
-			cm.moveStable(-1)
-		case "down", "j", "right", "l":
-			cm.moveStable(1)
-		case "enter":
-			if len(cm.stableTags) > 0 {
-				cm.targetTag = cm.stableTags[min(max(0, cm.cursor), len(cm.stableTags)-1)]
-				cm.phase = corePhaseConfirm
-			}
-		case "shift+tab", "ctrl+b":
-			cm.cursor = 0
-			cm.phase = corePhaseAction
-		case "esc", "q":
-			return nil, true
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move: cm.moveStable,
+			Confirm: func() (tea.Cmd, bool) {
+				if idx, ok := selectedIndex(cm.cursor, len(cm.stableTags)); ok {
+					cm.targetTag = cm.stableTags[idx]
+					cm.phase = corePhaseConfirm
+				}
+				return nil, false
+			},
+			Back: func() (tea.Cmd, bool) {
+				cm.cursor = 0
+				cm.phase = corePhaseAction
+				return nil, false
+			},
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case corePhaseConfirm:
-		switch msg.String() {
-		case "enter", "y":
+		switch {
+		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
 			return cm.startRun(), false
-		case "shift+tab", "ctrl+b":
+		case isSelectionBackKey(msg):
 			if cm.action == coreActionChangeStable {
 				cm.phase = corePhaseStableSelect
 			} else {
 				cm.phase = corePhaseAction
 			}
-		case "esc", "n":
+		case msg.String() == "esc", isSelectionNoKey(msg):
 			return nil, true
 		}
 	case corePhaseRunning:
@@ -230,7 +238,7 @@ func (cm *coreManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 
 func (cm *coreManager) moveAction(delta int) {
 	actions := cm.actions()
-	cm.cursor = (cm.cursor + delta + len(actions)) % len(actions)
+	cm.cursor = moveSelection(cm.cursor, len(actions), delta)
 	cm.fieldErr = ""
 }
 
@@ -238,14 +246,18 @@ func (cm *coreManager) moveStable(delta int) {
 	if len(cm.stableTags) == 0 {
 		return
 	}
-	cm.cursor = (cm.cursor + delta + len(cm.stableTags)) % len(cm.stableTags)
+	cm.cursor = moveSelection(cm.cursor, len(cm.stableTags), delta)
 	cm.fieldErr = ""
 }
 
 func (cm *coreManager) activateAction() {
 	cm.fieldErr = ""
 	actions := cm.actions()
-	cm.action = actions[min(max(0, cm.cursor), len(actions)-1)].action
+	idx, ok := selectedIndex(cm.cursor, len(actions))
+	if !ok {
+		return
+	}
+	cm.action = actions[idx].action
 	if cm.action == coreActionLogs {
 		cm.loadLogs()
 		return
@@ -380,7 +392,7 @@ func (cm *coreManager) View() string {
 		if cm.runErr != nil {
 			return commandFailedView(cm, "sing-box core action failed")
 		}
-		return flowOK.Render("sing-box core action complete") + "\n\n" + cm.doneSummary() + "\n\n" + dimStyle.Render("press any key to return")
+		return flowOK.Render("sing-box core action complete") + "\n\n" + cm.doneSummary()
 	case corePhaseLogs:
 		return cm.logsView()
 	default:
@@ -409,7 +421,6 @@ func (cm *coreManager) actionView() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n" + dimStyle.Render("enter select · ↑/↓ move · esc cancel"))
 	return b.String()
 }
 
@@ -424,7 +435,6 @@ func (cm *coreManager) stableView() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n" + dimStyle.Render("enter continue · shift+tab back · esc cancel"))
 	return b.String()
 }
 
@@ -443,7 +453,7 @@ func (cm *coreManager) confirmView() string {
 	} else {
 		rows = append(rows, summaryText("This will run systemctl "+cm.systemctlAction()+" sing-box.service."))
 	}
-	return flowTitle.Render("sing-box Core · Confirm") + "\n\n" + renderSummary(rows) + "\n\n" + dimStyle.Render("enter/y apply · shift+tab back · esc/n cancel")
+	return flowTitle.Render("sing-box Core · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (cm *coreManager) doneSummary() string {
@@ -468,30 +478,23 @@ func (cm *coreManager) logsView() string {
 	} else {
 		body += strings.Join(cm.visibleLogOutput(), "\n")
 	}
-	body += "\n\n" + dimStyle.Render("↑/↓ scroll · r refresh · enter/esc return")
 	return body
 }
 
-func (cm *coreManager) footerHints() []string {
+func (cm *coreManager) footerHints() []operationHint {
 	switch cm.phase {
 	case corePhaseAction:
-		return []string{"enter select", "esc cancel"}
+		return actionFooterHints("Select")
 	case corePhaseStableSelect:
-		return []string{"enter continue", "shift+tab back", "esc cancel"}
+		return actionBackFooterHints("Continue")
 	case corePhaseConfirm:
-		return []string{"enter apply", "shift+tab back", "esc cancel"}
+		return applyFooterHints("Apply")
 	case corePhaseRunning:
-		if cm.runComplete {
-			return []string{"enter summary", "↑/↓ scroll log"}
-		}
-		return []string{"↑/↓ scroll log"}
+		return runningFooterHints(cm.runComplete)
 	case corePhaseDone:
-		if cm.runErr != nil {
-			return []string{"↑/↓ scroll log", "any other key return"}
-		}
-		return []string{"any key return"}
+		return doneFooterHints(cm.runErr != nil)
 	case corePhaseLogs:
-		return []string{"↑/↓ scroll", "r refresh", "enter/esc return"}
+		return []operationHint{hint(keyMoveMouse, "Scroll"), hint(keyRefresh, "Refresh"), hint(keyReturn, "Return")}
 	default:
 		return nil
 	}

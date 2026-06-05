@@ -188,18 +188,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg, ok := msg.(tea.KeyMsg); ok {
-		switch msg.String() {
-		case "q", "ctrl+c", "esc":
+		switch {
+		case msg.String() == "ctrl+c", isSelectionCancelKey(msg):
 			return m, tea.Quit
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.flatItems())-1 {
-				m.cursor++
-			}
-		case "enter":
+		case isSelectionPreviousKey(msg):
+			m.cursor = moveSelection(m.cursor, len(m.flatItems()), -1)
+		case isSelectionNextKey(msg):
+			m.cursor = moveSelection(m.cursor, len(m.flatItems()), 1)
+		case isSelectionConfirmKey(msg):
 			return m, m.activate()
 		}
 	}
@@ -318,10 +314,10 @@ func (m *Model) contentView(width, height int) string {
 }
 
 func (m *Model) footerView() string {
-	var parts []string
+	var parts []operationHint
 	if m.install == nil {
 		if m.protocols == nil && m.subscribe == nil && m.core == nil && m.uninstall == nil {
-			parts = append(parts, "↑/↓ move", "enter select", "esc/q quit")
+			parts = append(parts, menuFooterHints()...)
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
 		} else if m.subscribe != nil {
@@ -334,7 +330,7 @@ func (m *Model) footerView() string {
 	} else {
 		parts = append(parts, m.install.footerHints()...)
 	}
-	return dimStyle.Render(strings.Join(parts, " · "))
+	return hintLine(parts...)
 }
 
 func fitViewHeight(view string, height int) string {

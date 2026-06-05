@@ -112,70 +112,82 @@ func (pm *protocolManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 
 func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if pm.loadErr != nil {
-		switch msg.String() {
-		case "esc", "q", "enter":
+		switch {
+		case isSelectionCancelKey(msg), isSelectionConfirmKey(msg):
 			return nil, true
 		}
 		return nil, false
 	}
 	switch pm.phase {
 	case protocolPhaseAction:
-		switch msg.String() {
-		case "up", "k", "left", "h":
-			pm.moveAction(-1)
-		case "down", "j", "right", "l":
-			pm.moveAction(1)
-		case "enter":
-			pm.activateAction()
-		case "esc", "q":
-			return nil, true
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move: pm.moveAction,
+			Confirm: func() (tea.Cmd, bool) {
+				pm.activateAction()
+				return nil, false
+			},
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case protocolPhaseSelect:
-		switch msg.String() {
-		case "up", "k", "left", "h":
-			pm.moveProtocol(-1)
-		case "down", "j", "right", "l":
-			pm.moveProtocol(1)
-		case " ", "space":
-			pm.toggleProtocol()
-		case "enter":
-			pm.prepareChangeConfirm()
-		case "shift+tab", "ctrl+b":
-			pm.phase = protocolPhaseAction
-		case "esc", "q":
-			return nil, true
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move:   pm.moveProtocol,
+			Toggle: pm.toggleProtocol,
+			Confirm: func() (tea.Cmd, bool) {
+				pm.prepareChangeConfirm()
+				return nil, false
+			},
+			Back: func() (tea.Cmd, bool) {
+				pm.phase = protocolPhaseAction
+				return nil, false
+			},
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case protocolPhaseEditPick:
-		switch msg.String() {
-		case "up", "k", "left", "h":
-			pm.moveInstalled(-1)
-		case "down", "j", "right", "l":
-			pm.moveInstalled(1)
-		case "enter":
-			pm.startEditForm()
-		case "shift+tab", "ctrl+b":
-			pm.phase = protocolPhaseAction
-		case "esc", "q":
-			return nil, true
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move: pm.moveInstalled,
+			Confirm: func() (tea.Cmd, bool) {
+				pm.startEditForm()
+				return nil, false
+			},
+			Back: func() (tea.Cmd, bool) {
+				pm.phase = protocolPhaseAction
+				return nil, false
+			},
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case protocolPhaseForm:
-		switch msg.String() {
-		case "enter":
-			pm.commitField()
-		case "shift+tab", "ctrl+b":
-			pm.previousField()
-		case "esc":
-			return nil, true
-		default:
-			return pm.updateInput(msg), false
+		cmd, done, handled := pm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
+			Complete: func() { pm.phase = protocolPhaseConfirm },
+			Back:     pm.previousField,
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case protocolPhaseConfirm:
-		switch msg.String() {
-		case "enter", "y":
+		switch {
+		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
 			return pm.startRun(), false
-		case "shift+tab", "ctrl+b":
+		case isSelectionBackKey(msg):
 			pm.backFromConfirm()
-		case "esc", "n":
+		case msg.String() == "esc", isSelectionNoKey(msg):
 			return nil, true
 		}
 	case protocolPhaseRunning:
@@ -234,17 +246,18 @@ func (pm *protocolManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 
 func (pm *protocolManager) moveAction(delta int) {
 	actions := pm.actions()
-	pm.cursor = (pm.cursor + delta + len(actions)) % len(actions)
+	pm.cursor = moveSelection(pm.cursor, len(actions), delta)
 	pm.fieldErr = ""
 }
 
 func (pm *protocolManager) activateAction() {
 	pm.fieldErr = ""
 	actions := pm.actions()
-	if len(actions) == 0 {
+	idx, ok := selectedIndex(pm.cursor, len(actions))
+	if !ok {
 		return
 	}
-	switch actions[min(max(0, pm.cursor), len(actions)-1)].action {
+	switch actions[idx].action {
 	case protocolActionChange:
 		pm.action = protocolActionChange
 		pm.phase = protocolPhaseSelect
@@ -261,24 +274,20 @@ func (pm *protocolManager) activateAction() {
 
 func (pm *protocolManager) moveProtocol(delta int) {
 	options := protocolOptions()
-	pm.cursor = (pm.cursor + delta + len(options)) % len(options)
+	pm.cursor = moveSelection(pm.cursor, len(options), delta)
 	pm.fieldErr = ""
 }
 
 func (pm *protocolManager) toggleProtocol() {
 	options := protocolOptions()
-	opt := options[min(max(0, pm.cursor), len(options)-1)]
-	if pm.selected[opt] {
-		delete(pm.selected, opt)
-	} else {
-		pm.selected[opt] = true
+	if toggleStringSelection(pm.selected, options, pm.cursor) {
+		pm.fieldErr = ""
 	}
-	pm.fieldErr = ""
 }
 
 func (pm *protocolManager) moveInstalled(delta int) {
 	installed := pm.cfg.Enabled
-	pm.cursor = (pm.cursor + delta + len(installed)) % len(installed)
+	pm.cursor = moveSelection(pm.cursor, len(installed), delta)
 	pm.fieldErr = ""
 }
 
@@ -311,11 +320,12 @@ func (pm *protocolManager) startEditForm() {
 		return
 	}
 	installed := pm.cfg.Enabled
-	if len(installed) == 0 {
+	idx, ok := selectedIndex(pm.cursor, len(installed))
+	if !ok {
 		pm.fieldErr = "no installed protocols"
 		return
 	}
-	pm.editProto = installed[min(max(0, pm.cursor), len(installed)-1)]
+	pm.editProto = installed[idx]
 	pm.startForm(pm.editFields(pm.editProto))
 }
 
@@ -506,7 +516,7 @@ func (pm *protocolManager) markRunFailed() {
 
 func (pm *protocolManager) View() string {
 	if pm.loadErr != nil {
-		return flowTitle.Render("Protocol Management") + "\n\n" + flowErr.Render(pm.loadErr.Error()) + "\n\n" + dimStyle.Render("run install first · press enter/esc to return")
+		return flowTitle.Render("Protocol Management") + "\n\n" + flowErr.Render(pm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run install first.")
 	}
 	switch pm.phase {
 	case protocolPhaseAction:
@@ -525,7 +535,7 @@ func (pm *protocolManager) View() string {
 		if pm.runErr != nil {
 			return pm.failedView()
 		}
-		return flowOK.Render("Protocol management complete") + "\n\n" + pm.doneSummary() + "\n\n" + dimStyle.Render("press any key to return")
+		return flowOK.Render("Protocol management complete") + "\n\n" + pm.doneSummary()
 	default:
 		return ""
 	}
@@ -549,7 +559,6 @@ func (pm *protocolManager) actionView() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n" + dimStyle.Render("enter select · ↑/↓ move · esc cancel"))
 	return b.String()
 }
 
@@ -561,8 +570,7 @@ func (pm *protocolManager) selectView() string {
 	if pm.fieldErr != "" {
 		b.WriteString(flowErr.Render(pm.fieldErr) + "\n")
 	}
-	b.WriteString("\n" + pm.protocolOptionsView() + "\n\n")
-	b.WriteString(dimStyle.Render("space toggle · enter continue · shift+tab back · esc cancel"))
+	b.WriteString("\n" + pm.protocolOptionsView())
 	return b.String()
 }
 
@@ -582,7 +590,6 @@ func (pm *protocolManager) editPickView() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n" + dimStyle.Render("enter edit · shift+tab back · esc cancel"))
 	return b.String()
 }
 
@@ -650,7 +657,7 @@ func (pm *protocolManager) confirmView() string {
 		summaryBlank(),
 		summaryText("This will regenerate sing-box config and all subscription files."),
 	)
-	return flowTitle.Render("Protocol Management · Confirm") + "\n\n" + renderSummary(rows) + "\n\n" + dimStyle.Render("enter/y apply · shift+tab back · esc/n cancel")
+	return flowTitle.Render("Protocol Management · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (pm *protocolManager) runningView() string {
@@ -673,31 +680,25 @@ func (pm *protocolManager) doneSummary() string {
 	})
 }
 
-func (pm *protocolManager) footerHints() []string {
+func (pm *protocolManager) footerHints() []operationHint {
 	if pm.loadErr != nil {
-		return []string{"enter/esc return"}
+		return returnFooterHints()
 	}
 	switch pm.phase {
 	case protocolPhaseAction:
-		return []string{"enter select", "esc cancel"}
+		return actionFooterHints("Select")
 	case protocolPhaseSelect:
-		return []string{"space toggle", "enter continue", "shift+tab back"}
+		return []operationHint{hint(keyMove, "Move"), hint(keySpace, "Toggle"), hint(keyEnter, "Continue"), hint(keyBack, "Back"), hint(keyCancel, "Cancel")}
 	case protocolPhaseEditPick:
-		return []string{"enter edit", "shift+tab back", "esc cancel"}
+		return actionBackFooterHints("Edit")
 	case protocolPhaseForm:
-		return []string{"enter continue", "shift+tab back", "esc cancel"}
+		return pm.parameterForm.footerHints()
 	case protocolPhaseConfirm:
-		return []string{"enter apply", "shift+tab back", "esc cancel"}
+		return applyFooterHints("Apply")
 	case protocolPhaseRunning:
-		if pm.runComplete {
-			return []string{"enter summary", "↑/↓ scroll log"}
-		}
-		return []string{"↑/↓ scroll log"}
+		return runningFooterHints(pm.runComplete)
 	case protocolPhaseDone:
-		if pm.runErr != nil {
-			return []string{"↑/↓ scroll log", "any other key return"}
-		}
-		return []string{"any key return"}
+		return doneFooterHints(pm.runErr != nil)
 	default:
 		return nil
 	}

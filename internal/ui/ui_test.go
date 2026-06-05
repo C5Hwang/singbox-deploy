@@ -88,7 +88,7 @@ func TestViewKeepsFooterAtConfiguredBottom(t *testing.T) {
 		t.Fatalf("view height = %d, want 12:\n%s", got, view)
 	}
 	lines := strings.Split(view, "\n")
-	if !strings.Contains(lines[len(lines)-1], "enter install") {
+	if !strings.Contains(lines[len(lines)-1], "Enter/Y: Install") {
 		t.Fatalf("footer should stay on final row:\n%s", view)
 	}
 }
@@ -326,10 +326,13 @@ func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
 		t.Fatalf("enter should open delete multi-select, phase=%v done=%v", sm.phase, done)
 	}
 	view := sm.View()
-	for _, want := range []string{"Remote subscriptions to delete", "[ ] one.example.com:9443", "[ ] two.example.com:9444", "space toggle"} {
+	for _, want := range []string{"Remote subscriptions to delete", "[ ] one.example.com:9443", "[ ] two.example.com:9444"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("delete multi-select missing %q:\n%s", want, view)
 		}
+	}
+	if got := hintText(sm.footerHints()...); !strings.Contains(got, "Space: Toggle") {
+		t.Fatalf("delete multi-select footer missing toggle hint: %s", got)
 	}
 
 	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
@@ -695,8 +698,8 @@ func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
 	if w.phase != phaseRunning || !w.run.runComplete {
 		t.Fatalf("completion should stay on running phase, phase=%v complete=%v", w.phase, w.run.runComplete)
 	}
-	if !strings.Contains(w.View(), "press enter to show summary") {
-		t.Fatalf("running view missing enter summary prompt:\n%s", w.View())
+	if got := hintText(w.footerHints()...); !strings.Contains(got, "Enter: Show summary") {
+		t.Fatalf("running footer missing enter summary hint: %s", got)
 	}
 	_, done := w.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || w.phase != phaseDone {
@@ -713,8 +716,8 @@ func TestProtocolRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
 	if pm.phase != protocolPhaseRunning || !pm.runComplete {
 		t.Fatalf("completion should stay on running phase, phase=%v complete=%v", pm.phase, pm.runComplete)
 	}
-	if !strings.Contains(pm.View(), "press enter to show summary") {
-		t.Fatalf("protocol running view missing enter summary prompt:\n%s", pm.View())
+	if got := hintText(pm.footerHints()...); !strings.Contains(got, "Enter: Show summary") {
+		t.Fatalf("protocol running footer missing enter summary hint: %s", got)
 	}
 	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || pm.phase != protocolPhaseDone {

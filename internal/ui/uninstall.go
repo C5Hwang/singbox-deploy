@@ -91,17 +91,20 @@ func (um *uninstallManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 func (um *uninstallManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch um.phase {
 	case uninstallPhaseConfirm:
-		switch msg.String() {
-		case "up", "k", "left", "h":
-			um.moveOption(-1)
-		case "down", "j", "right", "l":
-			um.moveOption(1)
-		case " ", "space":
-			um.toggleOption()
-		case "enter", "y":
-			return um.startRun(), false
-		case "esc", "n", "q":
-			return nil, true
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move:       um.moveOption,
+			Toggle:     um.toggleOption,
+			ConfirmYes: true,
+			CancelNo:   true,
+			Confirm: func() (tea.Cmd, bool) {
+				return um.startRun(), false
+			},
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case uninstallPhaseRunning:
 		switch msg.String() {
@@ -154,10 +157,7 @@ func (um *uninstallManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 
 func (um *uninstallManager) moveOption(delta int) {
 	options := uninstallOptions(uninstallUILayout())
-	if len(options) == 0 {
-		return
-	}
-	um.cursor = (um.cursor + delta + len(options)) % len(options)
+	um.cursor = moveSelection(um.cursor, len(options), delta)
 	um.fieldErr = ""
 }
 
@@ -166,7 +166,11 @@ func (um *uninstallManager) toggleOption() {
 	if len(options) == 0 {
 		return
 	}
-	key := options[min(max(0, um.cursor), len(options)-1)].key
+	idx, ok := selectedIndex(um.cursor, len(options))
+	if !ok {
+		return
+	}
+	key := options[idx].key
 	um.selection[key] = !um.selection[key]
 	um.fieldErr = ""
 }
@@ -238,7 +242,7 @@ func (um *uninstallManager) View() string {
 		if um.runErr != nil {
 			return commandFailedView(um, "Uninstall failed")
 		}
-		return flowOK.Render("Uninstall complete") + "\n\n" + um.doneSummary() + "\n\n" + dimStyle.Render("press any key to return")
+		return flowOK.Render("Uninstall complete") + "\n\n" + um.doneSummary()
 	default:
 		return ""
 	}
@@ -251,6 +255,7 @@ func (um *uninstallManager) confirmView() string {
 		summaryIndentedRow(2, "Services", system.SingBoxService+", "+system.MonitorService),
 		summaryIndentedRow(2, "ACME renewal", system.CertRenewTimer+" or managed cron entry"),
 		summaryIndentedRow(2, "Nginx config", "/etc/nginx/conf.d/singbox-deploy.conf"),
+		summaryIndentedRow(2, "Unrelated Nginx configs", "kept"),
 		summaryBlank(),
 		summaryText("Choose data to delete under " + layout.Root + ":"),
 	}
@@ -270,7 +275,6 @@ func (um *uninstallManager) confirmView() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n" + dimStyle.Render("space toggle · enter/y uninstall · esc/n cancel"))
 	return b.String()
 }
 
@@ -300,20 +304,14 @@ func (um *uninstallManager) doneSummary() string {
 	return renderSummary(rows)
 }
 
-func (um *uninstallManager) footerHints() []string {
+func (um *uninstallManager) footerHints() []operationHint {
 	switch um.phase {
 	case uninstallPhaseConfirm:
-		return []string{"space toggle", "enter uninstall", "esc cancel"}
+		return []operationHint{hint(keyMove, "Move"), hint(keySpace, "Toggle"), hint(keyEnterYes, "Uninstall"), hint("Esc/N/Q", "Cancel")}
 	case uninstallPhaseRunning:
-		if um.runComplete {
-			return []string{"enter summary", "↑/↓ scroll log"}
-		}
-		return []string{"↑/↓ scroll log"}
+		return runningFooterHints(um.runComplete)
 	case uninstallPhaseDone:
-		if um.runErr != nil {
-			return []string{"↑/↓ scroll log", "any other key return"}
-		}
-		return []string{"any key return"}
+		return doneFooterHints(um.runErr != nil)
 	default:
 		return nil
 	}

@@ -115,72 +115,56 @@ func (sm *subscriptionManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 
 func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if sm.loadErr != nil {
-		switch msg.String() {
-		case "esc", "q", "enter":
+		switch {
+		case isSelectionCancelKey(msg), isSelectionConfirmKey(msg):
 			return nil, true
 		}
 		return nil, false
 	}
 	switch sm.phase {
 	case subscriptionPhaseAction:
-		switch msg.String() {
-		case "up", "k", "left", "h":
-			sm.moveAction(-1)
-		case "down", "j", "right", "l":
-			sm.moveAction(1)
-		case "enter":
-			sm.activateAction()
-		case "esc", "q":
-			return nil, true
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move: sm.moveAction,
+			Confirm: func() (tea.Cmd, bool) {
+				sm.activateAction()
+				return nil, false
+			},
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case subscriptionPhaseForm:
-		switch msg.String() {
-		case "enter":
-			if sm.commitField() {
+		cmd, done, handled := sm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
+			Complete: func() {
 				sm.phase = subscriptionPhaseConfirm
-			}
-		case " ", "space":
-			if sm.currentFieldIsMulti() {
-				sm.toggleOption()
-				break
-			}
-			return sm.updateInput(msg), false
-		case "up", "k", "left", "h":
-			if sm.currentFieldHasOptions() {
-				sm.moveOption(-1)
-				break
-			}
-			return sm.updateInput(msg), false
-		case "down", "j", "right", "l":
-			if sm.currentFieldHasOptions() {
-				sm.moveOption(1)
-				break
-			}
-			return sm.updateInput(msg), false
-		case "shift+tab", "ctrl+b":
-			if !sm.previousField() {
-				sm.phase = subscriptionPhaseAction
-			}
-		case "esc", "q":
-			return nil, true
-		default:
-			if sm.currentFieldHasOptions() {
-				return nil, false
-			}
-			return sm.updateInput(msg), false
+			},
+			Back: func() {
+				if !sm.previousField() {
+					sm.phase = subscriptionPhaseAction
+				}
+			},
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case subscriptionPhaseConfirm:
-		switch msg.String() {
-		case "enter", "y":
+		switch {
+		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
 			return sm.startRun(), false
-		case "shift+tab", "ctrl+b":
+		case isSelectionBackKey(msg):
 			if len(sm.fields) > 0 {
 				sm.phase = subscriptionPhaseForm
 				sm.backToLastField()
 			} else {
 				sm.phase = subscriptionPhaseAction
 			}
-		case "esc", "n":
+		case msg.String() == "esc", isSelectionNoKey(msg):
 			return nil, true
 		}
 	case subscriptionPhaseRunning:
@@ -241,17 +225,18 @@ func (sm *subscriptionManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 
 func (sm *subscriptionManager) moveAction(delta int) {
 	actions := sm.actions()
-	sm.cursor = (sm.cursor + delta + len(actions)) % len(actions)
+	sm.cursor = moveSelection(sm.cursor, len(actions), delta)
 	sm.fieldErr = ""
 }
 
 func (sm *subscriptionManager) activateAction() {
 	sm.fieldErr = ""
 	actions := sm.actions()
-	if len(actions) == 0 {
+	idx, ok := selectedIndex(sm.cursor, len(actions))
+	if !ok {
 		return
 	}
-	sm.action = actions[min(max(0, sm.cursor), len(actions)-1)].action
+	sm.action = actions[idx].action
 	switch sm.action {
 	case subscriptionActionDisplayName:
 		sm.startForm(sm.displayNameFields())
@@ -438,7 +423,7 @@ func (sm *subscriptionManager) markRunFailed() { sm.phase = subscriptionPhaseDon
 
 func (sm *subscriptionManager) View() string {
 	if sm.loadErr != nil {
-		return flowTitle.Render("Manage Subscriptions") + "\n\n" + flowErr.Render(sm.loadErr.Error()) + "\n\n" + dimStyle.Render("run install first · press enter/esc to return")
+		return flowTitle.Render("Manage Subscriptions") + "\n\n" + flowErr.Render(sm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run install first.")
 	}
 	switch sm.phase {
 	case subscriptionPhaseAction:
@@ -453,7 +438,7 @@ func (sm *subscriptionManager) View() string {
 		if sm.runErr != nil {
 			return commandFailedView(sm, "Subscription update failed")
 		}
-		return flowOK.Render("Subscriptions updated") + "\n\n" + sm.doneSummary() + "\n\n" + dimStyle.Render("press any key to return")
+		return flowOK.Render("Subscriptions updated") + "\n\n" + sm.doneSummary()
 	default:
 		return ""
 	}
@@ -482,7 +467,6 @@ func (sm *subscriptionManager) actionView() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n" + dimStyle.Render("enter select · ↑/↓ move · esc cancel"))
 	return b.String()
 }
 
@@ -531,7 +515,7 @@ func (sm *subscriptionManager) confirmView() string {
 	} else {
 		rows = append(rows, summaryText("This will regenerate subscription files."))
 	}
-	return flowTitle.Render("Manage Subscriptions · Confirm") + "\n\n" + renderSummary(rows) + "\n\n" + dimStyle.Render("enter/y apply · shift+tab back · esc/n cancel")
+	return flowTitle.Render("Manage Subscriptions · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (sm *subscriptionManager) selectedRemoteDeleteLabels() []string {
@@ -567,27 +551,21 @@ func (sm *subscriptionManager) doneSummary() string {
 	})
 }
 
-func (sm *subscriptionManager) footerHints() []string {
+func (sm *subscriptionManager) footerHints() []operationHint {
 	if sm.loadErr != nil {
-		return []string{"enter/esc return"}
+		return returnFooterHints()
 	}
 	switch sm.phase {
 	case subscriptionPhaseAction:
-		return []string{"enter select", "esc cancel"}
+		return actionFooterHints("Select")
 	case subscriptionPhaseForm:
-		return []string{"enter continue", "shift+tab back", "esc cancel"}
+		return sm.parameterForm.footerHints()
 	case subscriptionPhaseConfirm:
-		return []string{"enter apply", "shift+tab back", "esc cancel"}
+		return applyFooterHints("Apply")
 	case subscriptionPhaseRunning:
-		if sm.runComplete {
-			return []string{"enter summary", "↑/↓ scroll log"}
-		}
-		return []string{"↑/↓ scroll log"}
+		return runningFooterHints(sm.runComplete)
 	case subscriptionPhaseDone:
-		if sm.runErr != nil {
-			return []string{"↑/↓ scroll log", "any other key return"}
-		}
-		return []string{"any key return"}
+		return doneFooterHints(sm.runErr != nil)
 	default:
 		return nil
 	}

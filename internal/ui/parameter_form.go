@@ -254,7 +254,7 @@ func (f *parameterForm) moveOption(delta int) {
 		return
 	}
 	options := f.fields[f.fieldIx].options
-	f.optionIx = (f.optionIx + delta + len(options)) % len(options)
+	f.optionIx = moveSelection(f.optionIx, len(options), delta)
 	f.fieldErr = ""
 }
 
@@ -269,13 +269,66 @@ func (f *parameterForm) toggleOption() {
 	if f.optionSelected == nil {
 		f.optionSelected = map[string]bool{}
 	}
-	opt := options[min(max(0, f.optionIx), len(options)-1)]
-	if f.optionSelected[opt] {
-		delete(f.optionSelected, opt)
-	} else {
-		f.optionSelected[opt] = true
+	if toggleStringSelection(f.optionSelected, options, f.optionIx) {
+		f.fieldErr = ""
 	}
-	f.fieldErr = ""
+}
+
+type parameterFormKeyHandlers struct {
+	Complete func()
+	Back     func()
+	Cancel   func() (tea.Cmd, bool)
+}
+
+func (f *parameterForm) handleKey(msg tea.KeyMsg, h parameterFormKeyHandlers) (tea.Cmd, bool, bool) {
+	if isSelectionConfirmKey(msg) {
+		if f.commitField() && h.Complete != nil {
+			h.Complete()
+		}
+		return nil, false, true
+	}
+	if isSelectionToggleKey(msg) {
+		if f.currentFieldHasOptions() {
+			if f.currentFieldIsMulti() {
+				f.toggleOption()
+			}
+			return nil, false, true
+		}
+		return f.updateInput(msg), false, true
+	}
+	if isSelectionPreviousKey(msg) {
+		if f.currentFieldHasOptions() {
+			f.moveOption(-1)
+			return nil, false, true
+		}
+		return f.updateInput(msg), false, true
+	}
+	if isSelectionNextKey(msg) {
+		if f.currentFieldHasOptions() {
+			f.moveOption(1)
+			return nil, false, true
+		}
+		return f.updateInput(msg), false, true
+	}
+	if isSelectionBackKey(msg) {
+		if h.Back != nil {
+			h.Back()
+		} else {
+			f.previousField()
+		}
+		return nil, false, true
+	}
+	if msg.String() == "esc" {
+		if h.Cancel != nil {
+			cmd, done := h.Cancel()
+			return cmd, done, true
+		}
+		return nil, true, true
+	}
+	if f.currentFieldHasOptions() {
+		return nil, false, true
+	}
+	return f.updateInput(msg), false, true
 }
 
 func (f *parameterForm) View(title string) string {
@@ -301,17 +354,24 @@ func (f *parameterForm) View(title string) string {
 		b.WriteString(flowErr.Render(f.fieldErr) + "\n")
 	}
 	if len(field.options) > 0 {
-		b.WriteString(f.optionsView(field) + "\n\n")
-		if field.multi {
-			b.WriteString(dimStyle.Render("space toggle · enter to continue · ↑/↓ or ←/→ move · shift+tab/ctrl+b back · esc to cancel"))
-			return b.String()
-		}
-		b.WriteString(dimStyle.Render("enter to continue · ↑/↓ or ←/→ select · shift+tab/ctrl+b back · esc to cancel"))
+		b.WriteString(f.optionsView(field))
 		return b.String()
 	}
-	b.WriteString(f.input.View() + "\n\n")
-	b.WriteString(dimStyle.Render("enter to continue · shift+tab/ctrl+b back · esc to cancel"))
+	b.WriteString(f.input.View())
 	return b.String()
+}
+
+func (f *parameterForm) footerHints() []operationHint {
+	if f.fieldIx < 0 || f.fieldIx >= len(f.fields) {
+		return nil
+	}
+	if f.currentFieldHasOptions() {
+		if f.currentFieldIsMulti() {
+			return formMultiChoiceFooterHints()
+		}
+		return formSingleChoiceFooterHints()
+	}
+	return formInputFooterHints()
 }
 
 func (f *parameterForm) fieldNote(field field) string {

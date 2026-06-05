@@ -90,25 +90,23 @@ func (r *commandRun) waitForRun() tea.Cmd {
 func commandRunningView(view commandRunView, title string) string {
 	r := view.runState()
 	logs := r.logView(r.logViewportHeight())
-	hint := "↑/↓ scroll log"
-	if r.runComplete {
-		hint = "complete · press enter to show summary · " + hint
-	}
 	body := flowTitle.Render(title) + "\n\n" + r.bar.ViewAs(r.percent())
 	if logs != "" {
 		body += "\n\n" + logs
 	}
-	return body + "\n\n" + dimStyle.Render(hint)
+	if r.runComplete {
+		body += "\n\n" + flowOK.Render("Complete")
+	}
+	return body
 }
 
 func commandFailedView(view commandRunView, title string) string {
 	r := view.runState()
 	body := flowErr.Render(title) + "\n\n" + r.runErr.Error()
 	if logs := r.logView(r.doneLogHeight()); logs != "" {
-		body += "\n\n" + logs + "\n\n" + dimStyle.Render("↑/↓ scroll log · any other key to return")
-		return body
+		body += "\n\n" + logs
 	}
-	return body + "\n\n" + dimStyle.Render("press any key to return")
+	return body
 }
 
 func (r *commandRun) appendLog(line string) {

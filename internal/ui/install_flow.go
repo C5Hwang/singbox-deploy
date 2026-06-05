@@ -323,48 +323,27 @@ func (f *installFlow) Update(msg tea.Msg) (tea.Cmd, bool) {
 func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch f.phase {
 	case phasePreflight:
-		switch msg.String() {
-		case "enter":
+		switch {
+		case isSelectionConfirmKey(msg):
 			if f.canProceed() {
 				f.phase = phaseForm
 				f.form.startForm()
 			}
-		case "esc", "q":
+		case isSelectionCancelKey(msg):
 			return nil, true
 		}
 	case phaseForm:
-		switch msg.String() {
-		case "enter":
-			if f.form.commitField() {
+		cmd, done, handled := f.form.handleKey(msg, parameterFormKeyHandlers{
+			Complete: func() {
 				f.phase = phaseConfirm
-			}
-		case " ", "space":
-			if f.form.currentFieldIsMulti() {
-				f.form.toggleOption()
-				break
-			}
-			return f.form.updateInput(msg), false
-		case "up", "k", "left", "h":
-			if f.form.currentFieldHasOptions() {
-				f.form.moveOption(-1)
-				break
-			}
-			return f.form.updateInput(msg), false
-		case "down", "j", "right", "l":
-			if f.form.currentFieldHasOptions() {
-				f.form.moveOption(1)
-				break
-			}
-			return f.form.updateInput(msg), false
-		case "shift+tab", "ctrl+b":
-			f.form.previousField()
-		case "esc":
-			return nil, true
-		default:
-			if f.form.currentFieldHasOptions() {
-				return nil, false
-			}
-			return f.form.updateInput(msg), false
+			},
+			Back: func() { f.form.previousField() },
+			Cancel: func() (tea.Cmd, bool) {
+				return nil, true
+			},
+		})
+		if handled {
+			return cmd, done
 		}
 	case phaseConfirm:
 		switch msg.String() {
@@ -820,11 +799,9 @@ var (
 func (w *installFlow) View() string {
 	switch w.phase {
 	case phasePreflight:
-		body := w.hosts + "\n\n"
-		if w.canProceed() {
-			body += dimStyle.Render("enter to begin · esc to cancel")
-		} else {
-			body += flowErr.Render("Cannot proceed. ") + dimStyle.Render("esc to go back")
+		body := w.hosts
+		if !w.canProceed() {
+			body += "\n\n" + flowErr.Render("Cannot proceed.")
 		}
 		return flowTitle.Render("Install · Preflight") + "\n\n" + body
 	case phaseForm:
@@ -837,8 +814,7 @@ func (w *installFlow) View() string {
 		if w.run.runErr != nil {
 			return w.failedView()
 		}
-		return flowOK.Render("Install complete") + "\n\n" + w.doneSummary() + "\n\n" +
-			dimStyle.Render("press any key to return")
+		return flowOK.Render("Install complete") + "\n\n" + w.doneSummary()
 	}
 	return ""
 }
@@ -847,24 +823,26 @@ func (w *installForm) View() string {
 	return w.parameterForm.View("Install · Configuration")
 }
 
-func (w *installFlow) footerHints() []string {
+func (w *installFlow) footerHints() []operationHint {
 	switch w.phase {
 	case phasePreflight:
-		return []string{"enter continue", "esc/q cancel"}
+		if w.canProceed() {
+			return []operationHint{hint(keyEnter, "Begin"), hint(keyCancel, "Cancel")}
+		}
+		return []operationHint{hint(keyCancel, "Cancel")}
 	case phaseForm:
-		return []string{"enter continue", "shift+tab back", "esc cancel"}
+		return w.form.footerHints()
 	case phaseConfirm:
-		return []string{"↑/↓ scroll", "enter install", "esc cancel"}
+		return []operationHint{
+			hint(keyMoveMouse, "Scroll"),
+			hint(keyEnterYes, "Install"),
+			hint(keyBack, "Back"),
+			hint(keyConfirmNo, "Cancel"),
+		}
 	case phaseRunning:
-		if w.run.runComplete {
-			return []string{"enter summary", "↑/↓ scroll log"}
-		}
-		return []string{"↑/↓ scroll log"}
+		return runningFooterHints(w.run.runComplete)
 	case phaseDone:
-		if w.run.runErr != nil {
-			return []string{"↑/↓ scroll log", "any other key return"}
-		}
-		return []string{"any key return"}
+		return doneFooterHints(w.run.runErr != nil)
 	default:
 		return nil
 	}
@@ -873,8 +851,7 @@ func (w *installFlow) footerHints() []string {
 func (w *installForm) confirmView(host system.Host) string {
 	viewportHeight := w.confirmViewportHeight()
 	lines := w.visibleConfirmLines(viewportHeight, host)
-	return flowTitle.Render("Install · Confirm") + "\n\n" + strings.Join(lines, "\n") + "\n\n" +
-		dimStyle.Render("↑/↓ or mouse wheel scroll · enter/y to install · shift+tab/ctrl+b back · esc/n to cancel")
+	return flowTitle.Render("Install · Confirm") + "\n\n" + strings.Join(lines, "\n")
 }
 
 func (w *installForm) visibleConfirmLines(height int, host system.Host) []string {
