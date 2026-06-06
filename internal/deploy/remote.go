@@ -1,4 +1,4 @@
-package install
+package deploy
 
 import (
 	"context"
@@ -16,7 +16,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
-	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
 const remoteSubscriptionsDir = "remotes"
@@ -35,139 +34,8 @@ type RemoteSubscription struct {
 // SubscriptionFetcher fetches remote subscription or monitor JSON endpoints.
 type SubscriptionFetcher func(context.Context, string) ([]byte, error)
 
-// SubscriptionUpdateOptions describes a subscription settings update.
-type SubscriptionUpdateOptions struct {
-	Layout paths.Layout
-	Runner system.Runner
-
-	Salt          string
-	SubscribePort int
-	Remotes       []RemoteSubscription
-	SetRemotes    bool
-
-	Firewall      system.Firewall
-	CheckPorts    func(context.Context, Config, int) error
-	Fetch         SubscriptionFetcher
-	Progress      func(Event)
-	NginxConfPath string
-}
-
-// UpdateSubscriptions updates local subscription settings, rewrites generated
-// subscription files, persists remote subscription entries, and reloads Nginx
-// when the public subscription port changes.
-func UpdateSubscriptions(ctx context.Context, opts SubscriptionUpdateOptions) (Config, error) {
-	opts = defaultSubscriptionOptions(opts)
-	cfg, err := LoadProtocolConfig(opts.Layout)
-	if err != nil {
-		return Config{}, err
-	}
-	oldPort := cfg.SubscribePort
-	if strings.TrimSpace(opts.Salt) != "" {
-		cfg.Salt = strings.TrimSpace(opts.Salt)
-	}
-	if opts.SubscribePort > 0 {
-		cfg.SubscribePort = opts.SubscribePort
-	}
-	if cfg.SubscribePort <= 0 || cfg.SubscribePort > 65535 {
-		return Config{}, fmt.Errorf("subscription port must be between 1 and 65535")
-	}
-
-	remotes := opts.Remotes
-	if !opts.SetRemotes {
-		remotes, err = LoadRemoteSubscriptions(opts.Layout)
-		if err != nil {
-			return Config{}, err
-		}
-	}
-	if err := validateRemoteSubscriptions(remotes); err != nil {
-		return Config{}, err
-	}
-
-	steps := subscriptionUpdateSteps(opts, oldPort, cfg.SubscribePort, remotes)
-	for i, s := range steps {
-		emitProtocolProgress(opts.Progress, Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
-		if err := s.run(ctx, cfg); err != nil {
-			emitProtocolProgress(opts.Progress, Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
-			return Config{}, fmt.Errorf("%s: %w", s.label, err)
-		}
-		emitProtocolProgress(opts.Progress, Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
-	}
-	return cfg, nil
-}
-
-type subscriptionUpdateStep struct {
-	label  string
-	detail string
-	run    func(context.Context, Config) error
-}
-
-func subscriptionUpdateSteps(opts SubscriptionUpdateOptions, oldPort, newPort int, remotes []RemoteSubscription) []subscriptionUpdateStep {
-	portChanged := oldPort != newPort
-	var steps []subscriptionUpdateStep
-	if portChanged {
-		steps = append(steps, subscriptionUpdateStep{label: "Port check", detail: "check new subscription HTTPS port", run: func(ctx context.Context, cfg Config) error {
-			return opts.CheckPorts(ctx, cfg, newPort)
-		}})
-		if opts.Firewall != system.FirewallNone {
-			steps = append(steps, subscriptionUpdateStep{label: "Firewall", detail: "open new subscription HTTPS port", run: func(_ context.Context, _ Config) error {
-				cmds := system.FirewallCommands(opts.Firewall, []system.Port{{Number: newPort, Proto: "tcp", Label: "subscription/Nginx"}})
-				if opts.Firewall == system.FirewallFirewalld && len(cmds) > 0 {
-					cmds = append(cmds, system.Command{Name: "firewall-cmd", Args: []string{"--reload"}})
-				}
-				return runProtocolCommands(opts.Runner, cmds...)
-			}})
-		}
-	}
-	steps = append(steps,
-		subscriptionUpdateStep{label: "Remote monitor", detail: "refresh remote monitor snapshots", run: func(ctx context.Context, _ Config) error {
-			return refreshRemoteMonitor(ctx, opts.Layout, remotes, opts.Fetch)
-		}},
-		subscriptionUpdateStep{label: "Subscriptions", detail: "regenerate local and remote subscription outputs", run: func(ctx context.Context, cfg Config) error {
-			return writeSubscriptionsWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch)
-		}},
-		subscriptionUpdateStep{label: "State", detail: "persist subscription settings", run: func(_ context.Context, cfg Config) error {
-			if err := writeInstallState(opts.Layout.StateDir, cfg); err != nil {
-				return err
-			}
-			return SaveRemoteSubscriptions(opts.Layout, remotes)
-		}},
-	)
-	if portChanged {
-		steps = append(steps, subscriptionUpdateStep{label: "Nginx", detail: "rewrite managed Nginx config and restart", run: func(_ context.Context, cfg Config) error {
-			if err := writeManagedNginxConfig(opts.Layout, cfg, opts.NginxConfPath); err != nil {
-				return err
-			}
-			return runProtocolCommands(opts.Runner,
-				system.Command{Name: "nginx", Args: []string{"-t"}},
-				system.Command{Name: "systemctl", Args: []string{"restart", "nginx"}},
-			)
-		}})
-	}
-	return steps
-}
-
-func defaultSubscriptionOptions(opts SubscriptionUpdateOptions) SubscriptionUpdateOptions {
-	if opts.Layout.Root == "" {
-		opts.Layout = paths.DefaultLayout()
-	}
-	if opts.Runner == nil {
-		opts.Runner = system.NewExecRunner(nil)
-	}
-	if opts.Fetch == nil {
-		opts.Fetch = defaultSubscriptionFetch
-	}
-	if opts.CheckPorts == nil {
-		opts.CheckPorts = func(ctx context.Context, cfg Config, port int) error {
-			return system.CheckPorts(ctx, cfg.Domain, []system.Port{{Number: port, Proto: "tcp", Label: "subscription/Nginx", Public: true}})
-		}
-	}
-	if opts.NginxConfPath == "" {
-		opts.NginxConfPath = "/etc/nginx/conf.d/singbox-deploy.conf"
-	}
-	return opts
-}
-
-func defaultSubscriptionFetch(ctx context.Context, url string) ([]byte, error) {
+// DefaultSubscriptionFetch is the default HTTP fetcher for remote subscription endpoints.
+func DefaultSubscriptionFetch(ctx context.Context, url string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -185,7 +53,8 @@ func defaultSubscriptionFetch(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 }
 
-func validateRemoteSubscriptions(remotes []RemoteSubscription) error {
+// ValidateRemoteSubscriptions checks that all remote entries are well-formed.
+func ValidateRemoteSubscriptions(remotes []RemoteSubscription) error {
 	seen := map[string]bool{}
 	for _, r := range remotes {
 		domain := strings.TrimSpace(r.Domain)
@@ -254,7 +123,7 @@ func LoadRemoteSubscriptions(layout paths.Layout) ([]RemoteSubscription, error) 
 		}
 		remotes = append(remotes, remote)
 	}
-	return remotes, validateRemoteSubscriptions(remotes)
+	return remotes, ValidateRemoteSubscriptions(remotes)
 }
 
 // SaveRemoteSubscriptions persists remote subscription entries as small state
@@ -320,7 +189,8 @@ func writePrivateStateFile(dir, name, value string) error {
 	return os.WriteFile(filepath.Join(dir, filepath.Clean(name)), []byte(value), 0o600)
 }
 
-func writeSubscriptionsWithRemotes(ctx context.Context, layout paths.Layout, cfg Config, remotes []RemoteSubscription, fetch SubscriptionFetcher) error {
+// WriteSubscriptionsWithRemotes generates subscription outputs aggregating local and remote nodes.
+func WriteSubscriptionsWithRemotes(ctx context.Context, layout paths.Layout, cfg Config, remotes []RemoteSubscription, fetch SubscriptionFetcher) error {
 	out, err := cfg.buildSubscriptionsWithRemotes(ctx, remotes, fetch)
 	if err != nil {
 		return err
@@ -337,7 +207,7 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		return out, nil
 	}
 	if fetch == nil {
-		fetch = defaultSubscriptionFetch
+		fetch = DefaultSubscriptionFetch
 	}
 
 	defaultBody, err := subscription.DecodeBase64(out.DefaultBase64)
@@ -408,7 +278,7 @@ func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionO
 		"sing-box":          out.SingBoxProfile,
 	}
 	for dir, body := range pathsByDir {
-		if err := writeFile(filepath.Join(layout.SubscribeDir, dir, token), []byte(body), 0o644); err != nil {
+		if err := WriteFile(filepath.Join(layout.SubscribeDir, dir, token), []byte(body), 0o644); err != nil {
 			return err
 		}
 	}
@@ -497,13 +367,15 @@ func (r RemoteSubscription) monitorBaseURL() string {
 	return fmt.Sprintf("https://%s:%d/monitor", strings.TrimSpace(r.Domain), r.MonitorPublicPort)
 }
 
-func remoteMonitorPath(layout paths.Layout) string {
+// RemoteMonitorPath returns the path to the remote monitor snapshot JSON.
+func RemoteMonitorPath(layout paths.Layout) string {
 	return filepath.Join(layout.StateDir, "remote_monitor.json")
 }
 
-func refreshRemoteMonitor(ctx context.Context, layout paths.Layout, remotes []RemoteSubscription, fetch SubscriptionFetcher) error {
+// RefreshRemoteMonitor fetches and persists monitor snapshots from all remote sources.
+func RefreshRemoteMonitor(ctx context.Context, layout paths.Layout, remotes []RemoteSubscription, fetch SubscriptionFetcher) error {
 	if fetch == nil {
-		fetch = defaultSubscriptionFetch
+		fetch = DefaultSubscriptionFetch
 	}
 	var sources []monitor.SourceSummary
 	for _, remote := range remotes {
@@ -557,5 +429,5 @@ func refreshRemoteMonitor(ctx context.Context, layout paths.Layout, remotes []Re
 			Resources:           payload.Resources,
 		})
 	}
-	return monitor.WriteRemoteSources(remoteMonitorPath(layout), sources)
+	return monitor.WriteRemoteSources(RemoteMonitorPath(layout), sources)
 }

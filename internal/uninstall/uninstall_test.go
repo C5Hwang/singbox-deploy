@@ -1,4 +1,4 @@
-package install
+package uninstall
 
 import (
 	"context"
@@ -10,6 +10,13 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
+
+type recordingRunner struct{ commands []string }
+
+func (r *recordingRunner) Run(c system.Command) error {
+	r.commands = append(r.commands, c.String())
+	return nil
+}
 
 func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 	root := t.TempDir()
@@ -38,7 +45,7 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 		writeTestFile(t, filepath.Join(systemdDir, unit))
 	}
 
-	err := Uninstall(context.Background(), UninstallOptions{
+	err := Run(context.Background(), Options{
 		Runner:              runner,
 		Layout:              layout,
 		SystemdDir:          systemdDir,
@@ -49,7 +56,7 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 		DeleteSubscriptions: true,
 	})
 	if err != nil {
-		t.Fatalf("Uninstall error: %v", err)
+		t.Fatalf("Run error: %v", err)
 	}
 
 	joined := strings.Join(runner.commands, "\n")
@@ -83,7 +90,7 @@ func TestUninstallRejectsSelectedPathOutsideLayoutRoot(t *testing.T) {
 	layout.TLSDir = filepath.Join(root, "outside-tls")
 	writeTestFile(t, filepath.Join(layout.TLSDir, "example.com.crt"))
 
-	err := Uninstall(context.Background(), UninstallOptions{
+	err := Run(context.Background(), Options{
 		Runner:             &recordingRunner{},
 		Layout:             layout,
 		SystemdDir:         filepath.Join(root, "systemd"),

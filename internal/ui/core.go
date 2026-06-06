@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	corepkg "github.com/C5Hwang/singbox-deploy/internal/core"
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -344,7 +344,7 @@ func (cm *coreManager) backendManager(logs *logWriter) *corepkg.Manager {
 	}
 	if logs != nil {
 		mgr.Runner = system.NewExecRunner(logs)
-		mgr.Progress = func(e install.Event) {
+		mgr.Progress = func(e deploy.Event) {
 			ev := e
 			logs.ch <- runMsg{event: &ev}
 		}

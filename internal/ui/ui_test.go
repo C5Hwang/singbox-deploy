@@ -15,10 +15,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
 )
 
 func TestNarrowLayoutMode(t *testing.T) {
@@ -333,11 +335,11 @@ func TestCoreChangeStableListsEightReleases(t *testing.T) {
 
 func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
 	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
-	remotes := []install.RemoteSubscription{
+	remotes := []deploy.RemoteSubscription{
 		{Domain: "one.example.com", Port: 9443, Salt: "salt-one"},
 		{Domain: "two.example.com", Port: 9444, Salt: "salt-two", Monitor: true, MonitorPublicPort: 9445},
 	}
-	if err := install.SaveRemoteSubscriptions(layout, remotes); err != nil {
+	if err := deploy.SaveRemoteSubscriptions(layout, remotes); err != nil {
 		t.Fatalf("save remotes: %v", err)
 	}
 	withSubscriptionDeps(t, layout)
@@ -680,8 +682,26 @@ func withMonitorDeps(t *testing.T, layout paths.Layout) {
 	})
 	monitorUILayout = func() paths.Layout { return layout }
 	detectMonitorHost = func() (system.Host, error) { return supportedTestHost(), nil }
-	updateMonitorRun = func(context.Context, install.MonitorUpdateOptions) (install.Config, error) {
-		return install.LoadProtocolConfig(layout)
+	updateMonitorRun = func(_ context.Context, opts monitor.UpdateOptions) (monitor.ManageConfig, error) {
+		dcfg, err := deploy.LoadProtocolConfig(layout)
+		if err != nil {
+			return monitor.ManageConfig{}, err
+		}
+		return monitor.ManageConfig{
+			Domain:                 dcfg.Domain,
+			DeployMonitor:          dcfg.DeployMonitor,
+			MonitorAlias:           dcfg.MonitorAlias,
+			MonitorPublicPort:      dcfg.MonitorPublicPort,
+			MonitorPort:            dcfg.MonitorPort,
+			MonitorInterface:       dcfg.MonitorInterface,
+			MonitorIntervalSeconds: dcfg.MonitorIntervalSeconds,
+			TrafficInLimitBytes:    dcfg.TrafficInLimitBytes,
+			TrafficOutLimitBytes:   dcfg.TrafficOutLimitBytes,
+			TrafficTotalLimitBytes: dcfg.TrafficTotalLimitBytes,
+			ResetDay:               dcfg.ResetDay,
+			ResetHour:              dcfg.ResetHour,
+			SubscribePort:          dcfg.SubscribePort,
+		}, nil
 	}
 }
 
@@ -720,7 +740,7 @@ func withUninstallDeps(t *testing.T, layout paths.Layout) {
 	})
 	uninstallUILayout = func() paths.Layout { return layout }
 	detectUninstallHost = func() (system.Host, error) { return supportedTestHost(), nil }
-	uninstallRun = func(context.Context, install.UninstallOptions) error { return nil }
+	uninstallRun = func(context.Context, uninstall.Options) error { return nil }
 }
 
 func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subscriptionAction) int {
@@ -1013,10 +1033,10 @@ func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 func TestInstallFieldsIncludeSiteTemplates(t *testing.T) {
 	fields := installFields()
 	field := fields[fieldIndex(t, fields, "site_template")]
-	if field.def != install.DefaultSiteTemplate {
+	if field.def != deploy.DefaultSiteTemplate {
 		t.Fatalf("site template default = %q", field.def)
 	}
-	if strings.Join(field.options, ",") != strings.Join(install.SiteTemplateOptions(), ",") {
+	if strings.Join(field.options, ",") != strings.Join(deploy.SiteTemplateOptions(), ",") {
 		t.Fatalf("site template options = %#v", field.options)
 	}
 }
@@ -1213,7 +1233,7 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 	if got := protocolSelectionValue(cfg.Enabled); got != "hysteria2,anytls" {
 		t.Fatalf("enabled = %q", got)
 	}
-	if cfg.SubscribePort != install.DefaultSubscribePort || cfg.MonitorPublicPort != install.DefaultMonitorPublicPort || cfg.MonitorPort != install.DefaultMonitorPort {
+	if cfg.SubscribePort != deploy.DefaultSubscribePort || cfg.MonitorPublicPort != deploy.DefaultMonitorPublicPort || cfg.MonitorPort != deploy.DefaultMonitorPort {
 		t.Fatalf("default managed ports = subscribe %d monitor public %d monitor local %d", cfg.SubscribePort, cfg.MonitorPublicPort, cfg.MonitorPort)
 	}
 	if cfg.Salt == "" {

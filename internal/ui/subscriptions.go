@@ -8,8 +8,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/account"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
@@ -37,8 +39,8 @@ const (
 var (
 	subscriptionUILayout   = paths.DefaultLayout
 	detectSubscriptionHost = system.DetectHost
-	updateSubscriptionsRun = install.UpdateSubscriptions
-	updateDisplayNameRun   = install.UpdateAccount
+	updateSubscriptionsRun = subscription.Update
+	updateDisplayNameRun   = account.Update
 )
 
 type subscriptionActionItem struct {
@@ -55,14 +57,14 @@ type subscriptionManager struct {
 
 	host    system.Host
 	hostErr error
-	cfg     install.Config
-	remotes []install.RemoteSubscription
+	cfg     deploy.Config
+	remotes []deploy.RemoteSubscription
 	loadErr error
 
 	cursor int
 	parameterForm
 	commandRun
-	result install.Config
+	result deploy.Config
 }
 
 func newSubscriptionManager() *subscriptionManager {
@@ -74,13 +76,13 @@ func newSubscriptionManager() *subscriptionManager {
 	host, err := detectSubscriptionHost()
 	sm.host = host
 	sm.hostErr = err
-	cfg, err := install.LoadProtocolConfig(subscriptionUILayout())
+	cfg, err := deploy.LoadProtocolConfig(subscriptionUILayout())
 	if err != nil {
 		sm.loadErr = err
 		return sm
 	}
 	sm.cfg = cfg
-	remotes, err := install.LoadRemoteSubscriptions(subscriptionUILayout())
+	remotes, err := deploy.LoadRemoteSubscriptions(subscriptionUILayout())
 	if err != nil {
 		sm.loadErr = err
 		return sm
@@ -171,11 +173,11 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		switch msg.String() {
 		case "enter":
 			if sm.runComplete {
-				if cfg, err := install.LoadProtocolConfig(subscriptionUILayout()); err == nil {
+				if cfg, err := deploy.LoadProtocolConfig(subscriptionUILayout()); err == nil {
 					sm.cfg = cfg
 					sm.result = cfg
 				}
-				if remotes, err := install.LoadRemoteSubscriptions(subscriptionUILayout()); err == nil {
+				if remotes, err := deploy.LoadRemoteSubscriptions(subscriptionUILayout()); err == nil {
 					sm.remotes = remotes
 				}
 				sm.phase = subscriptionPhaseDone
@@ -344,11 +346,11 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 	ch := sm.ch
 	logs := &logWriter{ch: ch}
 	if sm.action == subscriptionActionDisplayName {
-		opts := install.AccountUpdateOptions{
+		opts := account.UpdateOptions{
 			Layout:      subscriptionUILayout(),
 			Runner:      system.NewExecRunner(logs),
 			DisplayName: sm.values["display_name"],
-			Progress: func(e install.Event) {
+			Progress: func(e deploy.Event) {
 				ev := e
 				ch <- runMsg{event: &ev}
 			},
@@ -359,13 +361,12 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 		}()
 		return sm.waitForRun()
 	}
-	opts := sm.updateOptions()
+	opts := sm.buildSubscriptionUpdateOptions()
 	opts.Layout = subscriptionUILayout()
 	opts.Runner = system.NewExecRunner(logs)
 	opts.Firewall = sm.host.Firewall
-	opts.Progress = func(e install.Event) {
-		ev := e
-		ch <- runMsg{event: &ev}
+	opts.Progress = func(e subscription.Event) {
+		ch <- runMsg{event: &deploy.Event{Index: e.Index, Total: e.Total, Label: e.Label, Detail: e.Detail, Status: e.Status, Err: e.Err}}
 	}
 	go func() {
 		_, err := updateSubscriptionsRun(context.Background(), opts)
@@ -374,12 +375,67 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 	return sm.waitForRun()
 }
 
-func (sm *subscriptionManager) updateOptions() install.SubscriptionUpdateOptions {
-	opts := install.SubscriptionUpdateOptions{
+func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.UpdateOptions {
+	opts := subscription.UpdateOptions{
 		Salt:          sm.cfg.Salt,
 		SubscribePort: sm.cfg.SubscribePort,
-		Remotes:       sm.targetRemotes(),
+		Remotes:       toSubscriptionRemotes(sm.targetRemotes()),
 		SetRemotes:    true,
+		Fetch:         deploy.DefaultSubscriptionFetch,
+		LoadConfig: func(l paths.Layout) (subscription.Config, error) {
+			cfg, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return subscription.Config{}, err
+			}
+			return subscription.Config{Domain: cfg.Domain, Salt: cfg.Salt, SubscribePort: cfg.SubscribePort}, nil
+		},
+		LoadRemotes: func(l paths.Layout) ([]subscription.Remote, error) {
+			remotes, err := deploy.LoadRemoteSubscriptions(l)
+			if err != nil {
+				return nil, err
+			}
+			return toSubscriptionRemotes(remotes), nil
+		},
+		ValidateRemotes: func(remotes []subscription.Remote) error {
+			return deploy.ValidateRemoteSubscriptions(toDeployRemotes(remotes))
+		},
+		WriteState: func(stateDir string, cfg subscription.Config) error {
+			full, err := deploy.LoadProtocolConfig(subscriptionUILayout())
+			if err != nil {
+				return err
+			}
+			full.Salt = cfg.Salt
+			full.SubscribePort = cfg.SubscribePort
+			return deploy.WriteInstallState(stateDir, full)
+		},
+		SaveRemotes: func(l paths.Layout, remotes []subscription.Remote) error {
+			return deploy.SaveRemoteSubscriptions(l, toDeployRemotes(remotes))
+		},
+		WriteNginxConfig: func(l paths.Layout, cfg subscription.Config, confPath string) error {
+			full, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return err
+			}
+			full.Salt = cfg.Salt
+			full.SubscribePort = cfg.SubscribePort
+			return deploy.WriteManagedNginxConfig(l, full, confPath)
+		},
+		WriteWithRemotes: func(ctx context.Context, l paths.Layout, cfg subscription.Config, remotes []subscription.Remote, fetch subscription.Fetcher) error {
+			full, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return err
+			}
+			full.Salt = cfg.Salt
+			full.SubscribePort = cfg.SubscribePort
+			return deploy.WriteSubscriptionsWithRemotes(ctx, l, full, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+		},
+		RefreshMonitor: func(ctx context.Context, l paths.Layout, remotes []subscription.Remote, fetch subscription.Fetcher) error {
+			return deploy.RefreshRemoteMonitor(ctx, l, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+		},
+		RunCommands: deploy.RunCommands,
+		CheckPorts: func(ctx context.Context, domain string, port int) error {
+			return system.CheckPorts(ctx, domain, []system.Port{{Number: port, Proto: "tcp", Label: "subscription/Nginx", Public: true}})
+		},
 	}
 	if sm.action == subscriptionActionLocal {
 		opts.Salt = strings.TrimSpace(sm.values["subscribe_salt"])
@@ -390,12 +446,28 @@ func (sm *subscriptionManager) updateOptions() install.SubscriptionUpdateOptions
 	return opts
 }
 
-func (sm *subscriptionManager) targetRemotes() []install.RemoteSubscription {
+func toSubscriptionRemotes(remotes []deploy.RemoteSubscription) []subscription.Remote {
+	out := make([]subscription.Remote, len(remotes))
+	for i, r := range remotes {
+		out[i] = subscription.Remote{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+	}
+	return out
+}
+
+func toDeployRemotes(remotes []subscription.Remote) []deploy.RemoteSubscription {
+	out := make([]deploy.RemoteSubscription, len(remotes))
+	for i, r := range remotes {
+		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+	}
+	return out
+}
+
+func (sm *subscriptionManager) targetRemotes() []deploy.RemoteSubscription {
 	switch sm.action {
 	case subscriptionActionAddRemote:
-		remotes := append([]install.RemoteSubscription(nil), sm.remotes...)
+		remotes := append([]deploy.RemoteSubscription(nil), sm.remotes...)
 		port, _ := strconv.Atoi(strings.TrimSpace(sm.values["remote_subscribe_port"]))
-		remotes = append(remotes, install.RemoteSubscription{
+		remotes = append(remotes, deploy.RemoteSubscription{
 			Domain: strings.TrimSpace(sm.values["remote_domain"]),
 			Port:   port,
 			Alias:  strings.TrimSpace(sm.values["remote_alias"]),
@@ -404,7 +476,7 @@ func (sm *subscriptionManager) targetRemotes() []install.RemoteSubscription {
 		return remotes
 	case subscriptionActionDeleteRemotes:
 		deleted := selectedOptions(sm.values["delete_remotes"])
-		remotes := make([]install.RemoteSubscription, 0, len(sm.remotes))
+		remotes := make([]deploy.RemoteSubscription, 0, len(sm.remotes))
 		for _, remote := range sm.remotes {
 			if deleted[remoteOptionLabel(remote)] {
 				continue
@@ -413,11 +485,11 @@ func (sm *subscriptionManager) targetRemotes() []install.RemoteSubscription {
 		}
 		return remotes
 	default:
-		return append([]install.RemoteSubscription(nil), sm.remotes...)
+		return append([]deploy.RemoteSubscription(nil), sm.remotes...)
 	}
 }
 
-func remoteOptionLabel(remote install.RemoteSubscription) string {
+func remoteOptionLabel(remote deploy.RemoteSubscription) string {
 	alias := strings.TrimSpace(remote.Alias)
 	if alias == "" {
 		alias = strings.TrimSpace(remote.Domain)
@@ -541,7 +613,7 @@ func (sm *subscriptionManager) selectedRemoteDeleteLabels() []string {
 	return labels
 }
 
-func remoteLabels(remotes []install.RemoteSubscription) []string {
+func remoteLabels(remotes []deploy.RemoteSubscription) []string {
 	labels := make([]string, 0, len(remotes))
 	for _, remote := range remotes {
 		labels = append(labels, remoteOptionLabel(remote))

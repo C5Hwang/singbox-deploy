@@ -1,4 +1,4 @@
-package install
+package uninstall
 
 import (
 	"context"
@@ -7,14 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
-// UninstallOptions controls which managed data under /etc/singbox-deploy is
+// Options controls which managed data under /etc/singbox-deploy is
 // removed. Services, renewal entries, and the managed Nginx config are always
 // removed because they are project-owned runtime integration points.
-type UninstallOptions struct {
+type Options struct {
 	Runner system.Runner
 	Layout paths.Layout
 
@@ -28,7 +29,7 @@ type UninstallOptions struct {
 	DeleteSite          bool
 	DeleteSubscriptions bool
 
-	Progress func(Event)
+	Progress func(deploy.Event)
 }
 
 type uninstallStep struct {
@@ -37,23 +38,23 @@ type uninstallStep struct {
 	run    func(context.Context) error
 }
 
-// Uninstall removes only singbox-deploy managed integration files and selected
+// Run removes only singbox-deploy managed integration files and selected
 // data categories. Unknown files under the layout root are never removed.
-func Uninstall(ctx context.Context, opts UninstallOptions) error {
+func Run(ctx context.Context, opts Options) error {
 	opts.defaults()
 	steps := opts.steps()
 	for i, s := range steps {
-		opts.emit(Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
+		opts.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx); err != nil {
-			opts.emit(Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
+			opts.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
 			return fmt.Errorf("%s: %w", s.label, err)
 		}
-		opts.emit(Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
+		opts.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
 	}
 	return nil
 }
 
-func (o *UninstallOptions) defaults() {
+func (o *Options) defaults() {
 	if o.Runner == nil {
 		o.Runner = system.NewExecRunner(nil)
 	}
@@ -71,7 +72,7 @@ func (o *UninstallOptions) defaults() {
 	}
 }
 
-func (o UninstallOptions) steps() []uninstallStep {
+func (o Options) steps() []uninstallStep {
 	return []uninstallStep{
 		{"Stop services", "stop and disable managed systemd units", o.stepStopServices},
 		{"Systemd units", "remove managed systemd unit and timer files", o.stepSystemdUnits},
@@ -81,13 +82,13 @@ func (o UninstallOptions) steps() []uninstallStep {
 	}
 }
 
-func (o UninstallOptions) emit(e Event) {
+func (o Options) emit(e deploy.Event) {
 	if o.Progress != nil {
 		o.Progress(e)
 	}
 }
 
-func (o UninstallOptions) stepStopServices(context.Context) error {
+func (o Options) stepStopServices(context.Context) error {
 	for _, unit := range []string{system.CertRenewTimer, system.MonitorService, system.SingBoxService} {
 		if !fileExists(filepath.Join(o.SystemdDir, unit)) {
 			continue
@@ -106,7 +107,7 @@ func (o UninstallOptions) stepStopServices(context.Context) error {
 	return nil
 }
 
-func (o UninstallOptions) stepSystemdUnits(context.Context) error {
+func (o Options) stepSystemdUnits(context.Context) error {
 	removed := false
 	for _, unit := range []string{system.SingBoxService, system.MonitorService, system.CertRenewService, system.CertRenewTimer} {
 		ok, err := removeFileIfExists(filepath.Join(o.SystemdDir, unit))
@@ -125,17 +126,17 @@ func (o UninstallOptions) stepSystemdUnits(context.Context) error {
 	return nil
 }
 
-func (o UninstallOptions) stepCronRenewal(context.Context) error {
+func (o Options) stepCronRenewal(context.Context) error {
 	_, err := removeFileIfExists(o.CronPath)
 	return err
 }
 
-func (o UninstallOptions) stepNginxConfig(context.Context) error {
+func (o Options) stepNginxConfig(context.Context) error {
 	_, err := removeFileIfExists(o.NginxConfPath)
 	return err
 }
 
-func (o UninstallOptions) stepSelectedData(context.Context) error {
+func (o Options) stepSelectedData(context.Context) error {
 	root := o.Layout.Root
 	if o.DeleteRuntime {
 		if err := removeManagedDir(root, o.Layout.StateDir); err != nil {

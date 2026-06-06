@@ -1,4 +1,4 @@
-package install
+package deploy
 
 import (
 	"fmt"
@@ -51,7 +51,8 @@ func NginxInstallCommands(osr system.OSRelease) []system.Command {
 	}
 }
 
-func writeManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath string) error {
+// WriteManagedNginxConfig renders and writes the managed Nginx configuration.
+func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath string) error {
 	certPath := filepath.Join(layout.TLSDir, cfg.Domain+".crt")
 	keyPath := filepath.Join(layout.TLSDir, cfg.Domain+".key")
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
@@ -68,5 +69,5 @@ func writeManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 	if err != nil {
 		return err
 	}
-	return writeFile(nginxConfPath, []byte(conf), 0o644)
+	return WriteFile(nginxConfPath, []byte(conf), 0o644)
 }

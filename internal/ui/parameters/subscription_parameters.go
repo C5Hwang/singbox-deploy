@@ -5,22 +5,22 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 )
 
 func SubscriptionInstallFields() []Field {
 	return []Field{
-		{Key: "display_name", Label: "Node display name", Def: install.DefaultDisplayName, Note: "Used only in generated node names shown by clients."},
-		{Key: "subscribe_port", Label: "Subscription/Nginx HTTPS port", Def: strconv.Itoa(install.DefaultSubscribePort), Note: "Nginx listens on this public HTTPS port for /s subscriptions and the masquerade site."},
+		{Key: "display_name", Label: "Node display name", Def: deploy.DefaultDisplayName, Note: "Used only in generated node names shown by clients."},
+		{Key: "subscribe_port", Label: "Subscription/Nginx HTTPS port", Def: strconv.Itoa(deploy.DefaultSubscribePort), Note: "Nginx listens on this public HTTPS port for /s subscriptions and the masquerade site."},
 		{Key: "subscribe_salt", Label: "Subscription salt (optional)", Note: "Blank generates a random salt. The URL token is md5(salt + newline)."},
 	}
 }
 
-func SubscriptionDisplayNameField(cfg install.Config) Field {
+func SubscriptionDisplayNameField(cfg deploy.Config) Field {
 	return Field{Key: "display_name", Label: "Account display name", Def: cfg.DisplayName, Note: "Used only for generated node names shown by clients."}
 }
 
-func SubscriptionLocalFields(cfg install.Config) []Field {
+func SubscriptionLocalFields(cfg deploy.Config) []Field {
 	return []Field{
 		{Key: "subscribe_salt", Label: "Subscription salt", Def: cfg.Salt, Note: "Changing salt changes all subscription URLs. Token is md5(salt + newline)."},
 		{Key: "subscribe_port", Label: "Subscription/Nginx HTTPS port", Def: strconv.Itoa(cfg.SubscribePort), Note: "Changing this rewrites Nginx config and restarts Nginx."},

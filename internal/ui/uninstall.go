@@ -8,9 +8,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
 )
 
 type uninstallPhase int
@@ -32,7 +33,7 @@ const (
 var (
 	uninstallUILayout   = paths.DefaultLayout
 	detectUninstallHost = system.DetectHost
-	uninstallRun        = install.Uninstall
+	uninstallRun        = uninstall.Run
 )
 
 type uninstallDataOption struct {
@@ -204,7 +205,7 @@ func (um *uninstallManager) startRun() tea.Cmd {
 	um.resetRun(make(chan runMsg, 64))
 	ch := um.ch
 	logs := &logWriter{ch: ch}
-	opts := install.UninstallOptions{
+	opts := uninstall.Options{
 		Layout:              uninstallUILayout(),
 		Runner:              system.NewExecRunner(logs),
 		DeleteRuntime:       um.selected(uninstallRuntimeKey),
@@ -212,7 +213,7 @@ func (um *uninstallManager) startRun() tea.Cmd {
 		DeleteMonitorDB:     um.selected(uninstallMonitorDBKey),
 		DeleteSite:          um.selected(uninstallSiteKey),
 		DeleteSubscriptions: um.selected(uninstallSubscriptionsKey),
-		Progress: func(e install.Event) {
+		Progress: func(e deploy.Event) {
 			ev := e
 			ch <- runMsg{event: &ev}
 		},

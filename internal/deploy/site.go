@@ -1,4 +1,4 @@
-package install
+package deploy
 
 import (
 	"archive/zip"
@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
-	assets "github.com/C5Hwang/singbox-deploy/template"
+	"github.com/C5Hwang/singbox-deploy/assets"
 )
 
 const DefaultSiteTemplate = "massively"

@@ -1,4 +1,4 @@
-package install
+package deploy
 
 import (
 	"path/filepath"
@@ -15,7 +15,7 @@ func (o *Orchestrator) writeCertificateRenewalState(cfg Config) error {
 		"email":          cfg.Email,
 	}
 	for name, value := range state {
-		if err := writeFile(filepath.Join(o.Layout.StateDir, name), []byte(value+"\n"), 0o600); err != nil {
+		if err := WriteFile(filepath.Join(o.Layout.StateDir, name), []byte(value+"\n"), 0o600); err != nil {
 			return err
 		}
 	}

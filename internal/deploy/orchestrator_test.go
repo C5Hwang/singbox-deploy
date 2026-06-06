@@ -1,4 +1,4 @@
-package install
+package deploy
 
 import (
 	"archive/tar"
@@ -413,10 +413,10 @@ func TestStepCertificatesObtainsWhenExistingCertificateInvalid(t *testing.T) {
 	issuer := &countingIssuer{cert: acme.Certificate{CertificatePEM: []byte("NEWCERT"), PrivateKeyPEM: []byte("NEWKEY")}}
 	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer)}
 	certPath, keyPath := o.certPaths(cfg)
-	if err := writeFile(certPath, []byte("invalid cert"), 0o644); err != nil {
+	if err := WriteFile(certPath, []byte("invalid cert"), 0o644); err != nil {
 		t.Fatalf("write invalid cert: %v", err)
 	}
-	if err := writeFile(keyPath, []byte("invalid key"), 0o600); err != nil {
+	if err := WriteFile(keyPath, []byte("invalid key"), 0o600); err != nil {
 		t.Fatalf("write invalid key: %v", err)
 	}
 
@@ -468,10 +468,10 @@ func writeTestCertificatePair(t *testing.T, certPath, keyPath, domain string) ([
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	if err := writeFile(certPath, certPEM, 0o644); err != nil {
+	if err := WriteFile(certPath, certPEM, 0o644); err != nil {
 		t.Fatalf("write cert: %v", err)
 	}
-	if err := writeFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		t.Fatalf("write key: %v", err)
 	}
 	return certPEM, keyPEM

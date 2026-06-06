@@ -5,28 +5,28 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 )
 
 func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
 		{Key: "monitor", Label: "Deploy monitor", Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to skip the monitor service."},
-		{Key: "monitor_alias", Label: "Monitor alias", Def: install.DefaultMonitorAlias, Note: "Shown as the local source name on /monitor. Prefixes such as US, JP, HK get the same flag mapping as subscription nodes.", Skip: monitorDisabled},
-		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(install.DefaultMonitorPublicPort), Note: "Nginx listens on this public HTTPS port for /monitor.", Skip: monitorDisabled},
-		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(install.DefaultMonitorPort), Note: "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port.", Skip: monitorDisabled},
-		{Key: "monitor_interval_seconds", Label: "Traffic sampling interval seconds", Def: strconv.Itoa(install.DefaultMonitorIntervalSeconds), Note: "Default is 300 seconds. Lower values write more samples.", Skip: monitorDisabled},
+		{Key: "monitor_alias", Label: "Monitor alias", Def: deploy.DefaultMonitorAlias, Note: "Shown as the local source name on /monitor. Prefixes such as US, JP, HK get the same flag mapping as subscription nodes.", Skip: monitorDisabled},
+		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(deploy.DefaultMonitorPublicPort), Note: "Nginx listens on this public HTTPS port for /monitor.", Skip: monitorDisabled},
+		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(deploy.DefaultMonitorPort), Note: "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port.", Skip: monitorDisabled},
+		{Key: "monitor_interval_seconds", Label: "Traffic sampling interval seconds", Def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), Note: "Default is 300 seconds. Lower values write more samples.", Skip: monitorDisabled},
 		{Key: "traffic_in_limit_gb", Label: "Monthly inbound traffic limit in GB (0 = unlimited)", Def: "0", Note: "Inbound uses the monitored interface RX counter. When any configured limit is exceeded, sing-box.service is stopped automatically.", Skip: monitorDisabled},
 		{Key: "traffic_out_limit_gb", Label: "Monthly outbound traffic limit in GB (0 = unlimited)", Def: "0", Note: "Outbound uses the monitored interface TX counter.", Skip: monitorDisabled},
 		{Key: "traffic_total_limit_gb", Label: "Monthly total traffic limit in GB (0 = unlimited)", Def: "0", Note: "Total traffic is inbound + outbound.", Skip: monitorDisabled},
-		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(install.DefaultResetDay), Note: "Day of month when the traffic quota cycle resets and service can be restored.", Skip: monitorDisabled},
-		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(install.DefaultResetHour), Note: "Hour of day in GMT+0 for the monthly reset boundary.", Skip: monitorDisabled},
+		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(deploy.DefaultResetDay), Note: "Day of month when the traffic quota cycle resets and service can be restored.", Skip: monitorDisabled},
+		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(deploy.DefaultResetHour), Note: "Hour of day in GMT+0 for the monthly reset boundary.", Skip: monitorDisabled},
 	}
 }
 
-func MonitorLocalFields(cfg install.Config, monitorDisabled func(map[string]string) bool) []Field {
+func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
 		{Key: "monitor", Label: "Deploy monitor", Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: "Choose no to stop the monitor service."},
-		{Key: "monitor_alias", Label: "Monitor alias", Def: StringDefault(cfg.MonitorAlias, install.DefaultMonitorAlias), Note: "Shown as local source name on /monitor.", Skip: monitorDisabled},
+		{Key: "monitor_alias", Label: "Monitor alias", Def: StringDefault(cfg.MonitorAlias, deploy.DefaultMonitorAlias), Note: "Shown as local source name on /monitor.", Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(cfg.MonitorPublicPort), Skip: monitorDisabled},
 		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(cfg.MonitorPort), Skip: monitorDisabled},
 		{Key: "monitor_interface", Label: "Monitored network interface", Def: cfg.MonitorInterface, Note: "Leave as current/default interface unless you know the VPS egress interface changed.", Skip: monitorDisabled},
@@ -150,25 +150,25 @@ func TrafficSizeNote(suffix string) string {
 	return "Accepts bytes or B/KB/MB/GB/TB suffixes, for example 500MB or 1.5GB. " + suffix
 }
 
-func DefaultMonitorInterval(cfg install.Config) int {
+func DefaultMonitorInterval(cfg deploy.Config) int {
 	if cfg.MonitorIntervalSeconds > 0 {
 		return cfg.MonitorIntervalSeconds
 	}
-	return install.DefaultMonitorIntervalSeconds
+	return deploy.DefaultMonitorIntervalSeconds
 }
 
-func DefaultResetDay(cfg install.Config) int {
+func DefaultResetDay(cfg deploy.Config) int {
 	if cfg.ResetDay > 0 {
 		return cfg.ResetDay
 	}
-	return install.DefaultResetDay
+	return deploy.DefaultResetDay
 }
 
-func DefaultResetHour(cfg install.Config) int {
+func DefaultResetHour(cfg deploy.Config) int {
 	if cfg.ResetHour >= 0 && cfg.ResetHour <= 23 {
 		return cfg.ResetHour
 	}
-	return install.DefaultResetHour
+	return deploy.DefaultResetHour
 }
 
 func StringDefault(value, fallback string) string {

@@ -1,4 +1,4 @@
-package install
+package deploy
 
 import (
 	"context"
@@ -208,10 +208,10 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFile(certPath, cert.CertificatePEM, 0o644); err != nil {
+	if err := WriteFile(certPath, cert.CertificatePEM, 0o644); err != nil {
 		return err
 	}
-	return writeFile(keyPath, cert.PrivateKeyPEM, 0o600)
+	return WriteFile(keyPath, cert.PrivateKeyPEM, 0o600)
 }
 
 func (o *Orchestrator) stepSingBox(ctx context.Context, cfg Config) error {
@@ -246,7 +246,7 @@ func (o *Orchestrator) stepConfig(_ context.Context, cfg Config) error {
 	if err := os.MkdirAll(o.Layout.FragmentsDir, 0o755); err != nil {
 		return err
 	}
-	if err := writeFile(o.Layout.ConfigJSON, cfgBytes, 0o644); err != nil {
+	if err := WriteFile(o.Layout.ConfigJSON, cfgBytes, 0o644); err != nil {
 		return err
 	}
 	return o.run(system.Command{Name: o.Layout.SingBoxBin, Args: []string{"check", "-c", o.Layout.ConfigJSON}})
@@ -263,7 +263,7 @@ func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(o.SystemdDir, system.SingBoxService), []byte(unit), 0o644); err != nil {
+	if err := WriteFile(filepath.Join(o.SystemdDir, system.SingBoxService), []byte(unit), 0o644); err != nil {
 		return err
 	}
 	renewUnit, err := templatefs.Render("service/singbox-deploy-cert-renew.service.tmpl", map[string]any{
@@ -273,14 +273,14 @@ func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(o.SystemdDir, system.CertRenewService), []byte(renewUnit), 0o644); err != nil {
+	if err := WriteFile(filepath.Join(o.SystemdDir, system.CertRenewService), []byte(renewUnit), 0o644); err != nil {
 		return err
 	}
 	renewTimer, err := templatefs.Render("service/singbox-deploy-cert-renew.timer.tmpl", map[string]any{})
 	if err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(o.SystemdDir, system.CertRenewTimer), []byte(renewTimer), 0o644); err != nil {
+	if err := WriteFile(filepath.Join(o.SystemdDir, system.CertRenewTimer), []byte(renewTimer), 0o644); err != nil {
 		return err
 	}
 	return o.run(
@@ -291,11 +291,11 @@ func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepSubscriptions(_ context.Context, cfg Config) error {
-	return writeSubscriptions(o.Layout, cfg)
+	return WriteSubscriptions(o.Layout, cfg)
 }
 
 func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
-	if err := writeManagedNginxConfig(o.Layout, cfg, o.NginxConfPath); err != nil {
+	if err := WriteManagedNginxConfig(o.Layout, cfg, o.NginxConfPath); err != nil {
 		return err
 	}
 	if err := deploySiteTemplate(o.Layout, cfg.SiteTemplate); err != nil {
@@ -312,14 +312,14 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 	if !cfg.DeployMonitor {
 		return nil
 	}
-	unit, err := renderMonitorUnit(o.Layout, o.DeployBin, cfg)
+	unit, err := RenderMonitorUnit(o.Layout, o.DeployBin, cfg)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(o.Layout.MonitorDB), 0o755); err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(o.SystemdDir, system.MonitorService), []byte(unit), 0o644); err != nil {
+	if err := WriteFile(filepath.Join(o.SystemdDir, system.MonitorService), []byte(unit), 0o644); err != nil {
 		return err
 	}
 	return o.run(
@@ -328,7 +328,8 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 	)
 }
 
-func renderMonitorUnit(layout paths.Layout, deployBin string, cfg Config) (string, error) {
+// RenderMonitorUnit renders the systemd unit file for the monitor service.
+func RenderMonitorUnit(layout paths.Layout, deployBin string, cfg Config) (string, error) {
 	interval := cfg.MonitorIntervalSeconds
 	if interval <= 0 {
 		interval = DefaultMonitorIntervalSeconds
@@ -345,22 +346,23 @@ func renderMonitorUnit(layout paths.Layout, deployBin string, cfg Config) (strin
 		"ResetHour":       cfg.ResetHour,
 		"MonitorAlias":    cfg.MonitorAlias,
 		"IntervalSeconds": interval,
-		"RemoteMonitor":   remoteMonitorPath(layout),
+		"RemoteMonitor":   RemoteMonitorPath(layout),
 	})
 }
 
 func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
-	return writeInstallState(o.Layout.StateDir, cfg)
+	return WriteInstallState(o.Layout.StateDir, cfg)
 }
 
-func writeInstallState(stateDir string, cfg Config) error {
+// WriteInstallState persists the full install config as individual state files.
+func WriteInstallState(stateDir string, cfg Config) error {
 	state := map[string]string{
 		"acme_challenge":         string(cfg.Challenge),
 		"domain":                 cfg.Domain,
 		"dns_credential":         dnsCredentialForState(cfg),
 		"dns_provider":           cfg.DNSProvider,
 		"email":                  cfg.Email,
-		"enabled_protocols":      protocolStateValue(cfg.enabled()),
+		"enabled_protocols":      protocolStateValue(cfg.EnabledProtocols()),
 		"display_name":           cfg.DisplayName,
 		"subscribe_salt":         cfg.Salt,
 		"site_template":          cfg.siteTemplate(),

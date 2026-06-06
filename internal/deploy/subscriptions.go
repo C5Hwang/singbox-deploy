@@ -1,4 +1,4 @@
-package install
+package deploy
 
 import (
 	"encoding/json"
@@ -28,7 +28,7 @@ func (c Config) buildNodes() []node {
 		return subscription.AddNodePrefixFlag(c.DisplayName + "-" + label)
 	}
 	var nodes []node
-	for _, p := range c.enabled() {
+	for _, p := range c.EnabledProtocols() {
 		switch p {
 		case config.ProtocolRealityVision:
 			n := name("Reality-Vision")
@@ -348,7 +348,8 @@ func outboundTags(outbounds []map[string]any) []string {
 	return tags
 }
 
-func writeSubscriptions(layout paths.Layout, cfg Config) error {
+// WriteSubscriptions renders and writes all subscription output files.
+func WriteSubscriptions(layout paths.Layout, cfg Config) error {
 	out, err := cfg.buildSubscriptions()
 	if err != nil {
 		return err

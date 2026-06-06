@@ -1,7 +1,7 @@
 // Package config renders sing-box server configuration from embedded template
-// fragments and assembles them into a single validated config.json. Each
-// protocol is a separate JSON fragment; Go reads the fragments and builds the
-// final document (sing-box's own merge is not used).
+// fragments and builds them into a single validated config.json. Each protocol
+// is a separate JSON fragment; Go reads the fragments and builds the final
+// document (sing-box's own merge is not used).
 package config
 
 import (

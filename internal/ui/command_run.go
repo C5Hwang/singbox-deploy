@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 )
 
 type commandRun struct {
@@ -16,7 +16,7 @@ type commandRun struct {
 	height int
 
 	bar         progress.Model
-	events      []install.Event
+	events      []deploy.Event
 	logBuf      []string
 	logScroll   int
 	runErr      error
@@ -74,7 +74,7 @@ func handleCommandRun(target commandRunTarget, msg runMsg) tea.Cmd {
 	return r.waitForRun()
 }
 
-func formatRunEvent(e install.Event) string {
+func formatRunEvent(e deploy.Event) string {
 	line := fmt.Sprintf("[%d/%d] %s - %s", e.Index, e.Total, e.Label, e.Status)
 	if e.Err != nil {
 		line += ": " + e.Err.Error()

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -38,7 +38,7 @@ type Manager struct {
 
 	Download       func(ctx context.Context, url, dest string) error
 	StableReleases func(ctx context.Context, n int) ([]string, error)
-	Progress       func(install.Event)
+	Progress       func(deploy.Event)
 
 	GOOS   string
 	GOARCH string
@@ -185,17 +185,17 @@ func (m *Manager) serviceAction(ctx context.Context, label, systemctlAction stri
 
 func (m *Manager) runSteps(ctx context.Context, steps []step) error {
 	for i, s := range steps {
-		m.emit(install.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
+		m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx); err != nil {
-			m.emit(install.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
+			m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
 			return fmt.Errorf("%s: %w", s.label, err)
 		}
-		m.emit(install.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
+		m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
 	}
 	return nil
 }
 
-func (m *Manager) emit(e install.Event) {
+func (m *Manager) emit(e deploy.Event) {
 	if m.Progress != nil {
 		m.Progress(e)
 	}

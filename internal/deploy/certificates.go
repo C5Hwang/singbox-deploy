@@ -1,4 +1,4 @@
-package install
+package deploy
 
 import (
 	"crypto/tls"
@@ -43,10 +43,10 @@ func (o *Orchestrator) importExistingCertificate(cfg Config, certPath, keyPath s
 		if err != nil {
 			return false, err
 		}
-		if err := writeFile(certPath, certPEM, 0o644); err != nil {
+		if err := WriteFile(certPath, certPEM, 0o644); err != nil {
 			return false, err
 		}
-		if err := writeFile(keyPath, keyPEM, 0o600); err != nil {
+		if err := WriteFile(keyPath, keyPEM, 0o600); err != nil {
 			return false, err
 		}
 		return true, nil

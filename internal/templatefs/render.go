@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"text/template"
 
-	assets "github.com/C5Hwang/singbox-deploy/template"
+	"github.com/C5Hwang/singbox-deploy/assets"
 )
 
 // funcMap exposes helpers to every template. "json" marshals a value to its

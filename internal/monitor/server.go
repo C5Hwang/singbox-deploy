@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
-	assets "github.com/C5Hwang/singbox-deploy/template"
+	"github.com/C5Hwang/singbox-deploy/assets"
 )
 
 const (

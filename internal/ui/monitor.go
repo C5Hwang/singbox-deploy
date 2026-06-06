@@ -9,7 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -38,7 +38,7 @@ const (
 var (
 	monitorUILayout   = paths.DefaultLayout
 	detectMonitorHost = system.DetectHost
-	updateMonitorRun  = install.UpdateMonitor
+	updateMonitorRun = monitor.UpdateSettings
 )
 
 type monitorActionItem struct {
@@ -55,15 +55,15 @@ type monitorManager struct {
 
 	host    system.Host
 	hostErr error
-	cfg     install.Config
-	remotes []install.RemoteSubscription
+	cfg     deploy.Config
+	remotes []deploy.RemoteSubscription
 	totals  monitor.TrafficTotals
 	loadErr error
 
 	cursor int
 	parameterForm
 	commandRun
-	result install.Config
+	result deploy.Config
 }
 
 func newMonitorManager() *monitorManager {
@@ -74,19 +74,19 @@ func newMonitorManager() *monitorManager {
 	}
 	tm.host, tm.hostErr = detectMonitorHost()
 	layout := monitorUILayout()
-	cfg, err := install.LoadProtocolConfig(layout)
+	cfg, err := deploy.LoadProtocolConfig(layout)
 	if err != nil {
 		tm.loadErr = err
 		return tm
 	}
 	tm.cfg = cfg
-	remotes, err := install.LoadRemoteSubscriptions(layout)
+	remotes, err := deploy.LoadRemoteSubscriptions(layout)
 	if err != nil {
 		tm.loadErr = err
 		return tm
 	}
 	tm.remotes = remotes
-	totals, err := install.CurrentTrafficTotals(layout, cfg, time.Now().UTC())
+	totals, err := monitor.CurrentTrafficTotals(layout, cfg.ResetDay, cfg.ResetHour, time.Now().UTC())
 	if err == nil {
 		tm.totals = totals
 	}
@@ -217,14 +217,14 @@ func (tm *monitorManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 
 func (tm *monitorManager) reloadState() {
 	layout := monitorUILayout()
-	if cfg, err := install.LoadProtocolConfig(layout); err == nil {
+	if cfg, err := deploy.LoadProtocolConfig(layout); err == nil {
 		tm.cfg = cfg
 		tm.result = cfg
 	}
-	if remotes, err := install.LoadRemoteSubscriptions(layout); err == nil {
+	if remotes, err := deploy.LoadRemoteSubscriptions(layout); err == nil {
 		tm.remotes = remotes
 	}
-	if totals, err := install.CurrentTrafficTotals(layout, tm.cfg, time.Now().UTC()); err == nil {
+	if totals, err := monitor.CurrentTrafficTotals(layout, tm.cfg.ResetDay, tm.cfg.ResetHour, time.Now().UTC()); err == nil {
 		tm.totals = totals
 	}
 }
@@ -348,9 +348,9 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	opts.Layout = monitorUILayout()
 	opts.Runner = system.NewExecRunner(logs)
 	opts.Firewall = tm.host.Firewall
-	opts.Progress = func(e install.Event) {
-		ev := e
-		ch <- runMsg{event: &ev}
+	opts.Progress = func(e monitor.ManageEvent) {
+		de := deploy.Event{Index: e.Index, Total: e.Total, Label: e.Label, Detail: e.Detail, Status: e.Status, Err: e.Err}
+		ch <- runMsg{event: &de}
 	}
 	go func() {
 		_, err := updateMonitorRun(context.Background(), opts)
@@ -359,24 +359,35 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	return tm.waitForRun()
 }
 
-func (tm *monitorManager) updateOptions() install.MonitorUpdateOptions {
+func (tm *monitorManager) updateOptions() monitor.UpdateOptions {
+	base := monitorDeployCallbacks()
 	switch tm.action {
 	case monitorActionLocal:
 		return tm.localUpdateOptions()
 	case monitorActionUsage:
 		inBytes, _ := uiparams.ParseTrafficSize(tm.values["current_in_traffic"])
 		outBytes, _ := uiparams.ParseTrafficSize(tm.values["current_out_traffic"])
-		return install.MonitorUpdateOptions{SetCurrentTotals: true, CurrentInBytes: inBytes, CurrentOutBytes: outBytes}
+		opts := base
+		opts.SetCurrentTotals = true
+		opts.CurrentInBytes = inBytes
+		opts.CurrentOutBytes = outBytes
+		return opts
 	case monitorActionRemotes:
-		return install.MonitorUpdateOptions{SetRemotes: true, Remotes: tm.targetRemoteMonitor()}
+		opts := base
+		opts.SetRemotes = true
+		opts.Remotes = tm.targetRemoteMonitor()
+		return opts
 	case monitorActionRefresh:
-		return install.MonitorUpdateOptions{SetRemotes: true, Remotes: append([]install.RemoteSubscription(nil), tm.remotes...)}
+		opts := base
+		opts.SetRemotes = true
+		opts.Remotes = toManageRemotes(tm.remotes)
+		return opts
 	default:
-		return install.MonitorUpdateOptions{}
+		return base
 	}
 }
 
-func (tm *monitorManager) localUpdateOptions() install.MonitorUpdateOptions {
+func (tm *monitorManager) localUpdateOptions() monitor.UpdateOptions {
 	inLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_in_limit"])
 	outLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_out_limit"])
 	totalLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_total_limit"])
@@ -385,37 +396,44 @@ func (tm *monitorManager) localUpdateOptions() install.MonitorUpdateOptions {
 	interval, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_interval_seconds"]))
 	resetDay, _ := strconv.Atoi(strings.TrimSpace(tm.values["reset_day"]))
 	resetHour, _ := strconv.Atoi(strings.TrimSpace(tm.values["reset_hour"]))
-	return install.MonitorUpdateOptions{
-		SetLocal:          true,
-		SetMonitor:        true,
-		DeployMonitor:     monitorEnabled(tm.values),
-		MonitorAlias:      strings.TrimSpace(tm.values["monitor_alias"]),
-		MonitorPublicPort: monitorPublicPort,
-		MonitorPort:       monitorPort,
-		Interface:         strings.TrimSpace(tm.values["monitor_interface"]),
-		IntervalSeconds:   interval,
-		InLimitBytes:      inLimit,
-		OutLimitBytes:     outLimit,
-		TotalLimitBytes:   totalLimit,
-		ResetDay:          resetDay,
-		ResetHour:         resetHour,
-	}
+	opts := monitorDeployCallbacks()
+	opts.SetLocal = true
+	opts.SetMonitor = true
+	opts.DeployMonitor = monitorEnabled(tm.values)
+	opts.MonitorAlias = strings.TrimSpace(tm.values["monitor_alias"])
+	opts.MonitorPublicPort = monitorPublicPort
+	opts.MonitorPort = monitorPort
+	opts.Interface = strings.TrimSpace(tm.values["monitor_interface"])
+	opts.IntervalSeconds = interval
+	opts.InLimitBytes = inLimit
+	opts.OutLimitBytes = outLimit
+	opts.TotalLimitBytes = totalLimit
+	opts.ResetDay = resetDay
+	opts.ResetHour = resetHour
+	return opts
 }
 
-func (tm *monitorManager) targetRemoteMonitor() []install.RemoteSubscription {
+func (tm *monitorManager) targetRemoteMonitor() []monitor.ManageRemote {
 	selected := selectedOptions(tm.values["remote_monitor_sources"])
-	remotes := make([]install.RemoteSubscription, 0, len(tm.remotes))
+	remotes := make([]monitor.ManageRemote, 0, len(tm.remotes))
 	for i, remote := range tm.remotes {
 		label := remoteOptionLabel(remote)
-		remote.Monitor = selected[label]
-		if remote.Monitor {
+		mr := monitor.ManageRemote{
+			Domain:            remote.Domain,
+			Port:              remote.Port,
+			Alias:             remote.Alias,
+			Salt:              remote.Salt,
+			Monitor:           selected[label],
+			MonitorPublicPort: remote.MonitorPublicPort,
+		}
+		if mr.Monitor {
 			if port, err := strconv.Atoi(strings.TrimSpace(tm.values[remoteMonitorPublicPortKey(i)])); err == nil {
-				remote.MonitorPublicPort = port
+				mr.MonitorPublicPort = port
 			}
 		} else {
-			remote.MonitorPublicPort = 0
+			mr.MonitorPublicPort = 0
 		}
-		remotes = append(remotes, remote)
+		remotes = append(remotes, mr)
 	}
 	return remotes
 }
@@ -456,7 +474,7 @@ func (tm *monitorManager) View() string {
 func (tm *monitorManager) actionView() string {
 	rows := []summaryLine{
 		summaryRow("Monitor", yesNoString(tm.cfg.DeployMonitor)),
-		summaryRow("Monitor alias", or(tm.cfg.MonitorAlias, install.DefaultMonitorAlias)),
+		summaryRow("Monitor alias", or(tm.cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 		summaryRow("Monitor UI port", strconv.Itoa(tm.cfg.MonitorPublicPort)),
 		summaryRow("Monitor local port", strconv.Itoa(tm.cfg.MonitorPort)),
 		summaryRow("Monitor interface", or(tm.cfg.MonitorInterface, "auto/default")),
@@ -532,7 +550,7 @@ func (tm *monitorManager) doneSummary() string {
 	}
 	return renderSummary([]summaryLine{
 		summaryRow("Monitor", yesNoString(cfg.DeployMonitor)),
-		summaryRow("Monitor alias", or(cfg.MonitorAlias, install.DefaultMonitorAlias)),
+		summaryRow("Monitor alias", or(cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 		summaryRow("Monitor UI port", strconv.Itoa(cfg.MonitorPublicPort)),
 		summaryRow("Reset", fmt.Sprintf("day %d hour %d GMT", uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
 		summaryRow("Remote monitor sources", strconv.Itoa(countRemoteMonitor(tm.remotes))),
@@ -568,7 +586,116 @@ func (tm *monitorManager) actions() []monitorActionItem {
 	}
 }
 
-func countRemoteMonitor(remotes []install.RemoteSubscription) int {
+func monitorDeployCallbacks() monitor.UpdateOptions {
+	return monitor.UpdateOptions{
+		LoadConfig: func(l paths.Layout) (monitor.ManageConfig, error) {
+			dcfg, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return monitor.ManageConfig{}, err
+			}
+			return monitor.ManageConfig{
+				Domain:                 dcfg.Domain,
+				DeployMonitor:          dcfg.DeployMonitor,
+				MonitorAlias:           dcfg.MonitorAlias,
+				MonitorPublicPort:      dcfg.MonitorPublicPort,
+				MonitorPort:            dcfg.MonitorPort,
+				MonitorInterface:       dcfg.MonitorInterface,
+				MonitorIntervalSeconds: dcfg.MonitorIntervalSeconds,
+				TrafficInLimitBytes:    dcfg.TrafficInLimitBytes,
+				TrafficOutLimitBytes:   dcfg.TrafficOutLimitBytes,
+				TrafficTotalLimitBytes: dcfg.TrafficTotalLimitBytes,
+				ResetDay:               dcfg.ResetDay,
+				ResetHour:              dcfg.ResetHour,
+				SubscribePort:          dcfg.SubscribePort,
+			}, nil
+		},
+		LoadRemotes: func(l paths.Layout) ([]monitor.ManageRemote, error) {
+			dr, err := deploy.LoadRemoteSubscriptions(l)
+			if err != nil {
+				return nil, err
+			}
+			return toManageRemotes(dr), nil
+		},
+		ValidateRemotes: func(remotes []monitor.ManageRemote) error {
+			return deploy.ValidateRemoteSubscriptions(fromManageRemotes(remotes))
+		},
+		SaveRemotes: func(l paths.Layout, remotes []monitor.ManageRemote) error {
+			return deploy.SaveRemoteSubscriptions(l, fromManageRemotes(remotes))
+		},
+		WriteState: func(stateDir string, mcfg monitor.ManageConfig) error {
+			layout := monitorUILayout()
+			dcfg, err := deploy.LoadProtocolConfig(layout)
+			if err != nil {
+				return err
+			}
+			dcfg.DeployMonitor = mcfg.DeployMonitor
+			dcfg.MonitorAlias = mcfg.MonitorAlias
+			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
+			dcfg.MonitorPort = mcfg.MonitorPort
+			dcfg.MonitorInterface = mcfg.MonitorInterface
+			dcfg.MonitorIntervalSeconds = mcfg.MonitorIntervalSeconds
+			dcfg.TrafficInLimitBytes = mcfg.TrafficInLimitBytes
+			dcfg.TrafficOutLimitBytes = mcfg.TrafficOutLimitBytes
+			dcfg.TrafficTotalLimitBytes = mcfg.TrafficTotalLimitBytes
+			dcfg.ResetDay = mcfg.ResetDay
+			dcfg.ResetHour = mcfg.ResetHour
+			return deploy.WriteInstallState(stateDir, dcfg)
+		},
+		WriteManagedNginxConfig: func(l paths.Layout, mcfg monitor.ManageConfig, confPath string) error {
+			dcfg, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return err
+			}
+			dcfg.DeployMonitor = mcfg.DeployMonitor
+			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
+			dcfg.MonitorPort = mcfg.MonitorPort
+			dcfg.SubscribePort = mcfg.SubscribePort
+			return deploy.WriteManagedNginxConfig(l, dcfg, confPath)
+		},
+		RenderMonitorUnit: func(l paths.Layout, deployBin string, mcfg monitor.ManageConfig) (string, error) {
+			dcfg, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return "", err
+			}
+			dcfg.DeployMonitor = mcfg.DeployMonitor
+			dcfg.MonitorAlias = mcfg.MonitorAlias
+			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
+			dcfg.MonitorPort = mcfg.MonitorPort
+			dcfg.MonitorInterface = mcfg.MonitorInterface
+			dcfg.MonitorIntervalSeconds = mcfg.MonitorIntervalSeconds
+			dcfg.TrafficInLimitBytes = mcfg.TrafficInLimitBytes
+			dcfg.TrafficOutLimitBytes = mcfg.TrafficOutLimitBytes
+			dcfg.TrafficTotalLimitBytes = mcfg.TrafficTotalLimitBytes
+			dcfg.ResetDay = mcfg.ResetDay
+			dcfg.ResetHour = mcfg.ResetHour
+			return deploy.RenderMonitorUnit(l, deployBin, dcfg)
+		},
+		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, remotes []monitor.ManageRemote, fetch func(context.Context, string) ([]byte, error)) error {
+			return deploy.RefreshRemoteMonitor(ctx, l, fromManageRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+		},
+		RunCommands: func(r system.Runner, cmds ...system.Command) error {
+			return deploy.RunCommands(r, cmds...)
+		},
+	}
+}
+
+func toManageRemotes(remotes []deploy.RemoteSubscription) []monitor.ManageRemote {
+	out := make([]monitor.ManageRemote, len(remotes))
+	for i, r := range remotes {
+		out[i] = monitor.ManageRemote{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+	}
+	return out
+}
+
+func fromManageRemotes(remotes []monitor.ManageRemote) []deploy.RemoteSubscription {
+	out := make([]deploy.RemoteSubscription, len(remotes))
+	for i, r := range remotes {
+		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+	}
+	return out
+}
+
+func countRemoteMonitor(remotes []deploy.RemoteSubscription) int {
 	count := 0
 	for _, remote := range remotes {
 		if remote.Monitor {
@@ -578,12 +705,12 @@ func countRemoteMonitor(remotes []install.RemoteSubscription) int {
 	return count
 }
 
-func defaultRemoteMonitorPublicPort(remote install.RemoteSubscription, cfg install.Config) int {
+func defaultRemoteMonitorPublicPort(remote deploy.RemoteSubscription, cfg deploy.Config) int {
 	if remote.MonitorPublicPort > 0 {
 		return remote.MonitorPublicPort
 	}
 	if cfg.MonitorPublicPort > 0 {
 		return cfg.MonitorPublicPort
 	}
-	return install.DefaultMonitorPublicPort
+	return deploy.DefaultMonitorPublicPort
 }

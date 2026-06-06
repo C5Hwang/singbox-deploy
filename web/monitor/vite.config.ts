@@ -7,7 +7,7 @@ export default defineConfig({
   plugins: [vue()],
   base: "./",
   build: {
-    outDir: "../../template/monitor-ui",
+    outDir: "../../assets/monitor-ui",
     emptyOutDir: true,
   },
 });

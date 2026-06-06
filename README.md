@@ -55,7 +55,7 @@ pnpm --dir web/monitor install --frozen-lockfile
 pnpm --dir web/monitor build
 ```
 
-This writes the Vue build output to `template/monitor-ui`, where it is embedded
+This writes the Vue build output to `assets/monitor-ui`, where it is embedded
 by the Go build.
 
 ### 2. Build static binaries

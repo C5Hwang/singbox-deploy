@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 )
 
 // Field describes one UI parameter without depending on the ui package.
@@ -79,7 +79,7 @@ func ProtocolInstallFieldsForProtocol(proto config.Protocol) []Field {
 	}
 }
 
-func ProtocolEditFieldsForProtocol(cfg install.Config, proto config.Protocol) []Field {
+func ProtocolEditFieldsForProtocol(cfg deploy.Config, proto config.Protocol) []Field {
 	switch proto {
 	case config.ProtocolRealityVision:
 		return []Field{

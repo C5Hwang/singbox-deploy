@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
@@ -30,7 +30,7 @@ func TestChangeStableDownloadsReplacesValidatesAndRestarts(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	runner := &recordingRunner{}
-	var events []install.Event
+	var events []deploy.Event
 	var downloadedURL string
 	m := &Manager{
 		Runner: runner,
@@ -41,7 +41,7 @@ func TestChangeStableDownloadsReplacesValidatesAndRestarts(t *testing.T) {
 			downloadedURL = url
 			return writeTestSingBoxArchive(dest, "new-sing-box")
 		},
-		Progress: func(e install.Event) { events = append(events, e) },
+		Progress: func(e deploy.Event) { events = append(events, e) },
 	}
 
 	res, err := m.Run(context.Background(), ActionChangeStable, "v1.12.4")

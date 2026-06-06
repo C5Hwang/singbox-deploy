@@ -7,3 +7,4 @@ web/monitor/node_modules/
 
 # Build artifacts
 /dist/
+singbox-deploy

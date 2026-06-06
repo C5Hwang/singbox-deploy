@@ -1,9 +1,10 @@
-// Package install orchestrates the real, end-to-end sing-box deployment: system
-// preparation, Nginx, certificates, sing-box core, config generation, services,
-// subscriptions, and the monitor. System mutations go through a
-// system.Runner and filesystem writes go under a paths.Layout, so the whole
-// flow is exercisable with a recording runner and a temporary root.
-package install
+// Package deploy orchestrates the sing-box deployment lifecycle: fresh
+// installation, configuration, subscriptions, and shared types used by the
+// per-domain management packages (protocol, subscription, monitor, account,
+// uninstall). System mutations go through a system.Runner and filesystem
+// writes go under a paths.Layout, so the whole flow is exercisable with a
+// recording runner and a temporary root.
+package deploy
 
 import (
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
@@ -106,8 +107,8 @@ type Config struct {
 	Creds Credentials
 }
 
-// enabled returns the protocols to install, defaulting to all supported.
-func (c Config) enabled() []config.Protocol {
+// EnabledProtocols returns the protocols to install, defaulting to all supported.
+func (c Config) EnabledProtocols() []config.Protocol {
 	if len(c.Enabled) == 0 {
 		return config.AllProtocols
 	}
@@ -141,7 +142,7 @@ func (c Config) serverOptions(tlsCert, tlsKey string) config.ServerOptions {
 		Hysteria2DownMbps: c.hysteria2DownMbps(),
 		User:              c.userCredentials(),
 		Ports:             c.Ports,
-		Enabled:           c.enabled(),
+		Enabled:           c.EnabledProtocols(),
 	}
 }
 
@@ -179,7 +180,7 @@ func (c Config) firewallPorts() []system.Port {
 		config.ProtocolAnyTLS:        {c.Ports.AnyTLS, "tcp"},
 	}
 	var ports []system.Port
-	for _, p := range c.enabled() {
+	for _, p := range c.EnabledProtocols() {
 		if spec, ok := want[p]; ok {
 			ports = append(ports, system.Port{Number: spec.port, Proto: spec.proto})
 		}
@@ -198,8 +199,8 @@ func (c Config) firewallPorts() []system.Port {
 // configured domain; the monitor service port only needs to be free locally
 // because it binds to 127.0.0.1 behind Nginx.
 func (c Config) portChecks() []system.Port {
-	checks := make([]system.Port, 0, len(c.enabled())+4)
-	for _, p := range c.enabled() {
+	checks := make([]system.Port, 0, len(c.EnabledProtocols())+4)
+	for _, p := range c.EnabledProtocols() {
 		switch p {
 		case config.ProtocolRealityVision:
 			checks = append(checks, system.Port{Number: c.Ports.RealityVision, Proto: "tcp", Label: "Reality Vision", Public: true})

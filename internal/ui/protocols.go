@@ -9,8 +9,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/protocol"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
@@ -39,7 +40,7 @@ const (
 var (
 	protocolUILayout   = paths.DefaultLayout
 	detectProtocolHost = system.DetectHost
-	updateProtocolsRun = install.UpdateProtocols
+	updateProtocolsRun = protocol.Update
 )
 
 type protocolActionItem struct {
@@ -56,7 +57,7 @@ type protocolManager struct {
 
 	host    system.Host
 	hostErr error
-	cfg     install.Config
+	cfg     deploy.Config
 	loadErr error
 
 	cursor   int
@@ -66,7 +67,7 @@ type protocolManager struct {
 	editProto config.Protocol
 
 	commandRun
-	result install.Config
+	result deploy.Config
 }
 
 func newProtocolManager() *protocolManager {
@@ -79,7 +80,7 @@ func newProtocolManager() *protocolManager {
 	host, err := detectProtocolHost()
 	pm.host = host
 	pm.hostErr = err
-	cfg, err := install.LoadProtocolConfig(protocolUILayout())
+	cfg, err := deploy.LoadProtocolConfig(protocolUILayout())
 	if err != nil {
 		pm.loadErr = err
 		return pm
@@ -194,7 +195,7 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		switch msg.String() {
 		case "enter":
 			if pm.runComplete {
-				if cfg, err := install.LoadProtocolConfig(protocolUILayout()); err == nil {
+				if cfg, err := deploy.LoadProtocolConfig(protocolUILayout()); err == nil {
 					pm.cfg = cfg
 					pm.result = cfg
 					pm.selected = selectedOptions(protocolSelectionValue(cfg.Enabled))
@@ -444,7 +445,7 @@ func (pm *protocolManager) startRun() tea.Cmd {
 	opts.Layout = protocolUILayout()
 	opts.Runner = system.NewExecRunner(logs)
 	opts.Firewall = pm.host.Firewall
-	opts.Progress = func(e install.Event) {
+	opts.Progress = func(e deploy.Event) {
 		ev := e
 		ch <- runMsg{event: &ev}
 	}
@@ -455,12 +456,12 @@ func (pm *protocolManager) startRun() tea.Cmd {
 	return pm.waitForRun()
 }
 
-func (pm *protocolManager) updateOptions() install.ProtocolUpdateOptions {
+func (pm *protocolManager) updateOptions() protocol.UpdateOptions {
 	selected := pm.cfg.Enabled
 	if pm.action == protocolActionChange {
 		selected = pm.targetProtocols()
 	}
-	opts := install.ProtocolUpdateOptions{Selected: selected}
+	opts := protocol.UpdateOptions{Selected: selected}
 	if v := strings.TrimSpace(pm.values["reality_sni"]); v != "" {
 		if host, err := uiparams.NormalizeRealityServerName(v); err == nil {
 			opts.RealityServerName = host

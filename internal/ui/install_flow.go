@@ -14,7 +14,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
-	"github.com/C5Hwang/singbox-deploy/internal/install"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
@@ -50,7 +50,7 @@ func installFields() []field {
 		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
 		{key: "dns_credential", label: "DNS API credential", skip: isDNS, noteFunc: dnsCredentialNote},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
-		{key: "site_template", label: "Masquerade site template", def: install.DefaultSiteTemplate, options: install.SiteTemplateOptions(), note: "HML5 UP template deployed to /etc/singbox-deploy/www."},
+		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)
@@ -98,7 +98,7 @@ func dnsCredentialNote(vals map[string]string) string {
 // completion into the UI. It is the only channel the orchestrator goroutine
 // uses to communicate, so all UI state stays mutated on the UI goroutine.
 type runMsg struct {
-	event     *install.Event
+	event     *deploy.Event
 	logLine   string
 	done      bool
 	err       error
@@ -122,7 +122,7 @@ type installFlow struct {
 
 	form installForm
 	run  commandRun
-	cfg  install.Config
+	cfg  deploy.Config
 }
 
 func newInstallForm() installForm {
@@ -276,7 +276,7 @@ func (f *installForm) validateField(field field, val string, _ map[string]string
 			return fmt.Errorf("select at least one protocol")
 		}
 	case "site_template":
-		_, err := install.NormalizeSiteTemplate(val)
+		_, err := deploy.NormalizeSiteTemplate(val)
 		return err
 	}
 	if err := uiparams.ValidateSharedParameterValue(field.key, val); err != nil {
@@ -474,7 +474,7 @@ func (w *installFlow) startRun() tea.Cmd {
 	acmeManager := acme.NewManager(issuer)
 	releases := release.NewClient("", nil)
 
-	orch := &install.Orchestrator{
+	orch := &deploy.Orchestrator{
 		Runner:   runner,
 		Layout:   layout,
 		ACME:     acmeManager,
@@ -482,7 +482,7 @@ func (w *installFlow) startRun() tea.Cmd {
 		GOOS:     "linux",
 		GOARCH:   w.host.Arch,
 	}
-	orch.Progress = func(e install.Event) {
+	orch.Progress = func(e deploy.Event) {
 		ev := e
 		ch <- runMsg{event: &ev}
 	}
@@ -493,11 +493,11 @@ func (w *installFlow) startRun() tea.Cmd {
 	return w.run.waitForRun()
 }
 
-// buildConfig assembles install.Config from the collected values and host.
-func (w *installFlow) buildConfig() (install.Config, error) {
-	creds, err := install.GenerateCredentials()
+// buildConfig assembles deploy.Config from the collected values and host.
+func (w *installFlow) buildConfig() (deploy.Config, error) {
+	creds, err := deploy.GenerateCredentials()
 	if err != nil {
-		return install.Config{}, err
+		return deploy.Config{}, err
 	}
 	vals := w.form.values
 	w.form.applyCredentialOverrides(&creds)
@@ -506,43 +506,43 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 		enabled = config.AllProtocols
 	}
 	deployMonitor := monitorEnabled(vals)
-	siteTemplate, err := install.NormalizeSiteTemplate(vals["site_template"])
+	siteTemplate, err := deploy.NormalizeSiteTemplate(vals["site_template"])
 	if err != nil {
-		return install.Config{}, err
+		return deploy.Config{}, err
 	}
-	subscribePort, err := parseInstallPort(vals["subscribe_port"], install.DefaultSubscribePort, "subscription port")
+	subscribePort, err := parseInstallPort(vals["subscribe_port"], deploy.DefaultSubscribePort, "subscription port")
 	if err != nil {
-		return install.Config{}, err
+		return deploy.Config{}, err
 	}
-	monitorPublicPort, err := parseInstallPort(vals["monitor_public_port"], install.DefaultMonitorPublicPort, "monitor public port")
+	monitorPublicPort, err := parseInstallPort(vals["monitor_public_port"], deploy.DefaultMonitorPublicPort, "monitor public port")
 	if err != nil {
-		return install.Config{}, err
+		return deploy.Config{}, err
 	}
-	monitorPort, err := parseInstallPort(vals["monitor_port"], install.DefaultMonitorPort, "monitor service port")
+	monitorPort, err := parseInstallPort(vals["monitor_port"], deploy.DefaultMonitorPort, "monitor service port")
 	if err != nil {
-		return install.Config{}, err
+		return deploy.Config{}, err
 	}
 	ports, err := w.form.protocolPorts(enabled, subscribePort, monitorPublicPort, monitorPort, deployMonitor)
 	if err != nil {
-		return install.Config{}, err
+		return deploy.Config{}, err
 	}
 	hysteria2UpMbps := config.DefaultHysteria2UpMbps
 	hysteria2DownMbps := config.DefaultHysteria2DownMbps
 	if hasProtocol(enabled, config.ProtocolHysteria2) {
 		hysteria2UpMbps, err = parseHysteria2Mbps(vals["hysteria2_up_mbps"], config.DefaultHysteria2UpMbps, "hysteria2 up limit")
 		if err != nil {
-			return install.Config{}, err
+			return deploy.Config{}, err
 		}
 		hysteria2DownMbps, err = parseHysteria2Mbps(vals["hysteria2_down_mbps"], config.DefaultHysteria2DownMbps, "hysteria2 down limit")
 		if err != nil {
-			return install.Config{}, err
+			return deploy.Config{}, err
 		}
 	}
 	salt := strings.TrimSpace(vals["subscribe_salt"])
 	if salt == "" {
 		salt, err = credentials.Salt()
 		if err != nil {
-			return install.Config{}, err
+			return deploy.Config{}, err
 		}
 	}
 	inLimitBytes := parseTrafficLimitGB(vals["traffic_in_limit_gb"])
@@ -555,19 +555,19 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 	}
 	resetDay, _ := strconv.Atoi(vals["reset_day"])
 	if !deployMonitor || resetDay < 1 || resetDay > 28 {
-		resetDay = install.DefaultResetDay
+		resetDay = deploy.DefaultResetDay
 	}
 	resetHour, _ := strconv.Atoi(vals["reset_hour"])
 	if !deployMonitor || resetHour < 0 || resetHour > 23 {
-		resetHour = install.DefaultResetHour
+		resetHour = deploy.DefaultResetHour
 	}
 	monitorInterval, _ := strconv.Atoi(vals["monitor_interval_seconds"])
 	if !deployMonitor || monitorInterval < 10 {
-		monitorInterval = install.DefaultMonitorIntervalSeconds
+		monitorInterval = deploy.DefaultMonitorIntervalSeconds
 	}
 	monitorAlias := strings.TrimSpace(vals["monitor_alias"])
 	if monitorAlias == "" {
-		monitorAlias = install.DefaultMonitorAlias
+		monitorAlias = deploy.DefaultMonitorAlias
 	}
 
 	challenge := acme.Challenge(vals["challenge"])
@@ -592,11 +592,11 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 	if hasProtocol(enabled, config.ProtocolRealityVision) || hasProtocol(enabled, config.ProtocolRealityGRPC) {
 		realityServerName, err = uiparams.NormalizeRealityServerName(vals["reality_sni"])
 		if err != nil {
-			return install.Config{}, err
+			return deploy.Config{}, err
 		}
 	}
 
-	return install.Config{
+	return deploy.Config{
 		Domain:                 vals["domain"],
 		Email:                  vals["email"],
 		Challenge:              challenge,
@@ -658,7 +658,7 @@ func parseHysteria2Mbps(value string, fallback int, label string) (int, error) {
 	return mbps, nil
 }
 
-func (w *installForm) applyCredentialOverrides(creds *install.Credentials) {
+func (w *installForm) applyCredentialOverrides(creds *deploy.Credentials) {
 	if v := strings.TrimSpace(w.values["reality_vision_uuid"]); v != "" {
 		creds.RealityVisionUUID = v
 	}
@@ -926,8 +926,8 @@ func (w *installForm) summary(host system.Host) string {
 		summaryRow("ACME challenge", w.values["challenge"]),
 		summaryRow("Protocols", protocolLabels(protocols)),
 		summaryRow("Display name", w.values["display_name"]),
-		summaryRow("Masquerade site", or(w.values["site_template"], install.DefaultSiteTemplate)),
-		summaryRow("Subscription port", or(w.values["subscribe_port"], strconv.Itoa(install.DefaultSubscribePort))),
+		summaryRow("Masquerade site", or(w.values["site_template"], deploy.DefaultSiteTemplate)),
+		summaryRow("Subscription port", or(w.values["subscribe_port"], strconv.Itoa(deploy.DefaultSubscribePort))),
 		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
 		summaryRow("Monitor", yesNoString(deployMonitor)),
 		summaryRow("Operating system / architecture", host.OS.ID+" / "+host.Arch),
@@ -935,14 +935,14 @@ func (w *installForm) summary(host system.Host) string {
 	}
 	if deployMonitor {
 		rows = append(rows,
-			summaryRow("Monitor alias", or(w.values["monitor_alias"], install.DefaultMonitorAlias)),
-			summaryRow("Monitor public port", or(w.values["monitor_public_port"], strconv.Itoa(install.DefaultMonitorPublicPort))),
-			summaryRow("Monitor local port", or(w.values["monitor_port"], strconv.Itoa(install.DefaultMonitorPort))),
-			summaryRow("Traffic sampling interval", or(w.values["monitor_interval_seconds"], strconv.Itoa(install.DefaultMonitorIntervalSeconds))+" seconds"),
+			summaryRow("Monitor alias", or(w.values["monitor_alias"], deploy.DefaultMonitorAlias)),
+			summaryRow("Monitor public port", or(w.values["monitor_public_port"], strconv.Itoa(deploy.DefaultMonitorPublicPort))),
+			summaryRow("Monitor local port", or(w.values["monitor_port"], strconv.Itoa(deploy.DefaultMonitorPort))),
+			summaryRow("Traffic sampling interval", or(w.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
 			summaryRow("Inbound traffic limit", w.values["traffic_in_limit_gb"]+" GB"),
 			summaryRow("Outbound traffic limit", w.values["traffic_out_limit_gb"]+" GB"),
 			summaryRow("Total traffic limit", w.values["traffic_total_limit_gb"]+" GB"),
-			summaryRow("Traffic reset", fmt.Sprintf("day %s hour %s GMT", or(w.values["reset_day"], strconv.Itoa(install.DefaultResetDay)), or(w.values["reset_hour"], strconv.Itoa(install.DefaultResetHour)))),
+			summaryRow("Traffic reset", fmt.Sprintf("day %s hour %s GMT", or(w.values["reset_day"], strconv.Itoa(deploy.DefaultResetDay)), or(w.values["reset_hour"], strconv.Itoa(deploy.DefaultResetHour)))),
 		)
 	}
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
@@ -964,12 +964,12 @@ func summaryValueOrRandom(value string) string {
 }
 
 func (w *installFlow) doneSummary() string {
-	token := install.SubscriptionToken(w.cfg.Salt)
+	token := deploy.SubscriptionToken(w.cfg.Salt)
 	subscriptionBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.SubscribePort)
 	rows := []summaryLine{
 		summaryRow("Account", w.cfg.DisplayName),
 		summaryRow("Protocols", protocolLabels(w.cfg.Enabled)),
-		summaryRow("Masquerade site", or(w.cfg.SiteTemplate, install.DefaultSiteTemplate)),
+		summaryRow("Masquerade site", or(w.cfg.SiteTemplate, deploy.DefaultSiteTemplate)),
 		summaryRow("Ports", installedPortsSummary(w.cfg.Enabled, w.cfg.Ports)),
 		summaryRow("Subscription", subscriptionBase+"/s/default/"+token),
 		summaryRow("Clash", subscriptionBase+"/s/clashMetaProfiles/"+token),

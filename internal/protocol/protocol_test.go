@@ -1,4 +1,4 @@
-package install
+package protocol
 
 import (
 	"context"
@@ -8,35 +8,78 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
-func TestUpdateProtocolsRegeneratesConfigSubscriptionsAndState(t *testing.T) {
+type recordingRunner struct{ commands []string }
+
+func (r *recordingRunner) Run(c system.Command) error {
+	r.commands = append(r.commands, c.String())
+	return nil
+}
+
+func testConfig(t *testing.T) deploy.Config {
+	t.Helper()
+	creds, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatalf("GenerateCredentials: %v", err)
+	}
+	return deploy.Config{
+		Domain:                 "example.com",
+		Email:                  "admin@example.com",
+		Challenge:              acme.ChallengeHTTP01,
+		Ports:                  config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
+		DisplayName:            "US-vps1",
+		Salt:                   "testsalt",
+		SiteTemplate:           "massively",
+		RealityServerName:      "www.microsoft.com",
+		RealityHandshakePort:   config.DefaultRealityHandshakePort,
+		SubscribePort:          deploy.DefaultSubscribePort,
+		MonitorPublicPort:      deploy.DefaultMonitorPublicPort,
+		MonitorPort:            deploy.DefaultMonitorPort,
+		DeployMonitor:          true,
+		MonitorAlias:           "US-local",
+		TrafficInLimitBytes:    40 << 30,
+		TrafficOutLimitBytes:   50 << 30,
+		TrafficTotalLimitBytes: 100 << 30,
+		ResetDay:               deploy.DefaultResetDay,
+		ResetHour:              deploy.DefaultResetHour,
+		MonitorInterface:       "eth0",
+		MonitorIntervalSeconds: deploy.DefaultMonitorIntervalSeconds,
+		OS:                     system.OSRelease{Family: system.FamilyDebian, PackageManager: "apt"},
+		Firewall:               system.FirewallUFW,
+		Creds:                  creds,
+	}
+}
+
+func TestUpdateRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
 	cfg.Enabled = []config.Protocol{config.ProtocolRealityVision}
 	cfg.Ports.Hysteria2 = 0
-	if err := writeInstallState(layout.StateDir, cfg); err != nil {
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
 		t.Fatalf("writeInstallState: %v", err)
 	}
 
 	runner := &recordingRunner{}
 	var checked []config.Protocol
-	updated, err := UpdateProtocols(context.Background(), ProtocolUpdateOptions{
+	updated, err := Update(context.Background(), UpdateOptions{
 		Layout:   layout,
 		Runner:   runner,
 		Firewall: system.FirewallUFW,
 		Selected: []config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2},
-		CheckPorts: func(_ context.Context, _ Config, added []config.Protocol) error {
+		CheckPorts: func(_ context.Context, _ deploy.Config, added []config.Protocol) error {
 			checked = append([]config.Protocol(nil), added...)
 			return nil
 		},
 	})
 	if err != nil {
-		t.Fatalf("UpdateProtocols error: %v", err)
+		t.Fatalf("Update error: %v", err)
 	}
 	if !sameProtocols(updated.Enabled, []config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2}) {
 		t.Fatalf("Enabled = %#v", updated.Enabled)
@@ -64,7 +107,7 @@ func TestUpdateProtocolsRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 		t.Fatalf("enabled_protocols = %q", stateBody)
 	}
 
-	token := subscriptionToken(cfg.Salt)
+	token := deploy.SubscriptionToken(cfg.Salt)
 	if _, err := os.Stat(filepath.Join(layout.SubscribeDir, "sing-box", token)); err != nil {
 		t.Fatalf("subscription not refreshed: %v", err)
 	}
@@ -81,24 +124,24 @@ func TestUpdateProtocolsRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 	}
 }
 
-func TestUpdateProtocolsKeepsPreviousConfigOnValidationFailure(t *testing.T) {
+func TestUpdateKeepsPreviousConfigOnValidationFailure(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
 	cfg.Enabled = []config.Protocol{config.ProtocolRealityVision}
-	if err := writeInstallState(layout.StateDir, cfg); err != nil {
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
 		t.Fatalf("writeInstallState: %v", err)
 	}
-	if err := writeFile(layout.ConfigJSON, []byte("previous config"), 0o644); err != nil {
+	if err := deploy.WriteFile(layout.ConfigJSON, []byte("previous config"), 0o644); err != nil {
 		t.Fatalf("write previous config: %v", err)
 	}
 
 	runner := &failOnCandidateCheckRunner{}
-	_, err := UpdateProtocols(context.Background(), ProtocolUpdateOptions{
+	_, err := Update(context.Background(), UpdateOptions{
 		Layout:     layout,
 		Runner:     runner,
 		Selected:   []config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2},
-		CheckPorts: func(context.Context, Config, []config.Protocol) error { return nil },
+		CheckPorts: func(context.Context, deploy.Config, []config.Protocol) error { return nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "Validate") {
 		t.Fatalf("expected validation failure, got %v", err)
@@ -112,7 +155,7 @@ func TestUpdateProtocolsKeepsPreviousConfigOnValidationFailure(t *testing.T) {
 	}
 }
 
-func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
+func TestUpdateAppliesCredentialAndPortOverrides(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
@@ -121,28 +164,28 @@ func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
 	cfg.Hysteria2UpMbps = 50
 	cfg.Hysteria2DownMbps = 100
 	cfg.Creds.HysteriaPassword = "oldpass"
-	if err := writeInstallState(layout.StateDir, cfg); err != nil {
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
 		t.Fatalf("writeInstallState: %v", err)
 	}
 
 	runner := &recordingRunner{}
 	var checked []config.Protocol
-	updated, err := UpdateProtocols(context.Background(), ProtocolUpdateOptions{
+	updated, err := Update(context.Background(), UpdateOptions{
 		Layout:            layout,
 		Runner:            runner,
 		Firewall:          system.FirewallUFW,
 		Selected:          []config.Protocol{config.ProtocolHysteria2},
 		Ports:             config.Ports{Hysteria2: 18443},
-		Creds:             Credentials{HysteriaPassword: "newpass"},
+		Creds:             deploy.Credentials{HysteriaPassword: "newpass"},
 		Hysteria2UpMbps:   80,
 		Hysteria2DownMbps: 160,
-		CheckPorts: func(_ context.Context, _ Config, changed []config.Protocol) error {
+		CheckPorts: func(_ context.Context, _ deploy.Config, changed []config.Protocol) error {
 			checked = append([]config.Protocol(nil), changed...)
 			return nil
 		},
 	})
 	if err != nil {
-		t.Fatalf("UpdateProtocols error: %v", err)
+		t.Fatalf("Update error: %v", err)
 	}
 	if updated.Ports.Hysteria2 != 18443 || updated.Creds.HysteriaPassword != "newpass" || updated.Hysteria2UpMbps != 80 || updated.Hysteria2DownMbps != 160 {
 		t.Fatalf("override not applied: port=%d password=%q up=%d down=%d", updated.Ports.Hysteria2, updated.Creds.HysteriaPassword, updated.Hysteria2UpMbps, updated.Hysteria2DownMbps)
@@ -182,26 +225,26 @@ func TestUpdateProtocolsAppliesCredentialAndPortOverrides(t *testing.T) {
 	}
 }
 
-func TestUpdateProtocolsAppliesRealitySNIOverride(t *testing.T) {
+func TestUpdateAppliesRealitySNIOverride(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
 	cfg.Enabled = []config.Protocol{config.ProtocolRealityVision}
 	cfg.RealityServerName = "www.microsoft.com"
-	if err := writeInstallState(layout.StateDir, cfg); err != nil {
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
 		t.Fatalf("writeInstallState: %v", err)
 	}
 
 	runner := &recordingRunner{}
-	updated, err := UpdateProtocols(context.Background(), ProtocolUpdateOptions{
+	updated, err := Update(context.Background(), UpdateOptions{
 		Layout:            layout,
 		Runner:            runner,
 		Selected:          []config.Protocol{config.ProtocolRealityVision},
 		RealityServerName: "www.cloudflare.com",
-		CheckPorts:        func(context.Context, Config, []config.Protocol) error { return nil },
+		CheckPorts:        func(context.Context, deploy.Config, []config.Protocol) error { return nil },
 	})
 	if err != nil {
-		t.Fatalf("UpdateProtocols error: %v", err)
+		t.Fatalf("Update error: %v", err)
 	}
 	if updated.RealityServerName != "www.cloudflare.com" {
 		t.Fatalf("RealityServerName = %q", updated.RealityServerName)
