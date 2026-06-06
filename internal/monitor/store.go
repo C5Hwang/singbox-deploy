@@ -3,6 +3,7 @@ package monitor
 import (
 	"database/sql"
 	"fmt"
+	"math"
 
 	_ "modernc.org/sqlite"
 )
@@ -67,7 +68,13 @@ CREATE TABLE IF NOT EXISTS hourly (
     ts_hour INTEGER PRIMARY KEY,
     in_bytes INTEGER NOT NULL,
     out_bytes INTEGER NOT NULL
-);`
+);
+CREATE TABLE IF NOT EXISTS adjustments (
+    ts INTEGER NOT NULL,
+    in_bytes INTEGER NOT NULL,
+    out_bytes INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_adjustments_ts ON adjustments(ts);`
 	_, err := s.db.Exec(schema)
 	return err
 }
@@ -96,10 +103,39 @@ func (s *Store) TotalsSince(since int64) (TrafficTotals, error) {
 	).Scan(&aggIn, &aggOut); err != nil {
 		return TrafficTotals{}, err
 	}
+	var adjIn, adjOut sql.NullInt64
+	if err := s.db.QueryRow(
+		`SELECT COALESCE(SUM(in_bytes), 0), COALESCE(SUM(out_bytes), 0) FROM adjustments WHERE ts >= ?`, since,
+	).Scan(&adjIn, &adjOut); err != nil {
+		return TrafficTotals{}, err
+	}
 	return TrafficTotals{
-		InBytes:  uint64(rawIn.Int64 + aggIn.Int64),
-		OutBytes: uint64(rawOut.Int64 + aggOut.Int64),
+		InBytes:  nonNegativeUint64(rawIn.Int64 + aggIn.Int64 + adjIn.Int64),
+		OutBytes: nonNegativeUint64(rawOut.Int64 + aggOut.Int64 + adjOut.Int64),
 	}, nil
+}
+
+// SetTotalsSince adjusts the current cycle so totals since the boundary match
+// target values. It records a signed adjustment row rather than rewriting raw
+// counter samples, preserving the sampled history.
+func (s *Store) SetTotalsSince(since, ts int64, target TrafficTotals) error {
+	current, err := s.TotalsSince(since)
+	if err != nil {
+		return err
+	}
+	deltaIn, err := signedDifference(target.InBytes, current.InBytes)
+	if err != nil {
+		return err
+	}
+	deltaOut, err := signedDifference(target.OutBytes, current.OutBytes)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO adjustments(ts, in_bytes, out_bytes) VALUES(?, ?, ?)`,
+		ts, deltaIn, deltaOut,
+	)
+	return err
 }
 
 // TrendHourly returns hourly buckets at or after since, oldest first. It unions
@@ -155,6 +191,9 @@ func (s *Store) Cleanup(retentionCutoff int64) error {
 	if _, err := s.db.Exec(`DELETE FROM hourly WHERE ts_hour < ?`, retentionCutoff); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(`DELETE FROM adjustments WHERE ts < ?`, retentionCutoff); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -181,3 +220,17 @@ func (s *Store) LatestCounters(iface string) (rx, tx uint64, ok bool, err error)
 
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
+
+func nonNegativeUint64(value int64) uint64 {
+	if value <= 0 {
+		return 0
+	}
+	return uint64(value)
+}
+
+func signedDifference(target, current uint64) (int64, error) {
+	if target > math.MaxInt64 || current > math.MaxInt64 {
+		return 0, fmt.Errorf("traffic total exceeds supported adjustment range")
+	}
+	return int64(target) - int64(current), nil
+}

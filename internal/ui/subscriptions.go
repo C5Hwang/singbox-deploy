@@ -276,6 +276,7 @@ func (sm *subscriptionManager) remoteFields() []field {
 	return []field{
 		{key: "remote_domain", label: "Remote domain", note: "Domain name of the remote singbox-deploy server, for example node.example.com. Used to build remote subscription URLs."},
 		{key: "remote_subscribe_port", label: "Remote subscription HTTPS port", def: strconv.Itoa(sm.cfg.SubscribePort)},
+		{key: "remote_alias", label: "Remote alias", note: "Alias used to rename aggregated remote nodes and display remote traffic. Prefixes such as US, JP, HK get the same flag mapping as local nodes."},
 		{key: "remote_salt", label: "Remote subscription salt"},
 	}
 }
@@ -299,6 +300,10 @@ func validateSubscriptionField(f field, val string, _ map[string]string) error {
 	case "remote_domain":
 		if strings.TrimSpace(val) == "" {
 			return fmt.Errorf("remote domain is required")
+		}
+	case "remote_alias":
+		if strings.TrimSpace(val) == "" {
+			return fmt.Errorf("remote alias is required")
 		}
 	case "delete_remotes":
 		if strings.TrimSpace(val) == "" {
@@ -393,6 +398,7 @@ func (sm *subscriptionManager) targetRemotes() []install.RemoteSubscription {
 		remotes = append(remotes, install.RemoteSubscription{
 			Domain: strings.TrimSpace(sm.values["remote_domain"]),
 			Port:   port,
+			Alias:  strings.TrimSpace(sm.values["remote_alias"]),
 			Salt:   strings.TrimSpace(sm.values["remote_salt"]),
 		})
 		return remotes
@@ -412,7 +418,11 @@ func (sm *subscriptionManager) targetRemotes() []install.RemoteSubscription {
 }
 
 func remoteOptionLabel(remote install.RemoteSubscription) string {
-	return fmt.Sprintf("%s:%d", strings.TrimSpace(remote.Domain), remote.Port)
+	alias := strings.TrimSpace(remote.Alias)
+	if alias == "" {
+		alias = strings.TrimSpace(remote.Domain)
+	}
+	return fmt.Sprintf("%s (%s:%d)", alias, strings.TrimSpace(remote.Domain), remote.Port)
 }
 
 func (sm *subscriptionManager) handleRun(msg runMsg) tea.Cmd { return handleCommandRun(sm, msg) }
@@ -489,6 +499,7 @@ func (sm *subscriptionManager) confirmView() string {
 		rows = append(rows,
 			summaryRow("Add remote domain", sm.values["remote_domain"]),
 			summaryRow("Remote subscription port", sm.values["remote_subscribe_port"]),
+			summaryRow("Remote alias", sm.values["remote_alias"]),
 		)
 	case subscriptionActionDeleteRemotes:
 		selected := sm.selectedRemoteDeleteLabels()

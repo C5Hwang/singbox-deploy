@@ -112,7 +112,7 @@ func (o *Orchestrator) steps(cfg Config) []step {
 		{"Nginx config", "write managed config, deploy site, and reload", o.stepNginxConfig},
 	}
 	if cfg.DeployMonitor {
-		steps = append(steps, step{"Monitor", "install and start traffic monitor", o.stepMonitor})
+		steps = append(steps, step{"Monitor", "install and start monitor", o.stepMonitor})
 	}
 	steps = append(steps, step{"Finalize", "write account state", o.stepFinalize})
 	return steps
@@ -312,21 +312,11 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 	if !cfg.DeployMonitor {
 		return nil
 	}
-	unit, err := templatefs.Render("service/singbox-deploy-monitor.service.tmpl", map[string]any{
-		"DeployBin":       o.DeployBin,
-		"MonitorPort":     cfg.MonitorPort,
-		"Interface":       cfg.MonitorInterface,
-		"DB":              o.Layout.TrafficDB,
-		"InLimitBytes":    cfg.TrafficInLimitBytes,
-		"OutLimitBytes":   cfg.TrafficOutLimitBytes,
-		"TotalLimitBytes": cfg.TrafficTotalLimitBytes,
-		"ResetDay":        cfg.ResetDay,
-		"IntervalSeconds": DefaultMonitorIntervalSeconds,
-	})
+	unit, err := renderMonitorUnit(o.Layout, o.DeployBin, cfg)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(o.Layout.TrafficDB), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(o.Layout.MonitorDB), 0o755); err != nil {
 		return err
 	}
 	if err := writeFile(filepath.Join(o.SystemdDir, system.MonitorService), []byte(unit), 0o644); err != nil {
@@ -336,6 +326,27 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 		system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
 		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.MonitorService}},
 	)
+}
+
+func renderMonitorUnit(layout paths.Layout, deployBin string, cfg Config) (string, error) {
+	interval := cfg.MonitorIntervalSeconds
+	if interval <= 0 {
+		interval = DefaultMonitorIntervalSeconds
+	}
+	return templatefs.Render("service/singbox-deploy-monitor.service.tmpl", map[string]any{
+		"DeployBin":       deployBin,
+		"MonitorPort":     cfg.MonitorPort,
+		"Interface":       cfg.MonitorInterface,
+		"DB":              layout.MonitorDB,
+		"InLimitBytes":    cfg.TrafficInLimitBytes,
+		"OutLimitBytes":   cfg.TrafficOutLimitBytes,
+		"TotalLimitBytes": cfg.TrafficTotalLimitBytes,
+		"ResetDay":        cfg.ResetDay,
+		"ResetHour":       cfg.ResetHour,
+		"MonitorAlias":    cfg.MonitorAlias,
+		"IntervalSeconds": interval,
+		"RemoteMonitor":   remoteMonitorPath(layout),
+	})
 }
 
 func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
@@ -373,16 +384,19 @@ func writeInstallState(stateDir string, cfg Config) error {
 		"anytls_port":            itoa(cfg.Ports.AnyTLS),
 		"subscribe_token":        subscriptionToken(cfg.Salt),
 		"subscribe_port":         itoa(cfg.SubscribePort),
-		"traffic_port":           itoa(cfg.TrafficPort),
+		"monitor_public_port":    itoa(cfg.MonitorPublicPort),
 		"monitor_port":           itoa(cfg.MonitorPort),
 		"monitor_interface":      cfg.MonitorInterface,
-		"traffic_monitor":        yesNoString(cfg.DeployMonitor),
+		"monitor":                yesNoString(cfg.DeployMonitor),
 	}
 	if cfg.DeployMonitor {
+		state["monitor_alias"] = cfg.MonitorAlias
 		state["traffic_in_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficInLimitBytes)
 		state["traffic_out_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficOutLimitBytes)
 		state["traffic_total_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficTotalLimitBytes)
 		state["reset_day"] = itoa(cfg.ResetDay)
+		state["reset_hour"] = itoa(cfg.ResetHour)
+		state["monitor_interval_seconds"] = itoa(cfg.MonitorIntervalSeconds)
 	}
 	for name, value := range state {
 		if err := writeStateFile(stateDir, name, value+"\n"); err != nil {

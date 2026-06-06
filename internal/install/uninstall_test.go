@@ -24,7 +24,7 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 		filepath.Join(layout.StateDir, "domain"),
 		layout.SingBoxBin,
 		filepath.Join(layout.TLSDir, "example.com.crt"),
-		layout.TrafficDB,
+		layout.MonitorDB,
 		filepath.Join(layout.WebRoot, "index.html"),
 		filepath.Join(layout.SubscribeDir, "default", "token"),
 		filepath.Join(layout.Root, "custom.txt"),
@@ -45,7 +45,7 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 		NginxConfPath:       nginxConf,
 		CronPath:            cronPath,
 		DeleteRuntime:       true,
-		DeleteTrafficDB:     true,
+		DeleteMonitorDB:     true,
 		DeleteSubscriptions: true,
 	})
 	if err != nil {
@@ -65,7 +65,7 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 		}
 	}
 
-	for _, path := range []string{layout.StateDir, filepath.Dir(layout.SingBoxBin), layout.TrafficDB, layout.SubscribeDir, nginxConf, cronPath} {
+	for _, path := range []string{layout.StateDir, filepath.Dir(layout.SingBoxBin), layout.MonitorDB, layout.SubscribeDir, nginxConf, cronPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("%s should be removed, stat err=%v", path, err)
 		}

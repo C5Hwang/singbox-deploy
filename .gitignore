@@ -3,7 +3,7 @@ docs/
 
 # Node / frontend
 node_modules/
-web/traffic/node_modules/
+web/monitor/node_modules/
 
 # Build artifacts
 /dist/

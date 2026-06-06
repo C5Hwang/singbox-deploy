@@ -25,12 +25,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: web/traffic/pnpm-lock.yaml
+          cache-dependency-path: web/monitor/pnpm-lock.yaml
 
-      - name: Build traffic UI
+      - name: Build monitor UI
         run: |
-          pnpm --dir web/traffic install --frozen-lockfile
-          pnpm --dir web/traffic build
+          pnpm --dir web/monitor install --frozen-lockfile
+          pnpm --dir web/monitor build
 
       - name: Run tests
         run: go test ./...

@@ -91,14 +91,17 @@ func testConfig(t *testing.T) Config {
 		RealityServerName:      "www.microsoft.com",
 		RealityHandshakePort:   config.DefaultRealityHandshakePort,
 		SubscribePort:          DefaultSubscribePort,
-		TrafficPort:            DefaultTrafficPort,
+		MonitorPublicPort:      DefaultMonitorPublicPort,
 		MonitorPort:            DefaultMonitorPort,
 		DeployMonitor:          true,
+		MonitorAlias:           "US-local",
 		TrafficInLimitBytes:    40 << 30,
 		TrafficOutLimitBytes:   50 << 30,
 		TrafficTotalLimitBytes: 100 << 30,
 		ResetDay:               DefaultResetDay,
+		ResetHour:              DefaultResetHour,
 		MonitorInterface:       "eth0",
+		MonitorIntervalSeconds: DefaultMonitorIntervalSeconds,
 		OS:                     system.OSRelease{Family: system.FamilyDebian, PackageManager: "apt"},
 		Firewall:               system.FirewallUFW,
 		Creds:                  creds,
@@ -274,7 +277,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_in_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_out_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_total_limit_bytes"))
-	mustExist(t, filepath.Join(layout.StateDir, "traffic_port"))
+	mustExist(t, filepath.Join(layout.StateDir, "monitor_public_port"))
 	mustExist(t, filepath.Join(layout.StateDir, "site_template"))
 	mustExist(t, filepath.Join(layout.WebRoot, "index.html"))
 	mustExist(t, filepath.Join(layout.WebRoot, "LICENSE.txt"))
@@ -319,15 +322,15 @@ func TestOrchestratorSkipsMonitorWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read nginx config: %v", err)
 	}
-	if strings.Contains(string(nginxConf), "/traffic/") {
+	if strings.Contains(string(nginxConf), "/monitor/") {
 		t.Fatalf("nginx config should not include traffic locations when monitor is disabled:\n%s", nginxConf)
 	}
-	state, err := os.ReadFile(filepath.Join(layout.StateDir, "traffic_monitor"))
+	state, err := os.ReadFile(filepath.Join(layout.StateDir, "monitor"))
 	if err != nil {
-		t.Fatalf("read traffic_monitor state: %v", err)
+		t.Fatalf("read monitor state: %v", err)
 	}
 	if strings.TrimSpace(string(state)) != "no" {
-		t.Fatalf("traffic_monitor state = %q, want no", state)
+		t.Fatalf("monitor state = %q, want no", state)
 	}
 	mustNotExist(t, filepath.Join(layout.StateDir, "traffic_in_limit_bytes"))
 }

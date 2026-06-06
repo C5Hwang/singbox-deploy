@@ -1,10 +1,10 @@
 [Unit]
-Description=singbox-deploy traffic monitor
+Description=singbox-deploy monitor
 After=network.target sing-box.service
 
 [Service]
 User=root
-ExecStart={{ .DeployBin }} monitor serve --listen 127.0.0.1:{{ .MonitorPort }} --interface {{ .Interface }} --db {{ .DB }} --in-limit-bytes {{ .InLimitBytes }} --out-limit-bytes {{ .OutLimitBytes }} --total-limit-bytes {{ .TotalLimitBytes }} --reset-day {{ .ResetDay }} --interval-seconds {{ .IntervalSeconds }}
+ExecStart={{ .DeployBin }} monitor serve --listen 127.0.0.1:{{ .MonitorPort }} --interface {{ .Interface }} --db {{ .DB }} --in-limit-bytes {{ .InLimitBytes }} --out-limit-bytes {{ .OutLimitBytes }} --total-limit-bytes {{ .TotalLimitBytes }} --reset-day {{ .ResetDay }} --reset-hour {{ .ResetHour }} --alias {{ json .MonitorAlias }} --interval-seconds {{ .IntervalSeconds }} --remote-monitor {{ .RemoteMonitor }}
 Restart=on-failure
 RestartSec=10
 MemoryMax=128M

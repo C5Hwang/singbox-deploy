@@ -42,7 +42,7 @@ func installFields() []field {
 	noReality := func(v map[string]string) bool {
 		return !protocolSelected(v, config.ProtocolRealityVision) && !protocolSelected(v, config.ProtocolRealityGRPC)
 	}
-	monitorDisabled := func(v map[string]string) bool { return !trafficMonitorEnabled(v) }
+	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
 		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
 		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
@@ -50,19 +50,11 @@ func installFields() []field {
 		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
 		{key: "dns_credential", label: "DNS API credential", skip: isDNS, noteFunc: dnsCredentialNote},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
-		{key: "site_template", label: "Masquerade site template", def: install.DefaultSiteTemplate, options: install.SiteTemplateOptions(), note: "HTML5 UP template deployed to /etc/singbox-deploy/www."},
+		{key: "site_template", label: "Masquerade site template", def: install.DefaultSiteTemplate, options: install.SiteTemplateOptions(), note: "HML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)
-	fields = append(fields, []field{
-		{key: "traffic_monitor", label: "Deploy traffic monitor", def: "yes", options: []string{"yes", "no"}, note: "Choose no to skip the traffic monitor service and /traffic/ UI."},
-		{key: "traffic_port", label: "Traffic monitor public HTTPS port", def: strconv.Itoa(install.DefaultTrafficPort), note: "Nginx listens on this public HTTPS port for /traffic.", skip: monitorDisabled},
-		{key: "monitor_port", label: "Traffic monitor local port", def: strconv.Itoa(install.DefaultMonitorPort), note: "The monitor listens on 127.0.0.1 and Nginx proxies /traffic to this port.", skip: monitorDisabled},
-		{key: "traffic_in_limit_gb", label: "Monthly inbound traffic limit in GB (0 = unlimited)", def: "0", note: "Inbound uses the monitored interface RX counter. When any configured limit is exceeded, sing-box.service is stopped automatically.", skip: monitorDisabled},
-		{key: "traffic_out_limit_gb", label: "Monthly outbound traffic limit in GB (0 = unlimited)", def: "0", note: "Outbound uses the monitored interface TX counter.", skip: monitorDisabled},
-		{key: "traffic_total_limit_gb", label: "Monthly total traffic limit in GB (0 = unlimited)", def: "0", note: "Total traffic is inbound + outbound.", skip: monitorDisabled},
-		{key: "reset_day", label: "Monthly reset day (1-28)", def: strconv.Itoa(install.DefaultResetDay), note: "Day of month when the traffic quota cycle resets and service can be restored.", skip: monitorDisabled},
-	}...)
+	fields = append(fields, fieldsFromParameters(uiparams.MonitorInstallFields(monitorDisabled))...)
 	return fields
 }
 
@@ -227,8 +219,11 @@ func protocolSelected(vals map[string]string, p config.Protocol) bool {
 	return selectedOptions(value)[string(p)]
 }
 
-func trafficMonitorEnabled(vals map[string]string) bool {
-	value := vals["traffic_monitor"]
+func monitorEnabled(vals map[string]string) bool {
+	value := vals["monitor"]
+	if value == "" {
+		value = vals["traffic_monitor"]
+	}
 	if value == "" {
 		value = "yes"
 	}
@@ -287,16 +282,8 @@ func (f *installForm) validateField(field field, val string, _ map[string]string
 	if err := uiparams.ValidateSharedParameterValue(field.key, val); err != nil {
 		return err
 	}
-	switch {
-	case strings.HasPrefix(field.key, "traffic_") && strings.HasSuffix(field.key, "_limit_gb"):
-		if _, err := strconv.ParseUint(val, 10, 64); err != nil {
-			return fmt.Errorf("traffic limit must be a non-negative integer")
-		}
-	case field.key == "reset_day":
-		day, err := strconv.Atoi(val)
-		if err != nil || day < 1 || day > 28 {
-			return fmt.Errorf("reset day must be between 1 and 28")
-		}
+	if err := uiparams.ValidateMonitorParameterValue(field.key, val); err != nil {
+		return err
 	}
 	return nil
 }
@@ -518,7 +505,7 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 	if len(enabled) == 0 {
 		enabled = config.AllProtocols
 	}
-	deployMonitor := trafficMonitorEnabled(vals)
+	deployMonitor := monitorEnabled(vals)
 	siteTemplate, err := install.NormalizeSiteTemplate(vals["site_template"])
 	if err != nil {
 		return install.Config{}, err
@@ -527,15 +514,15 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 	if err != nil {
 		return install.Config{}, err
 	}
-	trafficPort, err := parseInstallPort(vals["traffic_port"], install.DefaultTrafficPort, "traffic monitor public port")
+	monitorPublicPort, err := parseInstallPort(vals["monitor_public_port"], install.DefaultMonitorPublicPort, "monitor public port")
 	if err != nil {
 		return install.Config{}, err
 	}
-	monitorPort, err := parseInstallPort(vals["monitor_port"], install.DefaultMonitorPort, "traffic monitor port")
+	monitorPort, err := parseInstallPort(vals["monitor_port"], install.DefaultMonitorPort, "monitor service port")
 	if err != nil {
 		return install.Config{}, err
 	}
-	ports, err := w.form.protocolPorts(enabled, subscribePort, trafficPort, monitorPort, deployMonitor)
+	ports, err := w.form.protocolPorts(enabled, subscribePort, monitorPublicPort, monitorPort, deployMonitor)
 	if err != nil {
 		return install.Config{}, err
 	}
@@ -569,6 +556,18 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 	resetDay, _ := strconv.Atoi(vals["reset_day"])
 	if !deployMonitor || resetDay < 1 || resetDay > 28 {
 		resetDay = install.DefaultResetDay
+	}
+	resetHour, _ := strconv.Atoi(vals["reset_hour"])
+	if !deployMonitor || resetHour < 0 || resetHour > 23 {
+		resetHour = install.DefaultResetHour
+	}
+	monitorInterval, _ := strconv.Atoi(vals["monitor_interval_seconds"])
+	if !deployMonitor || monitorInterval < 10 {
+		monitorInterval = install.DefaultMonitorIntervalSeconds
+	}
+	monitorAlias := strings.TrimSpace(vals["monitor_alias"])
+	if monitorAlias == "" {
+		monitorAlias = install.DefaultMonitorAlias
 	}
 
 	challenge := acme.Challenge(vals["challenge"])
@@ -613,14 +612,17 @@ func (w *installFlow) buildConfig() (install.Config, error) {
 		Hysteria2UpMbps:        hysteria2UpMbps,
 		Hysteria2DownMbps:      hysteria2DownMbps,
 		SubscribePort:          subscribePort,
-		TrafficPort:            trafficPort,
+		MonitorPublicPort:      monitorPublicPort,
 		MonitorPort:            monitorPort,
 		DeployMonitor:          deployMonitor,
+		MonitorAlias:           monitorAlias,
 		TrafficInLimitBytes:    inLimitBytes,
 		TrafficOutLimitBytes:   outLimitBytes,
 		TrafficTotalLimitBytes: totalLimitBytes,
 		ResetDay:               resetDay,
+		ResetHour:              resetHour,
 		MonitorInterface:       iface,
+		MonitorIntervalSeconds: monitorInterval,
 		OS:                     w.host.OS,
 		Firewall:               w.host.Firewall,
 		Creds:                  creds,
@@ -677,15 +679,15 @@ func (w *installForm) applyCredentialOverrides(creds *install.Credentials) {
 	}
 }
 
-func (w *installForm) protocolPorts(enabled []config.Protocol, subscribePort, trafficPort, monitorPort int, deployMonitor bool) (config.Ports, error) {
+func (w *installForm) protocolPorts(enabled []config.Protocol, subscribePort, monitorPublicPort, monitorPort int, deployMonitor bool) (config.Ports, error) {
 	used := map[int]bool{80: true, subscribePort: true}
 	if deployMonitor {
-		if used[trafficPort] {
-			return config.Ports{}, fmt.Errorf("traffic monitor public port %d conflicts with another required port", trafficPort)
+		if used[monitorPublicPort] {
+			return config.Ports{}, fmt.Errorf("monitor public port %d conflicts with another required port", monitorPublicPort)
 		}
-		used[trafficPort] = true
+		used[monitorPublicPort] = true
 		if used[monitorPort] {
-			return config.Ports{}, fmt.Errorf("traffic monitor port %d conflicts with another required port", monitorPort)
+			return config.Ports{}, fmt.Errorf("monitor service port %d conflicts with another required port", monitorPort)
 		}
 		used[monitorPort] = true
 	}
@@ -917,7 +919,7 @@ func (w *installForm) summary(host system.Host) string {
 	if len(protocols) == 0 {
 		protocols = config.AllProtocols
 	}
-	deployMonitor := trafficMonitorEnabled(w.values)
+	deployMonitor := monitorEnabled(w.values)
 	rows := []summaryLine{
 		summaryRow("Domain", w.values["domain"]),
 		summaryRow("Email", or(w.values["email"], "not set")),
@@ -927,17 +929,20 @@ func (w *installForm) summary(host system.Host) string {
 		summaryRow("Masquerade site", or(w.values["site_template"], install.DefaultSiteTemplate)),
 		summaryRow("Subscription port", or(w.values["subscribe_port"], strconv.Itoa(install.DefaultSubscribePort))),
 		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
-		summaryRow("Traffic monitor", yesNoString(deployMonitor)),
+		summaryRow("Monitor", yesNoString(deployMonitor)),
 		summaryRow("Operating system / architecture", host.OS.ID+" / "+host.Arch),
 		summaryRow("Firewall", firewallName(host.Firewall)),
 	}
 	if deployMonitor {
 		rows = append(rows,
-			summaryRow("Traffic monitor public port", or(w.values["traffic_port"], strconv.Itoa(install.DefaultTrafficPort))),
-			summaryRow("Traffic monitor local port", or(w.values["monitor_port"], strconv.Itoa(install.DefaultMonitorPort))),
+			summaryRow("Monitor alias", or(w.values["monitor_alias"], install.DefaultMonitorAlias)),
+			summaryRow("Monitor public port", or(w.values["monitor_public_port"], strconv.Itoa(install.DefaultMonitorPublicPort))),
+			summaryRow("Monitor local port", or(w.values["monitor_port"], strconv.Itoa(install.DefaultMonitorPort))),
+			summaryRow("Traffic sampling interval", or(w.values["monitor_interval_seconds"], strconv.Itoa(install.DefaultMonitorIntervalSeconds))+" seconds"),
 			summaryRow("Inbound traffic limit", w.values["traffic_in_limit_gb"]+" GB"),
 			summaryRow("Outbound traffic limit", w.values["traffic_out_limit_gb"]+" GB"),
 			summaryRow("Total traffic limit", w.values["traffic_total_limit_gb"]+" GB"),
+			summaryRow("Traffic reset", fmt.Sprintf("day %s hour %s GMT", or(w.values["reset_day"], strconv.Itoa(install.DefaultResetDay)), or(w.values["reset_hour"], strconv.Itoa(install.DefaultResetHour)))),
 		)
 	}
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
@@ -971,8 +976,8 @@ func (w *installFlow) doneSummary() string {
 		summaryRow("sing-box", subscriptionBase+"/s/sing-box/"+token),
 	}
 	if w.cfg.DeployMonitor {
-		trafficBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.TrafficPort)
-		rows = append(rows, summaryRow("Traffic UI", trafficBase+"/traffic/"))
+		monitorBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.MonitorPublicPort)
+		rows = append(rows, summaryRow("Monitor UI", monitorBase+"/monitor/"))
 	}
 	return renderSummary(rows)
 }

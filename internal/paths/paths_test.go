@@ -12,7 +12,7 @@ func TestDefaultLayout(t *testing.T) {
 		"config":     l.ConfigJSON,
 		"subscribe":  l.SubscribeDir,
 		"www":        l.WebRoot,
-		"trafficDB":  l.TrafficDB,
+		"monitorDB":  l.MonitorDB,
 		"tls":        l.TLSDir,
 	}
 	expected := map[string]string{
@@ -23,7 +23,7 @@ func TestDefaultLayout(t *testing.T) {
 		"config":     "/etc/singbox-deploy/sing-box/conf/config.json",
 		"subscribe":  "/etc/singbox-deploy/subscribe",
 		"www":        "/etc/singbox-deploy/www",
-		"trafficDB":  "/etc/singbox-deploy/monitor/traffic.db",
+		"monitorDB":  "/etc/singbox-deploy/monitor/monitor.db",
 		"tls":        "/etc/singbox-deploy/tls",
 	}
 	for k, want := range expected {

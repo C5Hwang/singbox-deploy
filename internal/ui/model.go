@@ -40,7 +40,7 @@ type Status struct {
 	Subscription string
 	ClashMetaSub string
 	SingBoxSub   string
-	TrafficUI    string
+	MonitorUI    string
 	TrafficQuota string
 }
 
@@ -65,6 +65,7 @@ type Model struct {
 	install   *installFlow
 	protocols *protocolManager
 	subscribe *subscriptionManager
+	monitor   *monitorManager
 	core      *coreManager
 	uninstall *uninstallManager
 }
@@ -80,7 +81,7 @@ func defaultGroups() []MenuGroup {
 		{Title: "Protocols", Items: []MenuItem{{Label: "Manage protocols"}}},
 		{Title: "Subscription", Items: []MenuItem{{Label: "Manage subscriptions"}}},
 		{Title: "Certificate & Nginx", Items: []MenuItem{{Label: "Certificate / site management"}}},
-		{Title: "Traffic", Items: []MenuItem{{Label: "Traffic monitor"}}},
+		{Title: "Monitor", Items: []MenuItem{{Label: "Manage monitor"}}},
 		{Title: "Routing", Items: []MenuItem{{Label: "Domain/IP blacklist"}}},
 		{Title: "Core", Items: []MenuItem{{Label: "sing-box core management"}}},
 		{Title: "System", Items: []MenuItem{
@@ -164,6 +165,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.monitor != nil {
+		flow := m.monitor
+		cmd, done := m.monitor.Update(msg)
+		if done {
+			if flow.phase == monitorPhaseDone && flow.runErr == nil {
+				m.RefreshStatus()
+			}
+			m.monitor = nil
+		}
+		return m, cmd
+	}
 	if m.core != nil {
 		c := m.core
 		cmd, done := m.core.Update(msg)
@@ -217,6 +229,10 @@ func (m *Model) activate() tea.Cmd {
 		s := newSubscriptionManager()
 		s.setSize(m.width, m.height)
 		m.subscribe = s
+	case 4:
+		t := newMonitorManager()
+		t.setSize(m.width, m.height)
+		m.monitor = t
 	case 6:
 		c := newCoreManager()
 		c.setSize(m.width, m.height)
@@ -302,6 +318,10 @@ func (m *Model) contentView(width, height int) string {
 		m.subscribe.setSize(width, height)
 		return m.subscribe.View()
 	}
+	if m.monitor != nil {
+		m.monitor.setSize(width, height)
+		return m.monitor.View()
+	}
 	if m.core != nil {
 		m.core.setSize(width, height)
 		return m.core.View()
@@ -316,12 +336,14 @@ func (m *Model) contentView(width, height int) string {
 func (m *Model) footerView() string {
 	var parts []operationHint
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil && m.core == nil && m.uninstall == nil {
+		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.uninstall == nil {
 			parts = append(parts, menuFooterHints()...)
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
 		} else if m.subscribe != nil {
 			parts = append(parts, m.subscribe.footerHints()...)
+		} else if m.monitor != nil {
+			parts = append(parts, m.monitor.footerHints()...)
 		} else if m.core != nil {
 			parts = append(parts, m.core.footerHints()...)
 		} else if m.uninstall != nil {
@@ -370,7 +392,7 @@ func (m *Model) statusView() string {
 		summaryRow("Default subscription", or(s.Subscription, "none")),
 		summaryRow("Clash Meta subscription", or(s.ClashMetaSub, "none")),
 		summaryRow("sing-box subscription", or(s.SingBoxSub, "none")),
-		summaryRow("Traffic UI", or(s.TrafficUI, "none")),
+		summaryRow("Monitor UI", or(s.MonitorUI, "none")),
 		summaryRow("Traffic", or(s.TrafficQuota, "unknown")),
 	}
 	return titleStyle.Render("Status") + "\n" + renderSummary(rows)

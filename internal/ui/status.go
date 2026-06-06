@@ -39,11 +39,18 @@ func loadStatus() Status {
 	if subscribePort == "" {
 		subscribePort = strconv.Itoa(install.DefaultSubscribePort)
 	}
-	trafficPort := readStatusState(store, "traffic_port")
-	if trafficPort == "" {
-		trafficPort = subscribePort
+	monitorPublicPort := readStatusState(store, "monitor_public_port")
+	if monitorPublicPort == "" {
+		monitorPublicPort = readStatusState(store, "traffic_port")
 	}
-	monitorEnabled := readStatusState(store, "traffic_monitor") != "no"
+	if monitorPublicPort == "" {
+		monitorPublicPort = subscribePort
+	}
+	monitorStateValue := readStatusState(store, "monitor")
+	if monitorStateValue == "" {
+		monitorStateValue = readStatusState(store, "traffic_monitor")
+	}
+	monitorEnabled := monitorStateValue != "no"
 	monitorState := "disabled"
 	if monitorEnabled {
 		monitorState = serviceState(system.MonitorService)
@@ -62,7 +69,7 @@ func loadStatus() Status {
 		Subscription: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "default"),
 		ClashMetaSub: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "clashMetaProfiles"),
 		SingBoxSub:   subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "sing-box"),
-		TrafficUI:    trafficUIStatus(domain, trafficPort, monitorEnabled),
+		MonitorUI:    monitorUIStatus(domain, monitorPublicPort, monitorEnabled),
 		TrafficQuota: trafficQuotaStatus(store),
 	}
 }
@@ -166,15 +173,19 @@ func subscriptionStatus(domain, port, token, kind string) string {
 	return fmt.Sprintf("https://%s:%s/s/%s/%s", domain, port, kind, token)
 }
 
-func trafficUIStatus(domain, port string, enabled bool) string {
+func monitorUIStatus(domain, port string, enabled bool) string {
 	if !enabled || domain == "" || port == "" {
 		return ""
 	}
-	return fmt.Sprintf("https://%s:%s/traffic/", domain, port)
+	return fmt.Sprintf("https://%s:%s/monitor/", domain, port)
 }
 
 func trafficQuotaStatus(store state.Store) string {
-	if readStatusState(store, "traffic_monitor") == "no" {
+	monitorStateValue := readStatusState(store, "monitor")
+	if monitorStateValue == "" {
+		monitorStateValue = readStatusState(store, "traffic_monitor")
+	}
+	if monitorStateValue == "no" {
 		return "disabled"
 	}
 	inRaw := readStatusState(store, "traffic_in_limit_bytes")
@@ -196,13 +207,17 @@ func trafficQuotaStatus(store state.Store) string {
 		return "unknown"
 	}
 	resetDay := readStatusState(store, "reset_day")
+	resetHour := readStatusState(store, "reset_hour")
 	parts := []string{
 		"in " + statusLimitLabel(inLimit),
 		"out " + statusLimitLabel(outLimit),
 		"total " + statusLimitLabel(totalLimit),
 	}
 	if resetDay != "" {
-		parts = append(parts, "reset day "+resetDay)
+		if resetHour == "" {
+			resetHour = "0"
+		}
+		parts = append(parts, "reset day "+resetDay+" hour "+resetHour+" GMT")
 	}
 	return strings.Join(parts, ", ")
 }

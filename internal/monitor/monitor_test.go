@@ -35,10 +35,11 @@ func TestDeltaCounterHandlesReset(t *testing.T) {
 }
 
 func TestCycleStart(t *testing.T) {
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	loc := time.FixedZone("local", 8*60*60)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, loc)
 	// reset day 15 -> cycle started May 15.
 	start := CycleStart(now, 15)
-	if start.Month() != time.May || start.Day() != 15 {
+	if start.Location() != time.UTC || start.Month() != time.May || start.Day() != 15 || start.Hour() != 0 {
 		t.Fatalf("cycle start = %v", start)
 	}
 	// reset day 1 -> cycle started June 1 (today).
@@ -46,10 +47,14 @@ func TestCycleStart(t *testing.T) {
 	if start.Month() != time.June || start.Day() != 1 {
 		t.Fatalf("cycle start = %v", start)
 	}
+	start = CycleStart(time.Date(2026, 6, 1, 3, 0, 0, 0, time.UTC), 1, 4)
+	if start.Month() != time.May || start.Day() != 1 || start.Hour() != 4 || start.Location() != time.UTC {
+		t.Fatalf("hourly GMT cycle start = %v", start)
+	}
 }
 
 func TestStoreInsertAndTotals(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "traffic.db")
+	path := filepath.Join(t.TempDir(), "monitor.db")
 	store, err := OpenStore(path)
 	if err != nil {
 		t.Fatalf("OpenStore error: %v", err)
@@ -72,8 +77,32 @@ func TestStoreInsertAndTotals(t *testing.T) {
 	}
 }
 
+func TestStoreSetTotalsSinceAddsSignedAdjustment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "monitor.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("OpenStore error: %v", err)
+	}
+	defer store.Close()
+
+	base := time.Now().Unix()
+	if err := store.InsertSample(base, "eth0", 100, 80, 100, 80); err != nil {
+		t.Fatalf("InsertSample error: %v", err)
+	}
+	if err := store.SetTotalsSince(base-1, base+1, TrafficTotals{InBytes: 40, OutBytes: 200}); err != nil {
+		t.Fatalf("SetTotalsSince error: %v", err)
+	}
+	totals, err := store.TotalsSince(base - 1)
+	if err != nil {
+		t.Fatalf("TotalsSince error: %v", err)
+	}
+	if totals.InBytes != 40 || totals.OutBytes != 200 {
+		t.Fatalf("totals = %#v", totals)
+	}
+}
+
 func TestRemoteSourcesRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "remote_traffic.json")
+	path := filepath.Join(t.TempDir(), "state", "remote_monitor.json")
 	want := []SourceSummary{{Name: "remote.example.com", TotalUsedBytes: 300, ResetTime: "2026-06-01T00:00:00Z"}}
 	if err := WriteRemoteSources(path, want); err != nil {
 		t.Fatalf("WriteRemoteSources error: %v", err)

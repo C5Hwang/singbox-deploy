@@ -42,8 +42,8 @@ const now = ref(new Date());
 let loadTimer: number | undefined;
 let clockTimer: number | undefined;
 
-// The UI is served under /traffic/, so the API is reached via a relative path
-// that resolves to /traffic/api/summary.
+// The UI is served under /monitor/, so the API is reached via a relative path
+// that resolves to /monitor/api/summary.
 async function load() {
   try {
     const res = await fetch("api/summary", { cache: "no-store" });
@@ -117,7 +117,7 @@ function barStyle(percent: number | null, color: string): Record<string, string>
 }
 
 const clockLabel = computed(() =>
-  now.value.toLocaleTimeString("en-US", { hour12: false }),
+	`${now.value.toLocaleTimeString("en-US", { hour12: false, timeZone: "UTC" })} GMT`,
 );
 
 const rows = computed<UsageRow[]>(() => {
@@ -150,36 +150,50 @@ const peak = computed(() => {
 });
 
 const sourcePercent = computed(() => peak.value?.percent ?? null);
-const isLimited = computed(() => rowPercents.value.some((item) => item.percent !== null && item.percent >= 100));
-const statusClass = computed(() => {
-  if (error.value) return " gray";
-  if (isLimited.value) return " danger";
-  if (sourcePercent.value !== null && sourcePercent.value >= 75) return " warn";
-  return "";
-});
-const statusLabel = computed(() => {
-  if (error.value) return "Unavailable";
-  if (isLimited.value) return "Limited";
-  return "Running";
-});
 
 const sourceChip = computed(() => (summary.value ? `Sources ${sources.value.length}` : "Sources 0"));
 const subtitle = computed(() => {
   if (error.value) return `Failed to load data: ${error.value}`;
-  if (!summary.value) return "Loading local traffic data";
+  if (!summary.value) return "Loading local monitor data";
   if (!peak.value) return "No traffic limits are configured";
-  return `Highest usage direction: ${peak.value.row.label}`;
+  return "";
 });
-const sideSummary = computed(() => {
-  const s = summary.value;
-  return `IN ${formatBytes(s?.inUsedBytes)} | OUT ${formatBytes(s?.outUsedBytes)} | Total ${formatBytes(s?.totalUsedBytes)}`;
-});
+
 function sourceResetLabel(source: SourceSummary): string {
-  return source.resetTime ? new Date(source.resetTime).toLocaleString("en-US") : "NA";
+  return source.resetTime ? formatGMTDateTime(source.resetTime) : "NA";
 }
 
-function sourceFreshLabel(source: SourceSummary): string {
-  return source.fetchedAt ? `Fetched: ${new Date(source.fetchedAt).toLocaleString("en-US")}` : "Live local data";
+function sourceSampleLabel(source: SourceSummary): string {
+  const latest = source.trend?.reduce<HourlyPoint | null>(
+    (best, point) => (!best || point.hourTs > best.hourTs ? point : best),
+    null,
+  );
+  return latest ? formatGMTDateTime(latest.hourTs * 1000) : "NA";
+}
+
+function sourceStatusClass(source: SourceSummary): string {
+  if (error.value) return " gray";
+  const percent = peakForSource(source);
+  if (percent !== null && percent >= 100) return " danger";
+  if (percent !== null && percent >= 75) return " warn";
+  return "";
+}
+
+function sourceStatusLabel(source: SourceSummary): string {
+  if (error.value) return "Unavailable";
+  const percent = peakForSource(source);
+  if (percent !== null && percent >= 100) return "Limited";
+  return "Running";
+}
+
+function formatGMTDateTime(value: string | number | Date): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "NA";
+  return date.toLocaleString("en-US", {
+    hour12: false,
+    timeZone: "UTC",
+    timeZoneName: "short",
+  }).replace(/\bUTC\b/g, "GMT");
 }
 
 onMounted(() => {
@@ -199,9 +213,9 @@ onUnmounted(() => {
   <div class="app">
     <aside class="sidebar" aria-label="Sidebar navigation">
       <div class="brand">
-        <div class="brand-logo">TM</div>
+        <div class="brand-logo">M</div>
         <div>
-          <strong>Traffic Monitor</strong>
+          <strong>Monitor</strong>
         </div>
       </div>
 
@@ -213,21 +227,18 @@ onUnmounted(() => {
       </a>
 
       <div class="mini-card">
-        <strong>{{ statusLabel }}</strong>
-        <div class="small">{{ sideSummary }}</div>
+        <strong>{{ sourceChip }}</strong>
       </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
         <div class="title">
-          <h1>Traffic Monitoring Center</h1>
-          <p>{{ subtitle }}</p>
+          <h1>Monitoring Center</h1>
+          <p v-if="subtitle">{{ subtitle }}</p>
         </div>
         <div class="toolbar">
-          <div class="chip">{{ sourceChip }}</div>
           <div class="chip">{{ clockLabel }}</div>
-          <button class="button" type="button" @click="load">Refresh Data</button>
         </div>
       </header>
 
@@ -277,16 +288,15 @@ onUnmounted(() => {
         </article>
       </section>
 
-      <section class="grid sources" aria-label="traffic sources">
+      <section class="grid sources" aria-label="monitor sources">
         <article v-for="source in sources" :key="source.name" class="card source-card">
           <div class="source-head">
             <div>
-              <p class="eyebrow">Traffic Source</p>
+              <p class="eyebrow">Monitor Source</p>
               <h2 class="source-name">{{ source.name }}</h2>
               <div class="source-meta">
                 <span>Reset Time: {{ sourceResetLabel(source) }}</span>
-                <span>{{ sourceFreshLabel(source) }}</span>
-                <span>Trend Points: {{ source.trend?.length ?? 0 }}</span>
+                <span>Latest Sample Time: {{ sourceSampleLabel(source) }}</span>
               </div>
             </div>
             <div>
@@ -294,7 +304,7 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="card-head">
-            <span :class="`status${source.fetchedAt ? ' gray' : statusClass}`"><span class="dot"></span>{{ source.fetchedAt ? 'Remote snapshot' : statusLabel }}</span>
+            <span :class="`status${sourceStatusClass(source)}`"><span class="dot"></span>{{ sourceStatusLabel(source) }}</span>
             <span v-if="peakForSource(source) !== null && (peakForSource(source) ?? 0) >= 100" class="tag red">Quota</span>
           </div>
           <div class="source-rows">
@@ -419,16 +429,8 @@ body {
   padding: 16px;
 }
 
-.mini-card .small {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
 .mini-card strong {
   display: block;
-  margin-bottom: 6px;
 }
 
 .main {
@@ -465,8 +467,7 @@ body {
   justify-content: flex-end;
 }
 
-.chip,
-.button {
+.chip {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.78);
   border-radius: 999px;
@@ -477,13 +478,6 @@ body {
   box-shadow: 0 8px 22px rgba(18, 32, 64, 0.04);
   line-height: 1;
   white-space: nowrap;
-}
-
-.button {
-  border: 0;
-  color: white;
-  background: linear-gradient(135deg, var(--blue), var(--cyan));
-  cursor: pointer;
 }
 
 .grid {

@@ -24,7 +24,7 @@ type UninstallOptions struct {
 
 	DeleteRuntime       bool // state files and sing-box binary/config directory
 	DeleteCertificates  bool
-	DeleteTrafficDB     bool
+	DeleteMonitorDB     bool
 	DeleteSite          bool
 	DeleteSubscriptions bool
 
@@ -150,11 +150,11 @@ func (o UninstallOptions) stepSelectedData(context.Context) error {
 			return err
 		}
 	}
-	if o.DeleteTrafficDB {
-		if err := removeManagedFile(root, o.Layout.TrafficDB); err != nil {
+	if o.DeleteMonitorDB {
+		if err := removeManagedFile(root, o.Layout.MonitorDB); err != nil {
 			return err
 		}
-		if err := removeEmptyManagedDir(root, filepath.Dir(o.Layout.TrafficDB)); err != nil {
+		if err := removeEmptyManagedDir(root, filepath.Dir(o.Layout.MonitorDB)); err != nil {
 			return err
 		}
 	}

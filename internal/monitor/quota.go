@@ -1,4 +1,4 @@
-// Package monitor implements the built-in traffic monitor: a network-interface
+// Package monitor implements the built-in monitor: a network-interface
 // counter collector, a low-memory SQLite store, quota enforcement, and an HTTP
 // API/UI server. Traffic is whole-VPS, derived from interface counters.
 package monitor
@@ -41,32 +41,46 @@ func Delta(previous, current uint64) uint64 {
 	return current - previous
 }
 
-// CycleStart returns the most recent reset boundary at or before now for the
-// given reset day-of-month. If the day hasn't occurred yet this month, it rolls
-// back to the previous month. Days beyond a month's length clamp to its last
-// day.
-func CycleStart(now time.Time, resetDay int) time.Time {
+// CycleStart returns the most recent GMT reset boundary at or before now for
+// the given reset day-of-month and hour. If the day/hour hasn't occurred yet
+// this month, it rolls back to the previous month. Days beyond a month's length
+// clamp to its last day.
+func CycleStart(now time.Time, resetDay int, resetHour ...int) time.Time {
 	if resetDay < 1 {
 		resetDay = 1
 	}
+	hour := resetBoundaryHour(resetHour...)
+	now = now.UTC()
 	year, month := now.Year(), now.Month()
 	day := clampDay(year, month, resetDay)
-	candidate := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
+	candidate := time.Date(year, month, day, hour, 0, 0, 0, time.UTC)
 	if !candidate.After(now) {
 		return candidate
 	}
 	// Roll back to previous month.
 	prev := now.AddDate(0, -1, 0)
 	day = clampDay(prev.Year(), prev.Month(), resetDay)
-	return time.Date(prev.Year(), prev.Month(), day, 0, 0, 0, 0, now.Location())
+	return time.Date(prev.Year(), prev.Month(), day, hour, 0, 0, 0, time.UTC)
 }
 
 // NextCycleReset returns the next reset boundary strictly after now.
-func NextCycleReset(now time.Time, resetDay int) time.Time {
-	start := CycleStart(now, resetDay)
+func NextCycleReset(now time.Time, resetDay int, resetHour ...int) time.Time {
+	hour := resetBoundaryHour(resetHour...)
+	start := CycleStart(now, resetDay, hour)
 	next := start.AddDate(0, 1, 0)
 	day := clampDay(next.Year(), next.Month(), resetDay)
-	return time.Date(next.Year(), next.Month(), day, 0, 0, 0, 0, now.Location())
+	return time.Date(next.Year(), next.Month(), day, hour, 0, 0, 0, time.UTC)
+}
+
+func resetBoundaryHour(resetHour ...int) int {
+	if len(resetHour) == 0 {
+		return 0
+	}
+	hour := resetHour[0]
+	if hour < 0 || hour > 23 {
+		return 0
+	}
+	return hour
 }
 
 // clampDay limits day to the number of days in the given year/month.

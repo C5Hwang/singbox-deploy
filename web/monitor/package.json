@@ -1,10 +1,10 @@
 {
-  "name": "singbox-deploy-traffic-ui",
+  "name": "singbox-deploy-monitor-ui",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --outDir ../../template/traffic-ui --emptyOutDir"
+    "build": "vite build --outDir ../../template/monitor-ui --emptyOutDir"
   },
   "dependencies": {
     "vue": "^3.5.13"

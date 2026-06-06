@@ -67,7 +67,7 @@ func TestUpdateAccountRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 	}
 }
 
-func TestUpdateSubscriptionsAggregatesRemoteAndTraffic(t *testing.T) {
+func TestUpdateSubscriptionsAggregatesRemoteAndMonitor(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
@@ -79,13 +79,13 @@ func TestUpdateSubscriptionsAggregatesRemoteAndTraffic(t *testing.T) {
 		t.Fatalf("write old subscription: %v", err)
 	}
 
-	remote := RemoteSubscription{Domain: "remote.example.com", Port: 9443, Salt: "abc", Traffic: true, TrafficPort: 9444}
+	remote := RemoteSubscription{Domain: "remote.example.com", Port: 9443, Alias: "US-edge", Salt: "abc", Monitor: true, MonitorPublicPort: 9444}
 	remoteEntry := remote.entry()
 	fetches := map[string][]byte{
 		remoteEntry.DefaultURL(): []byte(subscription.EncodeBase64("hysteria2://pass@remote.example.com:443#JP-01")),
 		remoteEntry.ClashURL():   []byte("proxies:\n  - name: \"JP-01\"\n    type: hysteria2\n"),
 		remoteEntry.SingBoxURL(): []byte(`{"outbounds":[{"type":"selector","tag":"PROXY"},{"type":"hysteria2","tag":"JP-01"},{"type":"direct","tag":"direct"}]}`),
-		remote.trafficURL():      []byte(`{"inUsedBytes":100,"outUsedBytes":200,"totalUsedBytes":300,"inRemainingBytes":900,"outRemainingBytes":800,"totalRemainingBytes":700,"inLimitBytes":1000,"outLimitBytes":1000,"totalLimitBytes":1000,"resetTime":"2026-06-01T00:00:00Z","trend":[]}`),
+		remote.monitorURL():      []byte(`{"inUsedBytes":100,"outUsedBytes":200,"totalUsedBytes":300,"inRemainingBytes":900,"outRemainingBytes":800,"totalRemainingBytes":700,"inLimitBytes":1000,"outLimitBytes":1000,"totalLimitBytes":1000,"resetTime":"2026-06-01T00:00:00Z","trend":[]}`),
 	}
 	runner := &recordingRunner{}
 	var checkedPort int
@@ -129,8 +129,8 @@ func TestUpdateSubscriptionsAggregatesRemoteAndTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode default subscription: %v", err)
 	}
-	if !strings.Contains(decoded, "#JP-01") {
-		t.Fatalf("default subscription missing original remote node name:\n%s", decoded)
+	if !strings.Contains(decoded, "US-edge-01") {
+		t.Fatalf("default subscription missing renamed remote node name:\n%s", decoded)
 	}
 	if _, err := os.Stat(filepath.Join(layout.SubscribeDir, "default", oldToken)); err == nil {
 		t.Fatalf("old subscription token file should be removed")
@@ -141,8 +141,8 @@ func TestUpdateSubscriptionsAggregatesRemoteAndTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read clash subscription: %v", err)
 	}
-	if !strings.Contains(string(clashBody), "name: \"JP-01\"") {
-		t.Fatalf("clash subscription missing original remote node name:\n%s", clashBody)
+	if !strings.Contains(string(clashBody), "US-edge-01") {
+		t.Fatalf("clash subscription missing renamed remote node name:\n%s", clashBody)
 	}
 	if strings.Contains(string(clashBody), "proxies:\n- name:") || !strings.HasPrefix(string(clashBody), "proxies:\n  - name:") {
 		t.Fatalf("clash subscription first proxy should stay indented:\n%s", clashBody)
@@ -151,27 +151,27 @@ func TestUpdateSubscriptionsAggregatesRemoteAndTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read sing-box outbounds: %v", err)
 	}
-	if !strings.Contains(string(singBoxOutbounds), "JP-01") || strings.Contains(string(singBoxOutbounds), "PROXY") {
-		t.Fatalf("sing-box outbounds should include original remote node only:\n%s", singBoxOutbounds)
+	if !strings.Contains(string(singBoxOutbounds), "US-edge-01") || strings.Contains(string(singBoxOutbounds), "PROXY") {
+		t.Fatalf("sing-box outbounds should include renamed remote node only:\n%s", singBoxOutbounds)
 	}
 
 	remotes, err := LoadRemoteSubscriptions(layout)
 	if err != nil {
 		t.Fatalf("LoadRemoteSubscriptions error: %v", err)
 	}
-	if len(remotes) != 1 || remotes[0].Domain != remote.Domain || !remotes[0].Traffic {
+	if len(remotes) != 1 || remotes[0].Domain != remote.Domain || remotes[0].Alias != remote.Alias || !remotes[0].Monitor {
 		t.Fatalf("remote state = %#v", remotes)
 	}
-	trafficBody, err := os.ReadFile(remoteTrafficPath(layout))
+	trafficBody, err := os.ReadFile(remoteMonitorPath(layout))
 	if err != nil {
-		t.Fatalf("read remote traffic snapshot: %v", err)
+		t.Fatalf("read remote monitor snapshot: %v", err)
 	}
 	var sources []monitor.SourceSummary
 	if err := json.Unmarshal(trafficBody, &sources); err != nil {
-		t.Fatalf("decode remote traffic: %v", err)
+		t.Fatalf("decode remote monitor: %v", err)
 	}
-	if len(sources) != 1 || sources[0].Name != remote.Domain || sources[0].TotalUsedBytes != 300 {
-		t.Fatalf("remote traffic sources = %#v", sources)
+	if len(sources) != 1 || sources[0].Name != subscription.AddNodePrefixFlag(remote.Alias) || sources[0].TotalUsedBytes != 300 {
+		t.Fatalf("remote monitor sources = %#v", sources)
 	}
 	joined := strings.Join(runner.commands, "\n")
 	for _, want := range []string{"ufw allow 24443/tcp", "nginx -t", "systemctl restart nginx"} {

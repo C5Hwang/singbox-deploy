@@ -20,7 +20,7 @@ server {
 }
 
 {{ if .EnableMonitor }}server {
-    listen {{ .TrafficPort }} ssl;
+    listen {{ .MonitorPublicPort }} ssl;
     http2 on;
     server_name {{ .Domain }};
 
@@ -28,17 +28,17 @@ server {
     ssl_certificate_key {{ .KeyPath }};
 
     location = / {
-        return 302 /traffic/;
+        return 302 /monitor/;
     }
 
-    location /traffic/ {
+    location /monitor/ {
         proxy_pass http://127.0.0.1:{{ .MonitorPort }}/;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
-    location /traffic/api/ {
+    location /monitor/api/ {
         proxy_pass http://127.0.0.1:{{ .MonitorPort }}/api/;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;

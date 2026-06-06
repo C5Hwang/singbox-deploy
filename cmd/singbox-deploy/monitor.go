@@ -19,7 +19,7 @@ import (
 func secondsToDuration(sec int) time.Duration { return time.Duration(sec) * time.Second }
 
 // runMonitor dispatches the "monitor serve" subcommand that runs the long-lived
-// traffic monitor HTTP/API service.
+// monitor HTTP/API service.
 func runMonitor(args []string) error {
 	if len(args) == 0 || args[0] != "serve" {
 		return flag.ErrHelp
@@ -29,13 +29,15 @@ func runMonitor(args []string) error {
 	fs := flag.NewFlagSet("monitor serve", flag.ContinueOnError)
 	listen := fs.String("listen", "127.0.0.1:"+strconv.Itoa(install.DefaultMonitorPort), "listen address")
 	iface := fs.String("interface", "", "monitored network interface (default: auto-detect)")
-	dbPath := fs.String("db", layout.TrafficDB, "traffic database path")
+	dbPath := fs.String("db", layout.MonitorDB, "monitor database path")
 	inLimit := fs.Uint64("in-limit-bytes", 0, "monthly inbound traffic limit in bytes (0 = unlimited)")
 	outLimit := fs.Uint64("out-limit-bytes", 0, "monthly outbound traffic limit in bytes (0 = unlimited)")
 	totalLimit := fs.Uint64("total-limit-bytes", 0, "monthly total traffic limit in bytes (0 = unlimited)")
 	resetDay := fs.Int("reset-day", install.DefaultResetDay, "monthly reset day-of-month")
+	resetHour := fs.Int("reset-hour", install.DefaultResetHour, "monthly reset hour in GMT, 0-23")
+	alias := fs.String("alias", install.DefaultMonitorAlias, "traffic source alias shown in the UI")
 	intervalSec := fs.Int("interval-seconds", install.DefaultMonitorIntervalSeconds, "sampling interval in seconds")
-	remoteTrafficPath := fs.String("remote-traffic", filepath.Join(layout.StateDir, "remote_traffic.json"), "remote traffic snapshot JSON path")
+	remoteMonitorPath := fs.String("remote-monitor", filepath.Join(layout.StateDir, "remote_monitor.json"), "remote monitor snapshot JSON path")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -54,6 +56,10 @@ func runMonitor(args []string) error {
 		return err
 	}
 	defer store.Close()
+	clock, err := monitor.NewNetworkClock(context.Background())
+	if err != nil {
+		return err
+	}
 
 	cfg := monitor.Config{
 		Listen:            *listen,
@@ -63,7 +69,10 @@ func runMonitor(args []string) error {
 		OutLimitBytes:     *outLimit,
 		TotalLimitBytes:   *totalLimit,
 		ResetDay:          *resetDay,
-		RemoteTrafficPath: *remoteTrafficPath,
+		ResetHour:         *resetHour,
+		Alias:             *alias,
+		RemoteMonitorPath: *remoteMonitorPath,
+		Now:               clock.Now,
 	}
 	m := monitor.New(store, cfg, systemdSingBox{})
 

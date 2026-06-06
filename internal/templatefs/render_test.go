@@ -7,15 +7,15 @@ import (
 
 func TestRenderNginxTemplate(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":   443,
-		"TrafficPort":     2097,
-		"Domain":          "example.com",
-		"CertificatePath": "/etc/singbox-deploy/tls/example.com.crt",
-		"KeyPath":         "/etc/singbox-deploy/tls/example.com.key",
-		"WebRoot":         "/etc/singbox-deploy/www",
-		"SubscribeDir":    "/etc/singbox-deploy/subscribe",
-		"EnableMonitor":   true,
-		"MonitorPort":     19090,
+		"SubscribePort":     443,
+		"MonitorPublicPort": 2097,
+		"Domain":            "example.com",
+		"CertificatePath":   "/etc/singbox-deploy/tls/example.com.crt",
+		"KeyPath":           "/etc/singbox-deploy/tls/example.com.key",
+		"WebRoot":           "/etc/singbox-deploy/www",
+		"SubscribeDir":      "/etc/singbox-deploy/subscribe",
+		"EnableMonitor":     true,
+		"MonitorPort":       19090,
 	})
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -29,20 +29,20 @@ func TestRenderNginxTemplate(t *testing.T) {
 
 func TestRenderNginxTemplateWithoutMonitor(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":   443,
-		"TrafficPort":     2097,
-		"Domain":          "example.com",
-		"CertificatePath": "/etc/singbox-deploy/tls/example.com.crt",
-		"KeyPath":         "/etc/singbox-deploy/tls/example.com.key",
-		"WebRoot":         "/etc/singbox-deploy/www",
-		"SubscribeDir":    "/etc/singbox-deploy/subscribe",
-		"EnableMonitor":   false,
-		"MonitorPort":     19090,
+		"SubscribePort":     443,
+		"MonitorPublicPort": 2097,
+		"Domain":            "example.com",
+		"CertificatePath":   "/etc/singbox-deploy/tls/example.com.crt",
+		"KeyPath":           "/etc/singbox-deploy/tls/example.com.key",
+		"WebRoot":           "/etc/singbox-deploy/www",
+		"SubscribeDir":      "/etc/singbox-deploy/subscribe",
+		"EnableMonitor":     false,
+		"MonitorPort":       19090,
 	})
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
-	if strings.Contains(out, "/traffic/") || strings.Contains(out, "127.0.0.1:19090") || strings.Contains(out, "2097") {
+	if strings.Contains(out, "/monitor/") || strings.Contains(out, "127.0.0.1:19090") || strings.Contains(out, "2097") {
 		t.Fatalf("rendered output should not include monitor proxy:\n%s", out)
 	}
 }

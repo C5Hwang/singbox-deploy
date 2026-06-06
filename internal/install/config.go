@@ -1,6 +1,6 @@
 // Package install orchestrates the real, end-to-end sing-box deployment: system
 // preparation, Nginx, certificates, sing-box core, config generation, services,
-// subscriptions, and the traffic monitor. System mutations go through a
+// subscriptions, and the monitor. System mutations go through a
 // system.Runner and filesystem writes go under a paths.Layout, so the whole
 // flow is exercisable with a recording runner and a temporary root.
 package install
@@ -15,9 +15,11 @@ import (
 const (
 	DefaultDisplayName            = "Node"
 	DefaultSubscribePort          = 2096
-	DefaultTrafficPort            = 2097
+	DefaultMonitorPublicPort      = 2097
 	DefaultMonitorPort            = 19090
 	DefaultResetDay               = 1
+	DefaultResetHour              = 0
+	DefaultMonitorAlias           = "Local Server"
 	DefaultMonitorIntervalSeconds = 300
 )
 
@@ -84,16 +86,19 @@ type Config struct {
 	Hysteria2UpMbps      int
 	Hysteria2DownMbps    int
 
-	SubscribePort int
-	TrafficPort   int
-	MonitorPort   int
+	SubscribePort     int
+	MonitorPublicPort int
+	MonitorPort       int
 
 	DeployMonitor          bool
+	MonitorAlias           string
 	TrafficInLimitBytes    uint64
 	TrafficOutLimitBytes   uint64
 	TrafficTotalLimitBytes uint64
 	ResetDay               int
+	ResetHour              int
 	MonitorInterface       string
+	MonitorIntervalSeconds int
 
 	OS       system.OSRelease
 	Firewall system.Firewall
@@ -179,17 +184,17 @@ func (c Config) firewallPorts() []system.Port {
 			ports = append(ports, system.Port{Number: spec.port, Proto: spec.proto})
 		}
 	}
-	// Subscriptions, the traffic UI, and ACME HTTP-01 need the public web ports.
+	// Subscriptions, the monitor UI, and ACME HTTP-01 need the public web ports.
 	ports = append(ports, system.Port{Number: c.SubscribePort, Proto: "tcp"})
 	if c.DeployMonitor {
-		ports = append(ports, system.Port{Number: c.TrafficPort, Proto: "tcp"})
+		ports = append(ports, system.Port{Number: c.MonitorPublicPort, Proto: "tcp"})
 	}
 	ports = append(ports, system.Port{Number: 80, Proto: "tcp"})
 	return ports
 }
 
 // portChecks returns the ports that must be available before installation. The
-// public protocol, subscription, and traffic UI ports are probed through the
+// public protocol, subscription, and monitor UI ports are probed through the
 // configured domain; the monitor service port only needs to be free locally
 // because it binds to 127.0.0.1 behind Nginx.
 func (c Config) portChecks() []system.Port {
@@ -210,13 +215,13 @@ func (c Config) portChecks() []system.Port {
 	}
 	checks = append(checks, system.Port{Number: c.SubscribePort, Proto: "tcp", Label: "subscription/Nginx", Public: true})
 	if c.DeployMonitor {
-		checks = append(checks, system.Port{Number: c.TrafficPort, Proto: "tcp", Label: "traffic monitor/Nginx", Public: true})
+		checks = append(checks, system.Port{Number: c.MonitorPublicPort, Proto: "tcp", Label: "monitor/Nginx", Public: true})
 	}
 	if c.Challenge == acme.ChallengeHTTP01 {
 		checks = append(checks, system.Port{Number: 80, Proto: "tcp", Label: "ACME HTTP-01", Public: true})
 	}
 	if c.DeployMonitor {
-		checks = append(checks, system.Port{Number: c.MonitorPort, Proto: "tcp", Label: "traffic monitor service", Public: false})
+		checks = append(checks, system.Port{Number: c.MonitorPort, Proto: "tcp", Label: "monitor service", Public: false})
 	}
 	return checks
 }

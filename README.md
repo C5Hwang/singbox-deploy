@@ -5,7 +5,7 @@ affiliated with SagerNet or sing-box.
 
 `singbox-deploy` is a [sing-box](https://github.com/SagerNet/sing-box)-only deployment and management tool written in Go,
 which is able to deploy sing-box, Nginx, Let's Encrypt certificates, subscription files,
-and a built-in traffic monitor on Linux servers.
+and a built-in monitor on Linux servers.
 
 The project is inspired by [`mack-a/v2ray-agent`](https://github.com/mack-a/v2ray-agent).
 
@@ -16,7 +16,7 @@ The project is inspired by [`mack-a/v2ray-agent`](https://github.com/mack-a/v2ra
 - Let's Encrypt certificate issuance with HTTP-01 and DNS-01 support.
 - Subscription output for default links, Clash Meta, and sing-box clients.
 - Selectable HTML5 UP masquerade site templates served by Nginx.
-- Traffic monitoring with a web dashboard and quota enforcement.
+- Resource monitor with a web dashboard and quota enforcement.
 
 ## Supported Protocols
 
@@ -39,7 +39,7 @@ the server.
 
 ## Build From Source
 
-The release binary uses Go `embed`, so the traffic UI must be built before the Go
+The release binary uses Go `embed`, so the monitor UI must be built before the Go
 binary when UI assets change.
 
 ### Requirements
@@ -48,14 +48,14 @@ binary when UI assets change.
 - Node.js 22 or newer.
 - pnpm 9 or newer.
 
-### 1. Build embedded traffic UI assets
+### 1. Build embedded monitor UI assets
 
 ```bash
-pnpm --dir web/traffic install --frozen-lockfile
-pnpm --dir web/traffic build
+pnpm --dir web/monitor install --frozen-lockfile
+pnpm --dir web/monitor build
 ```
 
-This writes the Vue build output to `template/traffic-ui`, where it is embedded
+This writes the Vue build output to `template/monitor-ui`, where it is embedded
 by the Go build.
 
 ### 2. Build static binaries

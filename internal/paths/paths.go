@@ -12,7 +12,7 @@ type Layout struct {
 	ConfigJSON   string
 	SubscribeDir string
 	WebRoot      string
-	TrafficDB    string
+	MonitorDB    string
 	TLSDir       string
 }
 
@@ -32,7 +32,7 @@ func LayoutForRoot(root string) Layout {
 		ConfigJSON:   root + "/sing-box/conf/config.json",
 		SubscribeDir: root + "/subscribe",
 		WebRoot:      root + "/www",
-		TrafficDB:    root + "/monitor/traffic.db",
+		MonitorDB:    root + "/monitor/monitor.db",
 		TLSDir:       root + "/tls",
 	}
 }

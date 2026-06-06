@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	assets "github.com/C5Hwang/singbox-deploy/template"
 )
 
@@ -36,7 +37,10 @@ type Config struct {
 	OutLimitBytes     uint64
 	TotalLimitBytes   uint64
 	ResetDay          int
-	RemoteTrafficPath string
+	ResetHour         int
+	Alias             string
+	RemoteMonitorPath string
+	Now               func() time.Time
 }
 
 // Monitor samples interface counters, enforces the quota, and serves the API/UI.
@@ -59,6 +63,9 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 	if cfg.ResetDay < 1 {
 		cfg.ResetDay = 1
 	}
+	if cfg.ResetHour < 0 || cfg.ResetHour > 23 {
+		cfg.ResetHour = 0
+	}
 	return &Monitor{store: store, cfg: cfg, control: control}
 }
 
@@ -66,7 +73,7 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 func (m *Monitor) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/summary", m.handleSummary)
-	if sub, err := fs.Sub(assets.FS, "traffic-ui"); err == nil {
+	if sub, err := fs.Sub(assets.FS, "monitor-ui"); err == nil {
 		mux.Handle("/", http.FileServer(http.FS(sub)))
 	}
 	return mux
@@ -88,7 +95,7 @@ type summary struct {
 	Sources             []SourceSummary `json:"sources"`
 }
 
-// SourceSummary is one traffic source shown by the traffic UI. Local data is
+// SourceSummary is one traffic source shown by the monitor UI. Local data is
 // live; remote data is a low-pressure snapshot refreshed by subscription sync.
 type SourceSummary struct {
 	Name                string        `json:"name"`
@@ -107,7 +114,7 @@ type SourceSummary struct {
 }
 
 func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
-	now := time.Now()
+	now := m.now()
 	used, err := m.usedThisCycle(now)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -119,7 +126,7 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	local := SourceSummary{
-		Name:                "Local Server",
+		Name:                m.localAlias(),
 		InUsedBytes:         used.InBytes,
 		OutUsedBytes:        used.OutBytes,
 		TotalUsedBytes:      used.Total(),
@@ -129,12 +136,12 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		InLimitBytes:        m.cfg.InLimitBytes,
 		OutLimitBytes:       m.cfg.OutLimitBytes,
 		TotalLimitBytes:     m.cfg.TotalLimitBytes,
-		ResetTime:           NextCycleReset(now, m.cfg.ResetDay).Format(time.RFC3339),
+		ResetTime:           NextCycleReset(now, m.cfg.ResetDay, m.cfg.ResetHour).Format(time.RFC3339),
 		Trend:               trend,
 	}
-	remote, err := ReadRemoteSources(m.cfg.RemoteTrafficPath)
+	remote, err := ReadRemoteSources(m.cfg.RemoteMonitorPath)
 	if err != nil {
-		log.Printf("monitor: read remote traffic: %v", err)
+		log.Printf("monitor: read remote monitor data: %v", err)
 	}
 	sources := append([]SourceSummary{local}, remote...)
 	w.Header().Set("Content-Type", "application/json")
@@ -154,8 +161,8 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// ReadRemoteSources reads remote traffic snapshots. Missing files mean no
-// configured remote traffic sources.
+// ReadRemoteSources reads remote monitor snapshots. Missing files mean no
+// configured remote monitor sources.
 func ReadRemoteSources(path string) ([]SourceSummary, error) {
 	if path == "" {
 		return nil, nil
@@ -174,7 +181,7 @@ func ReadRemoteSources(path string) ([]SourceSummary, error) {
 	return sources, nil
 }
 
-// WriteRemoteSources writes remote traffic snapshots for the monitor API.
+// WriteRemoteSources writes remote monitor snapshots for the monitor API.
 func WriteRemoteSources(path string, sources []SourceSummary) error {
 	if path == "" {
 		return nil
@@ -190,7 +197,22 @@ func WriteRemoteSources(path string, sources []SourceSummary) error {
 }
 
 func (m *Monitor) usedThisCycle(now time.Time) (TrafficTotals, error) {
-	return m.store.TotalsSince(CycleStart(now, m.cfg.ResetDay).Unix())
+	return m.store.TotalsSince(CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix())
+}
+
+func (m *Monitor) now() time.Time {
+	if m.cfg.Now != nil {
+		return m.cfg.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (m *Monitor) localAlias() string {
+	alias := m.cfg.Alias
+	if alias == "" {
+		alias = "Local Server"
+	}
+	return subscription.AddNodePrefixFlag(alias)
 }
 
 // Run starts the sampling loop and HTTP server until ctx is cancelled.
@@ -214,17 +236,17 @@ func (m *Monitor) Run(ctx context.Context) error {
 		m.prev = InterfaceCounters{Name: m.cfg.Interface, RXBytes: rx, TXBytes: tx}
 		m.havePrev = true
 	}
-	m.sampleOnce(time.Now())
+	m.sampleOnce(m.now())
 
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case t := <-sampleTicker.C:
-				m.sampleOnce(t)
-			case t := <-maintTicker.C:
-				m.maintenance(t)
+			case <-sampleTicker.C:
+				m.sampleOnce(m.now())
+			case <-maintTicker.C:
+				m.maintenance(m.now())
 			}
 		}
 	}()

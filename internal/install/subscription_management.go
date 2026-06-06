@@ -24,14 +24,15 @@ const remoteSubscriptionsDir = "remotes"
 // RemoteSubscription is one same-version remote server aggregated into local
 // subscription outputs. Remote node names are preserved unchanged.
 type RemoteSubscription struct {
-	Domain      string
-	Port        int
-	Salt        string
-	Traffic     bool
-	TrafficPort int
+	Domain            string
+	Port              int
+	Alias             string
+	Salt              string
+	Monitor           bool
+	MonitorPublicPort int
 }
 
-// SubscriptionFetcher fetches remote subscription or traffic JSON endpoints.
+// SubscriptionFetcher fetches remote subscription or monitor JSON endpoints.
 type SubscriptionFetcher func(context.Context, string) ([]byte, error)
 
 // SubscriptionUpdateOptions describes a subscription settings update.
@@ -118,8 +119,8 @@ func subscriptionUpdateSteps(opts SubscriptionUpdateOptions, oldPort, newPort in
 		}
 	}
 	steps = append(steps,
-		subscriptionUpdateStep{label: "Remote traffic", detail: "refresh remote traffic snapshots", run: func(ctx context.Context, _ Config) error {
-			return refreshRemoteTraffic(ctx, opts.Layout, remotes, opts.Fetch)
+		subscriptionUpdateStep{label: "Remote monitor", detail: "refresh remote monitor snapshots", run: func(ctx context.Context, _ Config) error {
+			return refreshRemoteMonitor(ctx, opts.Layout, remotes, opts.Fetch)
 		}},
 		subscriptionUpdateStep{label: "Subscriptions", detail: "regenerate local and remote subscription outputs", run: func(ctx context.Context, cfg Config) error {
 			return writeSubscriptionsWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch)
@@ -194,11 +195,14 @@ func validateRemoteSubscriptions(remotes []RemoteSubscription) error {
 		if r.Port <= 0 || r.Port > 65535 {
 			return fmt.Errorf("remote %s subscription port must be between 1 and 65535", domain)
 		}
+		if strings.TrimSpace(r.effectiveAlias()) == "" {
+			return fmt.Errorf("remote %s alias is required", domain)
+		}
 		if strings.TrimSpace(r.Salt) == "" {
 			return fmt.Errorf("remote %s salt is required", domain)
 		}
-		if r.Traffic && (r.TrafficPort <= 0 || r.TrafficPort > 65535) {
-			return fmt.Errorf("remote %s traffic port must be between 1 and 65535", domain)
+		if r.Monitor && (r.MonitorPublicPort <= 0 || r.MonitorPublicPort > 65535) {
+			return fmt.Errorf("remote %s monitor public port must be between 1 and 65535", domain)
 		}
 		key := strings.ToLower(domain) + ":" + strconv.Itoa(r.Port)
 		if seen[key] {
@@ -229,12 +233,24 @@ func LoadRemoteSubscriptions(layout paths.Layout) ([]RemoteSubscription, error) 
 			continue
 		}
 		root := filepath.Join(dir, entry.Name())
+		monitorValue := readRemoteStateDefault(root, "monitor", "")
+		if monitorValue == "" {
+			monitorValue = readRemoteStateDefault(root, "traffic", "no")
+		}
+		monitorPublicPort := readRemoteStateIntDefault(root, "monitor_public_port", 0)
+		if monitorPublicPort == 0 {
+			monitorPublicPort = readRemoteStateIntDefault(root, "traffic_port", 0)
+		}
 		remote := RemoteSubscription{
-			Domain:      readRemoteStateDefault(root, "domain", ""),
-			Port:        readRemoteStateIntDefault(root, "subscribe_port", 0),
-			Salt:        readRemoteStateDefault(root, "salt", ""),
-			Traffic:     readRemoteStateDefault(root, "traffic", "no") == "yes",
-			TrafficPort: readRemoteStateIntDefault(root, "traffic_port", 0),
+			Domain:            readRemoteStateDefault(root, "domain", ""),
+			Port:              readRemoteStateIntDefault(root, "subscribe_port", 0),
+			Alias:             readRemoteStateDefault(root, "alias", ""),
+			Salt:              readRemoteStateDefault(root, "salt", ""),
+			Monitor:           monitorValue == "yes",
+			MonitorPublicPort: monitorPublicPort,
+		}
+		if strings.TrimSpace(remote.Alias) == "" {
+			remote.Alias = remote.Domain
 		}
 		remotes = append(remotes, remote)
 	}
@@ -254,11 +270,12 @@ func SaveRemoteSubscriptions(layout paths.Layout, remotes []RemoteSubscription) 
 	for i, remote := range remotes {
 		entryDir := filepath.Join(dir, fmt.Sprintf("%03d", i+1))
 		values := map[string]string{
-			"domain":         strings.TrimSpace(remote.Domain),
-			"subscribe_port": itoa(remote.Port),
-			"salt":           strings.TrimSpace(remote.Salt),
-			"traffic":        yesNoString(remote.Traffic),
-			"traffic_port":   itoa(remote.TrafficPort),
+			"domain":              strings.TrimSpace(remote.Domain),
+			"subscribe_port":      itoa(remote.Port),
+			"alias":               strings.TrimSpace(remote.effectiveAlias()),
+			"salt":                strings.TrimSpace(remote.Salt),
+			"monitor":             yesNoString(remote.Monitor),
+			"monitor_public_port": itoa(remote.MonitorPublicPort),
 		}
 		for name, value := range values {
 			if err := writePrivateStateFile(entryDir, name, value+"\n"); err != nil {
@@ -345,13 +362,14 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("decode remote default %s: %w", remote.Domain, err)
 		}
-		defaultParts = append(defaultParts, splitNonEmptyLines(subscription.FilterDefaultLinks(decodedDefault))...)
+		alias := remote.effectiveAlias()
+		defaultParts = append(defaultParts, splitNonEmptyLines(subscription.RenameDefaultLinks(decodedDefault, alias))...)
 
 		remoteClash, err := fetch(ctx, entry.ClashURL())
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("fetch remote clash %s: %w", remote.Domain, err)
 		}
-		clashParts = append(clashParts, stripClashHeader(string(remoteClash)))
+		clashParts = append(clashParts, stripClashHeader(subscription.RenameClashFragment(string(remoteClash), alias)))
 
 		remoteSingBox, err := fetch(ctx, entry.SingBoxURL())
 		if err != nil {
@@ -361,7 +379,11 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("extract remote sing-box %s: %w", remote.Domain, err)
 		}
-		remoteOutbounds, err := decodeSubscriptionOutbounds(nodeOutbounds)
+		renamedOutbounds, err := subscription.RenameSingBoxOutbounds(nodeOutbounds, alias)
+		if err != nil {
+			return subscriptionOutputs{}, fmt.Errorf("rename remote sing-box %s: %w", remote.Domain, err)
+		}
+		remoteOutbounds, err := decodeSubscriptionOutbounds(renamedOutbounds)
 		if err != nil {
 			return subscriptionOutputs{}, err
 		}
@@ -456,29 +478,37 @@ func nonEmptyStrings(values []string) []string {
 }
 
 func (r RemoteSubscription) entry() subscription.RemoteEntry {
-	return subscription.RemoteEntry{Domain: strings.TrimSpace(r.Domain), Port: r.Port, Salt: strings.TrimSpace(r.Salt)}
+	return subscription.RemoteEntry{Domain: strings.TrimSpace(r.Domain), Port: r.Port, Alias: r.effectiveAlias(), Salt: strings.TrimSpace(r.Salt)}
 }
 
-func (r RemoteSubscription) trafficURL() string {
-	return fmt.Sprintf("https://%s:%d/traffic/api/summary", strings.TrimSpace(r.Domain), r.TrafficPort)
+func (r RemoteSubscription) effectiveAlias() string {
+	alias := strings.TrimSpace(r.Alias)
+	if alias == "" {
+		alias = strings.TrimSpace(r.Domain)
+	}
+	return alias
 }
 
-func remoteTrafficPath(layout paths.Layout) string {
-	return filepath.Join(layout.StateDir, "remote_traffic.json")
+func (r RemoteSubscription) monitorURL() string {
+	return fmt.Sprintf("https://%s:%d/monitor/api/summary", strings.TrimSpace(r.Domain), r.MonitorPublicPort)
 }
 
-func refreshRemoteTraffic(ctx context.Context, layout paths.Layout, remotes []RemoteSubscription, fetch SubscriptionFetcher) error {
+func remoteMonitorPath(layout paths.Layout) string {
+	return filepath.Join(layout.StateDir, "remote_monitor.json")
+}
+
+func refreshRemoteMonitor(ctx context.Context, layout paths.Layout, remotes []RemoteSubscription, fetch SubscriptionFetcher) error {
 	if fetch == nil {
 		fetch = defaultSubscriptionFetch
 	}
 	var sources []monitor.SourceSummary
 	for _, remote := range remotes {
-		if !remote.Traffic {
+		if !remote.Monitor {
 			continue
 		}
-		body, err := fetch(ctx, remote.trafficURL())
+		body, err := fetch(ctx, remote.monitorURL())
 		if err != nil {
-			return fmt.Errorf("fetch remote traffic %s: %w", remote.Domain, err)
+			return fmt.Errorf("fetch remote monitor %s: %w", remote.Domain, err)
 		}
 		var payload struct {
 			InUsedBytes         uint64                `json:"inUsedBytes"`
@@ -494,11 +524,11 @@ func refreshRemoteTraffic(ctx context.Context, layout paths.Layout, remotes []Re
 			Trend               []monitor.HourlyPoint `json:"trend"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return fmt.Errorf("decode remote traffic %s: %w", remote.Domain, err)
+			return fmt.Errorf("decode remote monitor %s: %w", remote.Domain, err)
 		}
 		sources = append(sources, monitor.SourceSummary{
-			Name:                strings.TrimSpace(remote.Domain),
-			FetchedAt:           time.Now().Format(time.RFC3339),
+			Name:                subscription.AddNodePrefixFlag(remote.effectiveAlias()),
+			FetchedAt:           time.Now().UTC().Format(time.RFC3339),
 			InUsedBytes:         payload.InUsedBytes,
 			OutUsedBytes:        payload.OutUsedBytes,
 			TotalUsedBytes:      payload.TotalUsedBytes,
@@ -512,5 +542,5 @@ func refreshRemoteTraffic(ctx context.Context, layout paths.Layout, remotes []Re
 			Trend:               payload.Trend,
 		})
 	}
-	return monitor.WriteRemoteSources(remoteTrafficPath(layout), sources)
+	return monitor.WriteRemoteSources(remoteMonitorPath(layout), sources)
 }

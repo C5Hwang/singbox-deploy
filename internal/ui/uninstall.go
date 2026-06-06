@@ -24,7 +24,7 @@ const (
 const (
 	uninstallRuntimeKey       = "runtime"
 	uninstallCertificatesKey  = "certificates"
-	uninstallTrafficDBKey     = "traffic_db"
+	uninstallMonitorDBKey     = "monitor_db"
 	uninstallSiteKey          = "site"
 	uninstallSubscriptionsKey = "subscriptions"
 )
@@ -209,7 +209,7 @@ func (um *uninstallManager) startRun() tea.Cmd {
 		Runner:              system.NewExecRunner(logs),
 		DeleteRuntime:       um.selected(uninstallRuntimeKey),
 		DeleteCertificates:  um.selected(uninstallCertificatesKey),
-		DeleteTrafficDB:     um.selected(uninstallTrafficDBKey),
+		DeleteMonitorDB:     um.selected(uninstallMonitorDBKey),
 		DeleteSite:          um.selected(uninstallSiteKey),
 		DeleteSubscriptions: um.selected(uninstallSubscriptionsKey),
 		Progress: func(e install.Event) {
@@ -321,7 +321,7 @@ func uninstallOptions(layout paths.Layout) []uninstallDataOption {
 	return []uninstallDataOption{
 		{key: uninstallRuntimeKey, label: "Runtime state/config", path: layout.StateDir + " and " + filepath.Dir(layout.SingBoxBin), defaultDelete: true},
 		{key: uninstallCertificatesKey, label: "Certificates", path: layout.TLSDir},
-		{key: uninstallTrafficDBKey, label: "SQLite traffic database", path: layout.TrafficDB},
+		{key: uninstallMonitorDBKey, label: "SQLite monitor database", path: layout.MonitorDB},
 		{key: uninstallSiteKey, label: "Masquerade site files", path: layout.WebRoot},
 		{key: uninstallSubscriptionsKey, label: "Subscription outputs", path: layout.SubscribeDir},
 	}

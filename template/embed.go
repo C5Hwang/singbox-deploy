@@ -5,5 +5,5 @@ package assets
 
 import "embed"
 
-//go:embed nginx/* service/* site/*.zip sing-box/* subscription/* traffic-ui/*
+//go:embed nginx/* service/* site/*.zip sing-box/* subscription/* monitor-ui/*
 var FS embed.FS

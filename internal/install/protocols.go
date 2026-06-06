@@ -63,9 +63,20 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		return Config{}, err
 	}
 	subscribePort := readProtocolStateIntDefault(store, "subscribe_port", DefaultSubscribePort)
-	trafficPort := readProtocolStateIntDefault(store, "traffic_port", 0)
-	if trafficPort == 0 {
-		trafficPort = subscribePort
+	monitorPublicPort := readProtocolStateIntDefault(store, "monitor_public_port", 0)
+	if monitorPublicPort == 0 {
+		monitorPublicPort = readProtocolStateIntDefault(store, "traffic_port", 0)
+	}
+	if monitorPublicPort == 0 {
+		monitorPublicPort = subscribePort
+	}
+	monitorStateValue := readProtocolStateDefault(store, "monitor", "")
+	if monitorStateValue == "" {
+		monitorStateValue = readProtocolStateDefault(store, "traffic_monitor", "yes")
+	}
+	monitorAlias := readProtocolStateDefault(store, "monitor_alias", "")
+	if monitorAlias == "" {
+		monitorAlias = readProtocolStateDefault(store, "traffic_alias", DefaultMonitorAlias)
 	}
 
 	cfg := Config{
@@ -83,14 +94,17 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		Hysteria2UpMbps:        readProtocolStateIntDefault(store, "hysteria2_up_mbps", config.DefaultHysteria2UpMbps),
 		Hysteria2DownMbps:      readProtocolStateIntDefault(store, "hysteria2_down_mbps", config.DefaultHysteria2DownMbps),
 		SubscribePort:          subscribePort,
-		TrafficPort:            trafficPort,
+		MonitorPublicPort:      monitorPublicPort,
 		MonitorPort:            readProtocolStateIntDefault(store, "monitor_port", DefaultMonitorPort),
-		DeployMonitor:          readProtocolStateDefault(store, "traffic_monitor", "yes") != "no",
+		DeployMonitor:          monitorStateValue != "no",
+		MonitorAlias:           monitorAlias,
 		TrafficInLimitBytes:    readProtocolStateUintDefault(store, "traffic_in_limit_bytes", 0),
 		TrafficOutLimitBytes:   readProtocolStateUintDefault(store, "traffic_out_limit_bytes", 0),
 		TrafficTotalLimitBytes: readProtocolStateUintDefault(store, "traffic_total_limit_bytes", 0),
 		ResetDay:               readProtocolStateIntDefault(store, "reset_day", DefaultResetDay),
+		ResetHour:              readProtocolStateIntDefault(store, "reset_hour", DefaultResetHour),
 		MonitorInterface:       readProtocolStateDefault(store, "monitor_interface", ""),
+		MonitorIntervalSeconds: readProtocolStateIntDefault(store, "monitor_interval_seconds", DefaultMonitorIntervalSeconds),
 		Ports: config.Ports{
 			RealityVision: readProtocolStateIntDefault(store, "reality_vision_port", 0),
 			RealityGRPC:   readProtocolStateIntDefault(store, "reality_grpc_port", 0),
@@ -395,7 +409,7 @@ func ensureProtocolMaterial(cfg *Config, old, selected []config.Protocol) error 
 	oldSet := selectedProtocolSet(old)
 	used := map[int]bool{80: true, cfg.SubscribePort: true}
 	if cfg.DeployMonitor {
-		used[cfg.TrafficPort] = true
+		used[cfg.MonitorPublicPort] = true
 		used[cfg.MonitorPort] = true
 	}
 	for _, p := range selected {
