@@ -10,12 +10,6 @@ import (
 	"strings"
 )
 
-// AssetName returns the singbox-deploy release asset name for an OS/arch pair,
-// matching what the release workflow uploads.
-func AssetName(goos, goarch string) string {
-	return "singbox-deploy-" + goos + "-" + goarch
-}
-
 // SingBoxArchiveName returns the upstream sing-box archive name for a release
 // tag and OS/arch, e.g. sing-box-1.12.0-linux-amd64.tar.gz.
 func SingBoxArchiveName(tag, goos, goarch string) string {

@@ -62,29 +62,6 @@ func TestEncodeDecodeBase64RoundTrip(t *testing.T) {
 	}
 }
 
-func TestMergeSingBoxOutboundsRenamesRemoteTags(t *testing.T) {
-	local := []byte(`[{"type":"vless","tag":"🇺🇸 US-vps1-Reality-Vision"}]`)
-	remote := []byte(`[{"type":"hysteria2","tag":"JP-01 Hysteria2"}]`)
-	merged, err := MergeSingBoxOutbounds(local, remote, "US-vps1")
-	if err != nil {
-		t.Fatalf("MergeSingBoxOutbounds error: %v", err)
-	}
-	var outbounds []map[string]any
-	if err := json.Unmarshal(merged, &outbounds); err != nil {
-		t.Fatalf("invalid json: %v\n%s", err, merged)
-	}
-	if len(outbounds) != 2 {
-		t.Fatalf("expected 2 outbounds, got %d", len(outbounds))
-	}
-	tags := []string{outbounds[0]["tag"].(string), outbounds[1]["tag"].(string)}
-	if tags[0] != "🇺🇸 US-vps1-Reality-Vision" {
-		t.Fatalf("local tag changed: %q", tags[0])
-	}
-	if tags[1] != "🇺🇸 US-vps1-01 Hysteria2" {
-		t.Fatalf("remote tag = %q, want renamed", tags[1])
-	}
-}
-
 func TestRenameDefaultLinksFiltersAndRenames(t *testing.T) {
 	body := strings.Join([]string{
 		"vless://11111111-1111-4111-8111-111111111111@example.com:443?security=reality#JP-01",

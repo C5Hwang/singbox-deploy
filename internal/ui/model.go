@@ -91,9 +91,6 @@ func defaultGroups() []MenuGroup {
 	}
 }
 
-// SetStatus replaces the status panel contents.
-func (m *Model) SetStatus(s Status) { m.status = s }
-
 // RefreshStatus reloads the status panel from the current host and state files.
 func (m *Model) RefreshStatus() { m.status = loadStatus() }
 

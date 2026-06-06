@@ -40,23 +40,6 @@ func GenerateDefault(nodes []Node) string {
 	return strings.Join(lines, "\n")
 }
 
-// FilterDefaultLinks keeps supported universal links and preserves their
-// original node names unchanged.
-func FilterDefaultLinks(body string) string {
-	var lines []string
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		u, err := url.Parse(line)
-		if err == nil && u.Scheme != "" && Supported(u.Scheme) {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
 // RenameDefaultLinks filters unsupported remote universal links and rewrites
 // the fragment/node name with alias while preserving each link's protocol data.
 func RenameDefaultLinks(body, alias string) string {

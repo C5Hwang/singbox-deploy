@@ -44,13 +44,6 @@ func NewExecRunner(out io.Writer) *ExecRunner {
 	return &ExecRunner{Output: out, ctx: context.Background()}
 }
 
-// WithContext returns a copy of the runner bound to ctx for cancellation.
-func (r *ExecRunner) WithContext(ctx context.Context) *ExecRunner {
-	cp := *r
-	cp.ctx = ctx
-	return &cp
-}
-
 // Run executes the command, streaming its output.
 func (r *ExecRunner) Run(c Command) error {
 	ctx := r.ctx

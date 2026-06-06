@@ -228,12 +228,6 @@ func (s *Store) LatestSampleTime() (int64, bool) {
 	}
 }
 
-// Vacuum reclaims free pages. Run only when convenient (it rewrites the file).
-func (s *Store) Vacuum() error {
-	_, err := s.db.Exec(`VACUUM`)
-	return err
-}
-
 // LatestCounters returns the most recent stored cumulative counters for iface,
 // used to compute the next delta after a restart. ok is false when none exist.
 func (s *Store) LatestCounters(iface string) (rx, tx uint64, ok bool, err error) {
@@ -256,19 +250,6 @@ func (s *Store) InsertResourceSample(ts int64, cpu, mem, disk float64, dioRead, 
 		ts, cpu, mem, disk, int64(dioRead), int64(dioWrite),
 	)
 	return err
-}
-
-// LatestResourceSample returns the most recent resource sample values.
-func (s *Store) LatestResourceSample() (cpu, mem, disk float64, dioRead, dioWrite int64, ok bool, err error) {
-	row := s.db.QueryRow(`SELECT cpu_pct, mem_pct, disk_pct, dio_read, dio_write FROM resource_samples ORDER BY ts DESC LIMIT 1`)
-	switch scanErr := row.Scan(&cpu, &mem, &disk, &dioRead, &dioWrite); scanErr {
-	case nil:
-		return cpu, mem, disk, dioRead, dioWrite, true, nil
-	case sql.ErrNoRows:
-		return 0, 0, 0, 0, 0, false, nil
-	default:
-		return 0, 0, 0, 0, 0, false, scanErr
-	}
 }
 
 // ResourceTrendHourly returns hourly resource buckets at or after since,

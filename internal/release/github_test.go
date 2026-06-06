@@ -7,14 +7,6 @@ import (
 	"testing"
 )
 
-func TestAssetName(t *testing.T) {
-	got := AssetName("linux", "amd64")
-	want := "singbox-deploy-linux-amd64"
-	if got != want {
-		t.Fatalf("AssetName = %q, want %q", got, want)
-	}
-}
-
 func TestSingBoxArchiveName(t *testing.T) {
 	got := SingBoxArchiveName("v1.12.0", "linux", "amd64")
 	want := "sing-box-1.12.0-linux-amd64.tar.gz"

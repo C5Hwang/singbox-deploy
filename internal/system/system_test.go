@@ -137,7 +137,7 @@ func TestHostSupported(t *testing.T) {
 	if !h.Supported() {
 		t.Fatalf("ubuntu/amd64 should be supported")
 	}
-	bad := Host{OS: OSRelease{Family: FamilyUnknown}, Arch: "amd64"}
+	bad := Host{OS: OSRelease{}, Arch: "amd64"}
 	if bad.Supported() {
 		t.Fatalf("unknown family must be unsupported")
 	}

@@ -9,9 +9,8 @@ import (
 type Family string
 
 const (
-	FamilyDebian  Family = "debian"
-	FamilyRHEL    Family = "rhel"
-	FamilyUnknown Family = ""
+	FamilyDebian Family = "debian"
+	FamilyRHEL   Family = "rhel"
 )
 
 // OSRelease holds the parsed, normalized contents of /etc/os-release plus the
