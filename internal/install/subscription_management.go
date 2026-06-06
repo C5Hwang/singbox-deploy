@@ -493,6 +493,10 @@ func (r RemoteSubscription) monitorURL() string {
 	return fmt.Sprintf("https://%s:%d/monitor/api/summary", strings.TrimSpace(r.Domain), r.MonitorPublicPort)
 }
 
+func (r RemoteSubscription) monitorBaseURL() string {
+	return fmt.Sprintf("https://%s:%d/monitor", strings.TrimSpace(r.Domain), r.MonitorPublicPort)
+}
+
 func remoteMonitorPath(layout paths.Layout) string {
 	return filepath.Join(layout.StateDir, "remote_monitor.json")
 }
@@ -511,24 +515,34 @@ func refreshRemoteMonitor(ctx context.Context, layout paths.Layout, remotes []Re
 			return fmt.Errorf("fetch remote monitor %s: %w", remote.Domain, err)
 		}
 		var payload struct {
-			InUsedBytes         uint64                `json:"inUsedBytes"`
-			OutUsedBytes        uint64                `json:"outUsedBytes"`
-			TotalUsedBytes      uint64                `json:"totalUsedBytes"`
-			InRemainingBytes    uint64                `json:"inRemainingBytes"`
-			OutRemainingBytes   uint64                `json:"outRemainingBytes"`
-			TotalRemainingBytes uint64                `json:"totalRemainingBytes"`
-			InLimitBytes        uint64                `json:"inLimitBytes"`
-			OutLimitBytes       uint64                `json:"outLimitBytes"`
-			TotalLimitBytes     uint64                `json:"totalLimitBytes"`
-			ResetTime           string                `json:"resetTime"`
-			Trend               []monitor.HourlyPoint `json:"trend"`
+			InUsedBytes         uint64                     `json:"inUsedBytes"`
+			OutUsedBytes        uint64                     `json:"outUsedBytes"`
+			TotalUsedBytes      uint64                     `json:"totalUsedBytes"`
+			InRemainingBytes    uint64                     `json:"inRemainingBytes"`
+			OutRemainingBytes   uint64                     `json:"outRemainingBytes"`
+			TotalRemainingBytes uint64                     `json:"totalRemainingBytes"`
+			InLimitBytes        uint64                     `json:"inLimitBytes"`
+			OutLimitBytes       uint64                     `json:"outLimitBytes"`
+			TotalLimitBytes     uint64                     `json:"totalLimitBytes"`
+			ResetTime           string                     `json:"resetTime"`
+			Trend               []monitor.HourlyPoint      `json:"trend"`
+			Resources           *monitor.ResourceSnapshot  `json:"resources,omitempty"`
+			Sources             []struct {
+				SampledAt string `json:"sampledAt"`
+			} `json:"sources"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return fmt.Errorf("decode remote monitor %s: %w", remote.Domain, err)
 		}
+		var remoteSampledAt string
+		if len(payload.Sources) > 0 {
+			remoteSampledAt = payload.Sources[0].SampledAt
+		}
 		sources = append(sources, monitor.SourceSummary{
 			Name:                subscription.AddNodePrefixFlag(remote.effectiveAlias()),
 			FetchedAt:           time.Now().UTC().Format(time.RFC3339),
+			SampledAt:           remoteSampledAt,
+			MonitorURL:          remote.monitorBaseURL(),
 			InUsedBytes:         payload.InUsedBytes,
 			OutUsedBytes:        payload.OutUsedBytes,
 			TotalUsedBytes:      payload.TotalUsedBytes,
@@ -540,6 +554,7 @@ func refreshRemoteMonitor(ctx context.Context, layout paths.Layout, remotes []Re
 			TotalLimitBytes:     payload.TotalLimitBytes,
 			ResetTime:           payload.ResetTime,
 			Trend:               payload.Trend,
+			Resources:           payload.Resources,
 		})
 	}
 	return monitor.WriteRemoteSources(remoteMonitorPath(layout), sources)

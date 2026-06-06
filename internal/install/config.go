@@ -20,7 +20,7 @@ const (
 	DefaultResetDay               = 1
 	DefaultResetHour              = 0
 	DefaultMonitorAlias           = "Local Server"
-	DefaultMonitorIntervalSeconds = 300
+	DefaultMonitorIntervalSeconds = 60
 )
 
 // Credentials holds every generated secret for the single user.

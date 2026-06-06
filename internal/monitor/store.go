@@ -74,7 +74,24 @@ CREATE TABLE IF NOT EXISTS adjustments (
     in_bytes INTEGER NOT NULL,
     out_bytes INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_adjustments_ts ON adjustments(ts);`
+CREATE INDEX IF NOT EXISTS idx_adjustments_ts ON adjustments(ts);
+CREATE TABLE IF NOT EXISTS resource_samples (
+    ts        INTEGER NOT NULL,
+    cpu_pct   REAL    NOT NULL,
+    mem_pct   REAL    NOT NULL,
+    disk_pct  REAL    NOT NULL,
+    dio_read  INTEGER NOT NULL,
+    dio_write INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_resource_samples_ts ON resource_samples(ts);
+CREATE TABLE IF NOT EXISTS resource_hourly (
+    ts_hour       INTEGER PRIMARY KEY,
+    cpu_avg       REAL    NOT NULL, cpu_max       REAL    NOT NULL,
+    mem_avg       REAL    NOT NULL, mem_max       REAL    NOT NULL,
+    disk_avg      REAL    NOT NULL, disk_max      REAL    NOT NULL,
+    dio_read_avg  INTEGER NOT NULL, dio_read_max  INTEGER NOT NULL,
+    dio_write_avg INTEGER NOT NULL, dio_write_max INTEGER NOT NULL
+);`
 	_, err := s.db.Exec(schema)
 	return err
 }
@@ -194,7 +211,21 @@ func (s *Store) Cleanup(retentionCutoff int64) error {
 	if _, err := s.db.Exec(`DELETE FROM adjustments WHERE ts < ?`, retentionCutoff); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(`DELETE FROM resource_hourly WHERE ts_hour < ?`, retentionCutoff); err != nil {
+		return err
+	}
 	return nil
+}
+
+// LatestSampleTime returns the unix timestamp of the most recent traffic sample.
+func (s *Store) LatestSampleTime() (int64, bool) {
+	var ts int64
+	switch s.db.QueryRow(`SELECT MAX(ts) FROM samples`).Scan(&ts) {
+	case nil:
+		return ts, ts > 0
+	default:
+		return 0, false
+	}
 }
 
 // Vacuum reclaims free pages. Run only when convenient (it rewrites the file).
@@ -216,6 +247,109 @@ func (s *Store) LatestCounters(iface string) (rx, tx uint64, ok bool, err error)
 	default:
 		return 0, 0, false, fmt.Errorf("latest counters: %w", scanErr)
 	}
+}
+
+// InsertResourceSample records one resource reading.
+func (s *Store) InsertResourceSample(ts int64, cpu, mem, disk float64, dioRead, dioWrite uint64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO resource_samples(ts, cpu_pct, mem_pct, disk_pct, dio_read, dio_write) VALUES(?, ?, ?, ?, ?, ?)`,
+		ts, cpu, mem, disk, int64(dioRead), int64(dioWrite),
+	)
+	return err
+}
+
+// LatestResourceSample returns the most recent resource sample values.
+func (s *Store) LatestResourceSample() (cpu, mem, disk float64, dioRead, dioWrite int64, ok bool, err error) {
+	row := s.db.QueryRow(`SELECT cpu_pct, mem_pct, disk_pct, dio_read, dio_write FROM resource_samples ORDER BY ts DESC LIMIT 1`)
+	switch scanErr := row.Scan(&cpu, &mem, &disk, &dioRead, &dioWrite); scanErr {
+	case nil:
+		return cpu, mem, disk, dioRead, dioWrite, true, nil
+	case sql.ErrNoRows:
+		return 0, 0, 0, 0, 0, false, nil
+	default:
+		return 0, 0, 0, 0, 0, false, scanErr
+	}
+}
+
+// ResourceTrendHourly returns hourly resource buckets at or after since,
+// oldest first. It unions pre-aggregated hourly rows with on-the-fly
+// aggregation from raw resource samples.
+func (s *Store) ResourceTrendHourly(since int64) ([]ResourceHourlyPoint, error) {
+	rows, err := s.db.Query(`
+SELECT ts_hour,
+    AVG(cpu_avg), MAX(cpu_max), AVG(mem_avg), MAX(mem_max),
+    AVG(disk_avg), MAX(disk_max),
+    CAST(AVG(dio_read_avg) AS INTEGER), MAX(dio_read_max),
+    CAST(AVG(dio_write_avg) AS INTEGER), MAX(dio_write_max)
+FROM (
+    SELECT ts_hour, cpu_avg, cpu_max, mem_avg, mem_max, disk_avg, disk_max,
+           dio_read_avg, dio_read_max, dio_write_avg, dio_write_max
+    FROM resource_hourly WHERE ts_hour >= ?1
+    UNION ALL
+    SELECT (ts/3600)*3600 AS ts_hour,
+           AVG(cpu_pct), MAX(cpu_pct), AVG(mem_pct), MAX(mem_pct),
+           AVG(disk_pct), MAX(disk_pct),
+           CAST(AVG(dio_read) AS INTEGER), MAX(dio_read),
+           CAST(AVG(dio_write) AS INTEGER), MAX(dio_write)
+    FROM resource_samples WHERE ts >= ?1 GROUP BY (ts/3600)
+)
+GROUP BY ts_hour
+ORDER BY ts_hour ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var points []ResourceHourlyPoint
+	for rows.Next() {
+		var p ResourceHourlyPoint
+		if err := rows.Scan(
+			&p.HourTS,
+			&p.CPUAvg, &p.CPUMax, &p.MemAvg, &p.MemMax,
+			&p.DiskAvg, &p.DiskMax,
+			&p.DIOReadAvg, &p.DIOReadMax,
+			&p.DIOWriteAvg, &p.DIOWriteMax,
+		); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+	return points, rows.Err()
+}
+
+// AggregateResourceHourly folds raw resource samples older than before into
+// the resource_hourly table and deletes those raw samples.
+func (s *Store) AggregateResourceHourly(before int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+INSERT INTO resource_hourly(ts_hour, cpu_avg, cpu_max, mem_avg, mem_max, disk_avg, disk_max,
+    dio_read_avg, dio_read_max, dio_write_avg, dio_write_max)
+SELECT (ts/3600)*3600 AS h,
+    AVG(cpu_pct), MAX(cpu_pct), AVG(mem_pct), MAX(mem_pct),
+    AVG(disk_pct), MAX(disk_pct),
+    CAST(AVG(dio_read) AS INTEGER), MAX(dio_read),
+    CAST(AVG(dio_write) AS INTEGER), MAX(dio_write)
+FROM resource_samples WHERE ts < ? GROUP BY h
+ON CONFLICT(ts_hour) DO UPDATE SET
+    cpu_avg  = (resource_hourly.cpu_avg + excluded.cpu_avg) / 2,
+    cpu_max  = MAX(resource_hourly.cpu_max, excluded.cpu_max),
+    mem_avg  = (resource_hourly.mem_avg + excluded.mem_avg) / 2,
+    mem_max  = MAX(resource_hourly.mem_max, excluded.mem_max),
+    disk_avg = (resource_hourly.disk_avg + excluded.disk_avg) / 2,
+    disk_max = MAX(resource_hourly.disk_max, excluded.disk_max),
+    dio_read_avg  = (resource_hourly.dio_read_avg + excluded.dio_read_avg) / 2,
+    dio_read_max  = MAX(resource_hourly.dio_read_max, excluded.dio_read_max),
+    dio_write_avg = (resource_hourly.dio_write_avg + excluded.dio_write_avg) / 2,
+    dio_write_max = MAX(resource_hourly.dio_write_max, excluded.dio_write_max)`, before); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM resource_samples WHERE ts < ?`, before); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Close closes the underlying database.

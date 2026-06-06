@@ -1,200 +1,39 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import SidebarNav from "./components/SidebarNav.vue";
+import NetworkTraffic from "./pages/NetworkTraffic.vue";
+import Resources from "./pages/Resources.vue";
+import { fetchSummary } from "./api";
+import type { Summary } from "./types";
 
-interface HourlyPoint {
-  hourTs: number;
-  inBytes: number;
-  outBytes: number;
-  totalBytes: number;
-}
-
-interface SourceSummary {
-  name: string;
-  fetchedAt?: string;
-  inUsedBytes: number;
-  outUsedBytes: number;
-  totalUsedBytes: number;
-  inRemainingBytes: number;
-  outRemainingBytes: number;
-  totalRemainingBytes: number;
-  inLimitBytes: number;
-  outLimitBytes: number;
-  totalLimitBytes: number;
-  resetTime: string;
-  trend: HourlyPoint[];
-}
-
-interface Summary extends SourceSummary {
-  sources?: SourceSummary[];
-}
-
-interface UsageRow {
-  label: string;
-  key: "in" | "out" | "total";
-  used: number;
-  limit: number;
-  color: string;
-}
-
+const activeTab = ref<"traffic" | "resources">("traffic");
 const summary = ref<Summary | null>(null);
 const error = ref<string>("");
 const now = ref(new Date());
 let loadTimer: number | undefined;
 let clockTimer: number | undefined;
 
-// The UI is served under /monitor/, so the API is reached via a relative path
-// that resolves to /monitor/api/summary.
 async function load() {
   try {
-    const res = await fetch("api/summary", { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    summary.value = await res.json();
+    const res = await fetchSummary();
+    summary.value = res;
     error.value = "";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
 }
 
-function formatBytes(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return "NA";
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let size = Math.max(0, Number(value));
-  let index = 0;
-  while (size >= 1024 && index < units.length - 1) {
-    size /= 1024;
-    index += 1;
-  }
-  const digits = index === 0 ? 0 : size >= 10 ? 1 : 2;
-  return `${size.toFixed(digits)} ${units[index]}`;
-}
-
-function percentFor(used: number, limit: number): number | null {
-  if (limit <= 0) return null;
-  return Math.min(100, Math.max(0, (used / limit) * 100));
-}
-
-function percentText(value: number | null): string {
-  if (value === null) return "Unlimited";
-  return `${Math.round(value)}%`;
-}
-
-function rowText(row: UsageRow): string {
-  return row.limit > 0 ? `${formatBytes(row.used)} / ${formatBytes(row.limit)}` : formatBytes(row.used);
-}
-
-function rowsForSource(source: SourceSummary): UsageRow[] {
-  return [
-    { label: "IN", key: "in", used: source.inUsedBytes, limit: source.inLimitBytes, color: "var(--blue)" },
-    { label: "OUT", key: "out", used: source.outUsedBytes, limit: source.outLimitBytes, color: "var(--cyan)" },
-    { label: "Total", key: "total", used: source.totalUsedBytes, limit: source.totalLimitBytes, color: "var(--green)" },
-  ];
-}
-
-function percentsForSource(source: SourceSummary) {
-  return rowsForSource(source).map((row) => ({ row, percent: percentFor(row.used, row.limit) }));
-}
-
-function peakForSource(source: SourceSummary): number | null {
-  const configured = percentsForSource(source).filter((item) => item.percent !== null) as Array<{
-    row: UsageRow;
-    percent: number;
-  }>;
-  if (configured.length === 0) return null;
-  return configured.reduce((best, item) => (item.percent > best.percent ? item : best), configured[0]).percent;
-}
-
-function tone(percent: number | null): string {
-  if (percent !== null && percent >= 90) return " danger";
-  if (percent !== null && percent >= 75) return " warn";
-  return "";
-}
-
-function barStyle(percent: number | null, color: string): Record<string, string> {
-  return {
-    "--value": String(percent === null ? 0 : percent),
-    "--bar": color,
-  };
-}
-
 const clockLabel = computed(() =>
-	`${now.value.toLocaleTimeString("en-US", { hour12: false, timeZone: "UTC" })} GMT`,
+  `${now.value.toLocaleTimeString("en-US", { hour12: false, timeZone: "UTC" })} GMT`,
 );
 
-const rows = computed<UsageRow[]>(() => {
-  const s = summary.value;
-  return [
-    { label: "IN", key: "in", used: s?.inUsedBytes ?? 0, limit: s?.inLimitBytes ?? 0, color: "var(--blue)" },
-    { label: "OUT", key: "out", used: s?.outUsedBytes ?? 0, limit: s?.outLimitBytes ?? 0, color: "var(--cyan)" },
-    { label: "Total", key: "total", used: s?.totalUsedBytes ?? 0, limit: s?.totalLimitBytes ?? 0, color: "var(--green)" },
-  ];
-});
+const sourceCount = computed(() => summary.value?.sources?.length ?? 0);
 
-const sources = computed<SourceSummary[]>(() => {
-  const s = summary.value;
-  if (!s) return [];
-  if (s.sources && s.sources.length > 0) return s.sources;
-  return [{ ...s, name: "Local Server" }];
-});
-
-const rowPercents = computed(() =>
-  rows.value.map((row) => ({ row, percent: percentFor(row.used, row.limit) })),
-);
-
-const peak = computed(() => {
-  const configured = rowPercents.value.filter((item) => item.percent !== null) as Array<{
-    row: UsageRow;
-    percent: number;
-  }>;
-  if (configured.length === 0) return null;
-  return configured.reduce((best, item) => (item.percent > best.percent ? item : best), configured[0]);
-});
-
-const sourcePercent = computed(() => peak.value?.percent ?? null);
-
-const sourceChip = computed(() => (summary.value ? `Sources ${sources.value.length}` : "Sources 0"));
 const subtitle = computed(() => {
   if (error.value) return `Failed to load data: ${error.value}`;
-  if (!summary.value) return "Loading local monitor data";
-  if (!peak.value) return "No traffic limits are configured";
+  if (!summary.value) return "Loading monitor data...";
   return "";
 });
-
-function sourceResetLabel(source: SourceSummary): string {
-  return source.resetTime ? formatGMTDateTime(source.resetTime) : "NA";
-}
-
-function sourceSampleLabel(source: SourceSummary): string {
-  const latest = source.trend?.reduce<HourlyPoint | null>(
-    (best, point) => (!best || point.hourTs > best.hourTs ? point : best),
-    null,
-  );
-  return latest ? formatGMTDateTime(latest.hourTs * 1000) : "NA";
-}
-
-function sourceStatusClass(source: SourceSummary): string {
-  if (error.value) return " gray";
-  const percent = peakForSource(source);
-  if (percent !== null && percent >= 100) return " danger";
-  if (percent !== null && percent >= 75) return " warn";
-  return "";
-}
-
-function sourceStatusLabel(source: SourceSummary): string {
-  if (error.value) return "Unavailable";
-  const percent = peakForSource(source);
-  if (percent !== null && percent >= 100) return "Limited";
-  return "Running";
-}
-
-function formatGMTDateTime(value: string | number | Date): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "NA";
-  return date.toLocaleString("en-US", {
-    hour12: false,
-    timeZone: "UTC",
-    timeZoneName: "short",
-  }).replace(/\bUTC\b/g, "GMT");
-}
 
 onMounted(() => {
   load();
@@ -211,114 +50,25 @@ onUnmounted(() => {
 
 <template>
   <div class="app">
-    <aside class="sidebar" aria-label="Sidebar navigation">
-      <div class="brand">
-        <div class="brand-logo">M</div>
-        <div>
-          <strong>Monitor</strong>
-        </div>
-      </div>
-
-      <a class="nav-item active" href="#">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 13h8V3H3v10Zm10 8h8V3h-8v18ZM3 21h8v-6H3v6Z" />
-        </svg>
-        Overview
-      </a>
-
-      <div class="mini-card">
-        <strong>{{ sourceChip }}</strong>
-      </div>
-    </aside>
+    <SidebarNav v-model:activeTab="activeTab" :sourceCount="sourceCount" />
 
     <main class="main">
       <header class="topbar">
         <div class="title">
-          <h1>Monitoring Center</h1>
+          <h1 class="page-title">{{ activeTab === 'traffic' ? 'Network Traffic' : 'Resources' }}</h1>
           <p v-if="subtitle">{{ subtitle }}</p>
         </div>
         <div class="toolbar">
+          <div class="mobile-tabs">
+            <button :class="{ active: activeTab === 'traffic' }" @click="activeTab = 'traffic'">Traffic</button>
+            <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">Resources</button>
+          </div>
           <div class="chip">{{ clockLabel }}</div>
         </div>
       </header>
 
-      <section class="grid">
-        <article class="card metric-card span-3">
-          <div class="metric-head">
-            <div>
-              <p class="eyebrow">Peak Usage</p>
-              <p class="metric-value">{{ percentText(sourcePercent) }}</p>
-            </div>
-            <span :class="`delta${tone(sourcePercent)}`">Live</span>
-          </div>
-          <div class="progress" :style="barStyle(sourcePercent, 'var(--blue)')"></div>
-        </article>
-
-        <article class="card metric-card span-3">
-          <div class="metric-head">
-            <div>
-              <p class="eyebrow">Inbound</p>
-              <p class="metric-value">{{ formatBytes(summary?.inUsedBytes) }}</p>
-            </div>
-            <span :class="`delta${tone(rowPercents[0]?.percent ?? null)}`">{{ percentText(rowPercents[0]?.percent ?? null) }}</span>
-          </div>
-          <div class="progress" :style="barStyle(rowPercents[0]?.percent ?? null, 'var(--blue)')"></div>
-        </article>
-
-        <article class="card metric-card span-3">
-          <div class="metric-head">
-            <div>
-              <p class="eyebrow">Outbound</p>
-              <p class="metric-value">{{ formatBytes(summary?.outUsedBytes) }}</p>
-            </div>
-            <span :class="`delta${tone(rowPercents[1]?.percent ?? null)}`">{{ percentText(rowPercents[1]?.percent ?? null) }}</span>
-          </div>
-          <div class="progress" :style="barStyle(rowPercents[1]?.percent ?? null, 'var(--cyan)')"></div>
-        </article>
-
-        <article class="card metric-card span-3">
-          <div class="metric-head">
-            <div>
-              <p class="eyebrow">Total</p>
-              <p class="metric-value">{{ formatBytes(summary?.totalUsedBytes) }}</p>
-            </div>
-            <span :class="`delta${tone(rowPercents[2]?.percent ?? null)}`">{{ percentText(rowPercents[2]?.percent ?? null) }}</span>
-          </div>
-          <div class="progress" :style="barStyle(rowPercents[2]?.percent ?? null, 'var(--green)')"></div>
-        </article>
-      </section>
-
-      <section class="grid sources" aria-label="monitor sources">
-        <article v-for="source in sources" :key="source.name" class="card source-card">
-          <div class="source-head">
-            <div>
-              <p class="eyebrow">Monitor Source</p>
-              <h2 class="source-name">{{ source.name }}</h2>
-              <div class="source-meta">
-                <span>Reset Time: {{ sourceResetLabel(source) }}</span>
-                <span>Latest Sample Time: {{ sourceSampleLabel(source) }}</span>
-              </div>
-            </div>
-            <div>
-              <div class="source-score">{{ percentText(peakForSource(source)) }}<span>MAX USAGE</span></div>
-            </div>
-          </div>
-          <div class="card-head">
-            <span :class="`status${sourceStatusClass(source)}`"><span class="dot"></span>{{ sourceStatusLabel(source) }}</span>
-            <span v-if="peakForSource(source) !== null && (peakForSource(source) ?? 0) >= 100" class="tag red">Quota</span>
-          </div>
-          <div class="source-rows">
-            <div v-for="item in percentsForSource(source)" :key="item.row.key" class="progress-row">
-              <div class="row-label">
-                <strong>{{ item.row.label }}</strong>
-                <span>{{ rowText(item.row) }}</span>
-              </div>
-              <div class="progress" :class="{ empty: item.percent === null }" :style="barStyle(item.percent, item.row.color)"></div>
-              <div class="percent">{{ percentText(item.percent) }}</div>
-            </div>
-          </div>
-        </article>
-      </section>
+      <NetworkTraffic v-if="activeTab === 'traffic'" :summary="summary" :error="error" />
+      <Resources v-if="activeTab === 'resources'" :summary="summary" :error="error" />
 
       <p class="footer-note">{{ error ? 'Some data is unavailable. Refresh again later.' : '' }}</p>
     </main>
@@ -343,9 +93,7 @@ onUnmounted(() => {
   --radius-lg: 18px;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
@@ -361,6 +109,7 @@ body {
   min-height: 100vh;
 }
 
+/* ── Sidebar ──────────────────────────────────────────────── */
 .sidebar {
   padding: 28px 20px;
   border-right: 1px solid rgba(231, 236, 244, 0.9);
@@ -370,419 +119,215 @@ body {
   top: 0;
   height: 100vh;
 }
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 34px;
-  padding: 0 8px;
-}
-
+.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 34px; padding: 0 8px; }
 .brand-logo {
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  color: white;
-  font-weight: 800;
-  border-radius: 15px;
+  width: 44px; height: 44px; display: grid; place-items: center;
+  color: white; font-weight: 800; border-radius: 15px;
   background: linear-gradient(135deg, var(--blue), var(--cyan));
   box-shadow: 0 12px 28px rgba(37, 99, 235, 0.28);
 }
-
-.brand strong {
-  display: block;
-  font-size: 17px;
-}
-
+.brand strong { display: block; font-size: 17px; }
 .nav-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 46px;
-  padding: 0 14px;
-  color: #5f6b7e;
-  border-radius: 15px;
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 650;
-  margin-bottom: 6px;
+  display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 14px;
+  color: #5f6b7e; border-radius: 15px; text-decoration: none;
+  font-size: 14px; font-weight: 650; margin-bottom: 6px; cursor: pointer;
 }
-
-.nav-item svg {
-  width: 19px;
-  height: 19px;
-}
-
+.nav-item svg { width: 19px; height: 19px; flex-shrink: 0; }
 .nav-item.active {
-  color: var(--blue);
-  background: #edf4ff;
+  color: var(--blue); background: #edf4ff;
   box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.09);
 }
-
 .mini-card {
-  margin-top: 28px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: linear-gradient(180deg, #ffffff, #f8fbff);
-  padding: 16px;
+  margin-top: 28px; border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, #ffffff, #f8fbff); padding: 16px;
 }
+.mini-card strong { display: block; }
 
-.mini-card strong {
-  display: block;
-}
-
-.main {
-  padding: 28px;
-  min-width: 0;
-}
-
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: center;
-  margin-bottom: 20px;
-}
-
-.title h1 {
-  margin: 0;
-  font-size: 30px;
-  letter-spacing: 0;
-}
-
-.title p {
-  margin: 7px 0 0;
-  color: var(--muted);
-  font-size: 14px;
-  overflow-wrap: anywhere;
-}
-
-.toolbar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
+/* ── Main ─────────────────────────────────────────────────── */
+.main { padding: 28px; min-width: 0; }
+.topbar { display: flex; justify-content: space-between; gap: 18px; align-items: center; margin-bottom: 20px; }
+.title h1 { margin: 0; font-size: 30px; letter-spacing: -0.02em; }
+.page-title { font-weight: 900; font-size: 32px; letter-spacing: -0.03em; line-height: 1.1; }
+.title p { margin: 7px 0 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .chip {
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.78);
-  border-radius: 999px;
-  padding: 10px 14px;
-  color: #526075;
-  font-size: 13px;
-  font-weight: 700;
-  box-shadow: 0 8px 22px rgba(18, 32, 64, 0.04);
-  line-height: 1;
-  white-space: nowrap;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, 0.78);
+  border-radius: 999px; padding: 10px 14px; color: #526075;
+  font-size: 13px; font-weight: 700; box-shadow: 0 8px 22px rgba(18, 32, 64, 0.04);
+  line-height: 1; white-space: nowrap;
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 18px;
-}
-
-.sources {
-  margin-top: 18px;
-}
-
+/* ── Grid & Cards ─────────────────────────────────────────── */
+.grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 18px; }
+.sources { margin-top: 18px; }
 .card {
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(231, 236, 244, 0.94);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow);
-  padding: 20px;
-  min-width: 0;
+  background: rgba(255, 255, 255, 0.88); border: 1px solid rgba(231, 236, 244, 0.94);
+  border-radius: var(--radius-xl); box-shadow: var(--shadow); padding: 20px; min-width: 0;
 }
+.metric-card { padding: 16px; }
+.source-card { grid-column: span 12; }
+.span-3 { grid-column: span 3; }
+.span-4 { grid-column: span 4; }
+.span-6 { grid-column: span 6; }
+.clickable { cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; }
+.clickable:hover { transform: translateY(-2px); box-shadow: 0 22px 50px rgba(18, 32, 64, 0.12); }
 
-.metric-card {
-  padding: 16px;
-}
-
-.source-card {
-  grid-column: span 12;
-}
-
-.span-3 {
-  grid-column: span 3;
-}
-
-.metric-head,
-.card-head,
-.source-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.metric-head {
-  margin-bottom: 12px;
-  min-height: 70px;
-}
-
-.metric-head > div,
-.source-head > div {
-  min-width: 0;
-}
-
-.card-head {
-  margin-bottom: 16px;
-}
-
-.source-head {
-  margin-bottom: 14px;
-}
+.metric-head, .card-head, .source-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.metric-head { margin-bottom: 12px; min-height: 70px; }
+.metric-head > div, .source-head > div { min-width: 0; }
+.card-head { margin-bottom: 16px; }
+.source-head { margin-bottom: 14px; }
 
 .eyebrow {
-  margin: 0 0 7px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 750;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  text-transform: uppercase;
+  margin: 0 0 7px; color: var(--muted); font-size: 13px; font-weight: 750;
+  letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;
 }
-
 .metric-value {
-  font-size: 24px;
-  font-weight: 850;
-  letter-spacing: 0;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.15;
-  margin: 0;
-  overflow-wrap: anywhere;
+  font-size: 24px; font-weight: 850; letter-spacing: 0;
+  font-variant-numeric: tabular-nums; line-height: 1.15; margin: 0; overflow-wrap: anywhere;
 }
+.metric-value.small { font-size: 18px; }
 
-.delta,
-.tag,
-.status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: 999px;
-  padding: 6px 9px;
-  font-size: 12px;
-  font-weight: 850;
-  line-height: 1;
-  white-space: nowrap;
+/* ── Badges ───────────────────────────────────────────────── */
+.delta, .tag, .status {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: 999px; padding: 6px 9px;
+  font-size: 12px; font-weight: 850; line-height: 1; white-space: nowrap;
 }
+.metric-head .delta { margin-top: 1px; }
+.delta { background: #ecfdf5; color: #15803d; }
+.delta.warn { background: #fff7ed; color: #c2410c; }
+.delta.danger { background: #fef2f2; color: #b91c1c; }
+.tag.red { background: #fef2f2; color: #b91c1c; }
+.status { color: #0f766e; background: #ecfeff; }
+.status.warn { color: #c2410c; background: #fff7ed; }
+.status.danger { color: #b91c1c; background: #fef2f2; }
+.status.gray { color: #64748b; background: #f1f5f9; }
+.dot { width: 8px; height: 8px; border-radius: 999px; background: currentColor; box-shadow: 0 0 0 5px color-mix(in srgb, currentColor, transparent 84%); }
 
-.metric-head .delta {
-  margin-top: 1px;
+.chart-hint {
+  margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 600;
+  opacity: 0.6; transition: opacity 0.15s;
 }
+.clickable:hover .chart-hint { opacity: 1; }
 
-.delta {
-  background: #ecfdf5;
-  color: #15803d;
-}
-
-.delta.warn {
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.delta.danger {
-  background: #fef2f2;
-  color: #b91c1c;
-}
-
-.tag.red {
-  background: #fef2f2;
-  color: #b91c1c;
-}
-
-.status {
-  color: #0f766e;
-  background: #ecfeff;
-}
-
-.status.warn {
-  color: #c2410c;
-  background: #fff7ed;
-}
-
-.status.danger {
-  color: #b91c1c;
-  background: #fef2f2;
-}
-
-.status.gray {
-  color: #64748b;
-  background: #f1f5f9;
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: currentColor;
-  box-shadow: 0 0 0 5px color-mix(in srgb, currentColor, transparent 84%);
-}
-
+/* ── Progress bar ─────────────────────────────────────────── */
 .progress {
-  --value: 0;
-  --bar: var(--blue);
-  height: 10px;
-  position: relative;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #edf2f8;
+  --value: 0; --bar: var(--blue);
+  height: 10px; position: relative; overflow: hidden;
+  border-radius: 999px; background: #edf2f8;
 }
-
 .progress::after {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: calc(var(--value) * 1%);
-  border-radius: inherit;
+  content: ""; position: absolute; inset: 0 auto 0 0;
+  width: calc(var(--value) * 1%); border-radius: inherit;
   background: linear-gradient(90deg, var(--bar), color-mix(in srgb, var(--bar), white 34%));
   box-shadow: 0 8px 18px color-mix(in srgb, var(--bar), transparent 75%);
   animation: grow 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
+@keyframes grow { from { width: 0 } to { width: calc(var(--value) * 1%) } }
+.progress.empty::after { width: 0; }
 
-@keyframes grow {
-  from {
-    width: 0;
-  }
-  to {
-    width: calc(var(--value) * 1%);
-  }
-}
-
-.progress.empty::after {
-  width: 0;
-}
-
+/* ── Source rows ──────────────────────────────────────────── */
 .progress-row {
-  display: grid;
-  grid-template-columns: minmax(112px, 156px) minmax(0, 1fr) 82px;
-  align-items: center;
-  gap: 14px;
-  padding: 13px 0;
-  border-top: 1px solid var(--line);
+  display: grid; grid-template-columns: minmax(112px, 156px) minmax(0, 1fr) 82px;
+  align-items: center; gap: 14px; padding: 13px 0; border-top: 1px solid var(--line);
 }
+.progress-row:first-child { border-top: 0; padding-top: 0; }
+.progress-row:last-child { padding-bottom: 0; }
+.row-label { min-width: 0; }
+.row-label strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.row-label span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.percent { font-size: 13px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
 
-.progress-row:first-child {
-  border-top: 0;
-  padding-top: 0;
+.source-name { margin: 0; font-size: 20px; letter-spacing: 0; overflow-wrap: anywhere; }
+.source-meta { margin-top: 7px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.source-meta span { display: block; }
+.source-score { font-size: 32px; line-height: 1; font-weight: 900; font-variant-numeric: tabular-nums; text-align: right; }
+.source-score span { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; font-weight: 800; }
+.source-rows { display: grid; }
+
+/* ── Resource grid ────────────────────────────────────────── */
+.resource-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; }
+.resource-item { min-width: 0; }
+.resource-label { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; margin-bottom: 4px; }
+.resource-value { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; margin-bottom: 6px; }
+.resource-value.small { font-size: 16px; }
+.resource-value.warn { color: var(--orange); }
+.resource-value.danger { color: var(--red); }
+.no-data { color: var(--muted); font-size: 14px; padding: 12px 0; }
+
+/* ── Modal ────────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(4px);
+  display: grid; place-items: center;
+  animation: fadeIn 0.2s ease;
 }
-
-.progress-row:last-child {
-  padding-bottom: 0;
+.modal-content {
+  background: white; border-radius: var(--radius-xl);
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.15);
+  width: min(92vw, 1000px); max-height: 88vh; overflow: hidden;
+  animation: slideUp 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(30px) } to { opacity: 1; transform: translateY(0) } }
 
-.row-label {
-  min-width: 0;
+.modal-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  padding: 24px 28px 12px; gap: 16px;
 }
+.modal-title { margin: 0; font-size: 20px; }
+.modal-subtitle { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+.modal-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
-.row-label strong {
-  display: block;
-  font-size: 14px;
-  overflow-wrap: anywhere;
+.toggle-group {
+  display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
 }
-
-.row-label span {
-  display: block;
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 12px;
-  overflow-wrap: anywhere;
+.toggle-group button {
+  border: none; background: transparent; padding: 8px 14px;
+  font-size: 13px; font-weight: 700; cursor: pointer; color: var(--muted);
+  transition: background 0.15s, color 0.15s;
 }
+.toggle-group button.active { background: var(--blue); color: white; }
+.toggle-group button:hover:not(.active) { background: #f0f4f8; }
 
-.percent {
-  font-size: 13px;
-  font-weight: 850;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
+.close-btn {
+  border: none; background: transparent; font-size: 28px; line-height: 1;
+  cursor: pointer; color: var(--muted); padding: 0 4px;
 }
+.close-btn:hover { color: var(--text); }
 
-.source-name {
-  margin: 0;
-  font-size: 20px;
-  letter-spacing: 0;
-  overflow-wrap: anywhere;
+.chart-container { width: 100%; height: 460px; padding: 8px 16px 20px; }
+.chart-loading { padding: 60px; text-align: center; color: var(--muted); font-size: 15px; }
+
+/* ── Mobile tabs ──────────────────────────────────────────── */
+.mobile-tabs { display: none; }
+.mobile-tabs button {
+  border: 1px solid var(--line); background: transparent; border-radius: 10px;
+  padding: 8px 16px; font-size: 13px; font-weight: 700; cursor: pointer; color: var(--muted);
 }
+.mobile-tabs button.active { background: var(--blue); color: white; border-color: var(--blue); }
 
-.source-meta {
-  margin-top: 7px;
-  color: var(--muted);
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
+.footer-note { margin-top: 18px; color: var(--muted); font-size: 12px; text-align: right; min-height: 18px; }
 
-.source-meta span {
-  display: block;
-}
-
-.source-score {
-  font-size: 32px;
-  line-height: 1;
-  font-weight: 900;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.source-score span {
-  display: block;
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.source-rows {
-  display: grid;
-}
-
-.footer-note {
-  margin-top: 18px;
-  color: var(--muted);
-  font-size: 12px;
-  text-align: right;
-  min-height: 18px;
-}
-
+/* ── Responsive ───────────────────────────────────────────── */
 @media (max-width: 1120px) {
-  .app {
-    grid-template-columns: 1fr;
-  }
-  .sidebar {
-    display: none;
-  }
-  .span-3,
-  .source-card {
-    grid-column: span 12;
-  }
+  .app { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+  .mobile-tabs { display: flex; gap: 8px; }
+  .span-3, .span-4, .span-6, .source-card { grid-column: span 12; }
 }
-
 @media (max-width: 720px) {
-  .main {
-    padding: 18px;
-  }
-  .topbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .toolbar {
-    justify-content: flex-start;
-  }
-  .progress-row {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-  .percent {
-    text-align: left;
-  }
-  .source-head {
-    flex-direction: column;
-  }
-  .source-score {
-    text-align: left;
-  }
+  .main { padding: 18px; }
+  .topbar { align-items: flex-start; flex-direction: column; }
+  .toolbar { justify-content: flex-start; width: 100%; }
+  .progress-row { grid-template-columns: 1fr; gap: 8px; }
+  .percent { text-align: left; }
+  .source-head { flex-direction: column; }
+  .source-score { text-align: left; }
+  .modal-content { width: 98vw; }
+  .modal-header { flex-direction: column; padding: 16px 16px 8px; }
+  .chart-container { height: 350px; padding: 8px 8px 16px; }
+  .toggle-group button { padding: 6px 10px; font-size: 12px; }
 }
 </style>

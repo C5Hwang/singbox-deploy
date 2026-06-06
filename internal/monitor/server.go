@@ -3,6 +3,8 @@ package monitor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -14,11 +16,12 @@ import (
 	assets "github.com/C5Hwang/singbox-deploy/template"
 )
 
-// Defaults for sampling and retention.
 const (
-	DefaultSamplingInterval = 5 * time.Minute
-	rawRetention            = 2 * time.Hour
-	historyRetention        = 90 * 24 * time.Hour
+	DefaultSamplingInterval  = 1 * time.Minute
+	DefaultResourceInterval  = 10 * time.Second
+	rawRetention             = 2 * time.Hour
+	resourceRawRetention     = 2 * time.Hour
+	historyRetention         = 90 * 24 * time.Hour
 )
 
 // ServiceController starts/stops sing-box for quota enforcement.
@@ -52,6 +55,9 @@ type Monitor struct {
 	prev           InterfaceCounters
 	havePrev       bool
 	stoppedByQuota bool
+
+	resCollector    *ResourceCollector
+	latestResource  *ResourceSnapshot
 }
 
 // New returns a Monitor backed by store. control may be nil to disable quota
@@ -66,13 +72,20 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 	if cfg.ResetHour < 0 || cfg.ResetHour > 23 {
 		cfg.ResetHour = 0
 	}
-	return &Monitor{store: store, cfg: cfg, control: control}
+	return &Monitor{
+		store:        store,
+		cfg:          cfg,
+		control:      control,
+		resCollector: NewResourceCollector("/"),
+	}
 }
 
-// Handler returns the HTTP handler exposing /api/summary and the embedded UI.
+// Handler returns the HTTP handler exposing the API and the embedded UI.
 func (m *Monitor) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/summary", m.handleSummary)
+	mux.HandleFunc("/api/traffic-trend", m.handleTrafficTrend)
+	mux.HandleFunc("/api/resource-trend", m.handleResourceTrend)
 	if sub, err := fs.Sub(assets.FS, "monitor-ui"); err == nil {
 		mux.Handle("/", http.FileServer(http.FS(sub)))
 	}
@@ -81,36 +94,39 @@ func (m *Monitor) Handler() http.Handler {
 
 // summary is the JSON payload returned by /api/summary.
 type summary struct {
-	InUsedBytes         uint64          `json:"inUsedBytes"`
-	OutUsedBytes        uint64          `json:"outUsedBytes"`
-	TotalUsedBytes      uint64          `json:"totalUsedBytes"`
-	InRemainingBytes    uint64          `json:"inRemainingBytes"`
-	OutRemainingBytes   uint64          `json:"outRemainingBytes"`
-	TotalRemainingBytes uint64          `json:"totalRemainingBytes"`
-	InLimitBytes        uint64          `json:"inLimitBytes"`
-	OutLimitBytes       uint64          `json:"outLimitBytes"`
-	TotalLimitBytes     uint64          `json:"totalLimitBytes"`
-	ResetTime           string          `json:"resetTime"`
-	Trend               []HourlyPoint   `json:"trend"`
-	Sources             []SourceSummary `json:"sources"`
+	InUsedBytes         uint64           `json:"inUsedBytes"`
+	OutUsedBytes        uint64           `json:"outUsedBytes"`
+	TotalUsedBytes      uint64           `json:"totalUsedBytes"`
+	InRemainingBytes    uint64           `json:"inRemainingBytes"`
+	OutRemainingBytes   uint64           `json:"outRemainingBytes"`
+	TotalRemainingBytes uint64           `json:"totalRemainingBytes"`
+	InLimitBytes        uint64           `json:"inLimitBytes"`
+	OutLimitBytes       uint64           `json:"outLimitBytes"`
+	TotalLimitBytes     uint64           `json:"totalLimitBytes"`
+	ResetTime           string           `json:"resetTime"`
+	Resources           *ResourceSnapshot `json:"resources,omitempty"`
+	Sources             []SourceSummary  `json:"sources"`
 }
 
-// SourceSummary is one traffic source shown by the monitor UI. Local data is
-// live; remote data is a low-pressure snapshot refreshed by subscription sync.
+// SourceSummary is one traffic source shown by the monitor UI.
 type SourceSummary struct {
-	Name                string        `json:"name"`
-	FetchedAt           string        `json:"fetchedAt,omitempty"`
-	InUsedBytes         uint64        `json:"inUsedBytes"`
-	OutUsedBytes        uint64        `json:"outUsedBytes"`
-	TotalUsedBytes      uint64        `json:"totalUsedBytes"`
-	InRemainingBytes    uint64        `json:"inRemainingBytes"`
-	OutRemainingBytes   uint64        `json:"outRemainingBytes"`
-	TotalRemainingBytes uint64        `json:"totalRemainingBytes"`
-	InLimitBytes        uint64        `json:"inLimitBytes"`
-	OutLimitBytes       uint64        `json:"outLimitBytes"`
-	TotalLimitBytes     uint64        `json:"totalLimitBytes"`
-	ResetTime           string        `json:"resetTime"`
-	Trend               []HourlyPoint `json:"trend"`
+	Name                string            `json:"name"`
+	FetchedAt           string            `json:"fetchedAt,omitempty"`
+	SampledAt           string            `json:"sampledAt,omitempty"`
+	MonitorURL          string            `json:"monitorURL,omitempty"`
+	InUsedBytes         uint64            `json:"inUsedBytes"`
+	OutUsedBytes        uint64            `json:"outUsedBytes"`
+	TotalUsedBytes      uint64            `json:"totalUsedBytes"`
+	InRemainingBytes    uint64            `json:"inRemainingBytes"`
+	OutRemainingBytes   uint64            `json:"outRemainingBytes"`
+	TotalRemainingBytes uint64            `json:"totalRemainingBytes"`
+	InLimitBytes        uint64            `json:"inLimitBytes"`
+	OutLimitBytes       uint64            `json:"outLimitBytes"`
+	TotalLimitBytes     uint64            `json:"totalLimitBytes"`
+	ResetTime           string            `json:"resetTime"`
+	Trend               []HourlyPoint     `json:"trend,omitempty"`
+	Resources           *ResourceSnapshot `json:"resources,omitempty"`
+	ResourceTrend       []ResourceHourlyPoint `json:"resourceTrend,omitempty"`
 }
 
 func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
@@ -120,13 +136,13 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	trend, err := m.store.TrendHourly(now.Add(-historyRetention).Unix())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	var sampledAt string
+	if ts, ok := m.store.LatestSampleTime(); ok {
+		sampledAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
 	}
 	local := SourceSummary{
 		Name:                m.localAlias(),
+		SampledAt:           sampledAt,
 		InUsedBytes:         used.InBytes,
 		OutUsedBytes:        used.OutBytes,
 		TotalUsedBytes:      used.Total(),
@@ -137,7 +153,7 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		OutLimitBytes:       m.cfg.OutLimitBytes,
 		TotalLimitBytes:     m.cfg.TotalLimitBytes,
 		ResetTime:           NextCycleReset(now, m.cfg.ResetDay, m.cfg.ResetHour).Format(time.RFC3339),
-		Trend:               trend,
+		Resources:           m.latestResource,
 	}
 	remote, err := ReadRemoteSources(m.cfg.RemoteMonitorPath)
 	if err != nil {
@@ -156,13 +172,85 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		OutLimitBytes:       local.OutLimitBytes,
 		TotalLimitBytes:     local.TotalLimitBytes,
 		ResetTime:           local.ResetTime,
-		Trend:               local.Trend,
+		Resources:           local.Resources,
 		Sources:             sources,
 	})
 }
 
-// ReadRemoteSources reads remote monitor snapshots. Missing files mean no
-// configured remote monitor sources.
+func (m *Monitor) handleTrafficTrend(w http.ResponseWriter, r *http.Request) {
+	source := r.URL.Query().Get("source")
+	now := m.now()
+
+	if source == "" || source == "local" || source == m.localAlias() {
+		trend, err := m.store.TrendHourly(now.Add(-historyRetention).Unix())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"trend": trend})
+		return
+	}
+
+	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
+	for _, rs := range remotes {
+		if rs.Name == source {
+			if rs.MonitorURL != "" {
+				m.proxyRemote(w, rs.MonitorURL+"/api/traffic-trend")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"trend": rs.Trend})
+			return
+		}
+	}
+	http.Error(w, "source not found", http.StatusNotFound)
+}
+
+func (m *Monitor) handleResourceTrend(w http.ResponseWriter, r *http.Request) {
+	source := r.URL.Query().Get("source")
+	now := m.now()
+
+	if source == "" || source == "local" || source == m.localAlias() {
+		trend, err := m.store.ResourceTrendHourly(now.Add(-historyRetention).Unix())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"trend": trend})
+		return
+	}
+
+	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
+	for _, rs := range remotes {
+		if rs.Name == source {
+			if rs.MonitorURL != "" {
+				m.proxyRemote(w, rs.MonitorURL+"/api/resource-trend")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"trend": rs.ResourceTrend})
+			return
+		}
+	}
+	http.Error(w, "source not found", http.StatusNotFound)
+}
+
+func (m *Monitor) proxyRemote(w http.ResponseWriter, url string) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// ReadRemoteSources reads remote monitor snapshots.
 func ReadRemoteSources(path string) ([]SourceSummary, error) {
 	if path == "" {
 		return nil, nil
@@ -227,16 +315,17 @@ func (m *Monitor) Run(ctx context.Context) error {
 
 	sampleTicker := time.NewTicker(m.cfg.SamplingInterval)
 	defer sampleTicker.Stop()
+	resourceTicker := time.NewTicker(DefaultResourceInterval)
+	defer resourceTicker.Stop()
 	maintTicker := time.NewTicker(time.Hour)
 	defer maintTicker.Stop()
 
-	// Seed previous counters from the store so the first delta is sane across
-	// restarts.
 	if rx, tx, ok, _ := m.store.LatestCounters(m.cfg.Interface); ok {
 		m.prev = InterfaceCounters{Name: m.cfg.Interface, RXBytes: rx, TXBytes: tx}
 		m.havePrev = true
 	}
 	m.sampleOnce(m.now())
+	m.resourceSampleOnce(m.now())
 
 	go func() {
 		for {
@@ -245,6 +334,8 @@ func (m *Monitor) Run(ctx context.Context) error {
 				return
 			case <-sampleTicker.C:
 				m.sampleOnce(m.now())
+			case <-resourceTicker.C:
+				m.resourceSampleOnce(m.now())
 			case <-maintTicker.C:
 				m.maintenance(m.now())
 			}
@@ -257,7 +348,6 @@ func (m *Monitor) Run(ctx context.Context) error {
 	return nil
 }
 
-// sampleOnce reads counters, records the delta, and enforces the quota.
 func (m *Monitor) sampleOnce(now time.Time) {
 	cur, err := ReadCounters(m.cfg.Interface)
 	if err != nil {
@@ -277,7 +367,32 @@ func (m *Monitor) sampleOnce(now time.Time) {
 	m.enforceQuota(now)
 }
 
-// enforceQuota stops sing-box when over quota and restarts it after a reset.
+func (m *Monitor) resourceSampleOnce(now time.Time) {
+	reading, err := m.resCollector.Collect()
+	if err != nil {
+		log.Printf("monitor: resource collect: %v", err)
+		return
+	}
+	if !reading.Valid {
+		return
+	}
+	if err := m.store.InsertResourceSample(
+		now.Unix(), reading.CPUPct, reading.MemPct, reading.DiskUsedPct,
+		reading.DIOReadDelta, reading.DIOWriteDelta,
+	); err != nil {
+		log.Printf("monitor: insert resource sample: %v", err)
+		return
+	}
+	intervalSec := DefaultResourceInterval.Seconds()
+	m.latestResource = &ResourceSnapshot{
+		CPUPct:           reading.CPUPct,
+		MemPct:           reading.MemPct,
+		DiskRemainingPct: 100 - reading.DiskUsedPct,
+		DiskIOReadRate:   float64(reading.DIOReadDelta) / intervalSec,
+		DiskIOWriteRate:  float64(reading.DIOWriteDelta) / intervalSec,
+	}
+}
+
 func (m *Monitor) enforceQuota(now time.Time) {
 	limits := TrafficLimits{InBytes: m.cfg.InLimitBytes, OutBytes: m.cfg.OutLimitBytes, TotalBytes: m.cfg.TotalLimitBytes}
 	if m.control == nil || limits == (TrafficLimits{}) {
@@ -299,7 +414,6 @@ func (m *Monitor) enforceQuota(now time.Time) {
 			log.Printf("monitor: quota exceeded (in=%d/%d out=%d/%d total=%d/%d bytes), stopped sing-box", used.InBytes, m.cfg.InLimitBytes, used.OutBytes, m.cfg.OutLimitBytes, used.Total(), m.cfg.TotalLimitBytes)
 		}
 	case m.stoppedByQuota:
-		// New cycle has reduced usage below the limit; restore service.
 		if err := m.control.Start(); err != nil {
 			log.Printf("monitor: start sing-box: %v", err)
 			return
@@ -309,10 +423,12 @@ func (m *Monitor) enforceQuota(now time.Time) {
 	}
 }
 
-// maintenance aggregates raw samples and prunes old history.
 func (m *Monitor) maintenance(now time.Time) {
 	if err := m.store.AggregateHourly(now.Add(-rawRetention).Unix()); err != nil {
 		log.Printf("monitor: aggregate: %v", err)
+	}
+	if err := m.store.AggregateResourceHourly(now.Add(-resourceRawRetention).Unix()); err != nil {
+		log.Printf("monitor: aggregate resources: %v", err)
 	}
 	if err := m.store.Cleanup(now.Add(-historyRetention).Unix()); err != nil {
 		log.Printf("monitor: cleanup: %v", err)
