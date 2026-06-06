@@ -277,8 +277,8 @@ func (sm *subscriptionManager) localFields() []field {
 func (sm *subscriptionManager) remoteFields() []field {
 	return []field{
 		{key: "remote_domain", label: "Remote domain", note: "Domain name of the remote singbox-deploy server, for example node.example.com. Used to build remote subscription URLs."},
+		{key: "remote_alias", label: "Remote alias", note: "Alias used to rename aggregated remote nodes and display remote traffic. The node-name prefix (e.g. JP in JP-01) is replaced with this alias while preserving the numbering suffix, and the corresponding country flag emoji is prepended (e.g. JP-01 → 🇺🇸 US-vps1-01 when alias is US-vps1)."},
 		{key: "remote_subscribe_port", label: "Remote subscription HTTPS port", def: strconv.Itoa(sm.cfg.SubscribePort)},
-		{key: "remote_alias", label: "Remote alias", note: "Alias used to rename aggregated remote nodes and display remote traffic. Prefixes such as US, JP, HK get the same flag mapping as local nodes."},
 		{key: "remote_salt", label: "Remote subscription salt"},
 	}
 }

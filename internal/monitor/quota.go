@@ -94,11 +94,33 @@ func clampDay(year int, month time.Month, day int) int {
 
 // ResourceSnapshot is the latest resource reading shown on the monitor card.
 type ResourceSnapshot struct {
-	CPUPct           float64 `json:"cpuPct"`
-	MemPct           float64 `json:"memPct"`
-	DiskRemainingPct float64 `json:"diskRemainingPct"`
-	DiskIOReadRate   float64 `json:"diskIOReadRate"`
-	DiskIOWriteRate  float64 `json:"diskIOWriteRate"`
+	CPUPct         float64 `json:"cpuPct"`
+	MemPct         float64 `json:"memPct"`
+	MemUsedBytes   uint64  `json:"memUsedBytes"`
+	MemTotalBytes  uint64  `json:"memTotalBytes"`
+	DiskUsagePct   float64 `json:"diskUsagePct"`
+	DiskUsedBytes  uint64  `json:"diskUsedBytes"`
+	DiskTotalBytes uint64  `json:"diskTotalBytes"`
+	DiskIOReadRate  float64 `json:"diskIOReadRate"`
+	DiskIOWriteRate float64 `json:"diskIOWriteRate"`
+}
+
+// ResourceRawPoint is one raw resource sample (10-second interval).
+type ResourceRawPoint struct {
+	TS       int64   `json:"ts"`
+	CPUPct   float64 `json:"cpuPct"`
+	MemPct   float64 `json:"memPct"`
+	DiskPct  float64 `json:"diskPct"`
+	DIORead  int64   `json:"dioRead"`
+	DIOWrite int64   `json:"dioWrite"`
+}
+
+// TrafficRawPoint is one raw traffic sample (per sampling interval).
+type TrafficRawPoint struct {
+	TS         int64 `json:"ts"`
+	InBytes    int64 `json:"inBytes"`
+	OutBytes   int64 `json:"outBytes"`
+	TotalBytes int64 `json:"totalBytes"`
 }
 
 // ResourceHourlyPoint is one aggregated hourly resource bucket with avg and max.

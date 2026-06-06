@@ -11,15 +11,15 @@ import (
 func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
 		{Key: "monitor", Label: "Deploy monitor", Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to skip the monitor service."},
-		{Key: "monitor_alias", Label: "Monitor alias", Def: deploy.DefaultMonitorAlias, Note: "Shown as the local source name on /monitor. Prefixes such as US, JP, HK get the same flag mapping as subscription nodes.", Skip: monitorDisabled},
+		{Key: "monitor_alias", Label: "Monitor alias", Def: deploy.DefaultMonitorAlias, Note: "Shown as the local source name on /monitor.", Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(deploy.DefaultMonitorPublicPort), Note: "Nginx listens on this public HTTPS port for /monitor.", Skip: monitorDisabled},
 		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(deploy.DefaultMonitorPort), Note: "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port.", Skip: monitorDisabled},
 		{Key: "monitor_interval_seconds", Label: "Traffic sampling interval seconds", Def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), Note: "Default is 300 seconds. Lower values write more samples.", Skip: monitorDisabled},
 		{Key: "traffic_in_limit_gb", Label: "Monthly inbound traffic limit in GB (0 = unlimited)", Def: "0", Note: "Inbound uses the monitored interface RX counter. When any configured limit is exceeded, sing-box.service is stopped automatically.", Skip: monitorDisabled},
 		{Key: "traffic_out_limit_gb", Label: "Monthly outbound traffic limit in GB (0 = unlimited)", Def: "0", Note: "Outbound uses the monitored interface TX counter.", Skip: monitorDisabled},
 		{Key: "traffic_total_limit_gb", Label: "Monthly total traffic limit in GB (0 = unlimited)", Def: "0", Note: "Total traffic is inbound + outbound.", Skip: monitorDisabled},
-		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(deploy.DefaultResetDay), Note: "Day of month when the traffic quota cycle resets and service can be restored.", Skip: monitorDisabled},
-		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(deploy.DefaultResetHour), Note: "Hour of day in GMT+0 for the monthly reset boundary.", Skip: monitorDisabled},
+		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(deploy.DefaultResetDay), Note: "Day of month when the traffic quota cycle resets.", Skip: monitorDisabled},
+		{Key: "reset_hour", Label: "Monthly reset hour (0-23)", Def: strconv.Itoa(deploy.DefaultResetHour), Note: "Hour of day in GMT when the traffic quota cycle resets.", Skip: monitorDisabled},
 	}
 }
 

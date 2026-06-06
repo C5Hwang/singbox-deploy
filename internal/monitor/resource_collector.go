@@ -15,7 +15,11 @@ import (
 type ResourceReading struct {
 	CPUPct        float64
 	MemPct        float64
+	MemUsedBytes  uint64
+	MemTotalBytes uint64
 	DiskUsedPct   float64
+	DiskUsedBytes uint64
+	DiskTotalBytes uint64
 	DIOReadDelta  uint64
 	DIOWriteDelta uint64
 	Valid         bool
@@ -65,12 +69,12 @@ func (rc *ResourceCollector) Collect() (ResourceReading, error) {
 	}
 	rc.prevCPU = cpu
 
-	memPct, err := readMemoryPercent()
+	memPct, memUsed, memTotal, err := readMemoryInfo()
 	if err != nil {
 		return ResourceReading{}, err
 	}
 
-	diskPct, err := readDiskPercent(rc.diskPath)
+	diskPct, diskUsed, diskTotal, err := readDiskInfo(rc.diskPath)
 	if err != nil {
 		return ResourceReading{}, err
 	}
@@ -93,12 +97,16 @@ func (rc *ResourceCollector) Collect() (ResourceReading, error) {
 	rc.havePrevDIO = true
 
 	return ResourceReading{
-		CPUPct:        cpuPct,
-		MemPct:        memPct,
-		DiskUsedPct:   diskPct,
-		DIOReadDelta:  dioReadDelta,
-		DIOWriteDelta: dioWriteDelta,
-		Valid:         valid,
+		CPUPct:         cpuPct,
+		MemPct:         memPct,
+		MemUsedBytes:   memUsed,
+		MemTotalBytes:  memTotal,
+		DiskUsedPct:    diskPct,
+		DiskUsedBytes:  diskUsed,
+		DiskTotalBytes: diskTotal,
+		DIOReadDelta:   dioReadDelta,
+		DIOWriteDelta:  dioWriteDelta,
+		Valid:          valid,
 	}, nil
 }
 
@@ -131,10 +139,10 @@ func readProcStat() (cpuSample, error) {
 	return cpuSample{}, scanner.Err()
 }
 
-func readMemoryPercent() (float64, error) {
+func readMemoryInfo() (pct float64, usedBytes, totalBytes uint64, err error) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
 	defer f.Close()
 	var memTotal, memAvailable uint64
@@ -151,9 +159,12 @@ func readMemoryPercent() (float64, error) {
 		}
 	}
 	if memTotal == 0 {
-		return 0, nil
+		return 0, 0, 0, nil
 	}
-	return (1 - float64(memAvailable)/float64(memTotal)) * 100, nil
+	totalBytes = memTotal * 1024
+	usedBytes = (memTotal - memAvailable) * 1024
+	pct = (1 - float64(memAvailable)/float64(memTotal)) * 100
+	return pct, usedBytes, totalBytes, nil
 }
 
 func parseMemInfoKB(line string) uint64 {
@@ -165,17 +176,19 @@ func parseMemInfoKB(line string) uint64 {
 	return v
 }
 
-func readDiskPercent(path string) (float64, error) {
+func readDiskInfo(path string) (pct float64, usedBytes, totalBytes uint64, err error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
+		return 0, 0, 0, err
 	}
-	total := stat.Blocks * uint64(stat.Bsize)
+	totalBytes = stat.Blocks * uint64(stat.Bsize)
 	avail := stat.Bavail * uint64(stat.Bsize)
-	if total == 0 {
-		return 0, nil
+	if totalBytes == 0 {
+		return 0, 0, 0, nil
 	}
-	return (1 - float64(avail)/float64(total)) * 100, nil
+	usedBytes = totalBytes - avail
+	pct = (1 - float64(avail)/float64(totalBytes)) * 100
+	return pct, usedBytes, totalBytes, nil
 }
 
 var wholeDiskRE = regexp.MustCompile(`^(sd[a-z]+|vd[a-z]+|xvd[a-z]+|nvme\d+n\d+)$`)

@@ -297,6 +297,47 @@ ORDER BY ts_hour ASC`, since)
 	return points, rows.Err()
 }
 
+// ResourceRawSamples returns raw resource readings at or after since.
+func (s *Store) ResourceRawSamples(since int64) ([]ResourceRawPoint, error) {
+	rows, err := s.db.Query(`
+SELECT ts, cpu_pct, mem_pct, disk_pct, dio_read, dio_write
+FROM resource_samples WHERE ts >= ? ORDER BY ts ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var points []ResourceRawPoint
+	for rows.Next() {
+		var p ResourceRawPoint
+		if err := rows.Scan(&p.TS, &p.CPUPct, &p.MemPct, &p.DiskPct, &p.DIORead, &p.DIOWrite); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+	return points, rows.Err()
+}
+
+// TrafficRawSamples returns raw traffic deltas at or after since.
+func (s *Store) TrafficRawSamples(since int64) ([]TrafficRawPoint, error) {
+	rows, err := s.db.Query(`
+SELECT ts, delta_rx_bytes, delta_tx_bytes
+FROM samples WHERE ts >= ? ORDER BY ts ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var points []TrafficRawPoint
+	for rows.Next() {
+		var p TrafficRawPoint
+		if err := rows.Scan(&p.TS, &p.InBytes, &p.OutBytes); err != nil {
+			return nil, err
+		}
+		p.TotalBytes = p.InBytes + p.OutBytes
+		points = append(points, p)
+	}
+	return points, rows.Err()
+}
+
 // AggregateResourceHourly folds raw resource samples older than before into
 // the resource_hourly table and deletes those raw samples.
 func (s *Store) AggregateResourceHourly(before int64) error {

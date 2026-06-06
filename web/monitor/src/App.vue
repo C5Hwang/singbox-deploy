@@ -164,7 +164,8 @@ body {
   background: rgba(255, 255, 255, 0.88); border: 1px solid rgba(231, 236, 244, 0.94);
   border-radius: var(--radius-xl); box-shadow: var(--shadow); padding: 20px; min-width: 0;
 }
-.metric-card { padding: 16px; }
+.metric-card { padding: 16px; display: flex; flex-direction: column; }
+.metric-card > .progress { margin-top: auto; }
 .source-card { grid-column: span 12; }
 .span-3 { grid-column: span 3; }
 .span-4 { grid-column: span 4; }
@@ -187,6 +188,7 @@ body {
   font-variant-numeric: tabular-nums; line-height: 1.15; margin: 0; overflow-wrap: anywhere;
 }
 .metric-value.small { font-size: 18px; }
+.metric-detail { margin: 4px 0 0; color: var(--muted); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
 /* ── Badges ───────────────────────────────────────────────── */
 .delta, .tag, .status {
@@ -254,6 +256,7 @@ body {
 .resource-value.small { font-size: 16px; }
 .resource-value.warn { color: var(--orange); }
 .resource-value.danger { color: var(--red); }
+.resource-detail { color: var(--muted); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
 .no-data { color: var(--muted); font-size: 14px; padding: 12px 0; }
 
 /* ── Modal ────────────────────────────────────────────────── */

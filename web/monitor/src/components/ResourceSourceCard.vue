@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SourceSummary } from "../types";
-import { formatRate, formatGMTDateTime } from "../utils";
+import { formatBytes, formatRate, formatGMTDateTime } from "../utils";
 
 defineProps<{ source: SourceSummary }>();
 defineEmits<{ click: [] }>();
@@ -8,6 +8,11 @@ defineEmits<{ click: [] }>();
 function fmtPct(v: number | undefined): string {
   if (v === undefined || v === null) return "NA";
   return `${v.toFixed(1)}%`;
+}
+
+function fmtUsage(used: number | undefined, total: number | undefined): string {
+  if (!used && !total) return "";
+  return `${formatBytes(used ?? 0)} / ${formatBytes(total ?? 0)}`;
 }
 </script>
 
@@ -41,12 +46,16 @@ function fmtPct(v: number | undefined): string {
         <div class="resource-value" :class="{ warn: (source.resources.memPct ?? 0) >= 75, danger: (source.resources.memPct ?? 0) >= 90 }">
           {{ fmtPct(source.resources.memPct) }}
         </div>
+        <div class="resource-detail" v-if="source.resources.memTotalBytes">{{ fmtUsage(source.resources.memUsedBytes, source.resources.memTotalBytes) }}</div>
         <div class="progress" :style="{ '--value': source.resources.memPct, '--bar': 'var(--cyan)' }"></div>
       </div>
       <div class="resource-item">
-        <div class="resource-label">Disk Free</div>
-        <div class="resource-value">{{ fmtPct(source.resources.diskRemainingPct) }}</div>
-        <div class="progress" :style="{ '--value': 100 - (source.resources.diskRemainingPct ?? 0), '--bar': 'var(--green)' }"></div>
+        <div class="resource-label">Disk Usage</div>
+        <div class="resource-value" :class="{ warn: (source.resources.diskUsagePct ?? 0) >= 75, danger: (source.resources.diskUsagePct ?? 0) >= 90 }">
+          {{ fmtPct(source.resources.diskUsagePct) }}
+        </div>
+        <div class="resource-detail" v-if="source.resources.diskTotalBytes">{{ fmtUsage(source.resources.diskUsedBytes, source.resources.diskTotalBytes) }}</div>
+        <div class="progress" :style="{ '--value': source.resources.diskUsagePct, '--bar': 'var(--green)' }"></div>
       </div>
       <div class="resource-item">
         <div class="resource-label">IO Read</div>

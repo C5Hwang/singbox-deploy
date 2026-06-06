@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --outDir ../../template/monitor-ui --emptyOutDir"
+    "build": "vite build"
   },
   "dependencies": {
     "echarts": "^6.1.0",

@@ -85,7 +85,9 @@ func (m *Monitor) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/summary", m.handleSummary)
 	mux.HandleFunc("/api/traffic-trend", m.handleTrafficTrend)
+	mux.HandleFunc("/api/traffic-recent", m.handleTrafficRecent)
 	mux.HandleFunc("/api/resource-trend", m.handleResourceTrend)
+	mux.HandleFunc("/api/resource-recent", m.handleResourceRecent)
 	if sub, err := fs.Sub(assets.FS, "monitor-ui"); err == nil {
 		mux.Handle("/", http.FileServer(http.FS(sub)))
 	}
@@ -231,6 +233,56 @@ func (m *Monitor) handleResourceTrend(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"trend": rs.ResourceTrend})
+			return
+		}
+	}
+	http.Error(w, "source not found", http.StatusNotFound)
+}
+
+func (m *Monitor) handleTrafficRecent(w http.ResponseWriter, r *http.Request) {
+	source := r.URL.Query().Get("source")
+	now := m.now()
+
+	if source == "" || source == "local" || source == m.localAlias() {
+		points, err := m.store.TrafficRawSamples(now.Add(-rawRetention).Unix())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"points": points})
+		return
+	}
+
+	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
+	for _, rs := range remotes {
+		if rs.Name == source && rs.MonitorURL != "" {
+			m.proxyRemote(w, rs.MonitorURL+"/api/traffic-recent")
+			return
+		}
+	}
+	http.Error(w, "source not found", http.StatusNotFound)
+}
+
+func (m *Monitor) handleResourceRecent(w http.ResponseWriter, r *http.Request) {
+	source := r.URL.Query().Get("source")
+	now := m.now()
+
+	if source == "" || source == "local" || source == m.localAlias() {
+		points, err := m.store.ResourceRawSamples(now.Add(-resourceRawRetention).Unix())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"points": points})
+		return
+	}
+
+	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
+	for _, rs := range remotes {
+		if rs.Name == source && rs.MonitorURL != "" {
+			m.proxyRemote(w, rs.MonitorURL+"/api/resource-recent")
 			return
 		}
 	}
@@ -385,11 +437,15 @@ func (m *Monitor) resourceSampleOnce(now time.Time) {
 	}
 	intervalSec := DefaultResourceInterval.Seconds()
 	m.latestResource = &ResourceSnapshot{
-		CPUPct:           reading.CPUPct,
-		MemPct:           reading.MemPct,
-		DiskRemainingPct: 100 - reading.DiskUsedPct,
-		DiskIOReadRate:   float64(reading.DIOReadDelta) / intervalSec,
-		DiskIOWriteRate:  float64(reading.DIOWriteDelta) / intervalSec,
+		CPUPct:          reading.CPUPct,
+		MemPct:          reading.MemPct,
+		MemUsedBytes:    reading.MemUsedBytes,
+		MemTotalBytes:   reading.MemTotalBytes,
+		DiskUsagePct:    reading.DiskUsedPct,
+		DiskUsedBytes:   reading.DiskUsedBytes,
+		DiskTotalBytes:  reading.DiskTotalBytes,
+		DiskIOReadRate:  float64(reading.DIOReadDelta) / intervalSec,
+		DiskIOWriteRate: float64(reading.DIOWriteDelta) / intervalSec,
 	}
 }
 

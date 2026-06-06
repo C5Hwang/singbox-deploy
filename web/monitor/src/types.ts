@@ -8,9 +8,29 @@ export interface HourlyPoint {
 export interface ResourceSnapshot {
   cpuPct: number;
   memPct: number;
-  diskRemainingPct: number;
+  memUsedBytes: number;
+  memTotalBytes: number;
+  diskUsagePct: number;
+  diskUsedBytes: number;
+  diskTotalBytes: number;
   diskIOReadRate: number;
   diskIOWriteRate: number;
+}
+
+export interface TrafficRawPoint {
+  ts: number;
+  inBytes: number;
+  outBytes: number;
+  totalBytes: number;
+}
+
+export interface ResourceRawPoint {
+  ts: number;
+  cpuPct: number;
+  memPct: number;
+  diskPct: number;
+  dioRead: number;
+  dioWrite: number;
 }
 
 export interface ResourceHourlyPoint {
