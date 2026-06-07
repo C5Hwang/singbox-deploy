@@ -57,7 +57,6 @@ function sourceResetLabel(source: SourceSummary): string {
         <div class="source-meta">
           <span>Reset Time: {{ sourceResetLabel(source) }}</span>
           <span>Sample Time: {{ source.sampledAt ? formatGMTDateTime(source.sampledAt) : "NA" }}</span>
-          <span v-if="source.fetchedAt">Fetched: {{ formatGMTDateTime(source.fetchedAt) }}</span>
         </div>
       </div>
       <div>

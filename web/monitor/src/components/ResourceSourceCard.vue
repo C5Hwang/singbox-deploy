@@ -25,7 +25,6 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
         <div class="source-meta">
           <span v-if="source.resetTime">Reset Time: {{ formatGMTDateTime(source.resetTime) }}</span>
           <span>Sample Time: {{ source.sampledAt ? formatGMTDateTime(source.sampledAt) : "NA" }}</span>
-          <span v-if="source.fetchedAt">Fetched: {{ formatGMTDateTime(source.fetchedAt) }}</span>
         </div>
       </div>
     </div>
