@@ -1,7 +1,9 @@
 package monitor
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +17,93 @@ func TestTrafficLimitsExceeded(t *testing.T) {
 	used := TrafficTotals{InBytes: 90, OutBytes: 160}
 	if !limits.Exceeded(used) {
 		t.Fatalf("quota should be exceeded")
+	}
+}
+
+func TestSummaryRefreshesRemoteSourcesBeforeRead(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "monitor.db"))
+	if err != nil {
+		t.Fatalf("OpenStore error: %v", err)
+	}
+	defer store.Close()
+
+	remotePath := filepath.Join(dir, "state", "remote_monitor.json")
+	calls := 0
+	m := New(store, Config{
+		Alias:             "local",
+		RemoteMonitorPath: remotePath,
+		RefreshRemoteSources: func(_ context.Context) error {
+			calls++
+			return WriteRemoteSources(remotePath, []SourceSummary{{
+				Name:           "JP-remote",
+				TotalUsedBytes: 900,
+				ResetTime:      "2026-06-01T00:00:00Z",
+			}})
+		},
+		Now: func() time.Time {
+			return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+		},
+	}, nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/summary", nil)
+	m.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("refresh calls = %d", calls)
+	}
+	var got summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if len(got.Sources) != 2 || got.Sources[1].Name != "JP-remote" || got.Sources[1].TotalUsedBytes != 900 {
+		t.Fatalf("sources = %#v", got.Sources)
+	}
+}
+
+func TestSummaryKeepsOldRemoteSnapshotWhenRefreshFails(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "monitor.db"))
+	if err != nil {
+		t.Fatalf("OpenStore error: %v", err)
+	}
+	defer store.Close()
+
+	remotePath := filepath.Join(dir, "state", "remote_monitor.json")
+	if err := WriteRemoteSources(remotePath, []SourceSummary{{
+		Name:           "JP-old",
+		TotalUsedBytes: 300,
+		ResetTime:      "2026-06-01T00:00:00Z",
+	}}); err != nil {
+		t.Fatalf("WriteRemoteSources error: %v", err)
+	}
+
+	m := New(store, Config{
+		Alias:             "local",
+		RemoteMonitorPath: remotePath,
+		RefreshRemoteSources: func(_ context.Context) error {
+			return errors.New("remote unavailable")
+		},
+		Now: func() time.Time {
+			return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+		},
+	}, nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/summary", nil)
+	m.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if len(got.Sources) != 2 || got.Sources[1].Name != "JP-old" || got.Sources[1].TotalUsedBytes != 300 {
+		t.Fatalf("sources = %#v", got.Sources)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/assets"
@@ -33,17 +34,18 @@ type ServiceController interface {
 
 // Config configures the monitor service.
 type Config struct {
-	Listen            string
-	Interface         string
-	SamplingInterval  time.Duration
-	InLimitBytes      uint64
-	OutLimitBytes     uint64
-	TotalLimitBytes   uint64
-	ResetDay          int
-	ResetHour         int
-	Alias             string
-	RemoteMonitorPath string
-	Now               func() time.Time
+	Listen               string
+	Interface            string
+	SamplingInterval     time.Duration
+	InLimitBytes         uint64
+	OutLimitBytes        uint64
+	TotalLimitBytes      uint64
+	ResetDay             int
+	ResetHour            int
+	Alias                string
+	RemoteMonitorPath    string
+	RefreshRemoteSources func(context.Context) error
+	Now                  func() time.Time
 }
 
 // Monitor samples interface counters, enforces the quota, and serves the API/UI.
@@ -56,8 +58,9 @@ type Monitor struct {
 	havePrev       bool
 	stoppedByQuota bool
 
-	resCollector   *ResourceCollector
-	latestResource *ResourceSnapshot
+	resCollector    *ResourceCollector
+	latestResource  *ResourceSnapshot
+	remoteRefreshMu sync.Mutex
 }
 
 // New returns a Monitor backed by store. control may be nil to disable quota
@@ -131,7 +134,8 @@ type SourceSummary struct {
 	ResourceTrend       []ResourceHourlyPoint `json:"resourceTrend,omitempty"`
 }
 
-func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
+func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
+	m.refreshRemoteSources(r.Context())
 	now := m.now()
 	used, err := m.usedThisCycle(now)
 	if err != nil {
@@ -180,6 +184,17 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		Resources:           local.Resources,
 		Sources:             sources,
 	})
+}
+
+func (m *Monitor) refreshRemoteSources(ctx context.Context) {
+	if m.cfg.RefreshRemoteSources == nil {
+		return
+	}
+	m.remoteRefreshMu.Lock()
+	defer m.remoteRefreshMu.Unlock()
+	if err := m.cfg.RefreshRemoteSources(ctx); err != nil {
+		log.Printf("monitor: refresh remote monitor data: %v", err)
+	}
 }
 
 func (m *Monitor) handleTrafficTrend(w http.ResponseWriter, r *http.Request) {

@@ -32,13 +32,12 @@ const (
 	monitorActionLocal monitorAction = iota
 	monitorActionUsage
 	monitorActionRemotes
-	monitorActionRefresh
 )
 
 var (
 	monitorUILayout   = paths.DefaultLayout
 	detectMonitorHost = system.DetectHost
-	updateMonitorRun = monitor.UpdateSettings
+	updateMonitorRun  = monitor.UpdateSettings
 )
 
 type monitorActionItem struct {
@@ -253,8 +252,6 @@ func (tm *monitorManager) activateAction() {
 			return
 		}
 		tm.startForm(tm.remoteMonitorFields())
-	case monitorActionRefresh:
-		tm.phase = monitorPhaseConfirm
 	}
 }
 
@@ -376,11 +373,6 @@ func (tm *monitorManager) updateOptions() monitor.UpdateOptions {
 		opts := base
 		opts.SetRemotes = true
 		opts.Remotes = tm.targetRemoteMonitor()
-		return opts
-	case monitorActionRefresh:
-		opts := base
-		opts.SetRemotes = true
-		opts.Remotes = toManageRemotes(tm.remotes)
 		return opts
 	default:
 		return base
@@ -536,8 +528,6 @@ func (tm *monitorManager) confirmView() string {
 		if len(selected) == 0 {
 			rows = append(rows, summaryIndentedRow(2, "Remote", "none"))
 		}
-	case monitorActionRefresh:
-		rows = append(rows, summaryRow("Refresh remote monitors", strconv.Itoa(countRemoteMonitor(tm.remotes))))
 	}
 	rows = append(rows, summaryBlank(), summaryText("This will update monitor state and refresh /monitor data."))
 	return flowTitle.Render("Monitor · Confirm") + "\n\n" + renderSummary(rows)
@@ -582,7 +572,6 @@ func (tm *monitorManager) actions() []monitorActionItem {
 		{action: monitorActionLocal, label: "Edit monitor settings"},
 		{action: monitorActionUsage, label: "Adjust traffic counters"},
 		{action: monitorActionRemotes, label: "Configure remote sources"},
-		{action: monitorActionRefresh, label: "Refresh remote sources"},
 	}
 }
 

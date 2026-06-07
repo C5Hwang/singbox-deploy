@@ -585,7 +585,7 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	if status.SingBoxState != "running" || status.NginxState != "not running" || status.MonitorState != "not running" {
 		t.Fatalf("service states = %#v", status)
 	}
-	if status.Protocols != "reality-vision,tuic" {
+	if status.Protocols != "reality-vision, tuic" {
 		t.Fatalf("Protocols = %q", status.Protocols)
 	}
 	if status.Subscription != "https://example.com:2096/s/default/tok" {

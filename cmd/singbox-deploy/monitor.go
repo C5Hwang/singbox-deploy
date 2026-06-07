@@ -72,7 +72,18 @@ func runMonitor(args []string) error {
 		ResetHour:         *resetHour,
 		Alias:             *alias,
 		RemoteMonitorPath: *remoteMonitorPath,
-		Now:               clock.Now,
+		RefreshRemoteSources: func(ctx context.Context) error {
+			remotes, err := deploy.LoadRemoteSubscriptions(layout)
+			if err != nil {
+				return err
+			}
+			sources, err := deploy.FetchRemoteMonitorSources(ctx, remotes, deploy.DefaultSubscriptionFetch)
+			if err != nil {
+				return err
+			}
+			return monitor.WriteRemoteSources(*remoteMonitorPath, sources)
+		},
+		Now: clock.Now,
 	}
 	m := monitor.New(store, cfg, systemdSingBox{})
 

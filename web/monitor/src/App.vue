@@ -37,7 +37,7 @@ const subtitle = computed(() => {
 
 onMounted(() => {
   load();
-  loadTimer = window.setInterval(load, 30000);
+  loadTimer = window.setInterval(load, 10000);
   clockTimer = window.setInterval(() => {
     now.value = new Date();
   }, 1000);

@@ -69,7 +69,7 @@ func loadStatus() Status {
 		NginxState:   serviceState("nginx.service"),
 		MonitorState: monitorState,
 		CertState:    certificateState(layout, domain),
-		Protocols:    readStatusState(store, "enabled_protocols"),
+		Protocols:    protocolStrings(protocolsFromValue(readStatusState(store, "enabled_protocols"))),
 		Subscription: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "default"),
 		ClashMetaSub: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "clashMetaProfiles"),
 		SingBoxSub:   subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "sing-box"),
