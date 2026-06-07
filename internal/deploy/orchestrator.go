@@ -295,6 +295,7 @@ func (o *Orchestrator) stepSubscriptions(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
+	_ = os.Remove(filepath.Join(filepath.Dir(o.NginxConfPath), "default.conf"))
 	if err := WriteManagedNginxConfig(o.Layout, cfg, o.NginxConfPath); err != nil {
 		return err
 	}
@@ -388,6 +389,7 @@ func WriteInstallState(stateDir string, cfg Config) error {
 		"monitor_port":           itoa(cfg.MonitorPort),
 		"monitor_interface":      cfg.MonitorInterface,
 		"monitor":                yesNoString(cfg.DeployMonitor),
+		"monitor_frontend":       yesNoString(cfg.DeployMonitorFrontend),
 	}
 	if cfg.DeployMonitor {
 		state["monitor_alias"] = cfg.MonitorAlias

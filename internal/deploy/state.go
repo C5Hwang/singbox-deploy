@@ -47,6 +47,7 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 	if monitorStateValue == "" {
 		monitorStateValue = readProtocolStateDefault(store, "traffic_monitor", "yes")
 	}
+	monitorFrontendValue := readProtocolStateDefault(store, "monitor_frontend", "yes")
 	monitorAlias := readProtocolStateDefault(store, "monitor_alias", "")
 	if monitorAlias == "" {
 		monitorAlias = readProtocolStateDefault(store, "traffic_alias", DefaultMonitorAlias)
@@ -68,6 +69,7 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		MonitorPublicPort:      monitorPublicPort,
 		MonitorPort:            readProtocolStateIntDefault(store, "monitor_port", DefaultMonitorPort),
 		DeployMonitor:          monitorStateValue != "no",
+		DeployMonitorFrontend:  monitorFrontendValue != "no",
 		MonitorAlias:           monitorAlias,
 		TrafficInLimitBytes:    readProtocolStateUintDefault(store, "traffic_in_limit_bytes", 0),
 		TrafficOutLimitBytes:   readProtocolStateUintDefault(store, "traffic_out_limit_bytes", 0),

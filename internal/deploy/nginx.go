@@ -63,8 +63,9 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 		"KeyPath":           keyPath,
 		"WebRoot":           layout.WebRoot,
 		"SubscribeDir":      layout.SubscribeDir,
-		"EnableMonitor":     cfg.DeployMonitor,
-		"MonitorPort":       cfg.MonitorPort,
+		"EnableMonitor":         cfg.DeployMonitor,
+		"EnableMonitorFrontend": cfg.DeployMonitorFrontend,
+		"MonitorPort":           cfg.MonitorPort,
 	})
 	if err != nil {
 		return err

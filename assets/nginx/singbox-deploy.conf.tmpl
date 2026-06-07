@@ -1,4 +1,48 @@
 server {
+    listen 80 default_server;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name _;
+
+    ssl_certificate {{ .CertificatePath }};
+    ssl_certificate_key {{ .KeyPath }};
+
+    root {{ .WebRoot }};
+{{ if eq .SubscribePort 443 }}
+    location /s/ {
+        alias {{ .SubscribeDir }}/;
+        default_type text/plain;
+        charset utf-8;
+    }
+{{ end }}
+{{ if and .EnableMonitor (eq .MonitorPublicPort 443) }}
+{{ if .EnableMonitorFrontend }}
+    location /monitor/ {
+        proxy_pass http://127.0.0.1:{{ .MonitorPort }}/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+{{ end }}
+    location /monitor/api/ {
+        proxy_pass http://127.0.0.1:{{ .MonitorPort }}/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+{{ end }}
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+{{ if ne .SubscribePort 443 }}
+server {
     listen {{ .SubscribePort }} ssl;
     http2 on;
     server_name {{ .Domain }};
@@ -18,15 +62,16 @@ server {
         try_files $uri $uri/ /index.html;
     }
 }
-
-{{ if .EnableMonitor }}server {
+{{ end }}
+{{ if and .EnableMonitor (ne .MonitorPublicPort 443) }}
+server {
     listen {{ .MonitorPublicPort }} ssl;
     http2 on;
     server_name {{ .Domain }};
 
     ssl_certificate {{ .CertificatePath }};
     ssl_certificate_key {{ .KeyPath }};
-
+{{ if .EnableMonitorFrontend }}
     location = / {
         return 302 /monitor/;
     }
@@ -37,7 +82,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Real-IP $remote_addr;
     }
-
+{{ end }}
     location /monitor/api/ {
         proxy_pass http://127.0.0.1:{{ .MonitorPort }}/api/;
         proxy_set_header Host $host;

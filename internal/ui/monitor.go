@@ -392,6 +392,7 @@ func (tm *monitorManager) localUpdateOptions() monitor.UpdateOptions {
 	opts.SetLocal = true
 	opts.SetMonitor = true
 	opts.DeployMonitor = monitorEnabled(tm.values)
+	opts.DeployMonitorFrontend = monitorFrontendEnabled(tm.values)
 	opts.MonitorAlias = strings.TrimSpace(tm.values["monitor_alias"])
 	opts.MonitorPublicPort = monitorPublicPort
 	opts.MonitorPort = monitorPort
@@ -466,6 +467,7 @@ func (tm *monitorManager) View() string {
 func (tm *monitorManager) actionView() string {
 	rows := []summaryLine{
 		summaryRow("Monitor", yesNoString(tm.cfg.DeployMonitor)),
+		summaryRow("Monitor frontend", yesNoString(tm.cfg.DeployMonitorFrontend)),
 		summaryRow("Monitor alias", or(tm.cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 		summaryRow("Monitor UI port", strconv.Itoa(tm.cfg.MonitorPublicPort)),
 		summaryRow("Monitor local port", strconv.Itoa(tm.cfg.MonitorPort)),
@@ -501,6 +503,7 @@ func (tm *monitorManager) confirmView() string {
 	case monitorActionLocal:
 		rows = append(rows,
 			summaryRow("Deploy monitor", tm.values["monitor"]),
+			summaryRow("Monitor frontend", tm.values["monitor_frontend"]),
 			summaryRow("Monitor alias", tm.values["monitor_alias"]),
 			summaryRow("Monitor UI port", tm.values["monitor_public_port"]),
 			summaryRow("Monitor local port", tm.values["monitor_port"]),
@@ -540,6 +543,7 @@ func (tm *monitorManager) doneSummary() string {
 	}
 	return renderSummary([]summaryLine{
 		summaryRow("Monitor", yesNoString(cfg.DeployMonitor)),
+		summaryRow("Monitor frontend", yesNoString(cfg.DeployMonitorFrontend)),
 		summaryRow("Monitor alias", or(cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 		summaryRow("Monitor UI port", strconv.Itoa(cfg.MonitorPublicPort)),
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
@@ -585,6 +589,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			return monitor.ManageConfig{
 				Domain:                 dcfg.Domain,
 				DeployMonitor:          dcfg.DeployMonitor,
+				DeployMonitorFrontend:  dcfg.DeployMonitorFrontend,
 				MonitorAlias:           dcfg.MonitorAlias,
 				MonitorPublicPort:      dcfg.MonitorPublicPort,
 				MonitorPort:            dcfg.MonitorPort,
@@ -618,6 +623,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				return err
 			}
 			dcfg.DeployMonitor = mcfg.DeployMonitor
+			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
 			dcfg.MonitorAlias = mcfg.MonitorAlias
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort
@@ -636,6 +642,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				return err
 			}
 			dcfg.DeployMonitor = mcfg.DeployMonitor
+			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort
 			dcfg.SubscribePort = mcfg.SubscribePort
@@ -647,6 +654,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				return "", err
 			}
 			dcfg.DeployMonitor = mcfg.DeployMonitor
+			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
 			dcfg.MonitorAlias = mcfg.MonitorAlias
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort

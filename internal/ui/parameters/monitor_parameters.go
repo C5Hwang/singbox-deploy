@@ -11,6 +11,7 @@ import (
 func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
 		{Key: "monitor", Label: "Deploy monitor", Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to skip the monitor service."},
+		{Key: "monitor_frontend", Label: "Deploy monitor frontend", Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to expose the API only (no web UI).", Skip: monitorDisabled},
 		{Key: "monitor_alias", Label: "Monitor alias", Def: deploy.DefaultMonitorAlias, Note: "Shown as the local source name on /monitor.", Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(deploy.DefaultMonitorPublicPort), Note: "Nginx listens on this public HTTPS port for /monitor.", Skip: monitorDisabled},
 		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(deploy.DefaultMonitorPort), Note: "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port.", Skip: monitorDisabled},
@@ -26,6 +27,7 @@ func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field 
 func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
 		{Key: "monitor", Label: "Deploy monitor", Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: "Choose no to stop the monitor service."},
+		{Key: "monitor_frontend", Label: "Deploy monitor frontend", Def: YesNoString(cfg.DeployMonitorFrontend), Options: []string{"yes", "no"}, Note: "Choose no to expose the API only (no web UI).", Skip: monitorDisabled},
 		{Key: "monitor_alias", Label: "Monitor alias", Def: StringDefault(cfg.MonitorAlias, deploy.DefaultMonitorAlias), Note: "Shown as local source name on /monitor.", Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(cfg.MonitorPublicPort), Skip: monitorDisabled},
 		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(cfg.MonitorPort), Skip: monitorDisabled},

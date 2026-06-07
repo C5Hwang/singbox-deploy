@@ -90,6 +90,7 @@ type Config struct {
 	MonitorPort       int
 
 	DeployMonitor          bool
+	DeployMonitorFrontend  bool
 	MonitorAlias           string
 	TrafficInLimitBytes    uint64
 	TrafficOutLimitBytes   uint64
@@ -173,7 +174,10 @@ func (c Config) firewallPorts() []system.Port {
 	if c.DeployMonitor {
 		ports = append(ports, system.Port{Number: c.MonitorPublicPort, Proto: "tcp"})
 	}
-	ports = append(ports, system.Port{Number: 80, Proto: "tcp"})
+	ports = append(ports,
+		system.Port{Number: 80, Proto: "tcp"},
+		system.Port{Number: 443, Proto: "tcp"},
+	)
 	return ports
 }
 
