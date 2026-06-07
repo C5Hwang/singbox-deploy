@@ -478,7 +478,7 @@ func (tm *monitorManager) actionView() string {
 		summaryRow("Monitor UI port", strconv.Itoa(tm.cfg.MonitorPublicPort)),
 		summaryRow("Monitor local port", strconv.Itoa(tm.cfg.MonitorPort)),
 		summaryRow("Monitor interface", or(tm.cfg.MonitorInterface, "auto/default")),
-		summaryRow("Reset", fmt.Sprintf("day %d hour %d GMT", uiparams.DefaultResetDay(tm.cfg), uiparams.DefaultResetHour(tm.cfg))),
+		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(tm.cfg), uiparams.DefaultResetHour(tm.cfg))),
 		summaryRow("Current inbound", byteSize(tm.totals.InBytes)),
 		summaryRow("Current outbound", byteSize(tm.totals.OutBytes)),
 		summaryRow("Remote monitor sources", strconv.Itoa(countRemoteMonitor(tm.remotes))),
@@ -517,7 +517,7 @@ func (tm *monitorManager) confirmView() string {
 			summaryRow("Inbound limit", tm.values["traffic_in_limit"]),
 			summaryRow("Outbound limit", tm.values["traffic_out_limit"]),
 			summaryRow("Total limit", tm.values["traffic_total_limit"]),
-			summaryRow("Reset", fmt.Sprintf("day %s hour %s GMT", tm.values["reset_day"], tm.values["reset_hour"])),
+			summaryRow("Next reset", nextResetFromValues(tm.values["reset_day"], tm.values["reset_hour"])),
 		)
 	case monitorActionUsage:
 		rows = append(rows,
@@ -552,7 +552,7 @@ func (tm *monitorManager) doneSummary() string {
 		summaryRow("Monitor", yesNoString(cfg.DeployMonitor)),
 		summaryRow("Monitor alias", or(cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 		summaryRow("Monitor UI port", strconv.Itoa(cfg.MonitorPublicPort)),
-		summaryRow("Reset", fmt.Sprintf("day %d hour %d GMT", uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
+		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
 		summaryRow("Remote monitor sources", strconv.Itoa(countRemoteMonitor(tm.remotes))),
 	})
 }
@@ -580,9 +580,9 @@ func (tm *monitorManager) footerHints() []operationHint {
 func (tm *monitorManager) actions() []monitorActionItem {
 	return []monitorActionItem{
 		{action: monitorActionLocal, label: "Edit monitor settings"},
-		{action: monitorActionUsage, label: "Edit current in/out usage"},
-		{action: monitorActionRemotes, label: "Select remote monitor sources"},
-		{action: monitorActionRefresh, label: "Refresh remote monitors"},
+		{action: monitorActionUsage, label: "Adjust traffic counters"},
+		{action: monitorActionRemotes, label: "Configure remote sources"},
+		{action: monitorActionRefresh, label: "Refresh remote sources"},
 	}
 }
 

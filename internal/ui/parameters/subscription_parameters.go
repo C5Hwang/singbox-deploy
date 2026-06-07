@@ -17,7 +17,7 @@ func SubscriptionInstallFields() []Field {
 }
 
 func SubscriptionDisplayNameField(cfg deploy.Config) Field {
-	return Field{Key: "display_name", Label: "Account display name", Def: cfg.DisplayName, Note: "Used only for generated node names shown by clients."}
+	return Field{Key: "display_name", Label: "Node display name", Def: cfg.DisplayName, Note: "Used only for generated node names shown by clients."}
 }
 
 func SubscriptionLocalFields(cfg deploy.Config) []Field {

@@ -502,7 +502,7 @@ func (cm *coreManager) footerHints() []operationHint {
 
 func (cm *coreManager) actions() []coreActionItem {
 	return []coreActionItem{
-		{action: coreActionChangeStable, label: "Change to recent stable core"},
+		{action: coreActionChangeStable, label: "Change sing-box version"},
 		{action: coreActionStart, label: "Start sing-box.service"},
 		{action: coreActionStop, label: "Stop sing-box.service"},
 		{action: coreActionRestart, label: "Restart sing-box.service"},

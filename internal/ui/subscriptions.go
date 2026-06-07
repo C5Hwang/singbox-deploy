@@ -657,7 +657,7 @@ func (sm *subscriptionManager) footerHints() []operationHint {
 func (sm *subscriptionManager) actions() []subscriptionActionItem {
 	return []subscriptionActionItem{
 		{action: subscriptionActionDisplayName, label: "Edit display name"},
-		{action: subscriptionActionLocal, label: "Edit local subscription settings"},
+		{action: subscriptionActionLocal, label: "Edit subscription salt & port"},
 		{action: subscriptionActionAddRemote, label: "Add remote subscription"},
 		{action: subscriptionActionDeleteRemotes, label: "Delete remote subscription"},
 		{action: subscriptionActionRefresh, label: "Refresh subscriptions"},

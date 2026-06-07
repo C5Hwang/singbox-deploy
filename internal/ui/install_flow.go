@@ -545,9 +545,9 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 			return deploy.Config{}, err
 		}
 	}
-	inLimitBytes := parseTrafficLimitGB(vals["traffic_in_limit_gb"])
-	outLimitBytes := parseTrafficLimitGB(vals["traffic_out_limit_gb"])
-	totalLimitBytes := parseTrafficLimitGB(vals["traffic_total_limit_gb"])
+	inLimitBytes, _ := uiparams.ParseTrafficSize(vals["traffic_in_limit"])
+	outLimitBytes, _ := uiparams.ParseTrafficSize(vals["traffic_out_limit"])
+	totalLimitBytes, _ := uiparams.ParseTrafficSize(vals["traffic_total_limit"])
 	if !deployMonitor {
 		inLimitBytes = 0
 		outLimitBytes = 0
@@ -627,11 +627,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		Firewall:               w.host.Firewall,
 		Creds:                  creds,
 	}, nil
-}
-
-func parseTrafficLimitGB(value string) uint64 {
-	gb, _ := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
-	return gb << 30
 }
 
 func parseInstallPort(value string, fallback int, label string) (int, error) {
@@ -938,11 +933,11 @@ func (w *installForm) summary(host system.Host) string {
 			summaryRow("Monitor alias", or(w.values["monitor_alias"], deploy.DefaultMonitorAlias)),
 			summaryRow("Monitor public port", or(w.values["monitor_public_port"], strconv.Itoa(deploy.DefaultMonitorPublicPort))),
 			summaryRow("Monitor local port", or(w.values["monitor_port"], strconv.Itoa(deploy.DefaultMonitorPort))),
-			summaryRow("Traffic sampling interval", or(w.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
-			summaryRow("Inbound traffic limit", w.values["traffic_in_limit_gb"]+" GB"),
-			summaryRow("Outbound traffic limit", w.values["traffic_out_limit_gb"]+" GB"),
-			summaryRow("Total traffic limit", w.values["traffic_total_limit_gb"]+" GB"),
-			summaryRow("Traffic reset", fmt.Sprintf("day %s hour %s GMT", or(w.values["reset_day"], strconv.Itoa(deploy.DefaultResetDay)), or(w.values["reset_hour"], strconv.Itoa(deploy.DefaultResetHour)))),
+			summaryRow("Sampling interval", or(w.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
+			summaryRow("Inbound traffic limit", trafficLimitSummary(w.values["traffic_in_limit"])),
+			summaryRow("Outbound traffic limit", trafficLimitSummary(w.values["traffic_out_limit"])),
+			summaryRow("Total traffic limit", trafficLimitSummary(w.values["traffic_total_limit"])),
+			summaryRow("Next reset", nextResetFromValues(w.values["reset_day"], w.values["reset_hour"])),
 		)
 	}
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
@@ -953,6 +948,26 @@ func (w *installForm) summary(host system.Host) string {
 		rows = append(rows, summaryIndentedRow(2, fmt.Sprintf("%s port", proto), summaryValueOrRandom(w.values[portFieldKey(proto)])))
 	}
 	return renderSummary(rows) + "\n"
+}
+
+func nextResetFromValues(dayStr, hourStr string) string {
+	day, _ := strconv.Atoi(strings.TrimSpace(dayStr))
+	hour, _ := strconv.Atoi(strings.TrimSpace(hourStr))
+	if day < 1 || day > 28 {
+		day = deploy.DefaultResetDay
+	}
+	if hour < 0 || hour > 23 {
+		hour = deploy.DefaultResetHour
+	}
+	return nextResetLabel(day, hour)
+}
+
+func trafficLimitSummary(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "0" {
+		return "unlimited"
+	}
+	return value
 }
 
 func summaryValueOrRandom(value string) string {

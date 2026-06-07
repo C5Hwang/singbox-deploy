@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
@@ -109,9 +110,9 @@ func confirmInstallFlowForTest() *installFlow {
 			"reality_sni":            "www.microsoft.com",
 			"display_name":           "Node",
 			"monitor":                "yes",
-			"traffic_in_limit_gb":    "0",
-			"traffic_out_limit_gb":   "0",
-			"traffic_total_limit_gb": "0",
+			"traffic_in_limit":    "0",
+			"traffic_out_limit":   "0",
+			"traffic_total_limit": "0",
 		}),
 		host: supportedTestHost(),
 	}
@@ -193,7 +194,7 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 		t.Fatalf("monitor manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Edit current in/out usage", "Select remote monitor sources"} {
+	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust traffic counters", "Configure remote sources"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("monitor manager view missing %q:\n%s", want, view)
 		}
@@ -211,7 +212,7 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 		t.Fatalf("core manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"sing-box Core Management", "Current version", "sing-box version 1.12.0", "Change to recent stable core", "View sing-box.service logs"} {
+	for _, want := range []string{"sing-box Core Management", "Current version", "sing-box version 1.12.0", "Change sing-box version", "View sing-box.service logs"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("core manager view missing %q:\n%s", want, view)
 		}
@@ -402,10 +403,10 @@ func TestSubscriptionDeleteRemoteRequiresConfiguredRemote(t *testing.T) {
 func TestMenuUsesSubscriptionGroup(t *testing.T) {
 	m := NewModel()
 	view := m.menuView(40)
-	if !strings.Contains(view, "Subscription") || !strings.Contains(view, "Manage subscriptions") {
+	if !strings.Contains(view, "Proxy") || !strings.Contains(view, "Subscription settings") {
 		t.Fatalf("menu should contain subscription group and manager:\n%s", view)
 	}
-	for _, avoid := range []string{"User & Subscription", "Manage account", "Account & subscriptions"} {
+	for _, avoid := range []string{"User & Subscription", "Manage account", "Account & subscriptions", "Manage subscriptions"} {
 		if strings.Contains(view, avoid) {
 			t.Fatalf("old account/subscription wording %q should be removed:\n%s", avoid, view)
 		}
@@ -537,11 +538,15 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	oldLayout := defaultStatusLayout
 	oldDetect := detectStatusHost
 	oldOutput := statusCommandOutput
+	oldNow := statusNow
 	defer func() {
 		defaultStatusLayout = oldLayout
 		detectStatusHost = oldDetect
 		statusCommandOutput = oldOutput
+		statusNow = oldNow
 	}()
+	fixedTime := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	statusNow = func() time.Time { return fixedTime }
 	defaultStatusLayout = func() paths.Layout { return layout }
 	detectStatusHost = func() (system.Host, error) {
 		host := supportedTestHost()
@@ -595,7 +600,7 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	if status.MonitorUI != "https://example.com:2097/monitor/" {
 		t.Fatalf("MonitorUI = %q", status.MonitorUI)
 	}
-	if status.TrafficQuota != "in limit 40 GB, out limit 50 GB, total limit 100 GB, reset day 7 hour 4 GMT" {
+	if status.TrafficQuota != "in limit 40 GB, out limit 50 GB, total limit 100 GB, next reset 2026-07-07 04:00 GMT" {
 		t.Fatalf("TrafficQuota = %q", status.TrafficQuota)
 	}
 }
@@ -1012,7 +1017,7 @@ func TestRealityFieldsHiddenWhenRealityNotSelected(t *testing.T) {
 func TestMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 	vals := map[string]string{"monitor": "no"}
 	fields := installFields()
-	for _, key := range []string{"monitor_alias", "monitor_public_port", "monitor_port", "monitor_interval_seconds", "traffic_in_limit_gb", "traffic_out_limit_gb", "traffic_total_limit_gb", "reset_day", "reset_hour"} {
+	for _, key := range []string{"monitor_alias", "monitor_public_port", "monitor_port", "monitor_interval_seconds", "traffic_in_limit", "traffic_out_limit", "traffic_total_limit", "reset_day", "reset_hour"} {
 		f := fields[fieldIndex(t, fields, key)]
 		if f.skip == nil || !f.skip(vals) {
 			t.Fatalf("%s should be hidden when monitor is disabled", key)
@@ -1073,7 +1078,7 @@ func TestSummaryRendererAlignsAndHighlightsTokens(t *testing.T) {
 		summaryRow("Short", "running"),
 		summaryRow("Longer label", "sing-box version 1.12.0"),
 		summaryRow("Certificate", "valid until 2026-06-04"),
-		summaryRow("Traffic", "in unlimited, reset day 7"),
+		summaryRow("Traffic", "in unlimited, next reset 2026-07-01 00:00 GMT"),
 	})
 	if !strings.Contains(summary, dimStyle.Render("Short:       ")) {
 		t.Fatalf("summary labels should align:\n%s", summary)
@@ -1082,7 +1087,7 @@ func TestSummaryRendererAlignsAndHighlightsTokens(t *testing.T) {
 		statusOK.Render("running"),
 		summaryInfo.Render("1.12.0"),
 		summaryDate.Render("2026-06-04"),
-		summaryDate.Render("reset day 7"),
+		summaryDate.Render("2026-07-01 00:00"),
 	} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("summary missing highlighted token %q:\n%s", want, summary)
@@ -1124,9 +1129,9 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 			"monitor_public_port":      "24447",
 			"monitor_port":             "24446",
 			"monitor_interval_seconds": "60",
-			"traffic_in_limit_gb":      "40",
-			"traffic_out_limit_gb":     "50",
-			"traffic_total_limit_gb":   "100",
+			"traffic_in_limit":      "40GB",
+			"traffic_out_limit":     "50GB",
+			"traffic_total_limit":   "100GB",
 			"reset_day":                "1",
 			"reset_hour":               "5",
 		}),
@@ -1218,9 +1223,9 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 			"protocols":              "hysteria2,anytls",
 			"display_name":           "Node",
 			"monitor":                "yes",
-			"traffic_in_limit_gb":    "0",
-			"traffic_out_limit_gb":   "0",
-			"traffic_total_limit_gb": "0",
+			"traffic_in_limit":    "0",
+			"traffic_out_limit":   "0",
+			"traffic_total_limit": "0",
 			"reset_day":              "1",
 		}),
 		host: supportedTestHost(),
@@ -1261,10 +1266,10 @@ func TestBuildConfigDisablesMonitor(t *testing.T) {
 			"protocols":              "tuic",
 			"tuic_uuid":              "22222222-2222-4222-8222-222222222222",
 			"display_name":           "Node",
-			"monitor":                "no",
-			"traffic_in_limit_gb":    "40",
-			"traffic_out_limit_gb":   "50",
-			"traffic_total_limit_gb": "100",
+			"monitor":              "no",
+			"traffic_in_limit":     "40GB",
+			"traffic_out_limit":    "50GB",
+			"traffic_total_limit":  "100GB",
 		}),
 		host: supportedTestHost(),
 	}

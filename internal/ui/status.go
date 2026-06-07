@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -56,12 +57,15 @@ func loadStatus() Status {
 		monitorState = serviceState(system.MonitorService)
 	}
 
+	singBoxVer := singBoxVersion(layout.SingBoxBin)
+	singBoxState := singBoxServiceState(singBoxVer, store, layout, monitorEnabled)
+
 	return Status{
 		Domain:       domain,
 		PublicIP:     readStatusState(store, "public_ip"),
 		OSArch:       osArchStatus(),
-		SingBoxVer:   singBoxVersion(layout.SingBoxBin),
-		SingBoxState: serviceState(system.SingBoxService),
+		SingBoxVer:   singBoxVer,
+		SingBoxState: singBoxState,
 		NginxState:   serviceState("nginx.service"),
 		MonitorState: monitorState,
 		CertState:    certificateState(layout, domain),
@@ -139,6 +143,40 @@ func serviceState(unit string) string {
 	}
 }
 
+func singBoxServiceState(version string, store state.Store, layout paths.Layout, monitorEnabled bool) string {
+	if version == "" {
+		return "not installed"
+	}
+	state := serviceState(system.SingBoxService)
+	if state == "not running" && monitorEnabled && isQuotaExceeded(store, layout) {
+		return "stopped (quota exceeded)"
+	}
+	return state
+}
+
+func isQuotaExceeded(store state.Store, layout paths.Layout) bool {
+	inRaw := readStatusState(store, "traffic_in_limit_bytes")
+	outRaw := readStatusState(store, "traffic_out_limit_bytes")
+	totalRaw := readStatusState(store, "traffic_total_limit_bytes")
+	inLimit, _ := parseStatusLimit(inRaw)
+	outLimit, _ := parseStatusLimit(outRaw)
+	totalLimit, _ := parseStatusLimit(totalRaw)
+	if inLimit == 0 && outLimit == 0 && totalLimit == 0 {
+		return false
+	}
+	resetDay, _ := strconv.Atoi(readStatusState(store, "reset_day"))
+	resetHour, _ := strconv.Atoi(readStatusState(store, "reset_hour"))
+	if resetDay < 1 || resetDay > 28 {
+		resetDay = deploy.DefaultResetDay
+	}
+	totals, err := monitor.CurrentTrafficTotals(layout, resetDay, resetHour, statusNow().UTC())
+	if err != nil {
+		return false
+	}
+	limits := monitor.TrafficLimits{InBytes: inLimit, OutBytes: outLimit, TotalBytes: totalLimit}
+	return limits.Exceeded(totals)
+}
+
 func certificateState(layout paths.Layout, domain string) string {
 	if domain == "" {
 		return ""
@@ -206,19 +244,17 @@ func trafficQuotaStatus(store state.Store) string {
 	if err != nil {
 		return "unknown"
 	}
-	resetDay := readStatusState(store, "reset_day")
-	resetHour := readStatusState(store, "reset_hour")
+	resetDay, _ := strconv.Atoi(readStatusState(store, "reset_day"))
+	resetHour, _ := strconv.Atoi(readStatusState(store, "reset_hour"))
+	if resetDay < 1 || resetDay > 28 {
+		resetDay = deploy.DefaultResetDay
+	}
 	parts := []string{
 		"in " + statusLimitLabel(inLimit),
 		"out " + statusLimitLabel(outLimit),
 		"total " + statusLimitLabel(totalLimit),
 	}
-	if resetDay != "" {
-		if resetHour == "" {
-			resetHour = "0"
-		}
-		parts = append(parts, "reset day "+resetDay+" hour "+resetHour+" GMT")
-	}
+	parts = append(parts, "next reset "+nextResetLabel(resetDay, resetHour))
 	return strings.Join(parts, ", ")
 }
 
@@ -234,6 +270,11 @@ func statusLimitLabel(limit uint64) string {
 		return "unlimited"
 	}
 	return "limit " + byteSize(limit)
+}
+
+func nextResetLabel(day, hour int) string {
+	next := monitor.NextCycleReset(statusNow().UTC(), day, hour)
+	return next.Format("2006-01-02 15:04") + " GMT"
 }
 
 func byteSize(n uint64) string {

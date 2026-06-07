@@ -14,12 +14,12 @@ func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field 
 		{Key: "monitor_alias", Label: "Monitor alias", Def: deploy.DefaultMonitorAlias, Note: "Shown as the local source name on /monitor.", Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(deploy.DefaultMonitorPublicPort), Note: "Nginx listens on this public HTTPS port for /monitor.", Skip: monitorDisabled},
 		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(deploy.DefaultMonitorPort), Note: "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port.", Skip: monitorDisabled},
-		{Key: "monitor_interval_seconds", Label: "Traffic sampling interval seconds", Def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), Note: "Default is 300 seconds. Lower values write more samples.", Skip: monitorDisabled},
-		{Key: "traffic_in_limit_gb", Label: "Monthly inbound traffic limit in GB (0 = unlimited)", Def: "0", Note: "Inbound uses the monitored interface RX counter. When any configured limit is exceeded, sing-box.service is stopped automatically.", Skip: monitorDisabled},
-		{Key: "traffic_out_limit_gb", Label: "Monthly outbound traffic limit in GB (0 = unlimited)", Def: "0", Note: "Outbound uses the monitored interface TX counter.", Skip: monitorDisabled},
-		{Key: "traffic_total_limit_gb", Label: "Monthly total traffic limit in GB (0 = unlimited)", Def: "0", Note: "Total traffic is inbound + outbound.", Skip: monitorDisabled},
+		{Key: "monitor_interval_seconds", Label: "Sampling interval (seconds)", Def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), Note: "Default is 60 seconds. Lower values write more samples.", Skip: monitorDisabled},
+		{Key: "traffic_in_limit", Label: "Inbound traffic limit", Def: "0", Note: TrafficSizeNote("0 means unlimited. When any limit is exceeded, sing-box.service is stopped automatically."), Skip: monitorDisabled},
+		{Key: "traffic_out_limit", Label: "Outbound traffic limit", Def: "0", Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
+		{Key: "traffic_total_limit", Label: "Total traffic limit", Def: "0", Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
 		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(deploy.DefaultResetDay), Note: "Day of month when the traffic quota cycle resets.", Skip: monitorDisabled},
-		{Key: "reset_hour", Label: "Monthly reset hour (0-23)", Def: strconv.Itoa(deploy.DefaultResetHour), Note: "Hour of day in GMT when the traffic quota cycle resets.", Skip: monitorDisabled},
+		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(deploy.DefaultResetHour), Note: "Hour of day in GMT when the traffic quota cycle resets.", Skip: monitorDisabled},
 	}
 }
 
@@ -30,7 +30,7 @@ func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]strin
 		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(cfg.MonitorPublicPort), Skip: monitorDisabled},
 		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(cfg.MonitorPort), Skip: monitorDisabled},
 		{Key: "monitor_interface", Label: "Monitored network interface", Def: cfg.MonitorInterface, Note: "Leave as current/default interface unless you know the VPS egress interface changed.", Skip: monitorDisabled},
-		{Key: "monitor_interval_seconds", Label: "Sampling interval seconds", Def: strconv.Itoa(DefaultMonitorInterval(cfg)), Skip: monitorDisabled},
+		{Key: "monitor_interval_seconds", Label: "Sampling interval (seconds)", Def: strconv.Itoa(DefaultMonitorInterval(cfg)), Skip: monitorDisabled},
 		{Key: "traffic_in_limit", Label: "Inbound traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficInLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
 		{Key: "traffic_out_limit", Label: "Outbound traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficOutLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
 		{Key: "traffic_total_limit", Label: "Total traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficTotalLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
@@ -62,10 +62,6 @@ func ValidateMonitorParameterValue(key, val string) error {
 		seconds, err := strconv.Atoi(strings.TrimSpace(val))
 		if err != nil || seconds < 10 {
 			return fmt.Errorf("sampling interval must be at least 10 seconds")
-		}
-	case strings.HasPrefix(key, "traffic_") && strings.HasSuffix(key, "_limit_gb"):
-		if _, err := strconv.ParseUint(strings.TrimSpace(val), 10, 64); err != nil {
-			return fmt.Errorf("traffic limit must be a non-negative integer")
 		}
 	case key == "traffic_in_limit" || key == "traffic_out_limit" || key == "traffic_total_limit" || key == "current_in_traffic" || key == "current_out_traffic":
 		_, err := ParseTrafficSize(val)

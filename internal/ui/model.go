@@ -77,13 +77,17 @@ func NewModel() *Model {
 
 func defaultGroups() []MenuGroup {
 	return []MenuGroup{
-		{Title: "Install", Items: []MenuItem{{Label: "Install / reinstall"}}},
-		{Title: "Protocols", Items: []MenuItem{{Label: "Manage protocols"}}},
-		{Title: "Subscription", Items: []MenuItem{{Label: "Manage subscriptions"}}},
-		{Title: "Certificate & Nginx", Items: []MenuItem{{Label: "Certificate / site management"}}},
-		{Title: "Monitor", Items: []MenuItem{{Label: "Manage monitor"}}},
-		{Title: "Routing", Items: []MenuItem{{Label: "Domain/IP blacklist"}}},
-		{Title: "Core", Items: []MenuItem{{Label: "sing-box core management"}}},
+		{Title: "Setup", Items: []MenuItem{{Label: "Install / Reinstall"}}},
+		{Title: "Proxy", Items: []MenuItem{
+			{Label: "Protocol settings"},
+			{Label: "Subscription settings"},
+		}},
+		{Title: "Server", Items: []MenuItem{
+			{Label: "Certificate & site"},
+			{Label: "Monitor & quota"},
+			{Label: "Routing rules"},
+			{Label: "sing-box core"},
+		}},
 		{Title: "System", Items: []MenuItem{
 			{Label: "Self-update"},
 			{Label: "Uninstall"},
@@ -380,17 +384,17 @@ func (m *Model) statusView() string {
 		summaryRow("Domain", or(s.Domain, "unknown")),
 		summaryRow("Public IP", or(s.PublicIP, "unknown")),
 		summaryRow("OS/Arch", or(s.OSArch, "unknown")),
-		summaryRow("sing-box", or(s.SingBoxVer, "not installed")),
-		summaryRow("Service", or(s.SingBoxState, "unknown")),
-		summaryRow("Nginx", or(s.NginxState, "unknown")),
-		summaryRow("Monitor", or(s.MonitorState, "unknown")),
+		summaryRow("sing-box version", or(s.SingBoxVer, "not installed")),
+		summaryRow("sing-box service", or(s.SingBoxState, "unknown")),
+		summaryRow("Nginx service", or(s.NginxState, "unknown")),
+		summaryRow("Monitor service", or(s.MonitorState, "unknown")),
 		summaryRow("Certificate", or(s.CertState, "unknown")),
 		summaryRow("Protocols", or(s.Protocols, "none")),
-		summaryRow("Default subscription", or(s.Subscription, "none")),
-		summaryRow("Clash Meta subscription", or(s.ClashMetaSub, "none")),
-		summaryRow("sing-box subscription", or(s.SingBoxSub, "none")),
-		summaryRow("Monitor UI", or(s.MonitorUI, "none")),
-		summaryRow("Traffic", or(s.TrafficQuota, "unknown")),
+		summaryRow("Subscription (universal)", or(s.Subscription, "none")),
+		summaryRow("Subscription (Clash Meta)", or(s.ClashMetaSub, "none")),
+		summaryRow("Subscription (sing-box)", or(s.SingBoxSub, "none")),
+		summaryRow("Monitor URL", or(s.MonitorUI, "none")),
+		summaryRow("Traffic quota", or(s.TrafficQuota, "unknown")),
 	}
 	return titleStyle.Render("Status") + "\n" + renderSummary(rows)
 }
