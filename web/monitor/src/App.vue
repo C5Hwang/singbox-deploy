@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watchEffect } from "vue";
 import SidebarNav from "./components/SidebarNav.vue";
 import NetworkTraffic from "./pages/NetworkTraffic.vue";
 import Resources from "./pages/Resources.vue";
@@ -28,6 +28,7 @@ const clockLabel = computed(() =>
 );
 
 const sourceCount = computed(() => summary.value?.sources?.length ?? 0);
+const pageTitle = computed(() => (activeTab.value === "traffic" ? "Network Traffic" : "Resources"));
 
 const subtitle = computed(() => {
   if (error.value) return `Failed to load data: ${error.value}`;
@@ -42,6 +43,9 @@ onMounted(() => {
     now.value = new Date();
   }, 1000);
 });
+watchEffect(() => {
+  document.title = pageTitle.value;
+});
 onUnmounted(() => {
   if (loadTimer) window.clearInterval(loadTimer);
   if (clockTimer) window.clearInterval(clockTimer);
@@ -55,7 +59,7 @@ onUnmounted(() => {
     <main class="main">
       <header class="topbar">
         <div class="title">
-          <h1 class="page-title">{{ activeTab === 'traffic' ? 'Network Traffic' : 'Resources' }}</h1>
+          <h1 class="page-title">{{ pageTitle }}</h1>
           <p v-if="subtitle">{{ subtitle }}</p>
         </div>
         <div class="toolbar">
