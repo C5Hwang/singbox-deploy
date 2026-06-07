@@ -30,12 +30,10 @@ type Config struct {
 
 // Remote describes a same-version remote subscription server to aggregate.
 type Remote struct {
-	Domain            string
-	Port              int
-	Alias             string
-	Salt              string
-	Monitor           bool
-	MonitorPublicPort int
+	Domain string
+	Port   int
+	Alias  string
+	Salt   string
 }
 
 // Fetcher fetches remote subscription or monitor JSON endpoints.
@@ -69,7 +67,7 @@ type UpdateOptions struct {
 	SaveRemotes      func(paths.Layout, []Remote) error
 	WriteNginxConfig func(layout paths.Layout, cfg Config, confPath string) error
 	WriteWithRemotes func(ctx context.Context, layout paths.Layout, cfg Config, remotes []Remote, fetch Fetcher) error
-	RefreshMonitor   func(ctx context.Context, layout paths.Layout, remotes []Remote, fetch Fetcher) error
+	RefreshMonitor   func(ctx context.Context, layout paths.Layout, fetch Fetcher) error
 	RunCommands      func(runner system.Runner, cmds ...system.Command) error
 }
 
@@ -147,7 +145,7 @@ func updateSteps(opts UpdateOptions, oldPort, newPort int, remotes []Remote) []u
 	}
 	steps = append(steps,
 		updateStep{label: "Remote monitor", detail: "refresh remote monitor snapshots", run: func(ctx context.Context, _ Config) error {
-			return opts.RefreshMonitor(ctx, opts.Layout, remotes, opts.Fetch)
+			return opts.RefreshMonitor(ctx, opts.Layout, opts.Fetch)
 		}},
 		updateStep{label: "Subscriptions", detail: "regenerate local and remote subscription outputs", run: func(ctx context.Context, cfg Config) error {
 			return opts.WriteWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch)

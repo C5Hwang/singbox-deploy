@@ -68,18 +68,18 @@ func toManageConfig(cfg deploy.Config) monitor.ManageConfig {
 	}
 }
 
-func toManageRemotes(remotes []deploy.RemoteSubscription) []monitor.ManageRemote {
-	out := make([]monitor.ManageRemote, len(remotes))
-	for i, r := range remotes {
-		out[i] = monitor.ManageRemote{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+func toManageMonitorSources(sources []deploy.MonitorSource) []monitor.ManageMonitorSource {
+	out := make([]monitor.ManageMonitorSource, len(sources))
+	for i, s := range sources {
+		out[i] = monitor.ManageMonitorSource{Domain: s.Domain, Alias: s.Alias, MonitorPublicPort: s.MonitorPublicPort}
 	}
 	return out
 }
 
-func toDeployRemotes(remotes []monitor.ManageRemote) []deploy.RemoteSubscription {
-	out := make([]deploy.RemoteSubscription, len(remotes))
-	for i, r := range remotes {
-		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+func fromManageMonitorSources(sources []monitor.ManageMonitorSource) []deploy.MonitorSource {
+	out := make([]deploy.MonitorSource, len(sources))
+	for i, s := range sources {
+		out[i] = deploy.MonitorSource{Domain: s.Domain, Alias: s.Alias, MonitorPublicPort: s.MonitorPublicPort}
 	}
 	return out
 }
@@ -107,7 +107,7 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 	}
 	store.Close()
 
-	remote := deploy.RemoteSubscription{Domain: "remote.example.com", Port: 9443, Alias: "JP-remote", Salt: "abc", Monitor: true, MonitorPublicPort: 9444}
+	monitorSrc := deploy.MonitorSource{Domain: "remote.example.com", Alias: "JP-remote", MonitorPublicPort: 9444}
 	monitorURL := fmt.Sprintf("https://remote.example.com:9444/monitor/api/summary")
 	fetches := map[string][]byte{
 		monitorURL: []byte(`{"inUsedBytes":10,"outUsedBytes":20,"totalUsedBytes":30,"inRemainingBytes":90,"outRemainingBytes":80,"totalRemainingBytes":70,"inLimitBytes":100,"outLimitBytes":100,"totalLimitBytes":100,"resetTime":"2026-06-15T05:00:00Z","trend":[]}`),
@@ -134,8 +134,8 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 		SetCurrentTotals:  true,
 		CurrentInBytes:    2 << 30,
 		CurrentOutBytes:   3 << 30,
-		SetRemotes:        true,
-		Remotes:           toManageRemotes([]deploy.RemoteSubscription{remote}),
+		SetMonitorSources: true,
+		MonitorSources:    toManageMonitorSources([]deploy.MonitorSource{monitorSrc}),
 		Firewall:          system.FirewallUFW,
 		NginxConfPath:     filepath.Join(root, "nginx", "singbox-deploy.conf"),
 		SystemdDir:        filepath.Join(root, "systemd"),
@@ -159,18 +159,18 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 			}
 			return toManageConfig(dcfg), nil
 		},
-		LoadRemotes: func(l paths.Layout) ([]monitor.ManageRemote, error) {
-			dr, err := deploy.LoadRemoteSubscriptions(l)
+		LoadMonitorSources: func(l paths.Layout) ([]monitor.ManageMonitorSource, error) {
+			srcs, err := deploy.LoadMonitorSources(l)
 			if err != nil {
 				return nil, err
 			}
-			return toManageRemotes(dr), nil
+			return toManageMonitorSources(srcs), nil
 		},
-		ValidateRemotes: func(remotes []monitor.ManageRemote) error {
-			return deploy.ValidateRemoteSubscriptions(toDeployRemotes(remotes))
+		ValidateMonitorSources: func(sources []monitor.ManageMonitorSource) error {
+			return deploy.ValidateMonitorSources(fromManageMonitorSources(sources))
 		},
-		SaveRemotes: func(l paths.Layout, remotes []monitor.ManageRemote) error {
-			return deploy.SaveRemoteSubscriptions(l, toDeployRemotes(remotes))
+		SaveMonitorSources: func(l paths.Layout, sources []monitor.ManageMonitorSource) error {
+			return deploy.SaveMonitorSources(l, fromManageMonitorSources(sources))
 		},
 		WriteState: func(stateDir string, mcfg monitor.ManageConfig) error {
 			dcfg, err := deploy.LoadProtocolConfig(layout)
@@ -213,8 +213,8 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 			dcfg.ResetHour = mcfg.ResetHour
 			return deploy.RenderMonitorUnit(l, deployBin, dcfg)
 		},
-		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, remotes []monitor.ManageRemote, fetch func(context.Context, string) ([]byte, error)) error {
-			return deploy.RefreshRemoteMonitor(ctx, l, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, sources []monitor.ManageMonitorSource, fetch func(context.Context, string) ([]byte, error)) error {
+			return deploy.RefreshRemoteMonitor(ctx, l, fromManageMonitorSources(sources), deploy.SubscriptionFetcher(fetch))
 		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error {
 			return deploy.RunCommands(r, cmds...)
@@ -263,7 +263,7 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 	if err := json.Unmarshal(remoteBody, &sources); err != nil {
 		t.Fatalf("decode remote monitor: %v", err)
 	}
-	if len(sources) != 1 || sources[0].Name != subscription.AddNodePrefixFlag(remote.Alias) || sources[0].TotalUsedBytes != 30 {
+	if len(sources) != 1 || sources[0].Name != subscription.AddNodePrefixFlag(monitorSrc.Alias) || sources[0].TotalUsedBytes != 30 {
 		t.Fatalf("remote sources = %#v", sources)
 	}
 	joined := strings.Join(runner.commands, "\n")

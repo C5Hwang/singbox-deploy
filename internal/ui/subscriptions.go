@@ -429,8 +429,12 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 			full.SubscribePort = cfg.SubscribePort
 			return deploy.WriteSubscriptionsWithRemotes(ctx, l, full, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
 		},
-		RefreshMonitor: func(ctx context.Context, l paths.Layout, remotes []subscription.Remote, fetch subscription.Fetcher) error {
-			return deploy.RefreshRemoteMonitor(ctx, l, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+		RefreshMonitor: func(ctx context.Context, l paths.Layout, fetch subscription.Fetcher) error {
+			sources, err := deploy.LoadMonitorSources(l)
+			if err != nil {
+				return err
+			}
+			return deploy.RefreshRemoteMonitor(ctx, l, sources, deploy.SubscriptionFetcher(fetch))
 		},
 		RunCommands: deploy.RunCommands,
 		CheckPorts: func(ctx context.Context, domain string, port int) error {
@@ -449,7 +453,7 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 func toSubscriptionRemotes(remotes []deploy.RemoteSubscription) []subscription.Remote {
 	out := make([]subscription.Remote, len(remotes))
 	for i, r := range remotes {
-		out[i] = subscription.Remote{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+		out[i] = subscription.Remote{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt}
 	}
 	return out
 }
@@ -457,7 +461,7 @@ func toSubscriptionRemotes(remotes []deploy.RemoteSubscription) []subscription.R
 func toDeployRemotes(remotes []subscription.Remote) []deploy.RemoteSubscription {
 	out := make([]deploy.RemoteSubscription, len(remotes))
 	for i, r := range remotes {
-		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt}
 	}
 	return out
 }

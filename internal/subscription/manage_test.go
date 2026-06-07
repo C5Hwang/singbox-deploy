@@ -35,8 +35,12 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 		t.Fatalf("write old subscription: %v", err)
 	}
 
-	remote := subscription.Remote{Domain: "remote.example.com", Port: 9443, Alias: "US-edge", Salt: "abc", Monitor: true, MonitorPublicPort: 9444}
+	remote := subscription.Remote{Domain: "remote.example.com", Port: 9443, Alias: "US-edge", Salt: "abc"}
 	remoteEntry := subscription.RemoteEntry{Domain: "remote.example.com", Port: 9443, Alias: "US-edge", Salt: "abc"}
+	monitorSrc := deploy.MonitorSource{Domain: "remote.example.com", Alias: "US-edge", MonitorPublicPort: 9444}
+	if err := deploy.SaveMonitorSources(layout, []deploy.MonitorSource{monitorSrc}); err != nil {
+		t.Fatalf("SaveMonitorSources: %v", err)
+	}
 	fetches := map[string][]byte{
 		remoteEntry.DefaultURL(): []byte(subscription.EncodeBase64("hysteria2://pass@remote.example.com:443#JP-01")),
 		remoteEntry.ClashURL():   []byte("proxies:\n  - name: \"JP-01\"\n    type: hysteria2\n"),
@@ -81,8 +85,12 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 			dcfg := deploy.Config{Domain: c.Domain, Salt: c.Salt, SubscribePort: c.SubscribePort, Creds: cfg.Creds, DisplayName: cfg.DisplayName}
 			return deploy.WriteSubscriptionsWithRemotes(ctx, l, dcfg, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
 		},
-		RefreshMonitor: func(ctx context.Context, l paths.Layout, remotes []subscription.Remote, fetch subscription.Fetcher) error {
-			return deploy.RefreshRemoteMonitor(ctx, l, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+		RefreshMonitor: func(ctx context.Context, l paths.Layout, fetch subscription.Fetcher) error {
+			sources, err := deploy.LoadMonitorSources(l)
+			if err != nil {
+				return err
+			}
+			return deploy.RefreshRemoteMonitor(ctx, l, sources, deploy.SubscriptionFetcher(fetch))
 		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error { return deploy.RunCommands(r, cmds...) },
 	})
@@ -135,7 +143,7 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRemoteSubscriptions error: %v", err)
 	}
-	if len(dRemotes) != 1 || dRemotes[0].Domain != remote.Domain || dRemotes[0].Alias != remote.Alias || !dRemotes[0].Monitor {
+	if len(dRemotes) != 1 || dRemotes[0].Domain != remote.Domain || dRemotes[0].Alias != remote.Alias {
 		t.Fatalf("remote state = %#v", dRemotes)
 	}
 	trafficBody, err := os.ReadFile(deploy.RemoteMonitorPath(layout))
@@ -146,7 +154,7 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 	if err := json.Unmarshal(trafficBody, &sources); err != nil {
 		t.Fatalf("decode remote monitor: %v", err)
 	}
-	if len(sources) != 1 || sources[0].Name != subscription.AddNodePrefixFlag(remote.Alias) || sources[0].TotalUsedBytes != 300 {
+	if len(sources) != 1 || sources[0].Name != subscription.AddNodePrefixFlag(monitorSrc.Alias) || sources[0].TotalUsedBytes != 300 {
 		t.Fatalf("remote monitor sources = %#v", sources)
 	}
 	joined := strings.Join(runner.commands, "\n")
@@ -160,7 +168,7 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 func toDeployRemotes(remotes []subscription.Remote) []deploy.RemoteSubscription {
 	out := make([]deploy.RemoteSubscription, len(remotes))
 	for i, r := range remotes {
-		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt}
 	}
 	return out
 }

@@ -194,7 +194,7 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 		t.Fatalf("monitor manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust traffic counters", "Configure remote sources"} {
+	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust traffic counters", "Add monitor source", "Delete monitor sources"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("monitor manager view missing %q:\n%s", want, view)
 		}
@@ -338,7 +338,7 @@ func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	remotes := []deploy.RemoteSubscription{
 		{Domain: "one.example.com", Port: 9443, Salt: "salt-one"},
-		{Domain: "two.example.com", Port: 9444, Salt: "salt-two", Monitor: true, MonitorPublicPort: 9445},
+		{Domain: "two.example.com", Port: 9444, Salt: "salt-two"},
 	}
 	if err := deploy.SaveRemoteSubscriptions(layout, remotes); err != nil {
 		t.Fatalf("save remotes: %v", err)

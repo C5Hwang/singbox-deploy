@@ -42,6 +42,10 @@ func runMonitor(args []string) error {
 		return err
 	}
 
+	if err := deploy.MigrateMonitorSources(layout); err != nil {
+		return err
+	}
+
 	selectedIface := *iface
 	if selectedIface == "" {
 		detected, err := monitor.DefaultInterface()
@@ -73,15 +77,15 @@ func runMonitor(args []string) error {
 		Alias:             *alias,
 		RemoteMonitorPath: *remoteMonitorPath,
 		RefreshRemoteSources: func(ctx context.Context) error {
-			remotes, err := deploy.LoadRemoteSubscriptions(layout)
+			sources, err := deploy.LoadMonitorSources(layout)
 			if err != nil {
 				return err
 			}
-			sources, err := deploy.FetchRemoteMonitorSources(ctx, remotes, deploy.DefaultSubscriptionFetch)
+			fetched, err := deploy.FetchRemoteMonitorSources(ctx, sources, deploy.DefaultSubscriptionFetch)
 			if err != nil {
 				return err
 			}
-			return monitor.WriteRemoteSources(*remoteMonitorPath, sources)
+			return monitor.WriteRemoteSources(*remoteMonitorPath, fetched)
 		},
 		Now: clock.Now,
 	}

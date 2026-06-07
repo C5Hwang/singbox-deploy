@@ -41,17 +41,14 @@ type ManageConfig struct {
 	SubscribePort          int
 }
 
-// ManageRemote describes a remote subscription for monitor aggregation.
-type ManageRemote struct {
+// ManageMonitorSource describes a remote monitor source for aggregation.
+type ManageMonitorSource struct {
 	Domain            string
-	Port              int
 	Alias             string
-	Salt              string
-	Monitor           bool
 	MonitorPublicPort int
 }
 
-// ManageFetcher fetches remote subscription or monitor JSON endpoints.
+// ManageFetcher fetches remote monitor JSON endpoints.
 type ManageFetcher func(context.Context, string) ([]byte, error)
 
 // UpdateOptions describes updates to the local monitor settings, current
@@ -83,8 +80,8 @@ type UpdateOptions struct {
 	CurrentInBytes   uint64
 	CurrentOutBytes  uint64
 
-	SetRemotes bool
-	Remotes    []ManageRemote
+	SetMonitorSources bool
+	MonitorSources    []ManageMonitorSource
 
 	Firewall      system.Firewall
 	CheckPorts    func(context.Context, ManageConfig, []system.Port) error
@@ -96,15 +93,15 @@ type UpdateOptions struct {
 	DeployBin     string
 
 	// Deploy callbacks — wired by the caller to concrete deploy functions.
-	LoadConfig             func(paths.Layout) (ManageConfig, error)
-	LoadRemotes            func(paths.Layout) ([]ManageRemote, error)
-	ValidateRemotes        func([]ManageRemote) error
-	SaveRemotes            func(paths.Layout, []ManageRemote) error
-	WriteState             func(stateDir string, cfg ManageConfig) error
+	LoadConfig              func(paths.Layout) (ManageConfig, error)
+	LoadMonitorSources      func(paths.Layout) ([]ManageMonitorSource, error)
+	ValidateMonitorSources  func([]ManageMonitorSource) error
+	SaveMonitorSources      func(paths.Layout, []ManageMonitorSource) error
+	WriteState              func(stateDir string, cfg ManageConfig) error
 	WriteManagedNginxConfig func(layout paths.Layout, cfg ManageConfig, confPath string) error
-	RenderMonitorUnit      func(layout paths.Layout, deployBin string, cfg ManageConfig) (string, error)
-	RefreshRemoteMonitor   func(ctx context.Context, layout paths.Layout, remotes []ManageRemote, fetch func(context.Context, string) ([]byte, error)) error
-	RunCommands            func(runner system.Runner, cmds ...system.Command) error
+	RenderMonitorUnit       func(layout paths.Layout, deployBin string, cfg ManageConfig) (string, error)
+	RefreshRemoteMonitor    func(ctx context.Context, layout paths.Layout, sources []ManageMonitorSource, fetch func(context.Context, string) ([]byte, error)) error
+	RunCommands             func(runner system.Runner, cmds ...system.Command) error
 }
 
 // UpdateSettings applies monitor settings to an existing installation.
@@ -129,18 +126,18 @@ func UpdateSettings(ctx context.Context, opts UpdateOptions) (ManageConfig, erro
 		return ManageConfig{}, err
 	}
 
-	remotes := opts.Remotes
-	if !opts.SetRemotes {
-		remotes, err = opts.LoadRemotes(opts.Layout)
+	sources := opts.MonitorSources
+	if !opts.SetMonitorSources {
+		sources, err = opts.LoadMonitorSources(opts.Layout)
 		if err != nil {
 			return ManageConfig{}, err
 		}
 	}
-	if err := opts.ValidateRemotes(remotes); err != nil {
+	if err := opts.ValidateMonitorSources(sources); err != nil {
 		return ManageConfig{}, err
 	}
 
-	steps := manageUpdateSteps(opts, old, cfg, remotes)
+	steps := manageUpdateSteps(opts, old, cfg, sources)
 	for i, s := range steps {
 		emitManageProgress(opts.Progress, ManageEvent{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx, cfg); err != nil {
@@ -248,7 +245,7 @@ func validateManageConfig(cfg ManageConfig) error {
 	return nil
 }
 
-func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, remotes []ManageRemote) []manageUpdateStep {
+func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, sources []ManageMonitorSource) []manageUpdateStep {
 	var steps []manageUpdateStep
 	changedPorts := manageChangedPortChecks(old, cfg)
 	if opts.SetLocal && len(changedPorts) > 0 {
@@ -286,9 +283,9 @@ func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, remotes []Mana
 			return setManageCurrentTrafficTotals(ctx, opts, cfg)
 		}})
 	}
-	if opts.SetRemotes {
+	if opts.SetMonitorSources {
 		steps = append(steps, manageUpdateStep{label: "Remote monitor", detail: "refresh selected remote monitors", run: func(ctx context.Context, _ ManageConfig) error {
-			return opts.RefreshRemoteMonitor(ctx, opts.Layout, remotes, opts.Fetch)
+			return opts.RefreshRemoteMonitor(ctx, opts.Layout, sources, opts.Fetch)
 		}})
 	}
 	steps = append(steps, manageUpdateStep{label: "State", detail: "persist monitor settings", run: func(_ context.Context, cfg ManageConfig) error {
@@ -297,8 +294,8 @@ func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, remotes []Mana
 				return err
 			}
 		}
-		if opts.SetRemotes {
-			return opts.SaveRemotes(opts.Layout, remotes)
+		if opts.SetMonitorSources {
+			return opts.SaveMonitorSources(opts.Layout, sources)
 		}
 		return nil
 	}})

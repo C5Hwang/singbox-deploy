@@ -18,16 +18,25 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 )
 
-const remoteSubscriptionsDir = "remotes"
+const (
+	remoteSubscriptionsDir = "remotes"
+	monitorSourcesDir      = "monitor_sources"
+)
 
 // RemoteSubscription is one same-version remote server aggregated into local
 // subscription outputs. Remote node names are preserved unchanged.
 type RemoteSubscription struct {
+	Domain string
+	Port   int
+	Alias  string
+	Salt   string
+}
+
+// MonitorSource is a remote server whose /monitor/api/summary is aggregated
+// into the local monitor page. Independent of subscription configuration.
+type MonitorSource struct {
 	Domain            string
-	Port              int
 	Alias             string
-	Salt              string
-	Monitor           bool
 	MonitorPublicPort int
 }
 
@@ -70,9 +79,6 @@ func ValidateRemoteSubscriptions(remotes []RemoteSubscription) error {
 		if strings.TrimSpace(r.Salt) == "" {
 			return fmt.Errorf("remote %s salt is required", domain)
 		}
-		if r.Monitor && (r.MonitorPublicPort <= 0 || r.MonitorPublicPort > 65535) {
-			return fmt.Errorf("remote %s monitor public port must be between 1 and 65535", domain)
-		}
 		key := strings.ToLower(domain) + ":" + strconv.Itoa(r.Port)
 		if seen[key] {
 			return fmt.Errorf("duplicate remote subscription %s", key)
@@ -102,21 +108,11 @@ func LoadRemoteSubscriptions(layout paths.Layout) ([]RemoteSubscription, error) 
 			continue
 		}
 		root := filepath.Join(dir, entry.Name())
-		monitorValue := readRemoteStateDefault(root, "monitor", "")
-		if monitorValue == "" {
-			monitorValue = readRemoteStateDefault(root, "traffic", "no")
-		}
-		monitorPublicPort := readRemoteStateIntDefault(root, "monitor_public_port", 0)
-		if monitorPublicPort == 0 {
-			monitorPublicPort = readRemoteStateIntDefault(root, "traffic_port", 0)
-		}
 		remote := RemoteSubscription{
-			Domain:            readRemoteStateDefault(root, "domain", ""),
-			Port:              readRemoteStateIntDefault(root, "subscribe_port", 0),
-			Alias:             readRemoteStateDefault(root, "alias", ""),
-			Salt:              readRemoteStateDefault(root, "salt", ""),
-			Monitor:           monitorValue == "yes",
-			MonitorPublicPort: monitorPublicPort,
+			Domain: readRemoteStateDefault(root, "domain", ""),
+			Port:   readRemoteStateIntDefault(root, "subscribe_port", 0),
+			Alias:  readRemoteStateDefault(root, "alias", ""),
+			Salt:   readRemoteStateDefault(root, "salt", ""),
 		}
 		if strings.TrimSpace(remote.Alias) == "" {
 			remote.Alias = remote.Domain
@@ -139,12 +135,10 @@ func SaveRemoteSubscriptions(layout paths.Layout, remotes []RemoteSubscription) 
 	for i, remote := range remotes {
 		entryDir := filepath.Join(dir, fmt.Sprintf("%03d", i+1))
 		values := map[string]string{
-			"domain":              strings.TrimSpace(remote.Domain),
-			"subscribe_port":      itoa(remote.Port),
-			"alias":               strings.TrimSpace(remote.effectiveAlias()),
-			"salt":                strings.TrimSpace(remote.Salt),
-			"monitor":             yesNoString(remote.Monitor),
-			"monitor_public_port": itoa(remote.MonitorPublicPort),
+			"domain":         strings.TrimSpace(remote.Domain),
+			"subscribe_port": itoa(remote.Port),
+			"alias":          strings.TrimSpace(remote.effectiveAlias()),
+			"salt":           strings.TrimSpace(remote.Salt),
 		}
 		for name, value := range values {
 			if err := writePrivateStateFile(entryDir, name, value+"\n"); err != nil {
@@ -359,12 +353,20 @@ func (r RemoteSubscription) effectiveAlias() string {
 	return alias
 }
 
-func (r RemoteSubscription) monitorURL() string {
-	return fmt.Sprintf("https://%s:%d/monitor/api/summary", strings.TrimSpace(r.Domain), r.MonitorPublicPort)
+func (s MonitorSource) effectiveAlias() string {
+	alias := strings.TrimSpace(s.Alias)
+	if alias == "" {
+		alias = strings.TrimSpace(s.Domain)
+	}
+	return alias
 }
 
-func (r RemoteSubscription) monitorBaseURL() string {
-	return fmt.Sprintf("https://%s:%d/monitor", strings.TrimSpace(r.Domain), r.MonitorPublicPort)
+func (s MonitorSource) monitorURL() string {
+	return fmt.Sprintf("https://%s:%d/monitor/api/summary", strings.TrimSpace(s.Domain), s.MonitorPublicPort)
+}
+
+func (s MonitorSource) monitorBaseURL() string {
+	return fmt.Sprintf("https://%s:%d/monitor", strings.TrimSpace(s.Domain), s.MonitorPublicPort)
 }
 
 // RemoteMonitorPath returns the path to the remote monitor snapshot JSON.
@@ -372,19 +374,16 @@ func RemoteMonitorPath(layout paths.Layout) string {
 	return filepath.Join(layout.StateDir, "remote_monitor.json")
 }
 
-// FetchRemoteMonitorSources fetches monitor snapshots from all remote sources.
-func FetchRemoteMonitorSources(ctx context.Context, remotes []RemoteSubscription, fetch SubscriptionFetcher) ([]monitor.SourceSummary, error) {
+// FetchRemoteMonitorSources fetches monitor snapshots from all monitor sources.
+func FetchRemoteMonitorSources(ctx context.Context, sources []MonitorSource, fetch SubscriptionFetcher) ([]monitor.SourceSummary, error) {
 	if fetch == nil {
 		fetch = DefaultSubscriptionFetch
 	}
-	var sources []monitor.SourceSummary
-	for _, remote := range remotes {
-		if !remote.Monitor {
-			continue
-		}
-		body, err := fetch(ctx, remote.monitorURL())
+	var out []monitor.SourceSummary
+	for _, src := range sources {
+		body, err := fetch(ctx, src.monitorURL())
 		if err != nil {
-			return nil, fmt.Errorf("fetch remote monitor %s: %w", remote.Domain, err)
+			return nil, fmt.Errorf("fetch remote monitor %s: %w", src.Domain, err)
 		}
 		var payload struct {
 			InUsedBytes         uint64                    `json:"inUsedBytes"`
@@ -404,17 +403,17 @@ func FetchRemoteMonitorSources(ctx context.Context, remotes []RemoteSubscription
 			} `json:"sources"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, fmt.Errorf("decode remote monitor %s: %w", remote.Domain, err)
+			return nil, fmt.Errorf("decode remote monitor %s: %w", src.Domain, err)
 		}
 		var remoteSampledAt string
 		if len(payload.Sources) > 0 {
 			remoteSampledAt = payload.Sources[0].SampledAt
 		}
-		sources = append(sources, monitor.SourceSummary{
-			Name:                subscription.AddNodePrefixFlag(remote.effectiveAlias()),
+		out = append(out, monitor.SourceSummary{
+			Name:                subscription.AddNodePrefixFlag(src.effectiveAlias()),
 			FetchedAt:           time.Now().UTC().Format(time.RFC3339),
 			SampledAt:           remoteSampledAt,
-			MonitorURL:          remote.monitorBaseURL(),
+			MonitorURL:          src.monitorBaseURL(),
 			InUsedBytes:         payload.InUsedBytes,
 			OutUsedBytes:        payload.OutUsedBytes,
 			TotalUsedBytes:      payload.TotalUsedBytes,
@@ -429,14 +428,147 @@ func FetchRemoteMonitorSources(ctx context.Context, remotes []RemoteSubscription
 			Resources:           payload.Resources,
 		})
 	}
-	return sources, nil
+	return out, nil
 }
 
-// RefreshRemoteMonitor fetches and persists monitor snapshots from all remote sources.
-func RefreshRemoteMonitor(ctx context.Context, layout paths.Layout, remotes []RemoteSubscription, fetch SubscriptionFetcher) error {
-	sources, err := FetchRemoteMonitorSources(ctx, remotes, fetch)
+// RefreshRemoteMonitor fetches and persists monitor snapshots from all monitor sources.
+func RefreshRemoteMonitor(ctx context.Context, layout paths.Layout, sources []MonitorSource, fetch SubscriptionFetcher) error {
+	fetched, err := FetchRemoteMonitorSources(ctx, sources, fetch)
 	if err != nil {
 		return err
 	}
-	return monitor.WriteRemoteSources(RemoteMonitorPath(layout), sources)
+	return monitor.WriteRemoteSources(RemoteMonitorPath(layout), fetched)
+}
+
+// ValidateMonitorSources checks that all monitor source entries are well-formed.
+func ValidateMonitorSources(sources []MonitorSource) error {
+	seen := map[string]bool{}
+	for _, s := range sources {
+		domain := strings.TrimSpace(s.Domain)
+		if domain == "" {
+			return fmt.Errorf("monitor source domain is required")
+		}
+		if strings.TrimSpace(s.effectiveAlias()) == "" {
+			return fmt.Errorf("monitor source %s alias is required", domain)
+		}
+		if s.MonitorPublicPort <= 0 || s.MonitorPublicPort > 65535 {
+			return fmt.Errorf("monitor source %s port must be between 1 and 65535", domain)
+		}
+		key := strings.ToLower(domain) + ":" + strconv.Itoa(s.MonitorPublicPort)
+		if seen[key] {
+			return fmt.Errorf("duplicate monitor source %s", key)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+// LoadMonitorSources reads configured monitor source entries.
+func LoadMonitorSources(layout paths.Layout) ([]MonitorSource, error) {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	dir := filepath.Join(layout.StateDir, monitorSourcesDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var sources []MonitorSource
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		root := filepath.Join(dir, entry.Name())
+		src := MonitorSource{
+			Domain:            readRemoteStateDefault(root, "domain", ""),
+			Alias:             readRemoteStateDefault(root, "alias", ""),
+			MonitorPublicPort: readRemoteStateIntDefault(root, "monitor_public_port", 0),
+		}
+		if strings.TrimSpace(src.Alias) == "" {
+			src.Alias = src.Domain
+		}
+		sources = append(sources, src)
+	}
+	return sources, ValidateMonitorSources(sources)
+}
+
+// SaveMonitorSources persists monitor source entries as small state files.
+func SaveMonitorSources(layout paths.Layout, sources []MonitorSource) error {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	dir := filepath.Join(layout.StateDir, monitorSourcesDir)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	for i, src := range sources {
+		entryDir := filepath.Join(dir, fmt.Sprintf("%03d", i+1))
+		values := map[string]string{
+			"domain":              strings.TrimSpace(src.Domain),
+			"alias":               strings.TrimSpace(src.effectiveAlias()),
+			"monitor_public_port": itoa(src.MonitorPublicPort),
+		}
+		for name, value := range values {
+			if err := writePrivateStateFile(entryDir, name, value+"\n"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// MigrateMonitorSources copies monitor-enabled remote subscriptions into the
+// independent monitor_sources storage on first load. If the monitor_sources
+// directory already exists the migration is a no-op.
+func MigrateMonitorSources(layout paths.Layout) error {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	dir := filepath.Join(layout.StateDir, monitorSourcesDir)
+	if _, err := os.Stat(dir); err == nil {
+		return nil
+	}
+	remotesDir := filepath.Join(layout.StateDir, remoteSubscriptionsDir)
+	entries, err := os.ReadDir(remotesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var sources []MonitorSource
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		root := filepath.Join(remotesDir, entry.Name())
+		monitorValue := readRemoteStateDefault(root, "monitor", "")
+		if monitorValue == "" {
+			monitorValue = readRemoteStateDefault(root, "traffic", "no")
+		}
+		if monitorValue != "yes" {
+			continue
+		}
+		port := readRemoteStateIntDefault(root, "monitor_public_port", 0)
+		if port == 0 {
+			port = readRemoteStateIntDefault(root, "traffic_port", 0)
+		}
+		alias := readRemoteStateDefault(root, "alias", "")
+		if alias == "" {
+			alias = readRemoteStateDefault(root, "domain", "")
+		}
+		sources = append(sources, MonitorSource{
+			Domain:            readRemoteStateDefault(root, "domain", ""),
+			Alias:             alias,
+			MonitorPublicPort: port,
+		})
+	}
+	if len(sources) == 0 {
+		return os.MkdirAll(dir, 0o700)
+	}
+	return SaveMonitorSources(layout, sources)
 }

@@ -31,7 +31,8 @@ type monitorAction int
 const (
 	monitorActionLocal monitorAction = iota
 	monitorActionUsage
-	monitorActionRemotes
+	monitorActionAddSource
+	monitorActionDeleteSources
 )
 
 var (
@@ -52,12 +53,12 @@ type monitorManager struct {
 	width  int
 	height int
 
-	host    system.Host
-	hostErr error
-	cfg     deploy.Config
-	remotes []deploy.RemoteSubscription
-	totals  monitor.TrafficTotals
-	loadErr error
+	host           system.Host
+	hostErr        error
+	cfg            deploy.Config
+	monitorSources []deploy.MonitorSource
+	totals         monitor.TrafficTotals
+	loadErr        error
 
 	cursor int
 	parameterForm
@@ -79,12 +80,16 @@ func newMonitorManager() *monitorManager {
 		return tm
 	}
 	tm.cfg = cfg
-	remotes, err := deploy.LoadRemoteSubscriptions(layout)
+	if err := deploy.MigrateMonitorSources(layout); err != nil {
+		tm.loadErr = err
+		return tm
+	}
+	sources, err := deploy.LoadMonitorSources(layout)
 	if err != nil {
 		tm.loadErr = err
 		return tm
 	}
-	tm.remotes = remotes
+	tm.monitorSources = sources
 	totals, err := monitor.CurrentTrafficTotals(layout, cfg.ResetDay, cfg.ResetHour, time.Now().UTC())
 	if err == nil {
 		tm.totals = totals
@@ -220,8 +225,8 @@ func (tm *monitorManager) reloadState() {
 		tm.cfg = cfg
 		tm.result = cfg
 	}
-	if remotes, err := deploy.LoadRemoteSubscriptions(layout); err == nil {
-		tm.remotes = remotes
+	if sources, err := deploy.LoadMonitorSources(layout); err == nil {
+		tm.monitorSources = sources
 	}
 	if totals, err := monitor.CurrentTrafficTotals(layout, tm.cfg.ResetDay, tm.cfg.ResetHour, time.Now().UTC()); err == nil {
 		tm.totals = totals
@@ -246,12 +251,14 @@ func (tm *monitorManager) activateAction() {
 		tm.startForm(tm.localFields())
 	case monitorActionUsage:
 		tm.startForm(tm.usageFields())
-	case monitorActionRemotes:
-		if len(tm.remotes) == 0 {
-			tm.fieldErr = "no remote subscriptions configured"
+	case monitorActionAddSource:
+		tm.startForm(tm.addMonitorSourceFields())
+	case monitorActionDeleteSources:
+		if len(tm.monitorSources) == 0 {
+			tm.fieldErr = "no monitor sources configured"
 			return
 		}
-		tm.startForm(tm.remoteMonitorFields())
+		tm.startForm(tm.deleteMonitorSourceFields())
 	}
 }
 
@@ -273,41 +280,56 @@ func (tm *monitorManager) usageFields() []field {
 	return fieldsFromParameters(uiparams.MonitorUsageFields(tm.totals.InBytes, tm.totals.OutBytes))
 }
 
-func (tm *monitorManager) remoteMonitorFields() []field {
-	options := make([]string, 0, len(tm.remotes))
-	selected := make(map[string]bool)
-	for _, remote := range tm.remotes {
-		label := remoteOptionLabel(remote)
-		options = append(options, label)
-		if remote.Monitor {
-			selected[label] = true
-		}
+func (tm *monitorManager) addMonitorSourceFields() []field {
+	return []field{
+		{key: "monitor_source_domain", label: "Monitor source domain", note: "Domain name of the remote server whose /monitor/api/summary will be aggregated."},
+		{key: "monitor_source_alias", label: "Monitor source alias", note: "Alias used as the traffic source label on /monitor."},
+		{key: "monitor_source_port", label: "Monitor HTTPS port", def: strconv.Itoa(deploy.DefaultMonitorPublicPort), note: "Public HTTPS port serving the remote /monitor page."},
 	}
-	fields := []field{{
-		key:     "remote_monitor_sources",
-		label:   "Remote monitor sources",
-		def:     selectedOptionsValue(options, selected),
+}
+
+func (tm *monitorManager) deleteMonitorSourceFields() []field {
+	options := make([]string, 0, len(tm.monitorSources))
+	for _, src := range tm.monitorSources {
+		options = append(options, monitorSourceOptionLabel(src))
+	}
+	return []field{{
+		key:     "delete_monitor_sources",
+		label:   "Monitor sources to delete",
 		options: options,
 		multi:   true,
-		note:    "Select configured remote subscriptions whose /monitor/api/summary should be aggregated into the local /monitor page.",
+		note:    "Select one or more monitor sources to delete.",
 	}}
-	for i, remote := range tm.remotes {
-		label := remoteOptionLabel(remote)
-		idx := i
-		fields = append(fields, field{
-			key:   remoteMonitorPublicPortKey(idx),
-			label: "Monitor HTTPS port for " + label,
-			def:   strconv.Itoa(defaultRemoteMonitorPublicPort(remote, tm.cfg)),
-			note:  "Public HTTPS port serving the remote /monitor page.",
-			skip: func(vals map[string]string) bool {
-				return !selectedOptions(vals["remote_monitor_sources"])[label]
-			},
-		})
+}
+
+func monitorSourceOptionLabel(src deploy.MonitorSource) string {
+	alias := strings.TrimSpace(src.Alias)
+	if alias == "" {
+		alias = strings.TrimSpace(src.Domain)
 	}
-	return fields
+	return fmt.Sprintf("%s (%s:%d)", alias, strings.TrimSpace(src.Domain), src.MonitorPublicPort)
 }
 
 func validateMonitorField(f field, val string, _ map[string]string) error {
+	switch f.key {
+	case "monitor_source_domain":
+		if strings.TrimSpace(val) == "" {
+			return fmt.Errorf("monitor source domain is required")
+		}
+		return nil
+	case "monitor_source_alias":
+		if strings.TrimSpace(val) == "" {
+			return fmt.Errorf("monitor source alias is required")
+		}
+		return nil
+	case "monitor_source_port":
+		return uiparams.ValidateMonitorParameterValue("monitor_public_port", val)
+	case "delete_monitor_sources":
+		if strings.TrimSpace(val) == "" {
+			return fmt.Errorf("select at least one monitor source to delete")
+		}
+		return nil
+	}
 	return uiparams.ValidateMonitorParameterValue(f.key, val)
 }
 
@@ -369,10 +391,30 @@ func (tm *monitorManager) updateOptions() monitor.UpdateOptions {
 		opts.CurrentInBytes = inBytes
 		opts.CurrentOutBytes = outBytes
 		return opts
-	case monitorActionRemotes:
+	case monitorActionAddSource:
 		opts := base
-		opts.SetRemotes = true
-		opts.Remotes = tm.targetRemoteMonitor()
+		opts.SetMonitorSources = true
+		port, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_source_port"]))
+		sources := append([]deploy.MonitorSource(nil), tm.monitorSources...)
+		sources = append(sources, deploy.MonitorSource{
+			Domain:            strings.TrimSpace(tm.values["monitor_source_domain"]),
+			Alias:             strings.TrimSpace(tm.values["monitor_source_alias"]),
+			MonitorPublicPort: port,
+		})
+		opts.MonitorSources = toManageMonitorSources(sources)
+		return opts
+	case monitorActionDeleteSources:
+		opts := base
+		opts.SetMonitorSources = true
+		deleted := selectedOptions(tm.values["delete_monitor_sources"])
+		sources := make([]deploy.MonitorSource, 0, len(tm.monitorSources))
+		for _, src := range tm.monitorSources {
+			if deleted[monitorSourceOptionLabel(src)] {
+				continue
+			}
+			sources = append(sources, src)
+		}
+		opts.MonitorSources = toManageMonitorSources(sources)
 		return opts
 	default:
 		return base
@@ -406,34 +448,6 @@ func (tm *monitorManager) localUpdateOptions() monitor.UpdateOptions {
 	return opts
 }
 
-func (tm *monitorManager) targetRemoteMonitor() []monitor.ManageRemote {
-	selected := selectedOptions(tm.values["remote_monitor_sources"])
-	remotes := make([]monitor.ManageRemote, 0, len(tm.remotes))
-	for i, remote := range tm.remotes {
-		label := remoteOptionLabel(remote)
-		mr := monitor.ManageRemote{
-			Domain:            remote.Domain,
-			Port:              remote.Port,
-			Alias:             remote.Alias,
-			Salt:              remote.Salt,
-			Monitor:           selected[label],
-			MonitorPublicPort: remote.MonitorPublicPort,
-		}
-		if mr.Monitor {
-			if port, err := strconv.Atoi(strings.TrimSpace(tm.values[remoteMonitorPublicPortKey(i)])); err == nil {
-				mr.MonitorPublicPort = port
-			}
-		} else {
-			mr.MonitorPublicPort = 0
-		}
-		remotes = append(remotes, mr)
-	}
-	return remotes
-}
-
-func remoteMonitorPublicPortKey(index int) string {
-	return fmt.Sprintf("remote_monitor_public_port_%d", index)
-}
 
 func (tm *monitorManager) handleRun(msg runMsg) tea.Cmd { return handleCommandRun(tm, msg) }
 
@@ -475,7 +489,7 @@ func (tm *monitorManager) actionView() string {
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(tm.cfg), uiparams.DefaultResetHour(tm.cfg))),
 		summaryRow("Current inbound", byteSize(tm.totals.InBytes)),
 		summaryRow("Current outbound", byteSize(tm.totals.OutBytes)),
-		summaryRow("Remote monitor sources", strconv.Itoa(countRemoteMonitor(tm.remotes))),
+		summaryRow("Monitor sources", strconv.Itoa(len(tm.monitorSources))),
 	}
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("Monitor") + "\n\n")
@@ -519,17 +533,33 @@ func (tm *monitorManager) confirmView() string {
 			summaryRow("Current inbound", byteSize(tm.totals.InBytes)+" -> "+tm.values["current_in_traffic"]),
 			summaryRow("Current outbound", byteSize(tm.totals.OutBytes)+" -> "+tm.values["current_out_traffic"]),
 		)
-	case monitorActionRemotes:
-		selected := selectedOptions(tm.values["remote_monitor_sources"])
-		rows = append(rows, summaryRow("Selected remote monitors", strconv.Itoa(len(selected))))
-		for i, remote := range tm.remotes {
-			label := remoteOptionLabel(remote)
-			if selected[label] {
-				rows = append(rows, summaryIndentedRow(2, "Remote", label+" port "+tm.values[remoteMonitorPublicPortKey(i)]))
+	case monitorActionAddSource:
+		rows = append(rows,
+			summaryRow("Add monitor source domain", tm.values["monitor_source_domain"]),
+			summaryRow("Monitor source alias", tm.values["monitor_source_alias"]),
+			summaryRow("Monitor HTTPS port", tm.values["monitor_source_port"]),
+		)
+	case monitorActionDeleteSources:
+		selected := selectedOptions(tm.values["delete_monitor_sources"])
+		remaining := make([]deploy.MonitorSource, 0, len(tm.monitorSources))
+		for _, src := range tm.monitorSources {
+			if !selected[monitorSourceOptionLabel(src)] {
+				remaining = append(remaining, src)
 			}
 		}
-		if len(selected) == 0 {
-			rows = append(rows, summaryIndentedRow(2, "Remote", "none"))
+		rows = append(rows, summaryRow("Delete monitor sources", strconv.Itoa(len(selected))))
+		for _, src := range tm.monitorSources {
+			label := monitorSourceOptionLabel(src)
+			if selected[label] {
+				rows = append(rows, summaryIndentedRow(2, "Delete", label))
+			}
+		}
+		rows = append(rows, summaryRow("Remaining monitor sources", strconv.Itoa(len(remaining))))
+		if len(remaining) == 0 {
+			rows = append(rows, summaryIndentedRow(2, "Keep", "none"))
+		}
+		for _, src := range remaining {
+			rows = append(rows, summaryIndentedRow(2, "Keep", monitorSourceOptionLabel(src)))
 		}
 	}
 	rows = append(rows, summaryBlank(), summaryText("This will update monitor state and refresh /monitor data."))
@@ -547,7 +577,7 @@ func (tm *monitorManager) doneSummary() string {
 		summaryRow("Monitor alias", or(cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 		summaryRow("Monitor UI port", strconv.Itoa(cfg.MonitorPublicPort)),
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
-		summaryRow("Remote monitor sources", strconv.Itoa(countRemoteMonitor(tm.remotes))),
+		summaryRow("Monitor sources", strconv.Itoa(len(tm.monitorSources))),
 	})
 }
 
@@ -575,7 +605,8 @@ func (tm *monitorManager) actions() []monitorActionItem {
 	return []monitorActionItem{
 		{action: monitorActionLocal, label: "Edit monitor settings"},
 		{action: monitorActionUsage, label: "Adjust traffic counters"},
-		{action: monitorActionRemotes, label: "Configure remote sources"},
+		{action: monitorActionAddSource, label: "Add monitor source"},
+		{action: monitorActionDeleteSources, label: "Delete monitor sources"},
 	}
 }
 
@@ -603,18 +634,18 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				SubscribePort:          dcfg.SubscribePort,
 			}, nil
 		},
-		LoadRemotes: func(l paths.Layout) ([]monitor.ManageRemote, error) {
-			dr, err := deploy.LoadRemoteSubscriptions(l)
+		LoadMonitorSources: func(l paths.Layout) ([]monitor.ManageMonitorSource, error) {
+			srcs, err := deploy.LoadMonitorSources(l)
 			if err != nil {
 				return nil, err
 			}
-			return toManageRemotes(dr), nil
+			return toManageMonitorSources(srcs), nil
 		},
-		ValidateRemotes: func(remotes []monitor.ManageRemote) error {
-			return deploy.ValidateRemoteSubscriptions(fromManageRemotes(remotes))
+		ValidateMonitorSources: func(sources []monitor.ManageMonitorSource) error {
+			return deploy.ValidateMonitorSources(fromManageMonitorSources(sources))
 		},
-		SaveRemotes: func(l paths.Layout, remotes []monitor.ManageRemote) error {
-			return deploy.SaveRemoteSubscriptions(l, fromManageRemotes(remotes))
+		SaveMonitorSources: func(l paths.Layout, sources []monitor.ManageMonitorSource) error {
+			return deploy.SaveMonitorSources(l, fromManageMonitorSources(sources))
 		},
 		WriteState: func(stateDir string, mcfg monitor.ManageConfig) error {
 			layout := monitorUILayout()
@@ -667,8 +698,8 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			dcfg.ResetHour = mcfg.ResetHour
 			return deploy.RenderMonitorUnit(l, deployBin, dcfg)
 		},
-		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, remotes []monitor.ManageRemote, fetch func(context.Context, string) ([]byte, error)) error {
-			return deploy.RefreshRemoteMonitor(ctx, l, fromManageRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, sources []monitor.ManageMonitorSource, fetch func(context.Context, string) ([]byte, error)) error {
+			return deploy.RefreshRemoteMonitor(ctx, l, fromManageMonitorSources(sources), deploy.SubscriptionFetcher(fetch))
 		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error {
 			return deploy.RunCommands(r, cmds...)
@@ -676,38 +707,18 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 	}
 }
 
-func toManageRemotes(remotes []deploy.RemoteSubscription) []monitor.ManageRemote {
-	out := make([]monitor.ManageRemote, len(remotes))
-	for i, r := range remotes {
-		out[i] = monitor.ManageRemote{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+func toManageMonitorSources(sources []deploy.MonitorSource) []monitor.ManageMonitorSource {
+	out := make([]monitor.ManageMonitorSource, len(sources))
+	for i, s := range sources {
+		out[i] = monitor.ManageMonitorSource{Domain: s.Domain, Alias: s.Alias, MonitorPublicPort: s.MonitorPublicPort}
 	}
 	return out
 }
 
-func fromManageRemotes(remotes []monitor.ManageRemote) []deploy.RemoteSubscription {
-	out := make([]deploy.RemoteSubscription, len(remotes))
-	for i, r := range remotes {
-		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt, Monitor: r.Monitor, MonitorPublicPort: r.MonitorPublicPort}
+func fromManageMonitorSources(sources []monitor.ManageMonitorSource) []deploy.MonitorSource {
+	out := make([]deploy.MonitorSource, len(sources))
+	for i, s := range sources {
+		out[i] = deploy.MonitorSource{Domain: s.Domain, Alias: s.Alias, MonitorPublicPort: s.MonitorPublicPort}
 	}
 	return out
-}
-
-func countRemoteMonitor(remotes []deploy.RemoteSubscription) int {
-	count := 0
-	for _, remote := range remotes {
-		if remote.Monitor {
-			count++
-		}
-	}
-	return count
-}
-
-func defaultRemoteMonitorPublicPort(remote deploy.RemoteSubscription, cfg deploy.Config) int {
-	if remote.MonitorPublicPort > 0 {
-		return remote.MonitorPublicPort
-	}
-	if cfg.MonitorPublicPort > 0 {
-		return cfg.MonitorPublicPort
-	}
-	return deploy.DefaultMonitorPublicPort
 }
