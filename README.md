@@ -1,20 +1,16 @@
 # singbox-deploy
 
-`singbox-deploy` is an **unofficial deployment tool** for sing-box. It is not
-affiliated with SagerNet or sing-box.
-
-`singbox-deploy` is a [sing-box](https://github.com/SagerNet/sing-box)-only deployment and management tool written in Go,
-which is able to deploy sing-box, Nginx, Let's Encrypt certificates, subscription files,
-and a built-in monitor on Linux servers.
-
-The project is inspired by [`mack-a/v2ray-agent`](https://github.com/mack-a/v2ray-agent).
+`singbox-deploy` is an **unofficial** [sing-box](https://github.com/SagerNet/sing-box)-focused
+deployment and management tool written in Go, not affiliated with SagerNet or sing-box.
+It automates the setup of sing-box, Nginx, Let's Encrypt certificates, and subscription
+files on Linux servers, and includes a built-in resource monitor.
 
 ## Core Features
 
 - Interactive terminal UI for deployment and management.
-- Automated sing-box, Nginx, certificate, subscription, and service deployment.
-- Let's Encrypt certificate issuance with HTTP-01 and DNS-01 support.
-- Subscription output for default links, Clash Meta, and sing-box clients.
+- Automated deployment of sing-box, Nginx, certificates, and subscriptions.
+- Let's Encrypt certificate issuance and renewal via HTTP-01 and DNS-01 challenges.
+- Subscription output in share-link, Clash Meta, and sing-box formats.
 - Selectable HTML5 UP masquerade site templates served by Nginx.
 - Resource monitor with a web dashboard and quota enforcement.
 
@@ -33,14 +29,14 @@ The project is inspired by [`mack-a/v2ray-agent`](https://github.com/mack-a/v2ra
 curl -fsSL https://github.com/C5Hwang/singbox-deploy/releases/latest/download/install.sh | sudo bash
 ```
 
-The installer downloads the matching release binary and installs it to
-`/usr/bin/singbox-deploy`. Then run `sudo singbox-deploy` to deploy and manage
-the server.
+The installer detects your platform and downloads the corresponding release
+binary to `/usr/bin/singbox-deploy`. Then run `sudo singbox-deploy` to start
+the interactive setup.
 
 ## Build From Source
 
-The release binary uses Go `embed`, so the monitor UI must be built before the Go
-binary when UI assets change.
+The monitor UI is embedded into the Go binary via `go:embed`, so it must be
+built before compiling the Go binary.
 
 ### Requirements
 
@@ -48,17 +44,17 @@ binary when UI assets change.
 - Node.js 22 or newer.
 - pnpm 9 or newer.
 
-### 1. Build embedded monitor UI assets
+### 1. Build the monitor UI
 
 ```bash
 pnpm --dir web/monitor install --frozen-lockfile
 pnpm --dir web/monitor build
 ```
 
-This writes the Vue build output to `assets/monitor-ui`, where it is embedded
-by the Go build.
+This writes the production build output to `assets/monitor-ui`, which the Go
+build embeds automatically.
 
-### 2. Build static binaries
+### 2. Build the binary
 
 ```bash
 # Build for the current Linux architecture.
@@ -71,6 +67,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dis
 # Build for Linux arm64.
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy-linux-arm64 ./cmd/singbox-deploy
 ```
+
+## Acknowledgments
+
+Inspired by [`mack-a/v2ray-agent`](https://github.com/mack-a/v2ray-agent).
 
 ## License
 

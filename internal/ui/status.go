@@ -20,6 +20,11 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
+var toolVersion = "dev"
+
+// SetVersion records the build-time version string for display in the UI.
+func SetVersion(v string) { toolVersion = v }
+
 var (
 	defaultStatusLayout = paths.DefaultLayout
 	detectStatusHost    = system.DetectHost
@@ -61,6 +66,7 @@ func loadStatus() Status {
 	singBoxState := singBoxServiceState(singBoxVer, store, layout, monitorEnabled)
 
 	return Status{
+		ToolVersion:  toolVersion,
 		Domain:       domain,
 		PublicIP:     readStatusState(store, "public_ip"),
 		OSArch:       osArchStatus(),

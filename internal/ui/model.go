@@ -28,6 +28,7 @@ const (
 // Status is the snapshot rendered in the top status panel. Empty fields render
 // as "unknown" so the panel is meaningful before installation.
 type Status struct {
+	ToolVersion  string
 	Domain       string
 	PublicIP     string
 	OSArch       string
@@ -57,17 +58,19 @@ type MenuGroup struct {
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	width     int
-	height    int
-	status    Status
-	groups    []MenuGroup
-	cursor    int // flat index across all items
-	install   *installFlow
-	protocols *protocolManager
-	subscribe *subscriptionManager
-	monitor   *monitorManager
-	core      *coreManager
-	uninstall *uninstallManager
+	width       int
+	height      int
+	status      Status
+	groups      []MenuGroup
+	cursor      int // flat index across all items
+	install     *installFlow
+	protocols   *protocolManager
+	subscribe   *subscriptionManager
+	monitor     *monitorManager
+	core        *coreManager
+	selfupdate  *selfUpdateManager
+	uninstall   *uninstallManager
+	placeholder *placeholderManager
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -188,6 +191,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.selfupdate != nil {
+		s := m.selfupdate
+		cmd, done := m.selfupdate.Update(msg)
+		if done {
+			if s.phase == selfUpdatePhaseDone && s.runErr == nil {
+				m.RefreshStatus()
+			}
+			m.selfupdate = nil
+		}
+		return m, cmd
+	}
 	if m.uninstall != nil {
 		u := m.uninstall
 		cmd, done := m.uninstall.Update(msg)
@@ -196,6 +210,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.RefreshStatus()
 			}
 			m.uninstall = nil
+		}
+		return m, cmd
+	}
+	if m.placeholder != nil {
+		cmd, done := m.placeholder.Update(msg)
+		if done {
+			m.placeholder = nil
 		}
 		return m, cmd
 	}
@@ -230,14 +251,22 @@ func (m *Model) activate() tea.Cmd {
 		s := newSubscriptionManager()
 		s.setSize(m.width, m.height)
 		m.subscribe = s
+	case 3:
+		m.placeholder = newPlaceholderManager("Certificate & site")
 	case 4:
 		t := newMonitorManager()
 		t.setSize(m.width, m.height)
 		m.monitor = t
+	case 5:
+		m.placeholder = newPlaceholderManager("Routing rules")
 	case 6:
 		c := newCoreManager()
 		c.setSize(m.width, m.height)
 		m.core = c
+	case 7:
+		s := newSelfUpdateManager()
+		s.setSize(m.width, m.height)
+		m.selfupdate = s
 	case 8:
 		u := newUninstallManager()
 		u.setSize(m.width, m.height)
@@ -327,9 +356,16 @@ func (m *Model) contentView(width, height int) string {
 		m.core.setSize(width, height)
 		return m.core.View()
 	}
+	if m.selfupdate != nil {
+		m.selfupdate.setSize(width, height)
+		return m.selfupdate.View()
+	}
 	if m.uninstall != nil {
 		m.uninstall.setSize(width, height)
 		return m.uninstall.View()
+	}
+	if m.placeholder != nil {
+		return m.placeholder.View()
 	}
 	return m.statusView()
 }
@@ -337,7 +373,7 @@ func (m *Model) contentView(width, height int) string {
 func (m *Model) footerView() string {
 	var parts []operationHint
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.uninstall == nil {
+		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.selfupdate == nil && m.uninstall == nil && m.placeholder == nil {
 			parts = append(parts, menuFooterHints()...)
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
@@ -347,8 +383,12 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.monitor.footerHints()...)
 		} else if m.core != nil {
 			parts = append(parts, m.core.footerHints()...)
+		} else if m.selfupdate != nil {
+			parts = append(parts, m.selfupdate.footerHints()...)
 		} else if m.uninstall != nil {
 			parts = append(parts, m.uninstall.footerHints()...)
+		} else if m.placeholder != nil {
+			parts = append(parts, m.placeholder.footerHints()...)
 		}
 	} else {
 		parts = append(parts, m.install.footerHints()...)
@@ -381,6 +421,7 @@ func or(v, fallback string) string {
 func (m *Model) statusView() string {
 	s := m.status
 	rows := []summaryLine{
+		summaryRow("singbox-deploy", or(s.ToolVersion, "dev")),
 		summaryRow("Domain", or(s.Domain, "unknown")),
 		summaryRow("Public IP", or(s.PublicIP, "unknown")),
 		summaryRow("OS/Arch", or(s.OSArch, "unknown")),

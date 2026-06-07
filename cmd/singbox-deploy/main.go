@@ -9,7 +9,10 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/ui"
 )
 
+var version = "dev"
+
 func main() {
+	ui.SetVersion(version)
 	// The monitor subcommand runs the long-lived monitor service and is
 	// dispatched before the interactive UI. It is wired in the monitor task.
 	if len(os.Args) > 1 && os.Args[1] == "monitor" {
