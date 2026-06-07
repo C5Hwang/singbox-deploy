@@ -46,6 +46,20 @@ jobs:
           done
           cp scripts/install.sh dist/install.sh
 
+      - name: Check if first release
+        id: check
+        run: |
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1)
+          echo "is_first=$([ -z "$PREV_TAG" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v2
+        if: steps.check.outputs.is_first == 'true'
         with:
+          body: "Initial release of singbox-deploy."
+          files: dist/*
+
+      - uses: softprops/action-gh-release@v2
+        if: steps.check.outputs.is_first == 'false'
+        with:
+          generate_release_notes: true
           files: dist/*
