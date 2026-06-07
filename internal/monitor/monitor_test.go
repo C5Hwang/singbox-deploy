@@ -1,7 +1,11 @@
 package monitor
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -103,7 +107,7 @@ func TestStoreSetTotalsSinceAddsSignedAdjustment(t *testing.T) {
 
 func TestRemoteSourcesRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "remote_monitor.json")
-	want := []SourceSummary{{Name: "remote.example.com", TotalUsedBytes: 300, ResetTime: "2026-06-01T00:00:00Z"}}
+	want := []SourceSummary{{Name: "remote.example.com", MonitorURL: "https://remote.example.com:9444/monitor", TotalUsedBytes: 300, ResetTime: "2026-06-01T00:00:00Z"}}
 	if err := WriteRemoteSources(path, want); err != nil {
 		t.Fatalf("WriteRemoteSources error: %v", err)
 	}
@@ -111,7 +115,56 @@ func TestRemoteSourcesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRemoteSources error: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != want[0].Name || got[0].TotalUsedBytes != want[0].TotalUsedBytes {
+	if len(got) != 1 || got[0].Name != want[0].Name || got[0].MonitorURL != want[0].MonitorURL || got[0].TotalUsedBytes != want[0].TotalUsedBytes {
 		t.Fatalf("remote sources = %#v", got)
+	}
+}
+
+func TestSummaryOmitsRemoteMonitorURL(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "monitor.db"))
+	if err != nil {
+		t.Fatalf("OpenStore error: %v", err)
+	}
+	defer store.Close()
+
+	remotePath := filepath.Join(dir, "state", "remote_monitor.json")
+	if err := WriteRemoteSources(remotePath, []SourceSummary{{
+		Name:           "JP-remote",
+		MonitorURL:     "https://remote.example.com:9444/monitor",
+		TotalUsedBytes: 300,
+		ResetTime:      "2026-06-01T00:00:00Z",
+	}}); err != nil {
+		t.Fatalf("WriteRemoteSources error: %v", err)
+	}
+
+	m := New(store, Config{
+		Alias:             "local",
+		RemoteMonitorPath: remotePath,
+		Now: func() time.Time {
+			return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+		},
+	}, nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/summary", nil)
+	m.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "monitorURL") || strings.Contains(body, "remote.example.com") {
+		t.Fatalf("summary leaked remote monitor URL: %s", body)
+	}
+
+	var got summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if len(got.Sources) != 2 || got.Sources[1].Name != "JP-remote" || got.Sources[1].TotalUsedBytes != 300 {
+		t.Fatalf("sources = %#v", got.Sources)
+	}
+	if got.Sources[1].MonitorURL != "" {
+		t.Fatalf("monitor URL should be omitted, got %q", got.Sources[1].MonitorURL)
 	}
 }

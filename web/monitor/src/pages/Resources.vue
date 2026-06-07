@@ -56,6 +56,7 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
         <div>
           <p class="eyebrow">CPU</p>
           <p class="metric-value">{{ fmtPct(peakRes?.cpuPct) }}</p>
+          <p class="metric-detail" aria-hidden="true"></p>
         </div>
         <span :class="`delta${tone(peakRes?.cpuPct ?? null)}`">Live</span>
       </div>
@@ -67,7 +68,7 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
         <div>
           <p class="eyebrow">Memory</p>
           <p class="metric-value">{{ fmtPct(peakRes?.memPct) }}</p>
-          <p class="metric-detail" v-if="peakRes">{{ fmtUsage(peakRes.memUsedBytes, peakRes.memTotalBytes) }}</p>
+          <p class="metric-detail">{{ peakRes ? fmtUsage(peakRes.memUsedBytes, peakRes.memTotalBytes) : "" }}</p>
         </div>
         <span :class="`delta${tone(peakRes?.memPct ?? null)}`">Live</span>
       </div>
@@ -79,7 +80,7 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
         <div>
           <p class="eyebrow">Disk Usage</p>
           <p class="metric-value">{{ fmtPct(peakRes?.diskUsagePct) }}</p>
-          <p class="metric-detail" v-if="peakRes">{{ fmtUsage(peakRes.diskUsedBytes, peakRes.diskTotalBytes) }}</p>
+          <p class="metric-detail">{{ peakRes ? fmtUsage(peakRes.diskUsedBytes, peakRes.diskTotalBytes) : "" }}</p>
         </div>
         <span :class="`delta${tone(peakRes?.diskUsagePct ?? null)}`">Live</span>
       </div>

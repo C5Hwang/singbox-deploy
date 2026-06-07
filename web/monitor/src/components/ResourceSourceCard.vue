@@ -39,6 +39,7 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
         <div class="resource-value" :class="{ warn: (source.resources.cpuPct ?? 0) >= 75, danger: (source.resources.cpuPct ?? 0) >= 90 }">
           {{ fmtPct(source.resources.cpuPct) }}
         </div>
+        <div class="resource-detail" aria-hidden="true"></div>
         <div class="progress" :style="{ '--value': source.resources.cpuPct, '--bar': 'var(--blue)' }"></div>
       </div>
       <div class="resource-item">
@@ -46,7 +47,7 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
         <div class="resource-value" :class="{ warn: (source.resources.memPct ?? 0) >= 75, danger: (source.resources.memPct ?? 0) >= 90 }">
           {{ fmtPct(source.resources.memPct) }}
         </div>
-        <div class="resource-detail" v-if="source.resources.memTotalBytes">{{ fmtUsage(source.resources.memUsedBytes, source.resources.memTotalBytes) }}</div>
+        <div class="resource-detail">{{ source.resources.memTotalBytes ? fmtUsage(source.resources.memUsedBytes, source.resources.memTotalBytes) : "" }}</div>
         <div class="progress" :style="{ '--value': source.resources.memPct, '--bar': 'var(--cyan)' }"></div>
       </div>
       <div class="resource-item">
@@ -54,7 +55,7 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
         <div class="resource-value" :class="{ warn: (source.resources.diskUsagePct ?? 0) >= 75, danger: (source.resources.diskUsagePct ?? 0) >= 90 }">
           {{ fmtPct(source.resources.diskUsagePct) }}
         </div>
-        <div class="resource-detail" v-if="source.resources.diskTotalBytes">{{ fmtUsage(source.resources.diskUsedBytes, source.resources.diskTotalBytes) }}</div>
+        <div class="resource-detail">{{ source.resources.diskTotalBytes ? fmtUsage(source.resources.diskUsedBytes, source.resources.diskTotalBytes) : "" }}</div>
         <div class="progress" :style="{ '--value': source.resources.diskUsagePct, '--bar': 'var(--green)' }"></div>
       </div>
       <div class="resource-item">

@@ -12,16 +12,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/assets"
+	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 )
 
 const (
-	DefaultSamplingInterval  = 1 * time.Minute
-	DefaultResourceInterval  = 10 * time.Second
-	rawRetention             = 2 * time.Hour
-	resourceRawRetention     = 2 * time.Hour
-	historyRetention         = 90 * 24 * time.Hour
+	DefaultSamplingInterval = 1 * time.Minute
+	DefaultResourceInterval = 10 * time.Second
+	rawRetention            = 2 * time.Hour
+	resourceRawRetention    = 2 * time.Hour
+	historyRetention        = 90 * 24 * time.Hour
 )
 
 // ServiceController starts/stops sing-box for quota enforcement.
@@ -56,8 +56,8 @@ type Monitor struct {
 	havePrev       bool
 	stoppedByQuota bool
 
-	resCollector    *ResourceCollector
-	latestResource  *ResourceSnapshot
+	resCollector   *ResourceCollector
+	latestResource *ResourceSnapshot
 }
 
 // New returns a Monitor backed by store. control may be nil to disable quota
@@ -96,26 +96,6 @@ func (m *Monitor) Handler() http.Handler {
 
 // summary is the JSON payload returned by /api/summary.
 type summary struct {
-	InUsedBytes         uint64           `json:"inUsedBytes"`
-	OutUsedBytes        uint64           `json:"outUsedBytes"`
-	TotalUsedBytes      uint64           `json:"totalUsedBytes"`
-	InRemainingBytes    uint64           `json:"inRemainingBytes"`
-	OutRemainingBytes   uint64           `json:"outRemainingBytes"`
-	TotalRemainingBytes uint64           `json:"totalRemainingBytes"`
-	InLimitBytes        uint64           `json:"inLimitBytes"`
-	OutLimitBytes       uint64           `json:"outLimitBytes"`
-	TotalLimitBytes     uint64           `json:"totalLimitBytes"`
-	ResetTime           string           `json:"resetTime"`
-	Resources           *ResourceSnapshot `json:"resources,omitempty"`
-	Sources             []SourceSummary  `json:"sources"`
-}
-
-// SourceSummary is one traffic source shown by the monitor UI.
-type SourceSummary struct {
-	Name                string            `json:"name"`
-	FetchedAt           string            `json:"fetchedAt,omitempty"`
-	SampledAt           string            `json:"sampledAt,omitempty"`
-	MonitorURL          string            `json:"monitorURL,omitempty"`
 	InUsedBytes         uint64            `json:"inUsedBytes"`
 	OutUsedBytes        uint64            `json:"outUsedBytes"`
 	TotalUsedBytes      uint64            `json:"totalUsedBytes"`
@@ -126,8 +106,28 @@ type SourceSummary struct {
 	OutLimitBytes       uint64            `json:"outLimitBytes"`
 	TotalLimitBytes     uint64            `json:"totalLimitBytes"`
 	ResetTime           string            `json:"resetTime"`
-	Trend               []HourlyPoint     `json:"trend,omitempty"`
 	Resources           *ResourceSnapshot `json:"resources,omitempty"`
+	Sources             []SourceSummary   `json:"sources"`
+}
+
+// SourceSummary is one traffic source shown by the monitor UI.
+type SourceSummary struct {
+	Name                string                `json:"name"`
+	FetchedAt           string                `json:"fetchedAt,omitempty"`
+	SampledAt           string                `json:"sampledAt,omitempty"`
+	MonitorURL          string                `json:"monitorURL,omitempty"`
+	InUsedBytes         uint64                `json:"inUsedBytes"`
+	OutUsedBytes        uint64                `json:"outUsedBytes"`
+	TotalUsedBytes      uint64                `json:"totalUsedBytes"`
+	InRemainingBytes    uint64                `json:"inRemainingBytes"`
+	OutRemainingBytes   uint64                `json:"outRemainingBytes"`
+	TotalRemainingBytes uint64                `json:"totalRemainingBytes"`
+	InLimitBytes        uint64                `json:"inLimitBytes"`
+	OutLimitBytes       uint64                `json:"outLimitBytes"`
+	TotalLimitBytes     uint64                `json:"totalLimitBytes"`
+	ResetTime           string                `json:"resetTime"`
+	Trend               []HourlyPoint         `json:"trend,omitempty"`
+	Resources           *ResourceSnapshot     `json:"resources,omitempty"`
 	ResourceTrend       []ResourceHourlyPoint `json:"resourceTrend,omitempty"`
 }
 
@@ -162,6 +162,9 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, _ *http.Request) {
 		log.Printf("monitor: read remote monitor data: %v", err)
 	}
 	sources := append([]SourceSummary{local}, remote...)
+	for i := range sources {
+		sources[i].MonitorURL = ""
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary{
 		InUsedBytes:         local.InUsedBytes,

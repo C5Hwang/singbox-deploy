@@ -5,7 +5,7 @@ import { LineChart } from "echarts/charts";
 import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import { fetchResourceTrend, fetchResourceRecent } from "../api";
-import { formatBytes } from "../utils";
+import { formatBytes, formatRate } from "../utils";
 import type { SourceSummary, ResourceHourlyPoint, ResourceRawPoint } from "../types";
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer]);
@@ -37,6 +37,13 @@ function avg(arr: number[]): number {
 function agg(arr: number[], isMax: boolean): number {
   if (arr.length === 0) return 0;
   return isMax ? Math.max(...arr) : avg(arr);
+}
+
+function formatTooltipValue(param: any): string {
+  const value = Array.isArray(param.value) ? param.value[1] : param.value;
+  if (param.seriesName === "Disk IO Read" || param.seriesName === "Disk IO Write") return formatRate(value);
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? `${numberValue.toFixed(1)}%` : "NA";
 }
 
 function aggregateDaily(points: ResourceHourlyPoint[], isMax: boolean): ResourceHourlyPoint[] {
@@ -86,7 +93,7 @@ function buildOption(): any {
           const timeStr = d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "UTC" }) + " GMT";
           let html = `<div style="font-weight:700;margin-bottom:6px">${timeStr}</div>`;
           for (const p of params) {
-            const val = p.yAxisIndex === 1 ? `${formatBytes(p.value[1])}/s` : `${p.value[1].toFixed(1)}%`;
+            const val = formatTooltipValue(p);
             html += `<div style="display:flex;align-items:center;gap:6px;margin:3px 0">`;
             html += `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${p.color}"></span>`;
             html += `<span>${p.seriesName}: <b>${val}</b></span></div>`;
@@ -240,7 +247,7 @@ function buildOption(): any {
           : d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" }) + " GMT";
         let html = `<div style="font-weight:700;margin-bottom:6px">${timeStr}</div>`;
         for (const p of params) {
-          const val = p.yAxisIndex === 1 ? `${formatBytes(p.value[1])}/s` : `${p.value[1].toFixed(1)}%`;
+          const val = formatTooltipValue(p);
           html += `<div style="display:flex;align-items:center;gap:6px;margin:3px 0">`;
           html += `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${p.color}"></span>`;
           html += `<span>${p.seriesName}: <b>${val}</b></span></div>`;

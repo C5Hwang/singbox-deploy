@@ -34,15 +34,15 @@ func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]strin
 		{Key: "traffic_in_limit", Label: "Inbound traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficInLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
 		{Key: "traffic_out_limit", Label: "Outbound traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficOutLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
 		{Key: "traffic_total_limit", Label: "Total traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficTotalLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
-		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(DefaultResetDay(cfg)), Skip: monitorDisabled},
-		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(DefaultResetHour(cfg)), Note: "Reset boundary is fixed to GMT+0 and monitor runtime uses network-fetched GMT time.", Skip: monitorDisabled},
+		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(DefaultResetDay(cfg)), Note: "Day of month when the traffic quota cycle resets.", Skip: monitorDisabled},
+		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(DefaultResetHour(cfg)), Note: "Hour of day in GMT when the traffic quota cycle resets.", Skip: monitorDisabled},
 	}
 }
 
 func MonitorUsageFields(inBytes, outBytes uint64) []Field {
 	return []Field{
-		{Key: "current_in_traffic", Label: "Current inbound used", Def: FormatTrafficSizeInput(inBytes), Note: TrafficSizeNote("Sets the current GMT quota-cycle inbound total.")},
-		{Key: "current_out_traffic", Label: "Current outbound used", Def: FormatTrafficSizeInput(outBytes), Note: TrafficSizeNote("Sets the current GMT quota-cycle outbound total.")},
+		{Key: "current_in_traffic", Label: "Current inbound used", Def: FormatTrafficSizeInput(inBytes), Note: TrafficSizeNote("Sets the current quota-cycle inbound total.")},
+		{Key: "current_out_traffic", Label: "Current outbound used", Def: FormatTrafficSizeInput(outBytes), Note: TrafficSizeNote("Sets the current quota-cycle outbound total.")},
 	}
 }
 
