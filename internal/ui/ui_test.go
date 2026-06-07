@@ -141,7 +141,7 @@ func TestInstallFieldShowsUsageNote(t *testing.T) {
 }
 
 func TestProtocolManagementMenuOpens(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withProtocolManagerDeps(t, layout)
 	m := NewModel()
 	m.cursor = 1
@@ -150,13 +150,13 @@ func TestProtocolManagementMenuOpens(t *testing.T) {
 		t.Fatalf("protocol manager was not opened")
 	}
 	view := m.View()
-	if !strings.Contains(view, "Protocol Management") || !strings.Contains(view, "Current:") || !strings.Contains(view, "reality-vision") {
+	if !strings.Contains(view, "Protocol Management") || !strings.Contains(view, "Current:") || !strings.Contains(view, "vless-reality-vision") {
 		t.Fatalf("protocol manager view missing expected content:\n%s", view)
 	}
 }
 
 func TestSubscriptionMenuEntryOpens(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withSubscriptionDeps(t, layout)
 
 	m := NewModel()
@@ -175,7 +175,7 @@ func TestSubscriptionMenuEntryOpens(t *testing.T) {
 }
 
 func TestMonitorMenuEntryOpens(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	writeStatusState(t, layout.StateDir, "monitor", "yes")
 	writeStatusState(t, layout.StateDir, "monitor_alias", "US-local")
 	writeStatusState(t, layout.StateDir, "traffic_in_limit_bytes", fmt.Sprintf("%d", uint64(40)<<30))
@@ -202,7 +202,7 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 }
 
 func TestCoreManagementMenuEntryOpens(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withCoreDeps(t, layout)
 
 	m := NewModel()
@@ -220,7 +220,7 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 }
 
 func TestUninstallMenuEntryOpens(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withUninstallDeps(t, layout)
 
 	m := NewModel()
@@ -242,7 +242,7 @@ func TestUninstallMenuEntryOpens(t *testing.T) {
 }
 
 func TestUninstallConfirmTogglesOptionalData(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withUninstallDeps(t, layout)
 
 	um := newUninstallManager()
@@ -264,7 +264,7 @@ func TestUninstallConfirmTogglesOptionalData(t *testing.T) {
 }
 
 func TestCoreManagementNonRootShowsBlockerOnlyAfterSelection(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withCoreDeps(t, layout)
 	detectCoreHost = func() (system.Host, error) {
 		host := supportedTestHost()
@@ -286,7 +286,7 @@ func TestCoreManagementNonRootShowsBlockerOnlyAfterSelection(t *testing.T) {
 }
 
 func TestCoreChangeStableListsEightReleases(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withCoreDeps(t, layout)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/SagerNet/sing-box/releases" {
@@ -335,7 +335,7 @@ func TestCoreChangeStableListsEightReleases(t *testing.T) {
 }
 
 func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	remotes := []deploy.RemoteSubscription{
 		{Domain: "one.example.com", Port: 9443, Salt: "salt-one"},
 		{Domain: "two.example.com", Port: 9444, Salt: "salt-two", Monitor: true, MonitorPublicPort: 9445},
@@ -386,7 +386,7 @@ func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
 }
 
 func TestSubscriptionDeleteRemoteRequiresConfiguredRemote(t *testing.T) {
-	layout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withSubscriptionDeps(t, layout)
 
 	sm := newSubscriptionManager()
@@ -463,18 +463,10 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 	if done || !strings.Contains(pm.View(), "Hysteria2 port") || !strings.Contains(pm.View(), "default: 9443") {
 		t.Fatalf("missing port edit field:\n%s", pm.View())
 	}
-	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || !strings.Contains(pm.View(), "Hysteria2 up limit") || !strings.Contains(pm.View(), "default: 50") {
-		t.Fatalf("missing up limit edit field:\n%s", pm.View())
-	}
-	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || !strings.Contains(pm.View(), "Hysteria2 down limit") || !strings.Contains(pm.View(), "default: 100") {
-		t.Fatalf("missing down limit edit field:\n%s", pm.View())
-	}
 }
 
 func TestParameterInputShowsTwoCharacterDefaultWhenUnsized(t *testing.T) {
-	form := newParameterForm([]field{{key: "hysteria2_up_mbps", label: "Hysteria2 up limit", def: "50"}})
+	form := newParameterForm([]field{{key: "hysteria2_port", label: "Hysteria2 port", def: "50"}})
 	form.startForm()
 	form.input.Cursor.Blink = true
 	if got := form.input.View(); !strings.Contains(got, "50") {
@@ -496,7 +488,7 @@ func TestProtocolManagementRealitySNIEntryOnlyForRealityProtocols(t *testing.T) 
 		t.Fatalf("Reality SNI entry should be hidden without Reality protocols:\n%s", pm.View())
 	}
 
-	realityLayout := protocolManagerState(t, "reality-vision", "www.microsoft.com")
+	realityLayout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withProtocolManagerDeps(t, realityLayout)
 	pm = newProtocolManager()
 	view := pm.View()
@@ -521,7 +513,7 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	writeStatusState(t, layout.StateDir, "subscribe_port", "2096")
 	writeStatusState(t, layout.StateDir, "monitor_public_port", "2097")
 	writeStatusState(t, layout.StateDir, "subscribe_token", "tok")
-	writeStatusState(t, layout.StateDir, "enabled_protocols", "reality-vision,tuic")
+	writeStatusState(t, layout.StateDir, "enabled_protocols", "vless-reality-vision,tuic")
 	writeStatusState(t, layout.StateDir, "monitor", "yes")
 	writeStatusState(t, layout.StateDir, "traffic_in_limit_bytes", fmt.Sprintf("%d", uint64(40)<<30))
 	writeStatusState(t, layout.StateDir, "traffic_out_limit_bytes", fmt.Sprintf("%d", uint64(50)<<30))
@@ -585,7 +577,7 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	if status.SingBoxState != "running" || status.NginxState != "not running" || status.MonitorState != "not running" {
 		t.Fatalf("service states = %#v", status)
 	}
-	if status.Protocols != "reality-vision, tuic" {
+	if status.Protocols != "vless-reality-vision, tuic" {
 		t.Fatalf("Protocols = %q", status.Protocols)
 	}
 	if status.Subscription != "https://example.com:2096/s/default/tok" {
@@ -1030,7 +1022,7 @@ func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 	w.width = 80
 	w.setField(fieldIndex(t, w.fields, "reality_vision_uuid"))
 	view := w.View()
-	if !strings.Contains(view, "Setting parameters for: reality-vision") {
+	if !strings.Contains(view, "Setting parameters for: vless-reality-vision") {
 		t.Fatalf("current protocol marker missing:\n%s", view)
 	}
 }
@@ -1100,10 +1092,10 @@ func TestSummaryRendererAlignsAndHighlightsTokens(t *testing.T) {
 
 func TestProtocolLabelsAddSpacesForDisplay(t *testing.T) {
 	protocols := []config.Protocol{config.ProtocolRealityVision, config.ProtocolTUIC}
-	if got := protocolSelectionValue(protocols); got != "reality-vision,tuic" {
+	if got := protocolSelectionValue(protocols); got != "vless-reality-vision,tuic" {
 		t.Fatalf("protocolSelectionValue = %q", got)
 	}
-	if got := protocolLabels(protocols); got != "reality-vision, tuic" {
+	if got := protocolLabels(protocols); got != "vless-reality-vision, tuic" {
 		t.Fatalf("protocolLabels = %q", got)
 	}
 }
@@ -1113,7 +1105,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":                   "example.com",
 			"challenge":                "http-01",
-			"protocols":                "reality-vision,tuic",
+			"protocols":                "vless-reality-vision,tuic",
 			"reality_sni":              "https://www.cloudflare.com/cdn-cgi/trace",
 			"reality_vision_uuid":      "11111111-1111-4111-8111-111111111111",
 			"reality_vision_port":      "24443",
@@ -1142,7 +1134,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 		t.Fatalf("buildConfig error: %v", err)
 	}
 
-	if got := protocolSelectionValue(cfg.Enabled); got != "reality-vision,tuic" {
+	if got := protocolSelectionValue(cfg.Enabled); got != "vless-reality-vision,tuic" {
 		t.Fatalf("enabled = %q", got)
 	}
 	if cfg.RealityServerName != "www.cloudflare.com" {

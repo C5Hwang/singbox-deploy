@@ -55,20 +55,20 @@ func (o ServerOptions) fragmentFor(proto Protocol, shortID string) (string, map[
 	name := func(suffix string) string { return o.User.DisplayName + suffix }
 	switch proto {
 	case ProtocolRealityVision:
-		return "sing-box/reality-vision.json.tmpl", map[string]any{
+		return "sing-box/vless-reality-vision.json.tmpl", map[string]any{
 			"Port":          o.Ports.RealityVision,
 			"UUID":          o.User.RealityVisionUUID,
-			"Name":          name("-Reality-Vision"),
+			"Name":          name("-VLESS-Reality-Vision"),
 			"ServerName":    o.RealityServerName,
 			"HandshakePort": positiveOrDefault(o.RealityPort, DefaultRealityHandshakePort),
 			"PrivateKey":    o.RealityPrivateKey,
 			"ShortID":       shortID,
 		}
 	case ProtocolRealityGRPC:
-		return "sing-box/reality-grpc.json.tmpl", map[string]any{
+		return "sing-box/vless-reality-grpc.json.tmpl", map[string]any{
 			"Port":          o.Ports.RealityGRPC,
 			"UUID":          o.User.RealityGRPCUUID,
-			"Name":          name("-Reality-gRPC"),
+			"Name":          name("-VLESS-Reality-gRPC"),
 			"ServerName":    o.RealityServerName,
 			"HandshakePort": positiveOrDefault(o.RealityPort, DefaultRealityHandshakePort),
 			"PrivateKey":    o.RealityPrivateKey,
@@ -76,14 +76,13 @@ func (o ServerOptions) fragmentFor(proto Protocol, shortID string) (string, map[
 		}
 	case ProtocolHysteria2:
 		return "sing-box/hysteria2.json.tmpl", map[string]any{
-			"Port":     o.Ports.Hysteria2,
-			"UpMbps":   positiveOrDefault(o.Hysteria2UpMbps, DefaultHysteria2UpMbps),
-			"DownMbps": positiveOrDefault(o.Hysteria2DownMbps, DefaultHysteria2DownMbps),
-			"Password": o.User.HysteriaPassword,
-			"Name":     name("-Hysteria2"),
-			"Domain":   o.Domain,
-			"CertPath": o.TLSCert,
-			"KeyPath":  o.TLSKey,
+			"Port":          o.Ports.Hysteria2,
+			"Password":      o.User.HysteriaPassword,
+			"Name":          name("-Hysteria2"),
+			"Domain":        o.Domain,
+			"SubscribePort": o.SubscribePort,
+			"CertPath":      o.TLSCert,
+			"KeyPath":       o.TLSKey,
 		}
 	case ProtocolTUIC:
 		return "sing-box/tuic.json.tmpl", map[string]any{

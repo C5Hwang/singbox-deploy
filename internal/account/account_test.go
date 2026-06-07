@@ -89,7 +89,7 @@ func TestUpdateRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	if !strings.Contains(string(configBody), "NewNode-Reality-Vision") {
+	if !strings.Contains(string(configBody), "NewNode-VLESS-Reality-Vision") {
 		t.Fatalf("config did not include new display name:\n%s", configBody)
 	}
 	token := subscription.TokenFromSalt(cfg.Salt)
@@ -101,7 +101,7 @@ func TestUpdateRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode default subscription: %v", err)
 	}
-	if !strings.Contains(decoded, "NewNode-Reality-Vision") {
+	if !strings.Contains(decoded, "NewNode-VLESS-Reality-Vision") {
 		t.Fatalf("subscription did not include new display name:\n%s", decoded)
 	}
 	if !strings.Contains(strings.Join(runner.commands, "\n"), "systemctl restart sing-box.service") {

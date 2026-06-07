@@ -371,8 +371,6 @@ func WriteInstallState(stateDir string, cfg Config) error {
 		"reality_short_id":       cfg.Creds.RealityShortID,
 		"reality_server_name":    cfg.RealityServerName,
 		"reality_handshake_port": itoa(cfg.realityHandshakePort()),
-		"hysteria2_up_mbps":      itoa(cfg.hysteria2UpMbps()),
-		"hysteria2_down_mbps":    itoa(cfg.hysteria2DownMbps()),
 		"reality_vision_uuid":    cfg.Creds.RealityVisionUUID,
 		"reality_grpc_uuid":      cfg.Creds.RealityGRPCUUID,
 		"hysteria2_password":     cfg.Creds.HysteriaPassword,

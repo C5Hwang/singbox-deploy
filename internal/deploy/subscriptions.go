@@ -31,7 +31,7 @@ func (c Config) buildNodes() []node {
 	for _, p := range c.EnabledProtocols() {
 		switch p {
 		case config.ProtocolRealityVision:
-			n := name("Reality-Vision")
+			n := name("VLESS-Reality-Vision")
 			nodes = append(nodes, node{
 				Name: n,
 				DefaultLink: realityLink("vless", c.Creds.RealityVisionUUID, addr, c.Ports.RealityVision, n, url.Values{
@@ -52,7 +52,7 @@ func (c Config) buildNodes() []node {
 				},
 			})
 		case config.ProtocolRealityGRPC:
-			n := name("Reality-gRPC")
+			n := name("VLESS-Reality-gRPC")
 			nodes = append(nodes, node{
 				Name: n,
 				DefaultLink: realityLink("vless", c.Creds.RealityGRPCUUID, addr, c.Ports.RealityGRPC, n, url.Values{
@@ -76,7 +76,6 @@ func (c Config) buildNodes() []node {
 			})
 		case config.ProtocolHysteria2:
 			n := name("Hysteria2")
-			up, down := c.hysteria2UpMbps(), c.hysteria2DownMbps()
 			nodes = append(nodes, node{
 				Name: n,
 				DefaultLink: scheme("hysteria2", c.Creds.HysteriaPassword, "", addr, c.Ports.Hysteria2, n, url.Values{
@@ -84,12 +83,12 @@ func (c Config) buildNodes() []node {
 				}),
 				ClashYAML: clashBlock(map[string]any{
 					"name": n, "type": "hysteria2", "server": addr, "port": c.Ports.Hysteria2,
-					"password": c.Creds.HysteriaPassword, "up": mbpsString(up), "down": mbpsString(down),
+					"password": c.Creds.HysteriaPassword,
 					"sni": c.Domain, "alpn": []any{"h3"},
 				}),
 				SingBoxOutbound: map[string]any{
 					"type": "hysteria2", "tag": n, "server": addr, "server_port": c.Ports.Hysteria2,
-					"up_mbps": up, "down_mbps": down, "password": c.Creds.HysteriaPassword,
+					"password": c.Creds.HysteriaPassword,
 					"tls": map[string]any{"enabled": true, "server_name": c.Domain, "alpn": []any{"h3"}},
 				},
 			})
@@ -160,7 +159,7 @@ func scheme(proto, user, pass, host string, port int, name string, q url.Values)
 func clashBlock(m map[string]any) string {
 	order := []string{
 		"name", "type", "server", "port", "uuid", "password", "network", "tls", "udp",
-		"up", "down", "flow", "servername", "sni", "alpn", "congestion-controller", "client-fingerprint",
+		"flow", "servername", "sni", "alpn", "congestion-controller", "client-fingerprint",
 		"grpc-opts", "reality-opts",
 	}
 	var b strings.Builder
@@ -179,10 +178,6 @@ func clashBlock(m map[string]any) string {
 		writeYAMLField(&b, 4, k, v)
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-func mbpsString(value int) string {
-	return fmt.Sprintf("%d Mbps", value)
 }
 
 func writeYAMLField(b *strings.Builder, indent int, key string, v any) {

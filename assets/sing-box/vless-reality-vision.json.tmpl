@@ -1,6 +1,6 @@
 {
   "type": "vless",
-  "tag": "reality-vision",
+  "tag": "vless-reality-vision",
   "listen": "::",
   "listen_port": {{ .Port }},
   "users": [
@@ -20,7 +20,8 @@
         "server_port": {{ .HandshakePort }}
       },
       "private_key": {{ .PrivateKey | json }},
-      "short_id": ["", {{ .ShortID | json }}]
+      "short_id": ["", {{ .ShortID | json }}],
+      "max_time_difference": "1m"
     }
   }
 }

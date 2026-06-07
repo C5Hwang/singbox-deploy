@@ -84,8 +84,6 @@ type Config struct {
 
 	RealityServerName    string
 	RealityHandshakePort int
-	Hysteria2UpMbps      int
-	Hysteria2DownMbps    int
 
 	SubscribePort     int
 	MonitorPublicPort int
@@ -138,8 +136,7 @@ func (c Config) serverOptions(tlsCert, tlsKey string) config.ServerOptions {
 		RealityServerName: c.RealityServerName,
 		RealityPort:       c.realityHandshakePort(),
 		RealityShortID:    c.Creds.RealityShortID,
-		Hysteria2UpMbps:   c.hysteria2UpMbps(),
-		Hysteria2DownMbps: c.hysteria2DownMbps(),
+		SubscribePort:     c.SubscribePort,
 		User:              c.userCredentials(),
 		Ports:             c.Ports,
 		Enabled:           c.EnabledProtocols(),
@@ -151,20 +148,6 @@ func (c Config) realityHandshakePort() int {
 		return c.RealityHandshakePort
 	}
 	return config.DefaultRealityHandshakePort
-}
-
-func (c Config) hysteria2UpMbps() int {
-	if c.Hysteria2UpMbps > 0 {
-		return c.Hysteria2UpMbps
-	}
-	return config.DefaultHysteria2UpMbps
-}
-
-func (c Config) hysteria2DownMbps() int {
-	if c.Hysteria2DownMbps > 0 {
-		return c.Hysteria2DownMbps
-	}
-	return config.DefaultHysteria2DownMbps
 }
 
 // firewallPorts returns the TCP/UDP ports to open for the enabled protocols.
@@ -203,9 +186,9 @@ func (c Config) portChecks() []system.Port {
 	for _, p := range c.EnabledProtocols() {
 		switch p {
 		case config.ProtocolRealityVision:
-			checks = append(checks, system.Port{Number: c.Ports.RealityVision, Proto: "tcp", Label: "Reality Vision", Public: true})
+			checks = append(checks, system.Port{Number: c.Ports.RealityVision, Proto: "tcp", Label: "VLESS Reality Vision", Public: true})
 		case config.ProtocolRealityGRPC:
-			checks = append(checks, system.Port{Number: c.Ports.RealityGRPC, Proto: "tcp", Label: "Reality gRPC", Public: true})
+			checks = append(checks, system.Port{Number: c.Ports.RealityGRPC, Proto: "tcp", Label: "VLESS Reality gRPC", Public: true})
 		case config.ProtocolHysteria2:
 			checks = append(checks, system.Port{Number: c.Ports.Hysteria2, Proto: "udp", Label: "Hysteria2", Public: true})
 		case config.ProtocolTUIC:

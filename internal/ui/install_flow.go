@@ -526,18 +526,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 	if err != nil {
 		return deploy.Config{}, err
 	}
-	hysteria2UpMbps := config.DefaultHysteria2UpMbps
-	hysteria2DownMbps := config.DefaultHysteria2DownMbps
-	if hasProtocol(enabled, config.ProtocolHysteria2) {
-		hysteria2UpMbps, err = parseHysteria2Mbps(vals["hysteria2_up_mbps"], config.DefaultHysteria2UpMbps, "hysteria2 up limit")
-		if err != nil {
-			return deploy.Config{}, err
-		}
-		hysteria2DownMbps, err = parseHysteria2Mbps(vals["hysteria2_down_mbps"], config.DefaultHysteria2DownMbps, "hysteria2 down limit")
-		if err != nil {
-			return deploy.Config{}, err
-		}
-	}
 	salt := strings.TrimSpace(vals["subscribe_salt"])
 	if salt == "" {
 		salt, err = credentials.Salt()
@@ -609,8 +597,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		SiteTemplate:           siteTemplate,
 		RealityServerName:      realityServerName,
 		RealityHandshakePort:   config.DefaultRealityHandshakePort,
-		Hysteria2UpMbps:        hysteria2UpMbps,
-		Hysteria2DownMbps:      hysteria2DownMbps,
 		SubscribePort:          subscribePort,
 		MonitorPublicPort:      monitorPublicPort,
 		MonitorPort:            monitorPort,
@@ -639,18 +625,6 @@ func parseInstallPort(value string, fallback int, label string) (int, error) {
 		return 0, fmt.Errorf("%s must be between 1 and 65535", label)
 	}
 	return port, nil
-}
-
-func parseHysteria2Mbps(value string, fallback int, label string) (int, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback, nil
-	}
-	mbps, err := strconv.Atoi(value)
-	if err != nil || mbps <= 0 {
-		return 0, fmt.Errorf("%s must be a positive integer Mbps value", label)
-	}
-	return mbps, nil
 }
 
 func (w *installForm) applyCredentialOverrides(creds *deploy.Credentials) {

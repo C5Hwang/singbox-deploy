@@ -28,9 +28,6 @@ type UpdateOptions struct {
 	Ports    config.Ports
 	Creds    deploy.Credentials
 
-	Hysteria2UpMbps   int
-	Hysteria2DownMbps int
-
 	// RealityServerName overrides the stored Reality camouflage host when Reality
 	// is newly enabled and no stored value exists yet.
 	RealityServerName string
@@ -163,12 +160,6 @@ func applyProtocolOverrides(cfg *deploy.Config, opts UpdateOptions) {
 		case config.ProtocolHysteria2:
 			if opts.Ports.Hysteria2 > 0 {
 				cfg.Ports.Hysteria2 = opts.Ports.Hysteria2
-			}
-			if opts.Hysteria2UpMbps > 0 {
-				cfg.Hysteria2UpMbps = opts.Hysteria2UpMbps
-			}
-			if opts.Hysteria2DownMbps > 0 {
-				cfg.Hysteria2DownMbps = opts.Hysteria2DownMbps
 			}
 			if strings.TrimSpace(opts.Creds.HysteriaPassword) != "" {
 				cfg.Creds.HysteriaPassword = strings.TrimSpace(opts.Creds.HysteriaPassword)
@@ -419,9 +410,9 @@ func firewallPortsForProtocols(cfg deploy.Config, protocols []config.Protocol) [
 	for _, p := range protocols {
 		switch p {
 		case config.ProtocolRealityVision:
-			ports = append(ports, system.Port{Number: cfg.Ports.RealityVision, Proto: "tcp", Label: "Reality Vision"})
+			ports = append(ports, system.Port{Number: cfg.Ports.RealityVision, Proto: "tcp", Label: "VLESS Reality Vision"})
 		case config.ProtocolRealityGRPC:
-			ports = append(ports, system.Port{Number: cfg.Ports.RealityGRPC, Proto: "tcp", Label: "Reality gRPC"})
+			ports = append(ports, system.Port{Number: cfg.Ports.RealityGRPC, Proto: "tcp", Label: "VLESS Reality gRPC"})
 		case config.ProtocolHysteria2:
 			ports = append(ports, system.Port{Number: cfg.Ports.Hysteria2, Proto: "udp", Label: "Hysteria2"})
 		case config.ProtocolTUIC:

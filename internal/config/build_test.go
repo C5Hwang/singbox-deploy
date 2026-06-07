@@ -13,6 +13,7 @@ func sampleOptions() ServerOptions {
 		RealityPrivateKey: "priv",
 		RealityServerName: "www.python.org",
 		RealityPort:       443,
+		SubscribePort:     2096,
 		User: UserCredentials{
 			DisplayName:       "US-vps1",
 			RealityVisionUUID: "11111111-1111-1111-1111-111111111111",
@@ -87,8 +88,7 @@ func TestBuildConfigCredentialsRendered(t *testing.T) {
 	for _, want := range []string{
 		"11111111-1111-1111-1111-111111111111", // reality vision uuid
 		"xtls-rprx-vision",
-		`"up_mbps": 50`,
-		`"down_mbps": 100`,
+		`"ignore_client_bandwidth": true`,
 		"hy-pass",
 		"tuic-pass",
 		"any-pass",

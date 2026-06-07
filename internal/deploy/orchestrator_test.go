@@ -217,7 +217,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		t.Fatalf("read clash fragment: %v", err)
 	}
 	clashText := string(clashFragment)
-	if !strings.Contains(clashText, "  - name: \"🇺🇸 US-vps1-Reality-Vision\"\n    type: vless") {
+	if !strings.Contains(clashText, "  - name: \"🇺🇸 US-vps1-VLESS-Reality-Vision\"\n    type: vless") {
 		t.Fatalf("clash fragment should use block-style proxies with UTF-8 names:\n%s", clashText)
 	}
 	if strings.Contains(clashText, "  - {") || strings.Contains(clashText, "reality-opts: {") {

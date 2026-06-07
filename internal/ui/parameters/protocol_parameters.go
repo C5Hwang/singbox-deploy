@@ -40,7 +40,7 @@ func RealitySNIEditField(current string) Field {
 	if f.Def == "" {
 		f.Def = "www.microsoft.com"
 	}
-	f.Note = "Updates the shared Reality handshake SNI for Reality Vision and Reality gRPC."
+	f.Note = "Updates the shared Reality handshake SNI for VLESS Reality Vision and VLESS Reality gRPC."
 	return f
 }
 
@@ -48,20 +48,18 @@ func ProtocolInstallFieldsForProtocol(proto config.Protocol) []Field {
 	switch proto {
 	case config.ProtocolRealityVision:
 		return []Field{
-			{Key: "reality_vision_uuid", Label: "Reality Vision UUID (optional)", Note: "Blank generates a random UUID."},
-			{Key: "reality_vision_port", Label: "Reality Vision port (optional)", Note: "Blank chooses a random listen port."},
+			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID (optional)", Note: "Blank generates a random UUID."},
+			{Key: "reality_vision_port", Label: "VLESS Reality Vision port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolRealityGRPC:
 		return []Field{
-			{Key: "reality_grpc_uuid", Label: "Reality gRPC UUID (optional)", Note: "Blank generates a random UUID."},
-			{Key: "reality_grpc_port", Label: "Reality gRPC port (optional)", Note: "Blank chooses a random listen port."},
+			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID (optional)", Note: "Blank generates a random UUID."},
+			{Key: "reality_grpc_port", Label: "VLESS Reality gRPC port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolHysteria2:
 		return []Field{
 			{Key: "hysteria2_password", Label: "Hysteria2 password (optional)", Note: "Blank generates a random password."},
 			{Key: "hysteria2_port", Label: "Hysteria2 port (optional)", Note: "Blank chooses a random listen port."},
-			{Key: "hysteria2_up_mbps", Label: "Hysteria2 up limit", Def: strconv.Itoa(config.DefaultHysteria2UpMbps), Note: "Sets the Hysteria2 upload bandwidth limit in Mbps."},
-			{Key: "hysteria2_down_mbps", Label: "Hysteria2 down limit", Def: strconv.Itoa(config.DefaultHysteria2DownMbps), Note: "Sets the Hysteria2 download bandwidth limit in Mbps."},
 		}
 	case config.ProtocolTUIC:
 		return []Field{
@@ -83,20 +81,18 @@ func ProtocolEditFieldsForProtocol(cfg deploy.Config, proto config.Protocol) []F
 	switch proto {
 	case config.ProtocolRealityVision:
 		return []Field{
-			{Key: "reality_vision_uuid", Label: "Reality Vision UUID", Def: cfg.Creds.RealityVisionUUID},
-			{Key: "reality_vision_port", Label: "Reality Vision port", Def: PortDefault(installedPort(proto, cfg.Ports))},
+			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID", Def: cfg.Creds.RealityVisionUUID},
+			{Key: "reality_vision_port", Label: "VLESS Reality Vision port", Def: PortDefault(installedPort(proto, cfg.Ports))},
 		}
 	case config.ProtocolRealityGRPC:
 		return []Field{
-			{Key: "reality_grpc_uuid", Label: "Reality gRPC UUID", Def: cfg.Creds.RealityGRPCUUID},
-			{Key: "reality_grpc_port", Label: "Reality gRPC port", Def: PortDefault(installedPort(proto, cfg.Ports))},
+			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID", Def: cfg.Creds.RealityGRPCUUID},
+			{Key: "reality_grpc_port", Label: "VLESS Reality gRPC port", Def: PortDefault(installedPort(proto, cfg.Ports))},
 		}
 	case config.ProtocolHysteria2:
 		return []Field{
 			{Key: "hysteria2_password", Label: "Hysteria2 password", Def: cfg.Creds.HysteriaPassword},
 			{Key: "hysteria2_port", Label: "Hysteria2 port", Def: PortDefault(installedPort(proto, cfg.Ports))},
-			{Key: "hysteria2_up_mbps", Label: "Hysteria2 up limit", Def: MbpsDefault(cfg.Hysteria2UpMbps, config.DefaultHysteria2UpMbps), Note: "Sets the Hysteria2 upload bandwidth limit in Mbps."},
-			{Key: "hysteria2_down_mbps", Label: "Hysteria2 down limit", Def: MbpsDefault(cfg.Hysteria2DownMbps, config.DefaultHysteria2DownMbps), Note: "Sets the Hysteria2 download bandwidth limit in Mbps."},
 		}
 	case config.ProtocolTUIC:
 		return []Field{
@@ -121,13 +117,6 @@ func PortDefault(port int) string {
 	return strconv.Itoa(port)
 }
 
-func MbpsDefault(value, fallback int) string {
-	if value <= 0 {
-		value = fallback
-	}
-	return strconv.Itoa(value)
-}
-
 func ValidateProtocolParameterField(f Field, val string, _ map[string]string) error {
 	return ValidateSharedParameterValue(f.Key, val)
 }
@@ -137,14 +126,6 @@ func ValidateSharedParameterValue(key, val string) error {
 	case key == "reality_sni":
 		_, err := NormalizeRealityServerName(val)
 		return err
-	case key == "hysteria2_up_mbps" || key == "hysteria2_down_mbps":
-		if val == "" {
-			return nil
-		}
-		mbps, err := strconv.Atoi(val)
-		if err != nil || mbps <= 0 {
-			return fmt.Errorf("bandwidth must be a positive integer Mbps value")
-		}
 	case strings.HasSuffix(key, "_port"):
 		if val == "" {
 			return nil
