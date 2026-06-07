@@ -17,10 +17,47 @@ const sources = computed<SourceSummary[]>(() => {
 
 const rows = computed<UsageRow[]>(() => {
   const s = props.summary;
+  if (!s) {
+    return [
+      { label: "IN", key: "in", used: 0, limit: 0, color: "var(--blue)" },
+      { label: "OUT", key: "out", used: 0, limit: 0, color: "var(--cyan)" },
+      { label: "Total", key: "total", used: 0, limit: 0, color: "var(--green)" },
+    ];
+  }
+
+  const srcs = s.sources && s.sources.length > 0 ? s.sources : null;
+
+  function peakOf(
+    usedKey: "inUsedBytes" | "outUsedBytes" | "totalUsedBytes",
+    limitKey: "inLimitBytes" | "outLimitBytes" | "totalLimitBytes",
+  ): { used: number; limit: number } {
+    if (!srcs) return { used: s![usedKey] ?? 0, limit: s![limitKey] ?? 0 };
+    let bestUsed = 0, bestLimit = 0, bestPct: number | null = null;
+    for (const src of srcs) {
+      const pct = percentFor(src[usedKey], src[limitKey]);
+      if (pct !== null && (bestPct === null || pct > bestPct)) {
+        bestUsed = src[usedKey];
+        bestLimit = src[limitKey];
+        bestPct = pct;
+      }
+    }
+    if (bestPct === null) {
+      for (const src of srcs) {
+        if (src[usedKey] > bestUsed) bestUsed = src[usedKey];
+      }
+      return { used: bestUsed, limit: 0 };
+    }
+    return { used: bestUsed, limit: bestLimit };
+  }
+
+  const inPeak = peakOf("inUsedBytes", "inLimitBytes");
+  const outPeak = peakOf("outUsedBytes", "outLimitBytes");
+  const totalPeak = peakOf("totalUsedBytes", "totalLimitBytes");
+
   return [
-    { label: "IN", key: "in", used: s?.inUsedBytes ?? 0, limit: s?.inLimitBytes ?? 0, color: "var(--blue)" },
-    { label: "OUT", key: "out", used: s?.outUsedBytes ?? 0, limit: s?.outLimitBytes ?? 0, color: "var(--cyan)" },
-    { label: "Total", key: "total", used: s?.totalUsedBytes ?? 0, limit: s?.totalLimitBytes ?? 0, color: "var(--green)" },
+    { label: "IN", key: "in", used: inPeak.used, limit: inPeak.limit, color: "var(--blue)" },
+    { label: "OUT", key: "out", used: outPeak.used, limit: outPeak.limit, color: "var(--cyan)" },
+    { label: "Total", key: "total", used: totalPeak.used, limit: totalPeak.limit, color: "var(--green)" },
   ];
 });
 
@@ -57,7 +94,7 @@ const sourcePercent = computed(() => peak.value?.percent ?? null);
       <div class="metric-head">
         <div>
           <p class="eyebrow">Inbound</p>
-          <p class="metric-value">{{ formatBytes(summary?.inUsedBytes) }}</p>
+          <p class="metric-value">{{ formatBytes(rows[0]?.used) }}</p>
         </div>
         <span :class="`delta${tone(rowPercents[0]?.percent ?? null)}`">{{ percentText(rowPercents[0]?.percent ?? null) }}</span>
       </div>
@@ -68,7 +105,7 @@ const sourcePercent = computed(() => peak.value?.percent ?? null);
       <div class="metric-head">
         <div>
           <p class="eyebrow">Outbound</p>
-          <p class="metric-value">{{ formatBytes(summary?.outUsedBytes) }}</p>
+          <p class="metric-value">{{ formatBytes(rows[1]?.used) }}</p>
         </div>
         <span :class="`delta${tone(rowPercents[1]?.percent ?? null)}`">{{ percentText(rowPercents[1]?.percent ?? null) }}</span>
       </div>
@@ -79,7 +116,7 @@ const sourcePercent = computed(() => peak.value?.percent ?? null);
       <div class="metric-head">
         <div>
           <p class="eyebrow">Total</p>
-          <p class="metric-value">{{ formatBytes(summary?.totalUsedBytes) }}</p>
+          <p class="metric-value">{{ formatBytes(rows[2]?.used) }}</p>
         </div>
         <span :class="`delta${tone(rowPercents[2]?.percent ?? null)}`">{{ percentText(rowPercents[2]?.percent ?? null) }}</span>
       </div>
