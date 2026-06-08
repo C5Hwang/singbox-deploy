@@ -55,18 +55,16 @@ dns:
     - 223.5.5.5
     - 119.29.29.29
   nameserver:
-    - https://1.1.1.1/dns-query
-    - https://8.8.8.8/dns-query
+    - "https://1.1.1.1/dns-query#全球代理"
+    - "https://8.8.8.8/dns-query#全球代理"
+  proxy-server-nameserver:
     - https://doh.pub/dns-query
     - https://dns.alidns.com/dns-query
-  proxy-server-nameserver:
-    - https://223.5.5.5/dns-query
-    - https://1.12.12.12/dns-query
   nameserver-policy:
-    "geosite:cn": https://dns.alidns.com/dns-query
-    "geosite:private": system
+    "geosite:cn,geosite:private": https://doh.pub/dns-query
   direct-nameserver:
-    - system
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
 
 proxy-providers:
   provider:
@@ -93,61 +91,34 @@ proxy-groups:
     use:
       - provider
     proxies: null
-  - name: 🇺🇸 美国节点
+{{- range .Countries }}
+  - name: {{ .Tag }}
     type: url-test
     url: http://www.gstatic.com/generate_204
     interval: 300
     tolerance: 50
-    filter: "(🇺🇸)|(🇺🇲)|(美)|(States)|(US)"
+    filter: {{ .Filter | json }}
     use:
       - provider
     proxies: null
-  - name: 🇯🇵 日本节点
-    type: url-test
-    url: http://www.gstatic.com/generate_204
-    interval: 300
-    tolerance: 50
-    filter: "(🇯🇵)|(日)|(Japan)|(JP)"
-    use:
-      - provider
-    proxies: null
-  - name: 🇼🇸 台湾节点
-    type: url-test
-    url: http://www.gstatic.com/generate_204
-    interval: 300
-    tolerance: 50
-    filter: "(🇹🇼)|(🇼🇸)|(台)|(Tai)|(TW)"
-    use:
-      - provider
-    proxies: null
-  - name: 🇭🇰 香港节点
-    type: url-test
-    url: http://www.gstatic.com/generate_204
-    interval: 300
-    tolerance: 50
-    filter: "(🇭🇰)|(港)|(Hong)|(HK)"
-    use:
-      - provider
-    proxies: null
+{{- end }}
   - name: 全球代理
     type: select
     proxies:
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
   - name: 国外媒体
     type: select
     proxies:
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
   - name: 国内媒体
     type: select
@@ -155,39 +126,35 @@ proxy-groups:
       - DIRECT
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
   - name: AI服务
     type: select
     proxies:
-      - 🇯🇵 日本节点
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
   - name: 游戏平台
     type: select
     proxies:
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
   - name: 学术网页
     type: select
     proxies:
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
   - name: 本地直连
     type: select
@@ -195,29 +162,26 @@ proxy-groups:
       - DIRECT
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
   - name: 漏网之鱼
     type: select
     proxies:
       - 🚀 手动切换
       - DIRECT
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
   - name: Google
     type: select
     proxies:
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
   - name: Microsoft
     type: select
@@ -225,326 +189,334 @@ proxy-groups:
       - DIRECT
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
   - name: Apple
     type: select
     proxies:
       - DIRECT
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
   - name: GitHub
     type: select
     proxies:
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
   - name: Spotify
     type: select
     proxies:
-      - 🇼🇸 台湾节点
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
   - name: Telegram
     type: select
     proxies:
       - 🚀 手动切换
       - ♻️ 自动选择
-      - 🇺🇸 美国节点
-      - 🇯🇵 日本节点
-      - 🇼🇸 台湾节点
-      - 🇭🇰 香港节点
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
       - DIRECT
 
 rule-providers:
-  lan:
+  Lan:
     type: http
     behavior: classical
     interval: 86400
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Lan/Lan.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Lan/Lan.yaml
     path: ./Rules/lan.yaml
-  reject:
+  Proxy:
     type: http
-    behavior: domain
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt
-    path: ./ruleset/reject.yaml
-    interval: 86400
-  proxy:
-    type: http
-    behavior: domain
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/proxy.txt
+    behavior: classical
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Proxy/Proxy.yaml
     path: ./ruleset/proxy.yaml
     interval: 86400
-  direct:
+  ProxyDomain:
     type: http
     behavior: domain
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt
-    path: ./ruleset/direct.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Proxy/Proxy_Domain.yaml
+    path: ./ruleset/proxy_domain.yaml
     interval: 86400
-  private:
-    type: http
-    behavior: domain
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/private.txt
-    path: ./ruleset/private.yaml
-    interval: 86400
-  gfw:
-    type: http
-    behavior: domain
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt
-    path: ./ruleset/gfw.yaml
-    interval: 86400
-  greatfire:
-    type: http
-    behavior: domain
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/greatfire.txt
-    path: ./ruleset/greatfire.yaml
-    interval: 86400
-  tld-not-cn:
-    type: http
-    behavior: domain
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/tld-not-cn.txt
-    path: ./ruleset/tld-not-cn.yaml
-    interval: 86400
-  telegramcidr:
-    type: http
-    behavior: ipcidr
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/telegramcidr.txt
-    path: ./ruleset/telegramcidr.yaml
-    interval: 86400
-  applications:
+  Direct:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/applications.txt
-    path: ./ruleset/applications.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Direct/Direct.yaml
+    path: ./ruleset/direct.yaml
+    interval: 86400
+  Telegram:
+    type: http
+    behavior: classical
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Telegram/Telegram.yaml
+    path: ./ruleset/telegram.yaml
     interval: 86400
   Disney:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Disney/Disney.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Disney/Disney.yaml
     path: ./ruleset/disney.yaml
     interval: 86400
   Netflix:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Netflix/Netflix.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Netflix/Netflix.yaml
     path: ./ruleset/netflix.yaml
     interval: 86400
   YouTube:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/YouTube/YouTube.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/YouTube/YouTube.yaml
     path: ./ruleset/youtube.yaml
     interval: 86400
   TikTok:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/TikTok/TikTok.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/TikTok/TikTok.yaml
     path: ./ruleset/tiktok.yaml
     interval: 86400
   Instagram:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Instagram/Instagram.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Instagram/Instagram.yaml
     path: ./ruleset/instagram.yaml
     interval: 86400
   Threads:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Threads/Threads.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Threads/Threads.yaml
     path: ./ruleset/threads.yaml
-    interval: 86400
-  ProxyMedia:
-    type: http
-    behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyMedia.list
-    path: ./ruleset/proxy_media.yaml
     interval: 86400
   HBO:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/HBO/HBO.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/HBO/HBO.yaml
     path: ./ruleset/hbo.yaml
+    interval: 86400
+  Hulu:
+    type: http
+    behavior: classical
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Hulu/Hulu.yaml
+    path: ./ruleset/hulu.yaml
     interval: 86400
   OpenAI:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml
     path: ./ruleset/openai.yaml
     interval: 86400
   Gemini:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Gemini/Gemini.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Gemini/Gemini.yaml
     path: ./ruleset/gemini.yaml
     interval: 86400
   Claude:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Claude/Claude.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Claude/Claude.yaml
     path: ./ruleset/claude.yaml
     interval: 86400
   Anthropic:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Anthropic/Anthropic.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Anthropic/Anthropic.yaml
     path: ./ruleset/anthropic.yaml
     interval: 86400
   Copilot:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Copilot/Copilot.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Copilot/Copilot.yaml
     path: ./ruleset/copilot.yaml
     interval: 86400
   Bing:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Bing/Bing.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Bing/Bing.yaml
     path: ./ruleset/bing.yaml
     interval: 86400
   Google:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Google/Google.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Google/Google.yaml
     path: ./ruleset/google.yaml
     interval: 86400
   GitHub:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GitHub/GitHub.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GitHub/GitHub.yaml
     path: ./ruleset/github.yaml
     interval: 86400
   Spotify:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Spotify/Spotify.yaml
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Spotify/Spotify.yaml
     path: ./ruleset/spotify.yaml
     interval: 86400
   Epic:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Epic.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Epic/Epic.yaml
     path: ./ruleset/epic.yaml
     interval: 86400
   Origin:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Origin.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Origin/Origin.yaml
     path: ./ruleset/origin.yaml
     interval: 86400
   Sony:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Sony.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Sony/Sony.yaml
     path: ./ruleset/sony.yaml
     interval: 86400
   Steam:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Steam.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Steam/Steam.yaml
     path: ./ruleset/steam.yaml
     interval: 86400
   Nintendo:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Ruleset/Nintendo.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Nintendo/Nintendo.yaml
     path: ./ruleset/nintendo.yaml
     interval: 86400
   Microsoft:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Microsoft/Microsoft.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Microsoft/Microsoft.yaml
     path: ./ruleset/microsoft.yaml
     interval: 86400
   OneDrive:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/OneDrive.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OneDrive/OneDrive.yaml
     path: ./ruleset/onedrive.yaml
     interval: 86400
   Apple:
     type: http
     behavior: classical
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Apple.list
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Apple/Apple.yaml
     path: ./ruleset/apple.yaml
     interval: 86400
-  ChinaMaxDomain:
+  AppleDomain:
     type: http
     behavior: domain
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Apple/Apple_Domain.yaml
+    path: ./ruleset/apple_domain.yaml
     interval: 86400
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_Domain.yaml
-    path: ./Rules/ChinaMaxDomain.yaml
-  ChinaMaxIPNoIPv6:
+  Scholar:
+    type: http
+    behavior: classical
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Scholar/Scholar.yaml
+    path: ./ruleset/scholar.yaml
+    interval: 86400
+  ChinaMedia:
+    type: http
+    behavior: classical
+    proxy: ♻️ 自动选择
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMedia/ChinaMedia.yaml
+    path: ./ruleset/china_media.yaml
+    interval: 86400
+  ChinaMaxNoMedia:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMaxNoMedia/ChinaMaxNoMedia.yaml
+    path: ./ruleset/china_max_no_media.yaml
+  ChinaMaxNoMediaIP:
     type: http
     behavior: ipcidr
     interval: 86400
-    url: https://gh-proxy.com/https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_IP_No_IPv6.yaml
-    path: ./Rules/ChinaMaxIPNoIPv6.yaml
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMaxNoMedia/ChinaMaxNoMedia_IP.yaml
+    path: ./ruleset/china_max_no_media_ip.yaml
+  ChinaMaxNoMediaDomain:
+    type: http
+    behavior: domain
+    interval: 86400
+    url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMaxNoMedia/ChinaMaxNoMedia_Domain.yaml
+    path: ./ruleset/china_max_no_media_domain.yaml
 
 rules:
-  - DOMAIN-SUFFIX,openrouter.ai,AI服务
+  - RULE-SET,Lan,本地直连
   - RULE-SET,OpenAI,AI服务
   - RULE-SET,Gemini,AI服务
   - RULE-SET,Claude,AI服务
-  - RULE-SET,Anthropic,AI服务
   - RULE-SET,Copilot,AI服务
+  - RULE-SET,Anthropic,AI服务
+  - DOMAIN-SUFFIX,openrouter.ai,AI服务
   - RULE-SET,Spotify,Spotify
-  - RULE-SET,YouTube,国外媒体
-  - RULE-SET,Netflix,国外媒体
-  - RULE-SET,TikTok,国外媒体
-  - RULE-SET,Instagram,国外媒体
-  - RULE-SET,Threads,国外媒体
-  - RULE-SET,ProxyMedia,国外媒体
-  - RULE-SET,HBO,国外媒体
-  - RULE-SET,Disney,国外媒体
-  - DOMAIN-SUFFIX,taylorandfrancis.com,学术网页
-  - DOMAIN,dl.acm.org,学术网页
-  - DOMAIN-SUFFIX,webofknowledge.com,学术网页
-  - DOMAIN-KEYWORD,pubmed,学术网页
-  - DOMAIN-KEYWORD,springer,学术网页
-  - DOMAIN-KEYWORD,ieee,学术网页
-  - DOMAIN-KEYWORD,elsevier,学术网页
-  - DOMAIN-KEYWORD,sciencedirect,学术网页
-  - DOMAIN-KEYWORD,nature,学术网页
-  - DOMAIN-KEYWORD,tandfonline,学术网页
-  - DOMAIN-SUFFIX,elsevier.com,学术网页
-  - DOMAIN-SUFFIX,edu.cn,学术网页
-  - DOMAIN-SUFFIX,webofscience.com,学术网页
-  - DOMAIN-SUFFIX,tandfonline.com,学术网页
-  - DOMAIN-SUFFIX,link.springer.com,学术网页
-  - DOMAIN-SUFFIX,onlinelibrary.wiley.com,学术网页
-  - DOMAIN-SUFFIX,sciencedirect.com,学术网页
-  - DOMAIN-SUFFIX,taylorfrancis.com,学术网页
   - RULE-SET,Epic,游戏平台
   - RULE-SET,Origin,游戏平台
   - RULE-SET,Sony,游戏平台
   - RULE-SET,Steam,游戏平台
   - RULE-SET,Nintendo,游戏平台
+  - RULE-SET,HBO,国外媒体
+  - RULE-SET,Hulu,国外媒体
+  - RULE-SET,Disney,国外媒体
+  - RULE-SET,TikTok,国外媒体
+  - RULE-SET,YouTube,国外媒体
+  - RULE-SET,Netflix,国外媒体
+  - RULE-SET,Threads,国外媒体
+  - RULE-SET,Instagram,国外媒体
+  - RULE-SET,ChinaMedia,国内媒体
+  - RULE-SET,Scholar,学术网页
+  - RULE-SET,Bing,Microsoft
   - RULE-SET,Microsoft,Microsoft
   - RULE-SET,OneDrive,Microsoft
-  - RULE-SET,Bing,Microsoft
+  - RULE-SET,AppleDomain,Apple
   - RULE-SET,Apple,Apple
   - RULE-SET,Google,Google
   - RULE-SET,GitHub,GitHub
-  - RULE-SET,telegramcidr,Telegram,no-resolve
-  - RULE-SET,proxy,全球代理
-  - RULE-SET,gfw,全球代理
-  - RULE-SET,applications,本地直连
-  - RULE-SET,ChinaMaxDomain,本地直连
-  - RULE-SET,ChinaMaxIPNoIPv6,本地直连,no-resolve
-  - RULE-SET,lan,本地直连,no-resolve
+  - RULE-SET,Telegram,Telegram
+  - RULE-SET,ProxyDomain,全球代理
+  - RULE-SET,Proxy,全球代理
+  - RULE-SET,Direct,本地直连
+  - RULE-SET,ChinaMaxNoMediaDomain,本地直连
+  - RULE-SET,ChinaMaxNoMediaIP,本地直连,no-resolve
+  - RULE-SET,ChinaMaxNoMedia,本地直连
   - GEOIP,CN,本地直连
   - MATCH,漏网之鱼

@@ -1,86 +1,289 @@
 {
+  "http_clients": [
+    {
+      "tag": "proxy-http",
+      "detour": "♻️ 自动选择"
+    }
+  ],
   "log": {
-    "level": "info",
+    "level": "debug",
     "timestamp": true
   },
   "dns": {
     "servers": [
       {
         "type": "https",
-        "tag": "remote",
+        "tag": "cloudflare",
         "server": "1.1.1.1",
-        "detour": "PROXY"
+        "detour": "全球代理"
       },
       {
         "type": "https",
-        "tag": "local",
+        "tag": "google",
+        "server": "8.8.8.8",
+        "detour": "全球代理"
+      },
+      {
+        "type": "https",
+        "tag": "dnspod",
+        "server": "1.12.12.12",
+        "tls": {
+          "server_name": "doh.pub"
+        },
+        "detour": "DIRECT"
+      },
+      {
+        "type": "https",
+        "tag": "alidns",
         "server": "223.5.5.5",
-        "detour": "direct"
+        "tls": {
+          "server_name": "dns.alidns.com"
+        },
+        "detour": "DIRECT"
+      },
+      {
+        "type": "local",
+        "tag": "local"
+      },
+      {
+        "type": "fakeip",
+        "tag": "fakeip",
+        "inet4_range": "198.18.0.0/16"
       }
     ],
     "rules": [
       {
-        "rule_set": "geosite-cn",
+        "domain_suffix": [
+          ".lan",
+          ".local"
+        ],
+        "action": "route",
         "server": "local"
+      },
+      {
+        "domain": [
+          "dns.google",
+          "localhost.ptlogin2.qq.com"
+        ],
+        "action": "route",
+        "server": "local"
+      },
+      {
+        "rule_set": "Lan",
+        "action": "route",
+        "server": "local"
+      },
+      {
+        "rule_set": "ChinaMaxNoIP",
+        "action": "route",
+        "server": "alidns"
       }
     ],
-    "final": "remote"
+    "final": "fakeip",
+    "strategy": "prefer_ipv4",
+    "reverse_mapping": true
   },
   "inbounds": [
     {
       "type": "tun",
       "tag": "tun-in",
-      "address": ["172.18.0.1/30", "fdfe:dcba:9876::1/126"],
+      "address": [
+        "172.18.0.1/30",
+        "fdfe:dcba:9876::1/126"
+      ],
       "auto_route": true,
       "strict_route": true,
-      "stack": "mixed"
+      "stack": "mixed",
+      "sniff": true,
+      "sniff_override_destination": false
     },
     {
       "type": "mixed",
       "tag": "mixed-in",
-      "listen": "127.0.0.1",
-      "listen_port": 2080
+      "listen": "0.0.0.0",
+      "listen_port": 7890,
+      "sniff": true,
+      "sniff_override_destination": false
     }
   ],
   "outbounds": [
     {
       "type": "selector",
-      "tag": "PROXY",
+      "tag": "🚀 手动切换",
       "outbounds": {{ .ProxyTagsJSON }},
       "default": {{ .DefaultProxyTag | json }}
     },
+    {
+      "type": "urltest",
+      "tag": "♻️ 自动选择",
+      "outbounds": {{ .ProxyTagsJSON }},
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": "10h",
+      "tolerance": 50
+    },
+{{- range .Countries }}
+    {
+      "type": "urltest",
+      "tag": {{ .Tag | json }},
+      "outbounds": {{ .TagsJSON }},
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": "5m",
+      "tolerance": 50
+    },
+{{- end }}
+    {
+      "type": "selector",
+      "tag": "全球代理",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "国外媒体",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "国内媒体",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "AI服务",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "游戏平台",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "学术网页",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "本地直连",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "漏网之鱼",
+      "outbounds": ["🚀 手动切换", "DIRECT", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "Google",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "Microsoft",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "Apple",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "GitHub",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "Spotify",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "Telegram",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+{{- if .OutboundsJSON }}
     {{ .OutboundsJSON }},
+{{- end }}
     {
       "type": "direct",
-      "tag": "direct"
+      "tag": "DIRECT"
     }
   ],
   "route": {
     "rule_set": [
-      {
-        "type": "remote",
-        "tag": "geosite-cn",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
-      },
-      {
-        "type": "remote",
-        "tag": "geoip-cn",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
-      }
+      {"type": "remote", "tag": "Lan", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Lan/Lan.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "OpenAI", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/OpenAI/OpenAI.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Gemini", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Gemini/Gemini.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Claude", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Claude/Claude.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Copilot", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Copilot/Copilot.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Anthropic", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Anthropic/Anthropic.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Spotify", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Spotify/Spotify.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Epic", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Epic/Epic.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Origin", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Origin/Origin.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Sony", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Sony/Sony.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Steam", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Steam/Steam.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Nintendo", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Nintendo/Nintendo.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "HBO", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/HBO/HBO.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Hulu", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Hulu/Hulu.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Disney", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Disney/Disney.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "TikTok", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/TikTok/TikTok.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "YouTube", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/YouTube/YouTube.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Netflix", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Netflix/Netflix.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Threads", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Threads/Threads.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Instagram", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Instagram/Instagram.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "ChinaMedia", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/ChinaMedia/ChinaMedia.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Scholar", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Scholar/Scholar.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Bing", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Bing/Bing.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Microsoft", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Microsoft/Microsoft.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "OneDrive", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/OneDrive/OneDrive.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Apple", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Apple/Apple.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Google", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Google/Google.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "GitHub", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/GitHub/GitHub.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Telegram", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Telegram/Telegram.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Proxy", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Proxy/Proxy.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "Direct", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/Direct/Direct.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "ChinaMaxNoMedia", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/ChinaMaxNoMedia/ChinaMaxNoMedia.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "ChinaMaxNoIP", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/ChinaMaxNoIP/ChinaMaxNoIP.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "ChinaIPs", "format": "binary", "url": "https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/ChinaIPs/ChinaIPs.srs", "update_interval": "24h"}
     ],
     "rules": [
-      {
-        "rule_set": ["geoip-cn", "geosite-cn"],
-        "outbound": "direct"
-      }
+      {"rule_set": "Lan", "outbound": "本地直连"},
+      {"rule_set": ["OpenAI", "Gemini", "Claude", "Copilot", "Anthropic"], "outbound": "AI服务"},
+      {"domain_suffix": "openrouter.ai", "outbound": "AI服务"},
+      {"rule_set": "Spotify", "outbound": "Spotify"},
+      {"rule_set": ["Epic", "Origin", "Sony", "Steam", "Nintendo"], "outbound": "游戏平台"},
+      {"rule_set": ["HBO", "Hulu", "Disney", "TikTok", "YouTube", "Netflix", "Threads", "Instagram"], "outbound": "国外媒体"},
+      {"rule_set": "ChinaMedia", "outbound": "国内媒体"},
+      {"rule_set": "Scholar", "outbound": "学术网页"},
+      {"rule_set": ["Bing", "Microsoft", "OneDrive"], "outbound": "Microsoft"},
+      {"rule_set": "Apple", "outbound": "Apple"},
+      {"rule_set": "Google", "outbound": "Google"},
+      {"rule_set": "GitHub", "outbound": "GitHub"},
+      {"rule_set": "Telegram", "outbound": "Telegram"},
+      {"rule_set": "Proxy", "outbound": "全球代理"},
+      {"rule_set": "Direct", "outbound": "本地直连"},
+      {"rule_set": ["ChinaMaxNoMedia", "ChinaIPs"], "outbound": "本地直连"}
     ],
     "default_domain_resolver": {
       "server": "local",
       "strategy": "prefer_ipv4"
     },
-    "final": "PROXY",
+    "default_http_client": "proxy-http",
+    "final": "漏网之鱼",
     "auto_detect_interface": true
   }
 }

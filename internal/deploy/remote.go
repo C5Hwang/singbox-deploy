@@ -256,7 +256,8 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 
 	out.DefaultBase64 = subscription.EncodeBase64(strings.Join(defaultParts, "\n"))
 	out.ClashFragment = "proxies:\n" + strings.Join(nonEmptyStrings(clashParts), "\n") + "\n"
-	if err := fillSingBoxOutputs(&out, outbounds); err != nil {
+	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
+	if err := fillProfiles(&out, outbounds, clashProviderURL); err != nil {
 		return subscriptionOutputs{}, err
 	}
 	return out, nil

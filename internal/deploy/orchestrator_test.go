@@ -211,6 +211,18 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	}
 	assertNewDNSServerFormat(t, "sing-box profile", profile)
 	assertDefaultDomainResolver(t, "sing-box profile", profile, "local")
+	profileText := string(profile)
+	for _, want := range []string{
+		`"tag": "全球代理"`,
+		`"tag": "ChinaIPs"`,
+		`"final": "漏网之鱼"`,
+		`https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/OpenAI/OpenAI.srs`,
+		`https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/ChinaIPs/ChinaIPs.srs`,
+	} {
+		if !strings.Contains(profileText, want) {
+			t.Fatalf("sing-box profile missing %q:\n%s", want, profileText)
+		}
+	}
 
 	clashFragment, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "clashMeta", token))
 	if err != nil {
@@ -234,9 +246,9 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		"    use:\n      - provider\n    proxies: null\n",
 		"rule-providers:\n",
 		"  OpenAI:\n",
-		"  ChinaMaxDomain:\n",
+		"  ChinaMaxNoMediaDomain:\n",
 		"  - RULE-SET,OpenAI,AI服务\n",
-		"  - RULE-SET,ChinaMaxIPNoIPv6,本地直连,no-resolve\n",
+		"  - RULE-SET,ChinaMaxNoMediaIP,本地直连,no-resolve\n",
 		"  - MATCH,漏网之鱼\n",
 	} {
 		if !strings.Contains(clashProfileText, want) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -84,12 +85,12 @@ func (c Config) buildNodes() []node {
 				ClashYAML: clashBlock(map[string]any{
 					"name": n, "type": "hysteria2", "server": addr, "port": c.Ports.Hysteria2,
 					"password": c.Creds.HysteriaPassword,
-					"sni": c.Domain, "alpn": []any{"h3"},
+					"sni":      c.Domain, "alpn": []any{"h3"},
 				}),
 				SingBoxOutbound: map[string]any{
 					"type": "hysteria2", "tag": n, "server": addr, "server_port": c.Ports.Hysteria2,
 					"password": c.Creds.HysteriaPassword,
-					"tls": map[string]any{"enabled": true, "server_name": c.Domain, "alpn": []any{"h3"}},
+					"tls":      map[string]any{"enabled": true, "server_name": c.Domain, "alpn": []any{"h3"}},
 				},
 			})
 		case config.ProtocolTUIC:
@@ -256,6 +257,58 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
+// countryDef maps a country code to its display info and filter regex.
+type countryDef struct {
+	Code   string
+	Flag   string
+	Name   string
+	Filter string
+}
+
+// knownCountries lists recognized countries in display order (Asia first, then West).
+var knownCountries = []countryDef{
+	{Code: "HK", Flag: "🇭🇰", Name: "香港节点", Filter: `(🇭🇰)|(港)|(Hong)|(HK)`},
+	{Code: "TW", Flag: "🇼🇸", Name: "台湾节点", Filter: `(🇹🇼)|(🇼🇸)|(台)|(Tai)|(TW)`},
+	{Code: "JP", Flag: "🇯🇵", Name: "日本节点", Filter: `(🇯🇵)|(日)|(Japan)|(JP)`},
+	{Code: "KR", Flag: "🇰🇷", Name: "韩国节点", Filter: `(🇰🇷)|(韩)|(Korea)|(KR)`},
+	{Code: "SG", Flag: "🇸🇬", Name: "新加坡节点", Filter: `(🇸🇬)|(新)|(Singapore)|(SG)`},
+	{Code: "US", Flag: "🇺🇸", Name: "美国节点", Filter: `(🇺🇸)|(🇺🇲)|(美)|(States)|(US)`},
+	{Code: "CA", Flag: "🇨🇦", Name: "加拿大节点", Filter: `(🇨🇦)|(加)|(Canada)|(CA)`},
+	{Code: "UK", Flag: "🇬🇧", Name: "英国节点", Filter: `(🇬🇧)|(英)|(United Kingdom)|(UK)`},
+	{Code: "DE", Flag: "🇩🇪", Name: "德国节点", Filter: `(🇩🇪)|(德)|(Germany)|(DE)`},
+	{Code: "FR", Flag: "🇫🇷", Name: "法国节点", Filter: `(🇫🇷)|(法)|(France)|(FR)`},
+	{Code: "NL", Flag: "🇳🇱", Name: "荷兰节点", Filter: `(🇳🇱)|(荷)|(Netherlands)|(NL)`},
+	{Code: "AU", Flag: "🇦🇺", Name: "澳大利亚节点", Filter: `(🇦🇺)|(澳)|(Australia)|(AU)`},
+}
+
+// detectedCountry is a country group detected from node tags.
+type detectedCountry struct {
+	Tag      string
+	Filter   string
+	TagsJSON string
+}
+
+func detectCountries(tags []string) []detectedCountry {
+	var result []detectedCountry
+	for _, def := range knownCountries {
+		re := regexp.MustCompile(def.Filter)
+		var matched []string
+		for _, tag := range tags {
+			if re.MatchString(tag) {
+				matched = append(matched, tag)
+			}
+		}
+		if len(matched) > 0 {
+			result = append(result, detectedCountry{
+				Tag:      def.Flag + " " + def.Name,
+				Filter:   def.Filter,
+				TagsJSON: marshalTags(matched),
+			})
+		}
+	}
+	return result
+}
+
 // subscriptionOutputs holds the rendered bodies for each subscription endpoint.
 type subscriptionOutputs struct {
 	DefaultBase64    string
@@ -283,24 +336,14 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 		ClashFragment: "proxies:\n" + strings.Join(clashItems, "\n") + "\n",
 	}
 
-	// Clash full profile references the generated fragment through a provider.
 	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
-	clashProfile, err := templatefs.Render("subscription/clash-meta.yaml.tmpl", map[string]any{
-		"ClashProviderURL": clashProviderURL,
-	})
-	if err != nil {
-		return subscriptionOutputs{}, err
-	}
-	out.ClashProfile = clashProfile
-
-	if err := fillSingBoxOutputs(&out, outbounds); err != nil {
+	if err := fillProfiles(&out, outbounds, clashProviderURL); err != nil {
 		return subscriptionOutputs{}, err
 	}
 	return out, nil
 }
 
-func fillSingBoxOutputs(out *subscriptionOutputs, outbounds []map[string]any) error {
-	// sing-box outbounds array + full profile.
+func fillProfiles(out *subscriptionOutputs, outbounds []map[string]any, clashProviderURL string) error {
 	obJSON, err := json.MarshalIndent(outbounds, "", "  ")
 	if err != nil {
 		return err
@@ -312,8 +355,6 @@ func fillSingBoxOutputs(out *subscriptionOutputs, outbounds []map[string]any) er
 	if err != nil {
 		return err
 	}
-	// The OutboundsJSON injection expects comma-joined objects without the outer
-	// brackets; strip them from the marshaled array.
 	inner := strings.TrimSpace(string(obJSON))
 	inner = strings.TrimPrefix(inner, "[")
 	inner = strings.TrimSuffix(inner, "]")
@@ -321,16 +362,37 @@ func fillSingBoxOutputs(out *subscriptionOutputs, outbounds []map[string]any) er
 	if len(tagsList) > 0 {
 		defaultTag = tagsList[0]
 	}
+
+	countries := detectCountries(tagsList)
+
 	singboxProfile, err := templatefs.Render("subscription/sing-box.json.tmpl", map[string]any{
 		"ProxyTagsJSON":   string(tagsJSON),
 		"DefaultProxyTag": defaultTag,
 		"OutboundsJSON":   strings.TrimSpace(inner),
+		"Countries":       countries,
 	})
 	if err != nil {
 		return err
 	}
 	out.SingBoxProfile = singboxProfile
+
+	clashProfile, err := templatefs.Render("subscription/clash-meta.yaml.tmpl", map[string]any{
+		"ClashProviderURL": clashProviderURL,
+		"Countries":        countries,
+	})
+	if err != nil {
+		return err
+	}
+	out.ClashProfile = clashProfile
 	return nil
+}
+
+func marshalTags(tags []string) string {
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 func outboundTags(outbounds []map[string]any) []string {
