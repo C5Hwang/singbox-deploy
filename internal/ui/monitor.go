@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,8 @@ const (
 	monitorPhaseConfirm
 	monitorPhaseRunning
 	monitorPhaseDone
+	monitorPhaseServiceConfirm
+	monitorPhaseLogs
 )
 
 type monitorAction int
@@ -33,17 +36,24 @@ const (
 	monitorActionUsage
 	monitorActionAddSource
 	monitorActionDeleteSources
+	monitorActionStart
+	monitorActionStop
+	monitorActionRestart
+	monitorActionLogs
 )
 
 var (
-	monitorUILayout   = paths.DefaultLayout
-	detectMonitorHost = system.DetectHost
-	updateMonitorRun  = monitor.UpdateSettings
+	monitorUILayout        = paths.DefaultLayout
+	detectMonitorHost      = system.DetectHost
+	updateMonitorRun       = monitor.UpdateSettings
+	monitorServiceSnapshot = func() string { return serviceState(system.MonitorService) }
+	monitorLogOutput       = defaultMonitorLogOutput
 )
 
 type monitorActionItem struct {
-	action monitorAction
-	label  string
+	action    monitorAction
+	label     string
+	separator bool
 }
 
 type monitorManager struct {
@@ -60,6 +70,13 @@ type monitorManager struct {
 	totals         monitor.TrafficTotals
 	loadErr        error
 
+	serviceState string
+	fieldErr     string
+
+	logs      string
+	logErr    error
+	svcLogScroll int
+
 	cursor int
 	parameterForm
 	commandRun
@@ -69,10 +86,12 @@ type monitorManager struct {
 func newMonitorManager() *monitorManager {
 	tm := &monitorManager{
 		phase:         monitorPhaseAction,
+		cursor:        1,
 		parameterForm: newParameterForm(nil),
 		commandRun:    newCommandRun(),
 	}
 	tm.host, tm.hostErr = detectMonitorHost()
+	tm.refreshServiceState()
 	layout := monitorUILayout()
 	cfg, err := deploy.LoadProtocolConfig(layout)
 	if err != nil {
@@ -201,6 +220,34 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			}
 		}
 		return nil, true
+	case monitorPhaseServiceConfirm:
+		switch {
+		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
+			return tm.startServiceRun(), false
+		case isSelectionBackKey(msg):
+			tm.phase = monitorPhaseAction
+		case msg.String() == "esc", isSelectionNoKey(msg):
+			return nil, true
+		}
+	case monitorPhaseLogs:
+		switch msg.String() {
+		case "up", "k":
+			tm.scrollServiceLogs(1)
+		case "down", "j":
+			tm.scrollServiceLogs(-1)
+		case "pgup":
+			tm.scrollServiceLogs(tm.serviceLogsHeight())
+		case "pgdown":
+			tm.scrollServiceLogs(-tm.serviceLogsHeight())
+		case "home":
+			tm.svcLogScroll = tm.maxServiceLogsScroll()
+		case "end":
+			tm.svcLogScroll = 0
+		case "r":
+			tm.loadServiceLogs()
+		case "esc", "q", "enter":
+			tm.phase = monitorPhaseAction
+		}
 	}
 	return nil, false
 }
@@ -210,13 +257,21 @@ func (tm *monitorManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 	case tea.MouseButtonWheelUp:
 		if tm.phase == monitorPhaseRunning || (tm.phase == monitorPhaseDone && tm.runErr != nil) {
 			tm.scrollLog(3, tm.logViewportHeight())
+		} else if tm.phase == monitorPhaseLogs {
+			tm.scrollServiceLogs(3)
 		}
 	case tea.MouseButtonWheelDown:
 		if tm.phase == monitorPhaseRunning || (tm.phase == monitorPhaseDone && tm.runErr != nil) {
 			tm.scrollLog(-3, tm.logViewportHeight())
+		} else if tm.phase == monitorPhaseLogs {
+			tm.scrollServiceLogs(-3)
 		}
 	}
 	return nil
+}
+
+func (tm *monitorManager) refreshServiceState() {
+	tm.serviceState = monitorServiceSnapshot()
 }
 
 func (tm *monitorManager) reloadState() {
@@ -231,10 +286,29 @@ func (tm *monitorManager) reloadState() {
 	if totals, err := monitor.CurrentTrafficTotals(layout, tm.cfg.ResetDay, tm.cfg.ResetHour, time.Now().UTC()); err == nil {
 		tm.totals = totals
 	}
+	tm.refreshServiceState()
 }
 
 func (tm *monitorManager) moveAction(delta int) {
-	tm.cursor = moveSelection(tm.cursor, len(tm.actions()), delta)
+	actions := tm.actions()
+	n := len(actions)
+	if n == 0 {
+		return
+	}
+	next := tm.cursor
+	for {
+		next = (next + delta) % n
+		if next < 0 {
+			next += n
+		}
+		if !actions[next].separator {
+			break
+		}
+		if next == tm.cursor {
+			break
+		}
+	}
+	tm.cursor = next
 	tm.fieldErr = ""
 }
 
@@ -259,6 +333,15 @@ func (tm *monitorManager) activateAction() {
 			return
 		}
 		tm.startForm(tm.deleteMonitorSourceFields())
+	case monitorActionLogs:
+		tm.loadServiceLogs()
+		return
+	case monitorActionStart, monitorActionStop, monitorActionRestart:
+		if !tm.canApply() {
+			tm.fieldErr = tm.applyBlocker()
+			return
+		}
+		tm.phase = monitorPhaseServiceConfirm
 	}
 }
 
@@ -473,6 +556,10 @@ func (tm *monitorManager) View() string {
 			return commandFailedView(tm, "Monitor update failed")
 		}
 		return flowOK.Render("Monitor settings updated") + "\n\n" + tm.doneSummary()
+	case monitorPhaseServiceConfirm:
+		return tm.serviceConfirmView()
+	case monitorPhaseLogs:
+		return tm.serviceLogsView()
 	default:
 		return ""
 	}
@@ -490,6 +577,7 @@ func (tm *monitorManager) actionView() string {
 		summaryRow("Current inbound", byteSize(tm.totals.InBytes)),
 		summaryRow("Current outbound", byteSize(tm.totals.OutBytes)),
 		summaryRow("Monitor sources", strconv.Itoa(len(tm.monitorSources))),
+		summaryRow("Monitor service", or(tm.serviceState, "unknown")),
 	}
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("Monitor") + "\n\n")
@@ -501,7 +589,12 @@ func (tm *monitorManager) actionView() string {
 		b.WriteString(flowErr.Render(tm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
-	for i, action := range tm.actions() {
+	actions := tm.actions()
+	for i, action := range actions {
+		if action.separator {
+			b.WriteString("\n" + dimStyle.Render(action.label) + "\n")
+			continue
+		}
 		row := "  " + action.label
 		if i == tm.cursor {
 			row = selStyle.Render("> " + action.label)
@@ -596,6 +689,10 @@ func (tm *monitorManager) footerHints() []operationHint {
 		return runningFooterHints(tm.runComplete)
 	case monitorPhaseDone:
 		return doneFooterHints(tm.runErr != nil)
+	case monitorPhaseServiceConfirm:
+		return applyFooterHints("Apply")
+	case monitorPhaseLogs:
+		return []operationHint{hint(keyMoveMouse, "Scroll"), hint(keyRefresh, "Refresh"), hint(keyReturn, "Return")}
 	default:
 		return nil
 	}
@@ -603,11 +700,163 @@ func (tm *monitorManager) footerHints() []operationHint {
 
 func (tm *monitorManager) actions() []monitorActionItem {
 	return []monitorActionItem{
+		{separator: true, label: "Monitor"},
 		{action: monitorActionLocal, label: "Edit monitor settings"},
 		{action: monitorActionUsage, label: "Adjust traffic counters"},
 		{action: monitorActionAddSource, label: "Add monitor source"},
 		{action: monitorActionDeleteSources, label: "Delete monitor sources"},
+		{separator: true, label: "Service"},
+		{action: monitorActionStart, label: "Start monitor service"},
+		{action: monitorActionStop, label: "Stop monitor service"},
+		{action: monitorActionRestart, label: "Restart monitor service"},
+		{action: monitorActionLogs, label: "View monitor service logs"},
 	}
+}
+
+func (tm *monitorManager) selectableActionCount() int {
+	count := 0
+	for _, a := range tm.actions() {
+		if !a.separator {
+			count++
+		}
+	}
+	return count
+}
+
+func (tm *monitorManager) serviceConfirmView() string {
+	rows := []summaryLine{
+		summaryRow("Action", tm.serviceActionLabel()),
+		summaryRow("Service", or(tm.serviceState, "unknown")),
+		summaryBlank(),
+		summaryText("This will run systemctl " + tm.serviceSystemctlAction() + " " + system.MonitorService + "."),
+	}
+	return flowTitle.Render("Monitor · Confirm") + "\n\n" + renderSummary(rows)
+}
+
+func (tm *monitorManager) serviceActionLabel() string {
+	for _, a := range tm.actions() {
+		if a.action == tm.action {
+			return a.label
+		}
+	}
+	return "unknown"
+}
+
+func (tm *monitorManager) serviceSystemctlAction() string {
+	switch tm.action {
+	case monitorActionStart:
+		return "start"
+	case monitorActionStop:
+		return "stop"
+	case monitorActionRestart:
+		return "restart"
+	default:
+		return ""
+	}
+}
+
+func (tm *monitorManager) startServiceRun() tea.Cmd {
+	if !tm.canApply() {
+		tm.fieldErr = tm.applyBlocker()
+		tm.phase = monitorPhaseAction
+		return nil
+	}
+	tm.phase = monitorPhaseRunning
+	tm.resetRun(make(chan runMsg, 64))
+	ch := tm.ch
+	action := tm.serviceSystemctlAction()
+	go func() {
+		ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Monitor service", Detail: action, Status: "running"}}
+		out, err := exec.Command("systemctl", action, system.MonitorService).CombinedOutput()
+		if len(out) > 0 {
+			ch <- runMsg{logLine: strings.TrimSpace(string(out))}
+		}
+		if err == nil {
+			ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Monitor service", Detail: action, Status: "done"}}
+		}
+		ch <- runMsg{done: true, err: err}
+	}()
+	return tm.waitForRun()
+}
+
+func (tm *monitorManager) loadServiceLogs() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	tm.logs, tm.logErr = monitorLogOutput(ctx, 200)
+	tm.svcLogScroll = 0
+	tm.phase = monitorPhaseLogs
+}
+
+func (tm *monitorManager) serviceLogsView() string {
+	body := flowTitle.Render("Monitor · Logs") + "\n\n"
+	if tm.logErr != nil {
+		body += flowErr.Render(tm.logErr.Error()) + "\n\n"
+	}
+	if strings.TrimSpace(tm.logs) == "" {
+		body += dimStyle.Render("no logs returned")
+	} else {
+		body += strings.Join(tm.visibleServiceLogOutput(), "\n")
+	}
+	return body
+}
+
+func (tm *monitorManager) visibleServiceLogOutput() []string {
+	rows := tm.serviceLogRows()
+	if len(rows) == 0 {
+		return nil
+	}
+	visible := min(tm.serviceLogsHeight(), len(rows))
+	tm.clampServiceLogsScroll()
+	start := len(rows) - visible - tm.svcLogScroll
+	return rows[start : start+visible]
+}
+
+func (tm *monitorManager) serviceLogRows() []string {
+	width := tm.width
+	if width <= 0 {
+		width = 80
+	}
+	style := dimStyle.Width(max(1, width))
+	var rows []string
+	for _, line := range strings.Split(strings.TrimRight(tm.logs, "\n"), "\n") {
+		rows = append(rows, strings.Split(style.Render(line), "\n")...)
+	}
+	return rows
+}
+
+func (tm *monitorManager) scrollServiceLogs(delta int) {
+	tm.svcLogScroll += delta
+	tm.clampServiceLogsScroll()
+}
+
+func (tm *monitorManager) clampServiceLogsScroll() {
+	tm.svcLogScroll = min(max(0, tm.svcLogScroll), tm.maxServiceLogsScroll())
+}
+
+func (tm *monitorManager) maxServiceLogsScroll() int {
+	return max(0, len(tm.serviceLogRows())-tm.serviceLogsHeight())
+}
+
+func (tm *monitorManager) serviceLogsHeight() int {
+	if tm.height <= 0 {
+		return 12
+	}
+	return max(1, tm.height-5)
+}
+
+func defaultMonitorLogOutput(ctx context.Context, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 200
+	}
+	out, err := exec.CommandContext(ctx, "journalctl", "-u", system.MonitorService, "-n", strconv.Itoa(lines), "--no-pager").CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(out))
+		if text == "" {
+			return "", err
+		}
+		return string(out), fmt.Errorf("%w: %s", err, text)
+	}
+	return string(out), nil
 }
 
 func monitorDeployCallbacks() monitor.UpdateOptions {
