@@ -216,8 +216,8 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		`"tag": "全球代理"`,
 		`"tag": "ChinaIPs"`,
 		`"final": "漏网之鱼"`,
-		`https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/OpenAI/OpenAI.srs`,
-		`https://raw.githubusercontent.com/senshinya/singbox_ruleset/main/rule/ChinaIPs/ChinaIPs.srs`,
+		`https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/OpenAI/OpenAI.srs`,
+		`https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/ChinaIPs/ChinaIPs.srs`,
 	} {
 		if !strings.Contains(profileText, want) {
 			t.Fatalf("sing-box profile missing %q:\n%s", want, profileText)
