@@ -3,7 +3,7 @@ import { ref, computed } from "vue";
 import SourceCard from "../components/SourceCard.vue";
 import TrendModal from "../components/TrendModal.vue";
 import { formatBytes, percentFor, percentText, tone, barStyle } from "../utils";
-import type { Summary, SourceSummary, UsageRow } from "../types";
+import type { Summary, SourceSummary } from "../types";
 
 const props = defineProps<{ summary: Summary | null; error: string }>();
 const modalSource = ref<SourceSummary | null>(null);
@@ -15,50 +15,59 @@ const sources = computed<SourceSummary[]>(() => {
   return [{ ...s, name: "Local Server" }];
 });
 
-const rows = computed<UsageRow[]>(() => {
-  const s = props.summary;
-  if (!s) {
-    return [
-      { label: "IN", key: "in", used: 0, limit: 0, color: "var(--blue)" },
-      { label: "OUT", key: "out", used: 0, limit: 0, color: "var(--cyan)" },
-      { label: "Total", key: "total", used: 0, limit: 0, color: "var(--green)" },
-    ];
-  }
+type UsedKey = "inUsedBytes" | "outUsedBytes" | "totalUsedBytes";
+type LimitKey = "inLimitBytes" | "outLimitBytes" | "totalLimitBytes";
 
-  const srcs = s.sources && s.sources.length > 0 ? s.sources : null;
+interface TrafficCard {
+  label: string;
+  used: number;
+  percent: number | null;
+  detail: string;
+  color: string;
+}
 
-  function sumOf(
-    usedKey: "inUsedBytes" | "outUsedBytes" | "totalUsedBytes",
-    limitKey: "inLimitBytes" | "outLimitBytes" | "totalLimitBytes",
-  ): { used: number; limit: number } {
-    if (!srcs) return { used: s![usedKey] ?? 0, limit: s![limitKey] ?? 0 };
-    let totalUsed = 0, totalLimit = 0;
-    for (const src of srcs) {
-      totalUsed += src[usedKey] ?? 0;
-      totalLimit += src[limitKey] ?? 0;
+// Unlimited sources (limit = 0) still count toward the displayed usage, but
+// the quota percentage only compares limited sources against their limits.
+function sumOf(usedKey: UsedKey, limitKey: LimitKey) {
+  let used = 0, limitedUsed = 0, limit = 0, unlimited = 0;
+  for (const src of sources.value) {
+    const u = src[usedKey] ?? 0;
+    const l = src[limitKey] ?? 0;
+    used += u;
+    if (l > 0) {
+      limit += l;
+      limitedUsed += u;
+    } else {
+      unlimited++;
     }
-    return { used: totalUsed, limit: totalLimit };
   }
+  return { used, limitedUsed, limit, unlimited };
+}
 
-  const inSum = sumOf("inUsedBytes", "inLimitBytes");
-  const outSum = sumOf("outUsedBytes", "outLimitBytes");
-  const totalSum = sumOf("totalUsedBytes", "totalLimitBytes");
-
-  return [
-    { label: "IN", key: "in", used: inSum.used, limit: inSum.limit, color: "var(--blue)" },
-    { label: "OUT", key: "out", used: outSum.used, limit: outSum.limit, color: "var(--cyan)" },
-    { label: "Total", key: "total", used: totalSum.used, limit: totalSum.limit, color: "var(--green)" },
+const cards = computed<TrafficCard[]>(() => {
+  const defs: { label: string; usedKey: UsedKey; limitKey: LimitKey; color: string }[] = [
+    { label: "Inbound", usedKey: "inUsedBytes", limitKey: "inLimitBytes", color: "var(--blue)" },
+    { label: "Outbound", usedKey: "outUsedBytes", limitKey: "outLimitBytes", color: "var(--cyan)" },
+    { label: "Total", usedKey: "totalUsedBytes", limitKey: "totalLimitBytes", color: "var(--green)" },
   ];
+  return defs.map((d) => {
+    const { used, limitedUsed, limit, unlimited } = sumOf(d.usedKey, d.limitKey);
+    const percent = limit > 0 ? percentFor(limitedUsed, limit) : null;
+    let detail: string;
+    if (limit <= 0) {
+      detail = sources.value.length > 0 ? "No quota configured" : "";
+    } else {
+      detail = `Quota ${formatBytes(limitedUsed)} / ${formatBytes(limit)}`;
+      if (unlimited > 0) detail += ` · ${unlimited} unlimited`;
+    }
+    return { label: d.label, used, percent, detail, color: d.color };
+  });
 });
-
-const rowPercents = computed(() =>
-  rows.value.map((row) => ({ row, percent: percentFor(row.used, row.limit) })),
-);
 
 const availableCount = computed(() => {
   const srcs = sources.value;
   const total = srcs.length;
-  if (total === 0) return { running: 0, total: 0, percent: null as number | null };
+  if (total === 0) return { running: 0, total: 0, percent: null as number | null, unavailablePercent: null as number | null };
   let running = 0;
   for (const src of srcs) {
     const rows = [
@@ -74,6 +83,13 @@ const availableCount = computed(() => {
   const unavailablePercent = 100 - percent;
   return { running, total, percent, unavailablePercent };
 });
+
+const availableDetail = computed(() => {
+  const { running, total } = availableCount.value;
+  if (total === 0) return "";
+  const limited = total - running;
+  return limited > 0 ? `${limited} source${limited > 1 ? "s" : ""} limited` : "All sources running";
+});
 </script>
 
 <template>
@@ -83,43 +99,23 @@ const availableCount = computed(() => {
         <div>
           <p class="eyebrow">Available</p>
           <p class="metric-value">{{ availableCount.running }} / {{ availableCount.total }}</p>
+          <p class="metric-detail">{{ availableDetail }}</p>
         </div>
         <span :class="`delta${tone(availableCount.unavailablePercent)}`">{{ percentText(availableCount.percent) }}</span>
       </div>
       <div class="progress" :style="barStyle(availableCount.percent, 'var(--green)')"></div>
     </article>
 
-    <article class="card metric-card span-3">
+    <article v-for="card in cards" :key="card.label" class="card metric-card span-3">
       <div class="metric-head">
         <div>
-          <p class="eyebrow">Inbound</p>
-          <p class="metric-value">{{ formatBytes(rows[0]?.used) }}</p>
+          <p class="eyebrow">{{ card.label }}</p>
+          <p class="metric-value">{{ formatBytes(card.used) }}</p>
+          <p class="metric-detail">{{ card.detail }}</p>
         </div>
-        <span :class="`delta${tone(rowPercents[0]?.percent ?? null)}`">{{ percentText(rowPercents[0]?.percent ?? null) }}</span>
+        <span :class="`delta${tone(card.percent)}`">{{ percentText(card.percent) }}</span>
       </div>
-      <div class="progress" :style="barStyle(rowPercents[0]?.percent ?? null, 'var(--blue)')"></div>
-    </article>
-
-    <article class="card metric-card span-3">
-      <div class="metric-head">
-        <div>
-          <p class="eyebrow">Outbound</p>
-          <p class="metric-value">{{ formatBytes(rows[1]?.used) }}</p>
-        </div>
-        <span :class="`delta${tone(rowPercents[1]?.percent ?? null)}`">{{ percentText(rowPercents[1]?.percent ?? null) }}</span>
-      </div>
-      <div class="progress" :style="barStyle(rowPercents[1]?.percent ?? null, 'var(--cyan)')"></div>
-    </article>
-
-    <article class="card metric-card span-3">
-      <div class="metric-head">
-        <div>
-          <p class="eyebrow">Total</p>
-          <p class="metric-value">{{ formatBytes(rows[2]?.used) }}</p>
-        </div>
-        <span :class="`delta${tone(rowPercents[2]?.percent ?? null)}`">{{ percentText(rowPercents[2]?.percent ?? null) }}</span>
-      </div>
-      <div class="progress" :style="barStyle(rowPercents[2]?.percent ?? null, 'var(--green)')"></div>
+      <div class="progress" :class="{ empty: card.percent === null }" :style="barStyle(card.percent, card.color)"></div>
     </article>
   </section>
 
