@@ -214,10 +214,10 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	profileText := string(profile)
 	for _, want := range []string{
 		`"tag": "全球代理"`,
-		`"tag": "ChinaIPs"`,
+		`"tag": "CNCIDR"`,
 		`"final": "漏网之鱼"`,
-		`https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/OpenAI/OpenAI.srs`,
-		`https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/ChinaIPs/ChinaIPs.srs`,
+		`https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/ai.srs`,
+		`https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/cncidr.srs`,
 	} {
 		if !strings.Contains(profileText, want) {
 			t.Fatalf("sing-box profile missing %q:\n%s", want, profileText)
@@ -245,10 +245,10 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		"    url: \"https://example.com:2096/s/clashMeta/" + token + "\"\n",
 		"    use:\n      - provider\n    proxies: null\n",
 		"rule-providers:\n",
-		"  OpenAI:\n",
-		"  ChinaMaxNoMediaDomain:\n",
-		"  - RULE-SET,OpenAI,AI服务\n",
-		"  - RULE-SET,ChinaMaxNoMediaIP,本地直连,no-resolve\n",
+		"  AI:\n",
+		"  CN:\n",
+		"  - RULE-SET,AI,AI服务\n",
+		"  - RULE-SET,CNCIDR,本地直连,no-resolve\n",
 		"  - MATCH,漏网之鱼\n",
 	} {
 		if !strings.Contains(clashProfileText, want) {
