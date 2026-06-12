@@ -79,7 +79,7 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 		WriteNginxConfig: func(l paths.Layout, c subscription.Config, confPath string) error { return nil },
 		WriteWithRemotes: func(ctx context.Context, l paths.Layout, c subscription.Config, remotes []subscription.Remote, fetch subscription.Fetcher) error {
 			dcfg := deploy.Config{Domain: c.Domain, Salt: c.Salt, SubscribePort: c.SubscribePort, Creds: cfg.Creds, DisplayName: cfg.DisplayName}
-			return deploy.WriteSubscriptionsWithRemotes(ctx, l, dcfg, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+			return deploy.WriteSubscriptionsWithRemotes(ctx, l, dcfg, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch), 0)
 		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error { return deploy.RunCommands(r, cmds...) },
 	})

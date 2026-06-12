@@ -183,16 +183,25 @@ func writePrivateStateFile(dir, name, value string) error {
 	return os.WriteFile(filepath.Join(dir, filepath.Clean(name)), []byte(value), 0o600)
 }
 
-// WriteSubscriptionsWithRemotes generates subscription outputs aggregating local and remote nodes.
-func WriteSubscriptionsWithRemotes(ctx context.Context, layout paths.Layout, cfg Config, remotes []RemoteSubscription, fetch SubscriptionFetcher) error {
-	out, err := cfg.buildSubscriptionsWithRemotes(ctx, remotes, fetch)
+// WriteSubscriptionsWithRemotes generates subscription outputs aggregating
+// local and remote nodes. localPosition controls where local nodes appear in
+// the combined output (0 = first, len(remotes) = last).
+func WriteSubscriptionsWithRemotes(ctx context.Context, layout paths.Layout, cfg Config, remotes []RemoteSubscription, fetch SubscriptionFetcher, localPosition int) error {
+	out, err := cfg.buildSubscriptionsWithRemotes(ctx, remotes, fetch, localPosition)
 	if err != nil {
 		return err
 	}
 	return writeSubscriptionOutputs(layout, cfg, out)
 }
 
-func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []RemoteSubscription, fetch SubscriptionFetcher) (subscriptionOutputs, error) {
+type subscriptionSourceParts struct {
+	defaultLines []string
+	clashPart    string
+	surgePart    string
+	outbounds    []map[string]any
+}
+
+func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []RemoteSubscription, fetch SubscriptionFetcher, localPosition int) (subscriptionOutputs, error) {
 	out, err := c.buildSubscriptions()
 	if err != nil {
 		return subscriptionOutputs{}, err
@@ -208,16 +217,21 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 	if err != nil {
 		return subscriptionOutputs{}, err
 	}
-	defaultParts := splitNonEmptyLines(defaultBody)
-	clashParts := []string{stripClashHeader(out.ClashFragment)}
-	surgeParts := []string{strings.TrimRight(out.SurgeFragment, "\n")}
-	outbounds, err := decodeSubscriptionOutbounds([]byte(out.SingBoxOutbounds))
+	localOutbounds, err := decodeSubscriptionOutbounds([]byte(out.SingBoxOutbounds))
 	if err != nil {
 		return subscriptionOutputs{}, err
 	}
+	local := subscriptionSourceParts{
+		defaultLines: splitNonEmptyLines(defaultBody),
+		clashPart:    stripClashHeader(out.ClashFragment),
+		surgePart:    strings.TrimRight(out.SurgeFragment, "\n"),
+		outbounds:    localOutbounds,
+	}
 
+	remoteParts := make([]subscriptionSourceParts, 0, len(remotes))
 	for _, remote := range remotes {
 		entry := remote.entry()
+		alias := remote.effectiveAlias()
 
 		remoteDefault, err := fetch(ctx, entry.DefaultURL())
 		if err != nil {
@@ -227,14 +241,11 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("decode remote default %s: %w", remote.Domain, err)
 		}
-		alias := remote.effectiveAlias()
-		defaultParts = append(defaultParts, splitNonEmptyLines(subscription.RenameDefaultLinks(decodedDefault, alias))...)
 
 		remoteClash, err := fetch(ctx, entry.ClashURL())
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("fetch remote clash %s: %w", remote.Domain, err)
 		}
-		clashParts = append(clashParts, stripClashHeader(subscription.RenameClashFragment(string(remoteClash), alias)))
 
 		remoteSingBox, err := fetch(ctx, entry.SingBoxProfilesURL())
 		if err != nil {
@@ -252,13 +263,30 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		if err != nil {
 			return subscriptionOutputs{}, err
 		}
-		outbounds = append(outbounds, remoteOutbounds...)
 
 		remoteSurge, err := fetch(ctx, entry.SurgeURL())
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("fetch remote surge %s: %w", remote.Domain, err)
 		}
-		surgeParts = append(surgeParts, subscription.RenameSurgeFragment(string(remoteSurge), alias))
+
+		remoteParts = append(remoteParts, subscriptionSourceParts{
+			defaultLines: splitNonEmptyLines(subscription.RenameDefaultLinks(decodedDefault, alias)),
+			clashPart:    stripClashHeader(subscription.RenameClashFragment(string(remoteClash), alias)),
+			surgePart:    subscription.RenameSurgeFragment(string(remoteSurge), alias),
+			outbounds:    remoteOutbounds,
+		})
+	}
+
+	ordered := mergeSourceParts(local, remoteParts, localPosition)
+
+	var defaultParts []string
+	var clashParts, surgeParts []string
+	var outbounds []map[string]any
+	for _, sp := range ordered {
+		defaultParts = append(defaultParts, sp.defaultLines...)
+		clashParts = append(clashParts, sp.clashPart)
+		surgeParts = append(surgeParts, sp.surgePart)
+		outbounds = append(outbounds, sp.outbounds...)
 	}
 
 	out.DefaultBase64 = subscription.EncodeBase64(strings.Join(defaultParts, "\n"))
@@ -270,6 +298,21 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		return subscriptionOutputs{}, err
 	}
 	return out, nil
+}
+
+func mergeSourceParts(local subscriptionSourceParts, remotes []subscriptionSourceParts, localPosition int) []subscriptionSourceParts {
+	pos := ClampLocalPosition(localPosition, len(remotes))
+	ordered := make([]subscriptionSourceParts, 0, 1+len(remotes))
+	for i, rp := range remotes {
+		if i == pos {
+			ordered = append(ordered, local)
+		}
+		ordered = append(ordered, rp)
+	}
+	if pos >= len(remotes) {
+		ordered = append(ordered, local)
+	}
+	return ordered
 }
 
 func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionOutputs) error {
@@ -535,6 +578,69 @@ func SaveMonitorSources(layout paths.Layout, sources []MonitorSource) error {
 		}
 	}
 	return nil
+}
+
+const (
+	localSubscriptionPositionFile = "local_subscription_position"
+	localMonitorPositionFile      = "local_monitor_position"
+)
+
+// LoadLocalSubscriptionPosition returns the saved position of the local
+// subscription entry in the combined [local + remotes] ordering. Returns 0
+// (local first) when no position has been saved yet.
+func LoadLocalSubscriptionPosition(layout paths.Layout) int {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	return readStateInt(layout.StateDir, localSubscriptionPositionFile, 0)
+}
+
+// SaveLocalSubscriptionPosition persists the local subscription position.
+func SaveLocalSubscriptionPosition(layout paths.Layout, pos int) error {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	return writePrivateStateFile(layout.StateDir, localSubscriptionPositionFile, itoa(pos)+"\n")
+}
+
+// LoadLocalMonitorPosition returns the saved position of the local monitor
+// entry in the combined [local + sources] ordering.
+func LoadLocalMonitorPosition(layout paths.Layout) int {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	return readStateInt(layout.StateDir, localMonitorPositionFile, 0)
+}
+
+// SaveLocalMonitorPosition persists the local monitor position.
+func SaveLocalMonitorPosition(layout paths.Layout, pos int) error {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	return writePrivateStateFile(layout.StateDir, localMonitorPositionFile, itoa(pos)+"\n")
+}
+
+func readStateInt(dir, name string, fallback int) int {
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return fallback
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+// ClampLocalPosition ensures pos is valid for the given remote count.
+func ClampLocalPosition(pos, remoteCount int) int {
+	if pos < 0 {
+		return 0
+	}
+	if pos > remoteCount {
+		return remoteCount
+	}
+	return pos
 }
 
 // MigrateMonitorSources copies monitor-enabled remote subscriptions into the

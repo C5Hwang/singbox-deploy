@@ -76,6 +76,7 @@ func runMonitor(args []string) error {
 		ResetHour:         *resetHour,
 		Alias:             *alias,
 		RemoteMonitorPath: *remoteMonitorPath,
+		LocalPositionPath: filepath.Join(layout.StateDir, "local_monitor_position"),
 		RefreshRemoteSources: func(ctx context.Context) error {
 			sources, err := deploy.LoadMonitorSources(layout)
 			if err != nil {

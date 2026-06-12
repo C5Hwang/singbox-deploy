@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +46,7 @@ type Config struct {
 	ResetHour            int
 	Alias                string
 	RemoteMonitorPath    string
+	LocalPositionPath    string
 	RefreshRemoteSources func(context.Context) error
 	Now                  func() time.Time
 }
@@ -165,7 +168,7 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("monitor: read remote monitor data: %v", err)
 	}
-	sources := append([]SourceSummary{local}, remote...)
+	sources := insertLocalSource(remote, readLocalPositionFile(m.cfg.LocalPositionPath), local)
 	for i := range sources {
 		sources[i].MonitorURL = ""
 	}
@@ -352,6 +355,41 @@ func WriteRemoteSources(path string, sources []SourceSummary) error {
 		return err
 	}
 	return os.WriteFile(path, b, 0o600)
+}
+
+func readLocalPositionFile(path string) int {
+	if path == "" {
+		return 0
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+func insertLocalSource(remote []SourceSummary, pos int, local SourceSummary) []SourceSummary {
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(remote) {
+		pos = len(remote)
+	}
+	sources := make([]SourceSummary, 0, 1+len(remote))
+	for i, r := range remote {
+		if i == pos {
+			sources = append(sources, local)
+		}
+		sources = append(sources, r)
+	}
+	if pos >= len(remote) {
+		sources = append(sources, local)
+	}
+	return sources
 }
 
 func (m *Monitor) usedThisCycle(now time.Time) (TrafficTotals, error) {

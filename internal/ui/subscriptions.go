@@ -24,6 +24,7 @@ const (
 	subscriptionPhaseConfirm
 	subscriptionPhaseRunning
 	subscriptionPhaseDone
+	subscriptionPhaseReorder
 )
 
 type subscriptionAction int
@@ -32,7 +33,9 @@ const (
 	subscriptionActionDisplayName subscriptionAction = iota
 	subscriptionActionLocal
 	subscriptionActionAddRemote
+	subscriptionActionEditRemote
 	subscriptionActionDeleteRemotes
+	subscriptionActionReorder
 	subscriptionActionRefresh
 )
 
@@ -61,7 +64,10 @@ type subscriptionManager struct {
 	remotes []deploy.RemoteSubscription
 	loadErr error
 
-	cursor int
+	cursor          int
+	editRemoteIndex int
+	localPosition   int
+	reorder         reorderForm
 	parameterForm
 	commandRun
 	result deploy.Config
@@ -69,25 +75,28 @@ type subscriptionManager struct {
 
 func newSubscriptionManager() *subscriptionManager {
 	sm := &subscriptionManager{
-		phase:         subscriptionPhaseAction,
-		parameterForm: newParameterForm(nil),
-		commandRun:    newCommandRun(),
+		phase:           subscriptionPhaseAction,
+		editRemoteIndex: -1,
+		parameterForm:   newParameterForm(nil),
+		commandRun:      newCommandRun(),
 	}
 	host, err := detectSubscriptionHost()
 	sm.host = host
 	sm.hostErr = err
-	cfg, err := deploy.LoadProtocolConfig(subscriptionUILayout())
+	layout := subscriptionUILayout()
+	cfg, err := deploy.LoadProtocolConfig(layout)
 	if err != nil {
 		sm.loadErr = err
 		return sm
 	}
 	sm.cfg = cfg
-	remotes, err := deploy.LoadRemoteSubscriptions(subscriptionUILayout())
+	remotes, err := deploy.LoadRemoteSubscriptions(layout)
 	if err != nil {
 		sm.loadErr = err
 		return sm
 	}
 	sm.remotes = remotes
+	sm.localPosition = deploy.LoadLocalSubscriptionPosition(layout)
 	return sm
 }
 
@@ -141,10 +150,26 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case subscriptionPhaseForm:
 		cmd, done, handled := sm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
+				if sm.action == subscriptionActionEditRemote && sm.editRemoteIndex < 0 {
+					selectedLabel := sm.values["edit_remote_select"]
+					for i, r := range sm.remotes {
+						if remoteOptionLabel(r) == selectedLabel {
+							sm.editRemoteIndex = i
+							break
+						}
+					}
+					sm.startEditRemoteForm()
+					return
+				}
 				sm.phase = subscriptionPhaseConfirm
 			},
 			Back: func() {
 				if !sm.previousField() {
+					if sm.action == subscriptionActionEditRemote && sm.editRemoteIndex >= 0 {
+						sm.editRemoteIndex = -1
+						sm.startForm(sm.editRemoteSelectField())
+						return
+					}
 					sm.phase = subscriptionPhaseAction
 				}
 			},
@@ -155,12 +180,23 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if handled {
 			return cmd, done
 		}
+	case subscriptionPhaseReorder:
+		confirm, cancel := sm.reorder.handleKey(msg)
+		if confirm {
+			sm.phase = subscriptionPhaseConfirm
+			return nil, false
+		}
+		if cancel {
+			return nil, true
+		}
 	case subscriptionPhaseConfirm:
 		switch {
 		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
 			return sm.startRun(), false
 		case isSelectionBackKey(msg):
-			if len(sm.fields) > 0 {
+			if sm.action == subscriptionActionReorder {
+				sm.phase = subscriptionPhaseReorder
+			} else if len(sm.fields) > 0 {
 				sm.phase = subscriptionPhaseForm
 				sm.backToLastField()
 			} else {
@@ -173,13 +209,15 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		switch msg.String() {
 		case "enter":
 			if sm.runComplete {
-				if cfg, err := deploy.LoadProtocolConfig(subscriptionUILayout()); err == nil {
+				layout := subscriptionUILayout()
+				if cfg, err := deploy.LoadProtocolConfig(layout); err == nil {
 					sm.cfg = cfg
 					sm.result = cfg
 				}
-				if remotes, err := deploy.LoadRemoteSubscriptions(subscriptionUILayout()); err == nil {
+				if remotes, err := deploy.LoadRemoteSubscriptions(layout); err == nil {
 					sm.remotes = remotes
 				}
+				sm.localPosition = deploy.LoadLocalSubscriptionPosition(layout)
 				sm.phase = subscriptionPhaseDone
 			}
 		case "up", "k":
@@ -233,6 +271,7 @@ func (sm *subscriptionManager) moveAction(delta int) {
 
 func (sm *subscriptionManager) activateAction() {
 	sm.fieldErr = ""
+	sm.editRemoteIndex = -1
 	actions := sm.actions()
 	idx, ok := selectedIndex(sm.cursor, len(actions))
 	if !ok {
@@ -246,12 +285,21 @@ func (sm *subscriptionManager) activateAction() {
 		sm.startForm(sm.localFields())
 	case subscriptionActionAddRemote:
 		sm.startForm(sm.remoteFields())
+	case subscriptionActionEditRemote:
+		if len(sm.remotes) == 0 {
+			sm.fieldErr = "no remote subscriptions to edit"
+			return
+		}
+		sm.startForm(sm.editRemoteSelectField())
 	case subscriptionActionDeleteRemotes:
 		if len(sm.remotes) == 0 {
 			sm.fieldErr = "no remote subscriptions to delete"
 			return
 		}
 		sm.startForm(sm.deleteRemoteFields())
+	case subscriptionActionReorder:
+		sm.reorder = newReorderForm(sm.buildReorderItems())
+		sm.phase = subscriptionPhaseReorder
 	case subscriptionActionRefresh:
 		sm.phase = subscriptionPhaseConfirm
 	}
@@ -295,6 +343,68 @@ func (sm *subscriptionManager) deleteRemoteFields() []field {
 		multi:   true,
 		note:    "Select one or more configured remote subscriptions to delete.",
 	}}
+}
+
+func (sm *subscriptionManager) editRemoteSelectField() []field {
+	options := make([]string, 0, len(sm.remotes))
+	for _, remote := range sm.remotes {
+		options = append(options, remoteOptionLabel(remote))
+	}
+	return []field{{
+		key:     "edit_remote_select",
+		label:   "Remote subscription to edit",
+		options: options,
+		note:    "Select a remote subscription to edit.",
+	}}
+}
+
+func (sm *subscriptionManager) startEditRemoteForm() {
+	if sm.editRemoteIndex < 0 || sm.editRemoteIndex >= len(sm.remotes) {
+		return
+	}
+	remote := sm.remotes[sm.editRemoteIndex]
+	fields := sm.remoteFields()
+	sm.parameterForm.setFields(fields)
+	sm.parameterForm.values["remote_domain"] = strings.TrimSpace(remote.Domain)
+	sm.parameterForm.values["remote_alias"] = strings.TrimSpace(remote.Alias)
+	sm.parameterForm.values["remote_subscribe_port"] = strconv.Itoa(remote.Port)
+	sm.parameterForm.values["remote_salt"] = strings.TrimSpace(remote.Salt)
+	sm.parameterForm.validate = validateSubscriptionField
+	sm.phase = subscriptionPhaseForm
+	if sm.parameterForm.advanceField() {
+		sm.phase = subscriptionPhaseConfirm
+	}
+}
+
+func (sm *subscriptionManager) buildReorderItems() []reorderItem {
+	total := 1 + len(sm.remotes)
+	items := make([]reorderItem, 0, total)
+	localPos := deploy.ClampLocalPosition(sm.localPosition, len(sm.remotes))
+	localLabel := "Local"
+	if sm.cfg.DisplayName != "" && sm.cfg.DisplayName != deploy.DefaultDisplayName {
+		localLabel = "Local (" + sm.cfg.DisplayName + ")"
+	}
+	remoteIdx := 0
+	for i := 0; i < total; i++ {
+		if i == localPos {
+			items = append(items, reorderItem{key: "local", label: localLabel})
+		} else {
+			items = append(items, reorderItem{key: strconv.Itoa(remoteIdx), label: remoteOptionLabel(sm.remotes[remoteIdx])})
+			remoteIdx++
+		}
+	}
+	return items
+}
+
+func (sm *subscriptionManager) targetLocalPosition() int {
+	if sm.action == subscriptionActionReorder {
+		for i, item := range sm.reorder.items {
+			if item.key == "local" {
+				return i
+			}
+		}
+	}
+	return sm.localPosition
 }
 
 func validateSubscriptionField(f field, val string, _ map[string]string) error {
@@ -409,7 +519,10 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 			return deploy.WriteInstallState(stateDir, full)
 		},
 		SaveRemotes: func(l paths.Layout, remotes []subscription.Remote) error {
-			return deploy.SaveRemoteSubscriptions(l, toDeployRemotes(remotes))
+			if err := deploy.SaveRemoteSubscriptions(l, toDeployRemotes(remotes)); err != nil {
+				return err
+			}
+			return deploy.SaveLocalSubscriptionPosition(l, sm.targetLocalPosition())
 		},
 		WriteNginxConfig: func(l paths.Layout, cfg subscription.Config, confPath string) error {
 			full, err := deploy.LoadProtocolConfig(l)
@@ -427,7 +540,7 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 			}
 			full.Salt = cfg.Salt
 			full.SubscribePort = cfg.SubscribePort
-			return deploy.WriteSubscriptionsWithRemotes(ctx, l, full, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
+			return deploy.WriteSubscriptionsWithRemotes(ctx, l, full, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch), sm.targetLocalPosition())
 		},
 		RunCommands: deploy.RunCommands,
 		CheckPorts: func(ctx context.Context, domain string, port int) error {
@@ -471,6 +584,18 @@ func (sm *subscriptionManager) targetRemotes() []deploy.RemoteSubscription {
 			Salt:   strings.TrimSpace(sm.values["remote_salt"]),
 		})
 		return remotes
+	case subscriptionActionEditRemote:
+		remotes := append([]deploy.RemoteSubscription(nil), sm.remotes...)
+		if sm.editRemoteIndex >= 0 && sm.editRemoteIndex < len(remotes) {
+			port, _ := strconv.Atoi(strings.TrimSpace(sm.values["remote_subscribe_port"]))
+			remotes[sm.editRemoteIndex] = deploy.RemoteSubscription{
+				Domain: strings.TrimSpace(sm.values["remote_domain"]),
+				Port:   port,
+				Alias:  strings.TrimSpace(sm.values["remote_alias"]),
+				Salt:   strings.TrimSpace(sm.values["remote_salt"]),
+			}
+		}
+		return remotes
 	case subscriptionActionDeleteRemotes:
 		deleted := selectedOptions(sm.values["delete_remotes"])
 		remotes := make([]deploy.RemoteSubscription, 0, len(sm.remotes))
@@ -479,6 +604,18 @@ func (sm *subscriptionManager) targetRemotes() []deploy.RemoteSubscription {
 				continue
 			}
 			remotes = append(remotes, remote)
+		}
+		return remotes
+	case subscriptionActionReorder:
+		remotes := make([]deploy.RemoteSubscription, 0, len(sm.remotes))
+		for _, item := range sm.reorder.items {
+			if item.key == "local" {
+				continue
+			}
+			idx, _ := strconv.Atoi(item.key)
+			if idx >= 0 && idx < len(sm.remotes) {
+				remotes = append(remotes, sm.remotes[idx])
+			}
 		}
 		return remotes
 	default:
@@ -509,6 +646,8 @@ func (sm *subscriptionManager) View() string {
 		return sm.actionView()
 	case subscriptionPhaseForm:
 		return sm.parameterForm.View("Manage Subscriptions · Parameters")
+	case subscriptionPhaseReorder:
+		return sm.reorder.View("Manage Subscriptions · Reorder")
 	case subscriptionPhaseConfirm:
 		return sm.confirmView()
 	case subscriptionPhaseRunning:
@@ -570,6 +709,18 @@ func (sm *subscriptionManager) confirmView() string {
 			summaryRow("Remote subscription port", sm.values["remote_subscribe_port"]),
 			summaryRow("Remote alias", sm.values["remote_alias"]),
 		)
+	case subscriptionActionEditRemote:
+		if sm.editRemoteIndex >= 0 && sm.editRemoteIndex < len(sm.remotes) {
+			old := sm.remotes[sm.editRemoteIndex]
+			rows = append(rows,
+				summaryRow("Current domain", old.Domain),
+				summaryRow("New domain", sm.values["remote_domain"]),
+				summaryRow("Current alias", old.Alias),
+				summaryRow("New alias", sm.values["remote_alias"]),
+				summaryRow("Current port", strconv.Itoa(old.Port)),
+				summaryRow("New port", sm.values["remote_subscribe_port"]),
+			)
+		}
 	case subscriptionActionDeleteRemotes:
 		selected := sm.selectedRemoteDeleteLabels()
 		remaining := remoteLabels(sm.targetRemotes())
@@ -585,6 +736,11 @@ func (sm *subscriptionManager) confirmView() string {
 		}
 		for _, label := range remaining {
 			rows = append(rows, summaryIndentedRow(2, "Keep", label))
+		}
+	case subscriptionActionReorder:
+		rows = append(rows, summaryRow("New order", ""))
+		for i, item := range sm.reorder.items {
+			rows = append(rows, summaryIndentedRow(2, strconv.Itoa(i+1), item.label))
 		}
 	case subscriptionActionRefresh:
 		rows = append(rows, summaryRow("Refresh remote subscriptions", strconv.Itoa(len(sm.remotes))))
@@ -640,6 +796,8 @@ func (sm *subscriptionManager) footerHints() []operationHint {
 		return actionFooterHints("Select")
 	case subscriptionPhaseForm:
 		return sm.parameterForm.footerHints()
+	case subscriptionPhaseReorder:
+		return sm.reorder.footerHints()
 	case subscriptionPhaseConfirm:
 		return applyFooterHints("Apply")
 	case subscriptionPhaseRunning:
@@ -656,7 +814,9 @@ func (sm *subscriptionManager) actions() []subscriptionActionItem {
 		{action: subscriptionActionDisplayName, label: "Edit display name"},
 		{action: subscriptionActionLocal, label: "Edit subscription salt & port"},
 		{action: subscriptionActionAddRemote, label: "Add remote subscription"},
+		{action: subscriptionActionEditRemote, label: "Edit remote subscription"},
 		{action: subscriptionActionDeleteRemotes, label: "Delete remote subscription"},
+		{action: subscriptionActionReorder, label: "Reorder subscriptions"},
 		{action: subscriptionActionRefresh, label: "Refresh subscriptions"},
 	}
 }

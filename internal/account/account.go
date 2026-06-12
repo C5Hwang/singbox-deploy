@@ -78,7 +78,7 @@ func updateSteps(opts UpdateOptions, remotes []deploy.RemoteSubscription) []upda
 			return os.Rename(deploy.ProtocolConfigCandidate(opts.Layout), opts.Layout.ConfigJSON)
 		}},
 		{label: "Subscriptions", detail: "regenerate subscription files", run: func(ctx context.Context, cfg deploy.Config) error {
-			return deploy.WriteSubscriptionsWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch)
+			return deploy.WriteSubscriptionsWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch, deploy.LoadLocalSubscriptionPosition(opts.Layout))
 		}},
 		{label: "State", detail: "persist account display name", run: func(_ context.Context, cfg deploy.Config) error {
 			return deploy.WriteInstallState(opts.Layout.StateDir, cfg)

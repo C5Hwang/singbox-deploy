@@ -94,3 +94,11 @@ func doneFooterHints(runErr bool) []operationHint {
 func returnFooterHints() []operationHint {
 	return []operationHint{hint(keyReturn, "Return")}
 }
+
+func reorderFooterHints() []operationHint {
+	return []operationHint{hint(keyMove, "Navigate"), hint(keySpace, "Grab"), hint(keyEnter, "Confirm"), hint(keyCancel, "Cancel")}
+}
+
+func reorderGrabbedFooterHints() []operationHint {
+	return []operationHint{hint(keyMove, "Move item"), hint(keySpace, "Release"), hint(keyEnter, "Release"), hint(keyCancel, "Release")}
+}
