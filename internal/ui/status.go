@@ -78,7 +78,8 @@ func loadStatus() Status {
 		Protocols:    protocolStrings(protocolsFromValue(readStatusState(store, "enabled_protocols"))),
 		Subscription: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "default"),
 		ClashMetaSub: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "clashMetaProfiles"),
-		SingBoxSub:   subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "sing-box"),
+		SingBoxSub:   subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "singboxProfiles"),
+		SurgeSub:     subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "surgeProfiles"),
 		MonitorUI:    monitorUIStatus(domain, monitorPublicPort, monitorEnabled),
 		TrafficQuota: trafficQuotaStatus(store),
 	}

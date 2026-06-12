@@ -201,7 +201,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	}
 
 	// The assembled sing-box client profile is valid JSON.
-	profile, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "sing-box", token))
+	profile, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "singboxProfiles", token))
 	if err != nil {
 		t.Fatalf("read sing-box profile: %v", err)
 	}
@@ -257,6 +257,35 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	}
 	if strings.Contains(clashProfileText, "proxies:\n  - name:") {
 		t.Fatalf("clash profile should load proxies from provider, not inline proxies:\n%s", clashProfileText)
+	}
+
+	surgeFragment, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "surge", token))
+	if err != nil {
+		t.Fatalf("read surge fragment: %v", err)
+	}
+	surgeText := string(surgeFragment)
+	if !strings.Contains(surgeText, "US-vps1-Hysteria2 = hysteria2") {
+		t.Fatalf("surge fragment missing hysteria2 proxy:\n%s", surgeText)
+	}
+	if !strings.Contains(surgeText, "US-vps1-TUIC = tuic-v5") {
+		t.Fatalf("surge fragment missing tuic proxy:\n%s", surgeText)
+	}
+
+	surgeProfile, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "surgeProfiles", token))
+	if err != nil {
+		t.Fatalf("read surge profile: %v", err)
+	}
+	surgeProfileText := string(surgeProfile)
+	for _, want := range []string{
+		"[General]",
+		"[Proxy Group]",
+		"[Rule]",
+		"policy-path=https://example.com:2096/s/surge/" + token,
+		"FINAL,漏网之鱼",
+	} {
+		if !strings.Contains(surgeProfileText, want) {
+			t.Fatalf("surge profile missing %q:\n%s", want, surgeProfileText)
+		}
 	}
 
 	// Units, nginx config, sing-box binary, and account state were written.

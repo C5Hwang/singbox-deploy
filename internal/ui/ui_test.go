@@ -586,8 +586,11 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	if status.ClashMetaSub != "https://example.com:2096/s/clashMetaProfiles/tok" {
 		t.Fatalf("ClashMetaSub = %q", status.ClashMetaSub)
 	}
-	if status.SingBoxSub != "https://example.com:2096/s/sing-box/tok" {
+	if status.SingBoxSub != "https://example.com:2096/s/singboxProfiles/tok" {
 		t.Fatalf("SingBoxSub = %q", status.SingBoxSub)
+	}
+	if status.SurgeSub != "https://example.com:2096/s/surgeProfiles/tok" {
+		t.Fatalf("SurgeSub = %q", status.SurgeSub)
 	}
 	if status.MonitorUI != "https://example.com:2097/monitor/" {
 		t.Fatalf("MonitorUI = %q", status.MonitorUI)

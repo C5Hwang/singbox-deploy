@@ -96,6 +96,17 @@ func TestExtractSingBoxNodeOutboundsFiltersProfile(t *testing.T) {
 	}
 }
 
+func TestRenameSurgeFragment(t *testing.T) {
+	fragment := "🇯🇵 JP-01 = hysteria2, server, 443, password=abc\n🇯🇵 JP-02 = tuic-v5, server, 8443, uuid=def\n"
+	out := RenameSurgeFragment(fragment, "US-vps1")
+	if !strings.Contains(out, "🇺🇸 US-vps1-01 = hysteria2") {
+		t.Fatalf("renamed surge fragment = %q", out)
+	}
+	if !strings.Contains(out, "🇺🇸 US-vps1-02 = tuic-v5") {
+		t.Fatalf("renamed surge fragment = %q", out)
+	}
+}
+
 func TestRemoteEntryTokenAndURLs(t *testing.T) {
 	e := RemoteEntry{Domain: "node.example.com", Port: 443, Alias: "US-vps1", Salt: "abc"}
 	if e.Token() != "0bee89b07a248e27c83fc3d5951213c1" {
@@ -109,8 +120,14 @@ func TestRemoteEntryTokenAndURLs(t *testing.T) {
 	if !strings.HasSuffix(e.ClashURL(), "/s/clashMeta/0bee89b07a248e27c83fc3d5951213c1") {
 		t.Fatalf("ClashURL = %q", e.ClashURL())
 	}
+	if !strings.HasSuffix(e.SingBoxProfilesURL(), "/s/singboxProfiles/0bee89b07a248e27c83fc3d5951213c1") {
+		t.Fatalf("SingBoxProfilesURL = %q", e.SingBoxProfilesURL())
+	}
 	if !strings.HasSuffix(e.SingBoxURL(), "/s/sing-box/0bee89b07a248e27c83fc3d5951213c1") {
-		t.Fatalf("SingBoxURL = %q", e.SingBoxURL())
+		t.Fatalf("SingBoxURL (legacy) = %q", e.SingBoxURL())
+	}
+	if !strings.HasSuffix(e.SurgeURL(), "/s/surge/0bee89b07a248e27c83fc3d5951213c1") {
+		t.Fatalf("SurgeURL = %q", e.SurgeURL())
 	}
 }
 

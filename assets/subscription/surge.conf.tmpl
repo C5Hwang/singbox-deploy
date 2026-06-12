@@ -1,0 +1,66 @@
+[General]
+# > Log level
+loglevel = notify
+show-error-page-for-reject = true
+# > speed test
+test-timeout = 3
+internet-test-url = http://connectivitycheck.platform.hicloud.com/generate_204
+proxy-test-url = http://www.gstatic.com/generate_204
+# > ipv6
+ipv6 = true
+# > DNS
+dns-server = 223.5.5.5, 119.29.29.29, system
+hijack-dns = 8.8.8.8:53, 8.8.4.4:53
+encrypted-dns-server = https://doh.pub/dns-query, https://dns.alidns.com/dns-query
+# > geoip
+geoip-maxmind-url = https://cdn.jsdelivr.net/gh/Hackl0us/GeoIP2-CN@release/Country.mmdb
+# > skip proxy
+skip-proxy = 127.0.0.1, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 100.64.0.0/10, localhost, *.local, *.crashlytics.com
+
+[Proxy]
+DIRECT = direct
+
+[Proxy Group]
+🚀 手动切换 = select, policy-path={{ .SurgeProviderURL }}, update-interval=3600
+♻️ 自动选择 = url-test, policy-path={{ .SurgeProviderURL }}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50, update-interval=3600
+{{- range .Countries }}
+{{ .Tag }} = url-test, policy-path={{ $.SurgeProviderURL }}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50, policy-regex-filter={{ .Filter }}, update-interval=3600
+{{- end }}
+全球代理 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+国外媒体 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+国内媒体 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+AI服务 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+游戏平台 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+学术网页 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+本地直连 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+漏网之鱼 = select, 🚀 手动切换, DIRECT, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+Google = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+Microsoft = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+Apple = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+Gits = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+Spotify = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+
+[Rule]
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/private.list,本地直连
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/ai.list,AI服务
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/spotify.list,Spotify
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/games.list,游戏平台
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/hbo.list,国外媒体
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/hulu.list,国外媒体
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/disney.list,国外媒体
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/tiktok.list,国外媒体
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/youtube.list,国外媒体
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/netflix.list,国外媒体
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/socialmedia.list,国外媒体
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/proxy.list,全球代理
+RULE-SET,https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Surge/Scholar/Scholar.list,学术网页
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/gits.list,Gits
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/google.list,Google
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/microsoft.list,Microsoft
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/apple.list,Apple
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/socialmedia-cn.list,国内媒体
+RULE-SET,https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Direct/Direct.list,本地直连
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/cn.list,本地直连
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/cncidr.list,本地直连
+GEOIP,CN,本地直连
+FINAL,漏网之鱼

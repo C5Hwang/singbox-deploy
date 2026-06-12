@@ -41,6 +41,7 @@ type Status struct {
 	Subscription string
 	ClashMetaSub string
 	SingBoxSub   string
+	SurgeSub     string
 	MonitorUI    string
 	TrafficQuota string
 }
@@ -434,6 +435,7 @@ func (m *Model) statusView() string {
 		summaryRow("Subscription (universal)", or(s.Subscription, "none")),
 		summaryRow("Subscription (Clash Meta)", or(s.ClashMetaSub, "none")),
 		summaryRow("Subscription (sing-box)", or(s.SingBoxSub, "none")),
+		summaryRow("Subscription (Surge)", or(s.SurgeSub, "none")),
 		summaryRow("Monitor URL", or(s.MonitorUI, "none")),
 		summaryRow("Traffic quota", or(s.TrafficQuota, "unknown")),
 	}

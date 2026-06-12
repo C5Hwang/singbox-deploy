@@ -977,7 +977,8 @@ func (w *installFlow) doneSummary() string {
 		summaryRow("Ports", installedPortsSummary(w.cfg.Enabled, w.cfg.Ports)),
 		summaryRow("Subscription", subscriptionBase+"/s/default/"+token),
 		summaryRow("Clash", subscriptionBase+"/s/clashMetaProfiles/"+token),
-		summaryRow("sing-box", subscriptionBase+"/s/sing-box/"+token),
+		summaryRow("sing-box", subscriptionBase+"/s/singboxProfiles/"+token),
+		summaryRow("Surge", subscriptionBase+"/s/surgeProfiles/"+token),
 	}
 	if w.cfg.DeployMonitor {
 		monitorBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.MonitorPublicPort)

@@ -210,6 +210,7 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 	}
 	defaultParts := splitNonEmptyLines(defaultBody)
 	clashParts := []string{stripClashHeader(out.ClashFragment)}
+	surgeParts := []string{strings.TrimRight(out.SurgeFragment, "\n")}
 	outbounds, err := decodeSubscriptionOutbounds([]byte(out.SingBoxOutbounds))
 	if err != nil {
 		return subscriptionOutputs{}, err
@@ -235,9 +236,13 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		}
 		clashParts = append(clashParts, stripClashHeader(subscription.RenameClashFragment(string(remoteClash), alias)))
 
-		remoteSingBox, err := fetch(ctx, entry.SingBoxURL())
+		// Try new endpoint first; fall back to legacy /s/sing-box/ for older versions.
+		remoteSingBox, err := fetch(ctx, entry.SingBoxProfilesURL())
 		if err != nil {
-			return subscriptionOutputs{}, fmt.Errorf("fetch remote sing-box %s: %w", remote.Domain, err)
+			remoteSingBox, err = fetch(ctx, entry.SingBoxURL())
+			if err != nil {
+				return subscriptionOutputs{}, fmt.Errorf("fetch remote sing-box %s: %w", remote.Domain, err)
+			}
 		}
 		nodeOutbounds, err := subscription.ExtractSingBoxNodeOutbounds(remoteSingBox)
 		if err != nil {
@@ -252,12 +257,20 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 			return subscriptionOutputs{}, err
 		}
 		outbounds = append(outbounds, remoteOutbounds...)
+
+		remoteSurge, err := fetch(ctx, entry.SurgeURL())
+		if err != nil {
+			return subscriptionOutputs{}, fmt.Errorf("fetch remote surge %s: %w", remote.Domain, err)
+		}
+		surgeParts = append(surgeParts, subscription.RenameSurgeFragment(string(remoteSurge), alias))
 	}
 
 	out.DefaultBase64 = subscription.EncodeBase64(strings.Join(defaultParts, "\n"))
 	out.ClashFragment = "proxies:\n" + strings.Join(nonEmptyStrings(clashParts), "\n") + "\n"
+	out.SurgeFragment = strings.Join(nonEmptyStrings(surgeParts), "\n") + "\n"
 	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
-	if err := fillProfiles(&out, outbounds, clashProviderURL); err != nil {
+	surgeProviderURL := fmt.Sprintf("https://%s:%d/s/surge/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
+	if err := fillProfiles(&out, outbounds, clashProviderURL, surgeProviderURL); err != nil {
 		return subscriptionOutputs{}, err
 	}
 	return out, nil
@@ -269,8 +282,9 @@ func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionO
 		"default":           out.DefaultBase64,
 		"clashMeta":         out.ClashFragment,
 		"clashMetaProfiles": out.ClashProfile,
-		"sing-boxProfiles":  out.SingBoxOutbounds,
-		"sing-box":          out.SingBoxProfile,
+		"singboxProfiles":   out.SingBoxProfile,
+		"surge":             out.SurgeFragment,
+		"surgeProfiles":     out.SurgeProfile,
 	}
 	for dir, body := range pathsByDir {
 		if err := WriteFile(filepath.Join(layout.SubscribeDir, dir, token), []byte(body), 0o644); err != nil {
@@ -284,7 +298,8 @@ func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionO
 }
 
 func removeStaleSubscriptionFiles(subscribeDir, token string) error {
-	for _, dir := range []string{"default", "clashMeta", "clashMetaProfiles", "sing-boxProfiles", "sing-box"} {
+	// "sing-box" and "sing-boxProfiles" are legacy directories from older versions.
+	for _, dir := range []string{"default", "clashMeta", "clashMetaProfiles", "sing-box", "sing-boxProfiles", "singboxProfiles", "surge", "surgeProfiles"} {
 		entries, err := os.ReadDir(filepath.Join(subscribeDir, dir))
 		if err != nil {
 			if os.IsNotExist(err) {

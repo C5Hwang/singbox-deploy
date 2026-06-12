@@ -42,9 +42,10 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 		t.Fatalf("SaveMonitorSources: %v", err)
 	}
 	fetches := map[string][]byte{
-		remoteEntry.DefaultURL(): []byte(subscription.EncodeBase64("hysteria2://pass@remote.example.com:443#JP-01")),
-		remoteEntry.ClashURL():   []byte("proxies:\n  - name: \"JP-01\"\n    type: hysteria2\n"),
-		remoteEntry.SingBoxURL(): []byte(`{"outbounds":[{"type":"selector","tag":"PROXY"},{"type":"hysteria2","tag":"JP-01"},{"type":"direct","tag":"direct"}]}`),
+		remoteEntry.DefaultURL():         []byte(subscription.EncodeBase64("hysteria2://pass@remote.example.com:443#JP-01")),
+		remoteEntry.ClashURL():           []byte("proxies:\n  - name: \"JP-01\"\n    type: hysteria2\n"),
+		remoteEntry.SingBoxProfilesURL(): []byte(`{"outbounds":[{"type":"selector","tag":"PROXY"},{"type":"hysteria2","tag":"JP-01"},{"type":"direct","tag":"direct"}]}`),
+		remoteEntry.SurgeURL():           []byte("JP-01 = hysteria2, remote.example.com, 443, password=pass\n"),
 		fmt.Sprintf("https://remote.example.com:9444/monitor/api/summary"): []byte(`{"inUsedBytes":100,"outUsedBytes":200,"totalUsedBytes":300,"inRemainingBytes":900,"outRemainingBytes":800,"totalRemainingBytes":700,"inLimitBytes":1000,"outLimitBytes":1000,"totalLimitBytes":1000,"resetTime":"2026-06-01T00:00:00Z","trend":[]}`),
 	}
 	runner := &recordingRunner{}
@@ -76,10 +77,12 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 				SubscribePort: cfg.SubscribePort,
 			}, nil
 		},
-		LoadRemotes:      func(l paths.Layout) ([]subscription.Remote, error) { return nil, nil },
-		ValidateRemotes:  func(r []subscription.Remote) error { return nil },
-		WriteState:       func(stateDir string, c subscription.Config) error { return nil },
-		SaveRemotes:      func(l paths.Layout, r []subscription.Remote) error { return deploy.SaveRemoteSubscriptions(l, toDeployRemotes(r)) },
+		LoadRemotes:     func(l paths.Layout) ([]subscription.Remote, error) { return nil, nil },
+		ValidateRemotes: func(r []subscription.Remote) error { return nil },
+		WriteState:      func(stateDir string, c subscription.Config) error { return nil },
+		SaveRemotes: func(l paths.Layout, r []subscription.Remote) error {
+			return deploy.SaveRemoteSubscriptions(l, toDeployRemotes(r))
+		},
 		WriteNginxConfig: func(l paths.Layout, c subscription.Config, confPath string) error { return nil },
 		WriteWithRemotes: func(ctx context.Context, l paths.Layout, c subscription.Config, remotes []subscription.Remote, fetch subscription.Fetcher) error {
 			dcfg := deploy.Config{Domain: c.Domain, Salt: c.Salt, SubscribePort: c.SubscribePort, Creds: cfg.Creds, DisplayName: cfg.DisplayName}
@@ -131,12 +134,12 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 	if strings.Contains(string(clashBody), "proxies:\n- name:") || !strings.HasPrefix(string(clashBody), "proxies:\n  - name:") {
 		t.Fatalf("clash subscription first proxy should stay indented:\n%s", clashBody)
 	}
-	singBoxOutbounds, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "sing-boxProfiles", token))
+	surgeBody, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "surge", token))
 	if err != nil {
-		t.Fatalf("read sing-box outbounds: %v", err)
+		t.Fatalf("read surge subscription: %v", err)
 	}
-	if !strings.Contains(string(singBoxOutbounds), "US-edge-01") || strings.Contains(string(singBoxOutbounds), "PROXY") {
-		t.Fatalf("sing-box outbounds should include renamed remote node only:\n%s", singBoxOutbounds)
+	if !strings.Contains(string(surgeBody), "US-edge-01") {
+		t.Fatalf("surge subscription missing renamed remote node name:\n%s", surgeBody)
 	}
 
 	dRemotes, err := deploy.LoadRemoteSubscriptions(layout)

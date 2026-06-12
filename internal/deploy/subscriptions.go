@@ -20,6 +20,7 @@ type node struct {
 	DefaultLink     string
 	ClashYAML       string         // block-style list item, 2-space indent
 	SingBoxOutbound map[string]any // sing-box client outbound object
+	SurgeLine       string         // Surge proxy line: "name = type, server, port, ..."
 }
 
 // buildNodes generates a node per enabled protocol.
@@ -51,6 +52,13 @@ func (c Config) buildNodes() []node {
 					"uuid": c.Creds.RealityVisionUUID, "flow": "xtls-rprx-vision",
 					"tls": realityClientTLS(c.RealityServerName, c.Creds.RealityPublicKey, c.Creds.RealityShortID),
 				},
+				SurgeLine: surgeLine(n, "vless", addr, c.Ports.RealityVision,
+					"username="+c.Creds.RealityVisionUUID,
+					"tls=true", "sni="+c.RealityServerName,
+					"reality=true",
+					"reality-public-key="+c.Creds.RealityPublicKey,
+					"reality-short-id="+c.Creds.RealityShortID,
+					"client-fingerprint=chrome", "udp-relay=true"),
 			})
 		case config.ProtocolRealityGRPC:
 			n := name("VLESS-Reality-gRPC")
@@ -74,6 +82,14 @@ func (c Config) buildNodes() []node {
 					"tls":       realityClientTLS(c.RealityServerName, c.Creds.RealityPublicKey, c.Creds.RealityShortID),
 					"transport": map[string]any{"type": "grpc", "service_name": "grpc"},
 				},
+				SurgeLine: surgeLine(n, "vless", addr, c.Ports.RealityGRPC,
+					"username="+c.Creds.RealityGRPCUUID,
+					"tls=true", "sni="+c.RealityServerName,
+					"reality=true",
+					"reality-public-key="+c.Creds.RealityPublicKey,
+					"reality-short-id="+c.Creds.RealityShortID,
+					"client-fingerprint=chrome", "udp-relay=true",
+					"grpc=true", "grpc-service-name=grpc"),
 			})
 		case config.ProtocolHysteria2:
 			n := name("Hysteria2")
@@ -92,6 +108,9 @@ func (c Config) buildNodes() []node {
 					"password": c.Creds.HysteriaPassword,
 					"tls":      map[string]any{"enabled": true, "server_name": c.Domain, "alpn": []any{"h3"}},
 				},
+				SurgeLine: surgeLine(n, "hysteria2", addr, c.Ports.Hysteria2,
+					"password="+c.Creds.HysteriaPassword,
+					"sni="+c.Domain, "download-bandwidth=200"),
 			})
 		case config.ProtocolTUIC:
 			n := name("TUIC")
@@ -110,6 +129,10 @@ func (c Config) buildNodes() []node {
 					"uuid": c.Creds.TUICUUID, "password": c.Creds.TUICPassword, "congestion_control": "bbr",
 					"tls": map[string]any{"enabled": true, "server_name": c.Domain, "alpn": []any{"h3"}},
 				},
+				SurgeLine: surgeLine(n, "tuic-v5", addr, c.Ports.TUIC,
+					"uuid="+c.Creds.TUICUUID,
+					"password="+c.Creds.TUICPassword,
+					"alpn=h3", "sni="+c.Domain),
 			})
 		case config.ProtocolAnyTLS:
 			n := name("AnyTLS")
@@ -316,6 +339,8 @@ type subscriptionOutputs struct {
 	ClashProfile     string
 	SingBoxOutbounds string
 	SingBoxProfile   string
+	SurgeFragment    string
+	SurgeProfile     string
 }
 
 // buildSubscriptions renders every subscription output for the install config.
@@ -324,26 +349,32 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 
 	var links []subscription.Node
 	var clashItems []string
+	var surgeItems []string
 	var outbounds []map[string]any
 	for _, n := range nodes {
 		links = append(links, subscription.Node{Name: n.Name, Protocol: protoOf(n.SingBoxOutbound), Link: n.DefaultLink})
 		clashItems = append(clashItems, n.ClashYAML)
+		if n.SurgeLine != "" {
+			surgeItems = append(surgeItems, n.SurgeLine)
+		}
 		outbounds = append(outbounds, n.SingBoxOutbound)
 	}
 
 	out := subscriptionOutputs{
 		DefaultBase64: subscription.EncodeBase64(subscription.GenerateDefault(links)),
 		ClashFragment: "proxies:\n" + strings.Join(clashItems, "\n") + "\n",
+		SurgeFragment: strings.Join(surgeItems, "\n") + "\n",
 	}
 
 	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
-	if err := fillProfiles(&out, outbounds, clashProviderURL); err != nil {
+	surgeProviderURL := fmt.Sprintf("https://%s:%d/s/surge/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
+	if err := fillProfiles(&out, outbounds, clashProviderURL, surgeProviderURL); err != nil {
 		return subscriptionOutputs{}, err
 	}
 	return out, nil
 }
 
-func fillProfiles(out *subscriptionOutputs, outbounds []map[string]any, clashProviderURL string) error {
+func fillProfiles(out *subscriptionOutputs, outbounds []map[string]any, clashProviderURL, surgeProviderURL string) error {
 	obJSON, err := json.MarshalIndent(outbounds, "", "  ")
 	if err != nil {
 		return err
@@ -384,6 +415,15 @@ func fillProfiles(out *subscriptionOutputs, outbounds []map[string]any, clashPro
 		return err
 	}
 	out.ClashProfile = clashProfile
+
+	surgeProfile, err := templatefs.Render("subscription/surge.conf.tmpl", map[string]any{
+		"SurgeProviderURL": surgeProviderURL,
+		"Countries":        countries,
+	})
+	if err != nil {
+		return err
+	}
+	out.SurgeProfile = surgeProfile
 	return nil
 }
 
@@ -412,6 +452,15 @@ func WriteSubscriptions(layout paths.Layout, cfg Config) error {
 		return err
 	}
 	return writeSubscriptionOutputs(layout, cfg, out)
+}
+
+// surgeLine builds a Surge proxy line: "name = type, server, port, key=val, ..."
+func surgeLine(name, protoType, server string, port int, params ...string) string {
+	line := fmt.Sprintf("%s = %s, %s, %d", name, protoType, server, port)
+	for _, p := range params {
+		line += ", " + p
+	}
+	return line
 }
 
 // protoOf reports the subscription protocol key for a sing-box outbound.

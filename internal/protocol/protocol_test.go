@@ -108,7 +108,7 @@ func TestUpdateRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 	}
 
 	token := deploy.SubscriptionToken(cfg.Salt)
-	if _, err := os.Stat(filepath.Join(layout.SubscribeDir, "sing-box", token)); err != nil {
+	if _, err := os.Stat(filepath.Join(layout.SubscribeDir, "singboxProfiles", token)); err != nil {
 		t.Fatalf("subscription not refreshed: %v", err)
 	}
 
