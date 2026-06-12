@@ -26,19 +26,19 @@ DIRECT = direct
 {{- range .Countries }}
 {{ .Tag }} = url-test, policy-path={{ $.SurgeProviderURL }}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50, policy-regex-filter={{ .Filter }}, update-interval=3600
 {{- end }}
+本地直连 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
 全球代理 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 国外媒体 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 国内媒体 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
 AI服务 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
-游戏平台 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 学术网页 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
-本地直连 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
-漏网之鱼 = select, 🚀 手动切换, DIRECT, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
-Google = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
-Microsoft = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
-Apple = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+游戏平台 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 Gits = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 Spotify = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+Apple = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+Google = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+Microsoft = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+漏网之鱼 = select, 🚀 手动切换, DIRECT, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
 
 [Rule]
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/private.list,本地直连

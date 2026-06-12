@@ -52,13 +52,6 @@ func (c Config) buildNodes() []node {
 					"uuid": c.Creds.RealityVisionUUID, "flow": "xtls-rprx-vision",
 					"tls": realityClientTLS(c.RealityServerName, c.Creds.RealityPublicKey, c.Creds.RealityShortID),
 				},
-				SurgeLine: surgeLine(n, "vless", addr, c.Ports.RealityVision,
-					"username="+c.Creds.RealityVisionUUID,
-					"tls=true", "sni="+c.RealityServerName,
-					"reality=true",
-					"reality-public-key="+c.Creds.RealityPublicKey,
-					"reality-short-id="+c.Creds.RealityShortID,
-					"client-fingerprint=chrome", "udp-relay=true"),
 			})
 		case config.ProtocolRealityGRPC:
 			n := name("VLESS-Reality-gRPC")
@@ -82,14 +75,6 @@ func (c Config) buildNodes() []node {
 					"tls":       realityClientTLS(c.RealityServerName, c.Creds.RealityPublicKey, c.Creds.RealityShortID),
 					"transport": map[string]any{"type": "grpc", "service_name": "grpc"},
 				},
-				SurgeLine: surgeLine(n, "vless", addr, c.Ports.RealityGRPC,
-					"username="+c.Creds.RealityGRPCUUID,
-					"tls=true", "sni="+c.RealityServerName,
-					"reality=true",
-					"reality-public-key="+c.Creds.RealityPublicKey,
-					"reality-short-id="+c.Creds.RealityShortID,
-					"client-fingerprint=chrome", "udp-relay=true",
-					"grpc=true", "grpc-service-name=grpc"),
 			})
 		case config.ProtocolHysteria2:
 			n := name("Hysteria2")
@@ -150,6 +135,9 @@ func (c Config) buildNodes() []node {
 					"password": c.Creds.AnyTLSPassword,
 					"tls":      map[string]any{"enabled": true, "server_name": c.Domain},
 				},
+				SurgeLine: surgeLine(n, "anytls", addr, c.Ports.AnyTLS,
+					"password="+c.Creds.AnyTLSPassword,
+					"sni="+c.Domain),
 			})
 		}
 	}

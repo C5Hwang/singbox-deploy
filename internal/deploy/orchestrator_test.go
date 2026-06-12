@@ -270,6 +270,12 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	if !strings.Contains(surgeText, "US-vps1-TUIC = tuic-v5") {
 		t.Fatalf("surge fragment missing tuic proxy:\n%s", surgeText)
 	}
+	if !strings.Contains(surgeText, "US-vps1-AnyTLS = anytls") {
+		t.Fatalf("surge fragment missing anytls proxy:\n%s", surgeText)
+	}
+	if strings.Contains(surgeText, "vless") {
+		t.Fatalf("surge fragment should not contain vless (unsupported by Surge):\n%s", surgeText)
+	}
 
 	surgeProfile, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "surgeProfiles", token))
 	if err != nil {

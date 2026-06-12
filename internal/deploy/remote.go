@@ -294,8 +294,7 @@ func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionO
 }
 
 func removeStaleSubscriptionFiles(subscribeDir, token string) error {
-	// "sing-box" and "sing-boxProfiles" are legacy directories from older versions.
-	for _, dir := range []string{"default", "clashMeta", "clashMetaProfiles", "sing-box", "sing-boxProfiles", "singboxProfiles", "surge", "surgeProfiles"} {
+	for _, dir := range []string{"default", "clashMeta", "clashMetaProfiles", "singboxProfiles", "surge", "surgeProfiles"} {
 		entries, err := os.ReadDir(filepath.Join(subscribeDir, dir))
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -310,6 +309,11 @@ func removeStaleSubscriptionFiles(subscribeDir, token string) error {
 			if err := os.Remove(filepath.Join(subscribeDir, dir, entry.Name())); err != nil && !os.IsNotExist(err) {
 				return err
 			}
+		}
+	}
+	for _, legacy := range []string{"sing-box", "sing-boxProfiles"} {
+		if err := os.RemoveAll(filepath.Join(subscribeDir, legacy)); err != nil {
+			return err
 		}
 	}
 	return nil
