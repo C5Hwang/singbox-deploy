@@ -429,13 +429,6 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 			full.SubscribePort = cfg.SubscribePort
 			return deploy.WriteSubscriptionsWithRemotes(ctx, l, full, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
 		},
-		RefreshMonitor: func(ctx context.Context, l paths.Layout, fetch subscription.Fetcher) error {
-			sources, err := deploy.LoadMonitorSources(l)
-			if err != nil {
-				return err
-			}
-			return deploy.RefreshRemoteMonitor(ctx, l, sources, deploy.SubscriptionFetcher(fetch))
-		},
 		RunCommands: deploy.RunCommands,
 		CheckPorts: func(ctx context.Context, domain string, port int) error {
 			return system.CheckPorts(ctx, domain, []system.Port{{Number: port, Proto: "tcp", Label: "subscription/Nginx", Public: true}})

@@ -236,13 +236,9 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		}
 		clashParts = append(clashParts, stripClashHeader(subscription.RenameClashFragment(string(remoteClash), alias)))
 
-		// Try new endpoint first; fall back to legacy /s/sing-box/ for older versions.
 		remoteSingBox, err := fetch(ctx, entry.SingBoxProfilesURL())
 		if err != nil {
-			remoteSingBox, err = fetch(ctx, entry.SingBoxURL())
-			if err != nil {
-				return subscriptionOutputs{}, fmt.Errorf("fetch remote sing-box %s: %w", remote.Domain, err)
-			}
+			return subscriptionOutputs{}, fmt.Errorf("fetch remote sing-box %s: %w", remote.Domain, err)
 		}
 		nodeOutbounds, err := subscription.ExtractSingBoxNodeOutbounds(remoteSingBox)
 		if err != nil {

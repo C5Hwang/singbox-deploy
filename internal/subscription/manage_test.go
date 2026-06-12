@@ -2,7 +2,6 @@ package subscription_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
-	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -37,16 +35,11 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 
 	remote := subscription.Remote{Domain: "remote.example.com", Port: 9443, Alias: "US-edge", Salt: "abc"}
 	remoteEntry := subscription.RemoteEntry{Domain: "remote.example.com", Port: 9443, Alias: "US-edge", Salt: "abc"}
-	monitorSrc := deploy.MonitorSource{Domain: "remote.example.com", Alias: "US-edge", MonitorPublicPort: 9444}
-	if err := deploy.SaveMonitorSources(layout, []deploy.MonitorSource{monitorSrc}); err != nil {
-		t.Fatalf("SaveMonitorSources: %v", err)
-	}
 	fetches := map[string][]byte{
 		remoteEntry.DefaultURL():         []byte(subscription.EncodeBase64("hysteria2://pass@remote.example.com:443#JP-01")),
 		remoteEntry.ClashURL():           []byte("proxies:\n  - name: \"JP-01\"\n    type: hysteria2\n"),
 		remoteEntry.SingBoxProfilesURL(): []byte(`{"outbounds":[{"type":"selector","tag":"PROXY"},{"type":"hysteria2","tag":"JP-01"},{"type":"direct","tag":"direct"}]}`),
 		remoteEntry.SurgeURL():           []byte("JP-01 = hysteria2, remote.example.com, 443, password=pass\n"),
-		fmt.Sprintf("https://remote.example.com:9444/monitor/api/summary"): []byte(`{"inUsedBytes":100,"outUsedBytes":200,"totalUsedBytes":300,"inRemainingBytes":900,"outRemainingBytes":800,"totalRemainingBytes":700,"inLimitBytes":1000,"outLimitBytes":1000,"totalLimitBytes":1000,"resetTime":"2026-06-01T00:00:00Z","trend":[]}`),
 	}
 	runner := &recordingRunner{}
 	var checkedPort int
@@ -87,13 +80,6 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 		WriteWithRemotes: func(ctx context.Context, l paths.Layout, c subscription.Config, remotes []subscription.Remote, fetch subscription.Fetcher) error {
 			dcfg := deploy.Config{Domain: c.Domain, Salt: c.Salt, SubscribePort: c.SubscribePort, Creds: cfg.Creds, DisplayName: cfg.DisplayName}
 			return deploy.WriteSubscriptionsWithRemotes(ctx, l, dcfg, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch))
-		},
-		RefreshMonitor: func(ctx context.Context, l paths.Layout, fetch subscription.Fetcher) error {
-			sources, err := deploy.LoadMonitorSources(l)
-			if err != nil {
-				return err
-			}
-			return deploy.RefreshRemoteMonitor(ctx, l, sources, deploy.SubscriptionFetcher(fetch))
 		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error { return deploy.RunCommands(r, cmds...) },
 	})
@@ -148,17 +134,6 @@ func TestUpdateAggregatesRemoteAndMonitor(t *testing.T) {
 	}
 	if len(dRemotes) != 1 || dRemotes[0].Domain != remote.Domain || dRemotes[0].Alias != remote.Alias {
 		t.Fatalf("remote state = %#v", dRemotes)
-	}
-	trafficBody, err := os.ReadFile(deploy.RemoteMonitorPath(layout))
-	if err != nil {
-		t.Fatalf("read remote monitor snapshot: %v", err)
-	}
-	var sources []monitor.SourceSummary
-	if err := json.Unmarshal(trafficBody, &sources); err != nil {
-		t.Fatalf("decode remote monitor: %v", err)
-	}
-	if len(sources) != 1 || sources[0].Name != subscription.AddNodePrefixFlag(monitorSrc.Alias) || sources[0].TotalUsedBytes != 300 {
-		t.Fatalf("remote monitor sources = %#v", sources)
 	}
 	joined := strings.Join(runner.commands, "\n")
 	for _, want := range []string{"ufw allow 24443/tcp", "nginx -t", "systemctl restart nginx"} {

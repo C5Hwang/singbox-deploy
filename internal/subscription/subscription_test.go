@@ -123,9 +123,6 @@ func TestRemoteEntryTokenAndURLs(t *testing.T) {
 	if !strings.HasSuffix(e.SingBoxProfilesURL(), "/s/singboxProfiles/0bee89b07a248e27c83fc3d5951213c1") {
 		t.Fatalf("SingBoxProfilesURL = %q", e.SingBoxProfilesURL())
 	}
-	if !strings.HasSuffix(e.SingBoxURL(), "/s/sing-box/0bee89b07a248e27c83fc3d5951213c1") {
-		t.Fatalf("SingBoxURL (legacy) = %q", e.SingBoxURL())
-	}
 	if !strings.HasSuffix(e.SurgeURL(), "/s/surge/0bee89b07a248e27c83fc3d5951213c1") {
 		t.Fatalf("SurgeURL = %q", e.SurgeURL())
 	}

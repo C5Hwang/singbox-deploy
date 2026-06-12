@@ -35,11 +35,6 @@ func (e RemoteEntry) SingBoxProfilesURL() string {
 	return fmt.Sprintf("%s/s/singboxProfiles/%s", e.base(), e.Token())
 }
 
-// SingBoxURL is the legacy remote /s/sing-box endpoint for older versions.
-func (e RemoteEntry) SingBoxURL() string {
-	return fmt.Sprintf("%s/s/sing-box/%s", e.base(), e.Token())
-}
-
 // SurgeURL is the remote /s/surge endpoint (Surge proxy list fragment).
 func (e RemoteEntry) SurgeURL() string {
 	return fmt.Sprintf("%s/s/surge/%s", e.base(), e.Token())
