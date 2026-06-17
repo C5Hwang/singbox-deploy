@@ -44,6 +44,7 @@ type Status struct {
 	SurgeSub     string
 	MonitorUI    string
 	TrafficQuota string
+	Salt         string
 }
 
 // MenuItem is a single selectable action within a group.
@@ -432,6 +433,7 @@ func (m *Model) statusView() string {
 		summaryRow("Monitor service", or(s.MonitorState, "unknown")),
 		summaryRow("Certificate", or(s.CertState, "unknown")),
 		summaryRow("Protocols", or(s.Protocols, "none")),
+		summaryRow("Salt", or(s.Salt, "not set")),
 		summaryRow("Subscription (universal)", or(s.Subscription, "none")),
 		summaryRow("Subscription (Clash Meta)", or(s.ClashMetaSub, "none")),
 		summaryRow("Subscription (sing-box)", or(s.SingBoxSub, "none")),

@@ -82,6 +82,7 @@ func loadStatus() Status {
 		SurgeSub:     subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "surgeProfiles"),
 		MonitorUI:    monitorUIStatus(domain, monitorPublicPort, monitorEnabled),
 		TrafficQuota: trafficQuotaStatus(store),
+		Salt:         readStatusState(store, "subscribe_salt"),
 	}
 }
 

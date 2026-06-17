@@ -514,6 +514,7 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	writeStatusState(t, layout.StateDir, "monitor_public_port", "2097")
 	writeStatusState(t, layout.StateDir, "subscribe_token", "tok")
 	writeStatusState(t, layout.StateDir, "enabled_protocols", "vless-reality-vision,tuic")
+	writeStatusState(t, layout.StateDir, "subscribe_salt", "abcd1234deadbeef")
 	writeStatusState(t, layout.StateDir, "monitor", "yes")
 	writeStatusState(t, layout.StateDir, "traffic_in_limit_bytes", fmt.Sprintf("%d", uint64(40)<<30))
 	writeStatusState(t, layout.StateDir, "traffic_out_limit_bytes", fmt.Sprintf("%d", uint64(50)<<30))
@@ -579,6 +580,9 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	}
 	if status.Protocols != "vless-reality-vision, tuic" {
 		t.Fatalf("Protocols = %q", status.Protocols)
+	}
+	if status.Salt != "abcd1234deadbeef" {
+		t.Fatalf("Salt = %q", status.Salt)
 	}
 	if status.Subscription != "https://example.com:2096/s/default/tok" {
 		t.Fatalf("Subscription = %q", status.Subscription)
