@@ -34,6 +34,7 @@ AI服务 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}
 学术网页 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 游戏平台 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 Gits = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+PayPal = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 Spotify = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 Apple = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
 Google = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
@@ -43,6 +44,7 @@ Microsoft = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Cou
 [Rule]
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/private.list,本地直连
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/ai.list,AI服务
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/paypal.list,PayPal
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/spotify.list,Spotify
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/games.list,游戏平台
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/hbo.list,国外媒体

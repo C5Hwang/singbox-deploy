@@ -205,6 +205,12 @@
     },
     {
       "type": "selector",
+      "tag": "PayPal",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
       "tag": "Spotify",
       "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
       "default": "🚀 手动切换"
@@ -221,6 +227,7 @@
     "rule_set": [
       {"type": "remote", "tag": "Private", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/private.srs", "update_interval": "24h"},
       {"type": "remote", "tag": "AI", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/ai.srs", "update_interval": "24h"},
+      {"type": "remote", "tag": "PayPal", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/paypal.srs", "update_interval": "24h"},
       {"type": "remote", "tag": "Spotify", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/spotify.srs", "update_interval": "24h"},
       {"type": "remote", "tag": "Games", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/games.srs", "update_interval": "24h"},
       {"type": "remote", "tag": "HBO", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/hbo.srs", "update_interval": "24h"},
@@ -246,6 +253,7 @@
       {"rule_set": "Private", "outbound": "本地直连"},
       {"rule_set": ["AI"], "outbound": "AI服务"},
       {"domain_suffix": "openrouter.ai", "outbound": "AI服务"},
+      {"rule_set": "PayPal", "outbound": "PayPal"},
       {"rule_set": "Spotify", "outbound": "Spotify"},
       {"rule_set": "Games", "outbound": "游戏平台"},
       {"rule_set": ["HBO", "Hulu", "Disney", "TikTok", "YouTube", "Netflix", "SocialMedia"], "outbound": "国外媒体"},

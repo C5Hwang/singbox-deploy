@@ -210,6 +210,15 @@ proxy-groups:
       - {{ .Tag }}
 {{- end }}
       - DIRECT
+  - name: PayPal
+    type: select
+    proxies:
+      - 🚀 手动切换
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
+      - DIRECT
   - name: Spotify
     type: select
     proxies:
@@ -308,6 +317,14 @@ rule-providers:
     url: https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/meta/ai.list
     path: ./ruleset/ai.list
     interval: 86400
+  PayPal:
+    type: http
+    behavior: classical
+    format: text
+    proxy: DIRECT
+    url: https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/meta/paypal.list
+    path: ./ruleset/paypal.list
+    interval: 86400
   Google:
     type: http
     behavior: classical
@@ -391,6 +408,7 @@ rule-providers:
 rules:
   - RULE-SET,Private,本地直连
   - RULE-SET,AI,AI服务
+  - RULE-SET,PayPal,PayPal
   - RULE-SET,Spotify,Spotify
   - RULE-SET,Games,游戏平台
   - RULE-SET,HBO,国外媒体
