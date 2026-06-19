@@ -53,11 +53,7 @@ var (
 	monitorLogOutput       = defaultMonitorLogOutput
 )
 
-type monitorActionItem struct {
-	action    monitorAction
-	label     string
-	separator bool
-}
+type monitorActionItem = actionItem[monitorAction]
 
 type monitorManager struct {
 	phase  monitorPhase
@@ -328,25 +324,7 @@ func (tm *monitorManager) reloadState() {
 }
 
 func (tm *monitorManager) moveAction(delta int) {
-	actions := tm.actions()
-	n := len(actions)
-	if n == 0 {
-		return
-	}
-	next := tm.cursor
-	for {
-		next = (next + delta) % n
-		if next < 0 {
-			next += n
-		}
-		if !actions[next].separator {
-			break
-		}
-		if next == tm.cursor {
-			break
-		}
-	}
-	tm.cursor = next
+	tm.cursor = moveActionCursor(tm.cursor, tm.actions(), delta)
 	tm.fieldErr = ""
 }
 
@@ -744,18 +722,7 @@ func (tm *monitorManager) actionView() string {
 		b.WriteString(flowErr.Render(tm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
-	actions := tm.actions()
-	for i, action := range actions {
-		if action.separator {
-			b.WriteString("\n" + dimStyle.Render(action.label) + "\n")
-			continue
-		}
-		row := "  " + action.label
-		if i == tm.cursor {
-			row = selStyle.Render("> " + action.label)
-		}
-		b.WriteString(row + "\n")
-	}
+	b.WriteString(renderActionList(tm.actions(), tm.cursor))
 	return b.String()
 }
 
@@ -889,15 +856,6 @@ func (tm *monitorManager) actions() []monitorActionItem {
 	}
 }
 
-func (tm *monitorManager) selectableActionCount() int {
-	count := 0
-	for _, a := range tm.actions() {
-		if !a.separator {
-			count++
-		}
-	}
-	return count
-}
 
 func (tm *monitorManager) serviceConfirmView() string {
 	rows := []summaryLine{

@@ -43,10 +43,7 @@ var (
 	updateProtocolsRun = protocol.Update
 )
 
-type protocolActionItem struct {
-	action protocolAction
-	label  string
-}
+type protocolActionItem = actionItem[protocolAction]
 
 type protocolManager struct {
 	phase  protocolPhase
@@ -246,8 +243,7 @@ func (pm *protocolManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 }
 
 func (pm *protocolManager) moveAction(delta int) {
-	actions := pm.actions()
-	pm.cursor = moveSelection(pm.cursor, len(actions), delta)
+	pm.cursor = moveActionCursor(pm.cursor, pm.actions(), delta)
 	pm.fieldErr = ""
 }
 
@@ -541,13 +537,7 @@ func (pm *protocolManager) actionView() string {
 		b.WriteString(flowErr.Render(pm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
-	for i, action := range pm.actions() {
-		row := "  " + action.label
-		if i == pm.cursor {
-			row = selStyle.Render("> " + action.label)
-		}
-		b.WriteString(row + "\n")
-	}
+	b.WriteString(renderActionList(pm.actions(), pm.cursor))
 	return b.String()
 }
 

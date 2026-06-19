@@ -49,10 +49,7 @@ var (
 	coreReleaseClient   = func() *release.Client { return release.NewClient("", nil) }
 )
 
-type coreActionItem struct {
-	action coreAction
-	label  string
-}
+type coreActionItem = actionItem[coreAction]
 
 type coreManager struct {
 	phase  corePhase
@@ -81,7 +78,7 @@ type coreManager struct {
 }
 
 func newCoreManager() *coreManager {
-	cm := &coreManager{phase: corePhaseAction, commandRun: newCommandRun()}
+	cm := &coreManager{phase: corePhaseAction, cursor: 1, commandRun: newCommandRun()}
 	cm.host, cm.hostErr = detectCoreHost()
 	cm.refreshSnapshot()
 	return cm
@@ -237,8 +234,7 @@ func (cm *coreManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 }
 
 func (cm *coreManager) moveAction(delta int) {
-	actions := cm.actions()
-	cm.cursor = moveSelection(cm.cursor, len(actions), delta)
+	cm.cursor = moveActionCursor(cm.cursor, cm.actions(), delta)
 	cm.fieldErr = ""
 }
 
@@ -414,13 +410,7 @@ func (cm *coreManager) actionView() string {
 		b.WriteString(flowErr.Render(cm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
-	for i, action := range cm.actions() {
-		row := "  " + action.label
-		if i == cm.cursor {
-			row = selStyle.Render("> " + action.label)
-		}
-		b.WriteString(row + "\n")
-	}
+	b.WriteString(renderActionList(cm.actions(), cm.cursor))
 	return b.String()
 }
 
@@ -502,7 +492,9 @@ func (cm *coreManager) footerHints() []operationHint {
 
 func (cm *coreManager) actions() []coreActionItem {
 	return []coreActionItem{
+		{separator: true, label: "Config"},
 		{action: coreActionChangeStable, label: "Change sing-box version"},
+		{separator: true, label: "Service"},
 		{action: coreActionStart, label: "Start sing-box.service"},
 		{action: coreActionStop, label: "Stop sing-box.service"},
 		{action: coreActionRestart, label: "Restart sing-box.service"},

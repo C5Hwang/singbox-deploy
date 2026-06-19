@@ -46,10 +46,7 @@ var (
 	updateDisplayNameRun   = account.Update
 )
 
-type subscriptionActionItem struct {
-	action subscriptionAction
-	label  string
-}
+type subscriptionActionItem = actionItem[subscriptionAction]
 
 type subscriptionManager struct {
 	phase  subscriptionPhase
@@ -76,6 +73,7 @@ type subscriptionManager struct {
 func newSubscriptionManager() *subscriptionManager {
 	sm := &subscriptionManager{
 		phase:           subscriptionPhaseAction,
+		cursor:          1,
 		editRemoteIndex: -1,
 		parameterForm:   newParameterForm(nil),
 		commandRun:      newCommandRun(),
@@ -264,8 +262,7 @@ func (sm *subscriptionManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
 }
 
 func (sm *subscriptionManager) moveAction(delta int) {
-	actions := sm.actions()
-	sm.cursor = moveSelection(sm.cursor, len(actions), delta)
+	sm.cursor = moveActionCursor(sm.cursor, sm.actions(), delta)
 	sm.fieldErr = ""
 }
 
@@ -678,13 +675,7 @@ func (sm *subscriptionManager) actionView() string {
 		b.WriteString(flowErr.Render(sm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
-	for i, action := range sm.actions() {
-		row := "  " + action.label
-		if i == sm.cursor {
-			row = selStyle.Render("> " + action.label)
-		}
-		b.WriteString(row + "\n")
-	}
+	b.WriteString(renderActionList(sm.actions(), sm.cursor))
 	return b.String()
 }
 
@@ -811,11 +802,14 @@ func (sm *subscriptionManager) footerHints() []operationHint {
 
 func (sm *subscriptionManager) actions() []subscriptionActionItem {
 	return []subscriptionActionItem{
+		{separator: true, label: "Settings"},
 		{action: subscriptionActionDisplayName, label: "Edit display name"},
 		{action: subscriptionActionLocal, label: "Edit subscription salt & port"},
+		{separator: true, label: "Remote"},
 		{action: subscriptionActionAddRemote, label: "Add remote subscription"},
 		{action: subscriptionActionEditRemote, label: "Edit remote subscription"},
 		{action: subscriptionActionDeleteRemotes, label: "Delete remote subscription"},
+		{separator: true, label: "Manage"},
 		{action: subscriptionActionReorder, label: "Reorder subscriptions"},
 		{action: subscriptionActionRefresh, label: "Refresh subscriptions"},
 	}
