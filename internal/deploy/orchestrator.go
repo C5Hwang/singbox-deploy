@@ -42,7 +42,8 @@ type Orchestrator struct {
 	Progress       func(Event)
 
 	GOOS, GOARCH  string
-	DeployBin     string // path to the singbox-deploy binary (for the monitor unit)
+	DeployBin     string // path to the singbox-deploy binary (used by cert renew unit)
+	MonitorBin    string // path to the singbox-monitor binary (used by the monitor unit)
 	SystemdDir    string // default /etc/systemd/system
 	NginxConfPath string // default /etc/nginx/conf.d/singbox-deploy.conf
 }
@@ -77,6 +78,9 @@ func (o *Orchestrator) defaults() {
 	}
 	if o.DeployBin == "" {
 		o.DeployBin = "/usr/bin/singbox-deploy"
+	}
+	if o.MonitorBin == "" {
+		o.MonitorBin = "/usr/bin/singbox-monitor"
 	}
 	if o.Download == nil {
 		o.Download = func(ctx context.Context, url, dest string) error {
@@ -313,7 +317,7 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 	if !cfg.DeployMonitor {
 		return nil
 	}
-	unit, err := RenderMonitorUnit(o.Layout, o.DeployBin, cfg)
+	unit, err := RenderMonitorUnit(o.Layout, o.MonitorBin, cfg)
 	if err != nil {
 		return err
 	}
@@ -330,14 +334,15 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 }
 
 // RenderMonitorUnit renders the systemd unit file for the monitor service.
-func RenderMonitorUnit(layout paths.Layout, deployBin string, cfg Config) (string, error) {
+// monitorBin is the path to the singbox-monitor binary that the unit invokes.
+func RenderMonitorUnit(layout paths.Layout, monitorBin string, cfg Config) (string, error) {
 	interval := cfg.MonitorIntervalSeconds
 	if interval <= 0 {
 		interval = DefaultMonitorIntervalSeconds
 	}
 	return templatefs.Render("service/singbox-deploy-monitor.service.tmpl", map[string]any{
-		"DeployBin":       deployBin,
-		"MonitorPort":     cfg.MonitorPort,
+		"MonitorBin":      monitorBin,
+		"Listen":          fmt.Sprintf("127.0.0.1:%d", cfg.MonitorPort),
 		"Interface":       cfg.MonitorInterface,
 		"DB":              layout.MonitorDB,
 		"InLimitBytes":    cfg.TrafficInLimitBytes,

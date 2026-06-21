@@ -1,0 +1,13 @@
+[Unit]
+Description=singbox-deploy node agent
+After=network.target wg-quick@wg-sdeploy.service
+Requires=wg-quick@wg-sdeploy.service
+
+[Service]
+User=root
+ExecStart={{ .NodeBin }} serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

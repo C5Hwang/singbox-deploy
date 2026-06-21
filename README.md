@@ -59,14 +59,22 @@ build embeds automatically.
 ```bash
 # Build for the current Linux architecture.
 mkdir -p dist
-CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy ./cmd/singbox-deploy
+for bin in singbox-deploy singbox-monitor singbox-node; do
+  CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o dist/${bin} ./cmd/${bin}
+done
 
-# Build for Linux amd64.
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy-linux-amd64 ./cmd/singbox-deploy
-
-# Build for Linux arm64.
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy-linux-arm64 ./cmd/singbox-deploy
+# Cross-build for Linux amd64 / arm64.
+for arch in amd64 arm64; do
+  for bin in singbox-deploy singbox-monitor singbox-node; do
+    CGO_ENABLED=0 GOOS=linux GOARCH=${arch} go build -trimpath -ldflags="-s -w" -o dist/${bin}-linux-${arch} ./cmd/${bin}
+  done
+done
 ```
+
+The three binaries serve distinct roles:
+- `singbox-deploy` — interactive TUI on the master, manages cluster membership.
+- `singbox-monitor` — long-lived monitor service on both master and nodes.
+- `singbox-node` — persistent agent on each node, listens on the WireGuard interface.
 
 ## Acknowledgments
 
