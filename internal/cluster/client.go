@@ -72,6 +72,14 @@ type CertDeploy struct {
 	Key  string `json:"key"`
 }
 
+// SiteDeploy is the payload accepted by POST /api/site/deploy. Triggers the
+// agent to install Nginx (if missing), deploy the named masquerade site
+// template, write the node Nginx config, and start Nginx.
+type SiteDeploy struct {
+	Domain       string `json:"domain"`
+	SiteTemplate string `json:"siteTemplate"`
+}
+
 // Status fetches GET /api/status.
 func (c *AgentClient) Status(ctx context.Context) (Status, error) {
 	var status Status
@@ -104,6 +112,11 @@ func (c *AgentClient) Upgrade(ctx context.Context, req UpgradeRequest) error {
 // DeployCert pushes a renewed certificate (PEM) to the node.
 func (c *AgentClient) DeployCert(ctx context.Context, req CertDeploy) error {
 	return c.do(ctx, http.MethodPost, "/api/cert/deploy", req, nil)
+}
+
+// DeploySite asks the node to install Nginx and the masquerade site.
+func (c *AgentClient) DeploySite(ctx context.Context, req SiteDeploy) error {
+	return c.do(ctx, http.MethodPost, "/api/site/deploy", req, nil)
 }
 
 // Teardown asks the node to fully uninstall itself.

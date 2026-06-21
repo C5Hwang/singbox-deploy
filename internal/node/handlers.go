@@ -173,6 +173,49 @@ func (s *Server) handleCertDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleSiteDeploy installs Nginx (if not present), unpacks the requested
+// masquerade site template, writes the node Nginx config, and reloads Nginx.
+func (s *Server) handleSiteDeploy(w http.ResponseWriter, r *http.Request) {
+	var req cluster.SiteDeploy
+	if err := decodeJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Domain) == "" {
+		http.Error(w, "domain is required", http.StatusBadRequest)
+		return
+	}
+	host, err := system.DetectHost()
+	if err != nil {
+		http.Error(w, "detect host: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Install Nginx (idempotent: nginx package install on an already-installed
+	// system exits 0 with the apt/dnf scripts in deploy/nginx.go).
+	for _, cmd := range deploy.NginxInstallCommands(host.OS) {
+		if err := s.Runner.Run(cmd); err != nil {
+			http.Error(w, "install nginx: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := deploy.DeploySiteTemplate(s.Layout, req.SiteTemplate); err != nil {
+		http.Error(w, "deploy site: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := deploy.WriteNodeNginxConfig(s.Layout, req.Domain, "/etc/nginx/conf.d/singbox-deploy.conf"); err != nil {
+		http.Error(w, "write nginx config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.Runner.Run(system.Command{Name: "systemctl", Args: []string{"enable", "--now", "nginx"}}); err != nil {
+		// enable --now may have already enabled it; try restart instead.
+		if err := s.Runner.Run(system.Systemctl("restart", "nginx")); err != nil {
+			http.Error(w, "start nginx: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // handleTeardown runs the full uninstall sequence and exits. The HTTP response
 // is written before the agent process terminates so the master sees success.
 func (s *Server) handleTeardown(w http.ResponseWriter, r *http.Request) {

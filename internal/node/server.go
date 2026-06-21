@@ -62,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/monitor/config", s.requireAuthPost(s.handleMonitorConfig))
 	mux.HandleFunc("/api/upgrade", s.requireAuthPost(s.handleUpgrade))
 	mux.HandleFunc("/api/cert/deploy", s.requireAuthPost(s.handleCertDeploy))
+	mux.HandleFunc("/api/site/deploy", s.requireAuthPost(s.handleSiteDeploy))
 	mux.HandleFunc("/api/teardown", s.requireAuthPost(s.handleTeardown))
 	return mux
 }
