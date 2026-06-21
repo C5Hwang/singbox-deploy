@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bootstrap installer for singbox-deploy. Detects OS/arch, downloads the
-# matching binary from the latest GitHub Release, and installs it to
-# /usr/bin/singbox-deploy. Interactive use only; no non-interactive mode.
+# Bootstrap installer for singbox-deploy (master side). Downloads both
+# singbox-deploy (TUI) and singbox-monitor (monitor service) from the latest
+# GitHub Release and installs them to /usr/bin/. singbox-node is fetched onto
+# each remote node automatically when it is added via Node Management.
 
 REPO="C5Hwang/singbox-deploy"
-BIN="singbox-deploy"
-INSTALL_PATH="/usr/bin/${BIN}"
+INSTALL_DIR="/usr/bin"
+BINARIES=(singbox-deploy singbox-monitor)
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -33,22 +34,30 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-asset="${BIN}-${os}-${arch}"
-url="https://github.com/${REPO}/releases/latest/download/${asset}"
-tmp="$(mktemp)"
-trap 'rm -f "${tmp}"' EXIT
-
-echo "Downloading ${asset} ..."
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "${url}" -o "${tmp}"
+  fetcher=("curl" "-fsSL" "-o")
 elif command -v wget >/dev/null 2>&1; then
-  wget -qO "${tmp}" "${url}"
+  fetcher=("wget" "-qO")
 else
   echo "curl or wget is required" >&2
   exit 1
 fi
 
-chmod +x "${tmp}"
-install -m 0755 "${tmp}" "${INSTALL_PATH}"
-echo "Installed ${BIN} to ${INSTALL_PATH}"
-echo "Run: sudo ${BIN}"
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "${tmpdir}"' EXIT
+
+for bin in "${BINARIES[@]}"; do
+  asset="${bin}-${os}-${arch}"
+  url="https://github.com/${REPO}/releases/latest/download/${asset}"
+  out="${tmpdir}/${bin}"
+  echo "Downloading ${asset} ..."
+  "${fetcher[@]}" "${out}" "${url}"
+  chmod +x "${out}"
+done
+
+for bin in "${BINARIES[@]}"; do
+  install -m 0755 "${tmpdir}/${bin}" "${INSTALL_DIR}/${bin}"
+  echo "Installed ${bin} to ${INSTALL_DIR}/${bin}"
+done
+
+echo "Run: sudo singbox-deploy"
