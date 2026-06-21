@@ -17,5 +17,5 @@
     "certificate_path": {{ .CertPath | json }},
     "key_path": {{ .KeyPath | json }}
   },
-  "masquerade": {{ printf "https://%s:%d" .Domain .SubscribePort | json }}
+  "masquerade": {{ printf "https://%s" .Domain | json }}
 }
