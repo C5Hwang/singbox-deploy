@@ -144,7 +144,7 @@ func TestProtocolManagementMenuOpens(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withProtocolManagerDeps(t, layout)
 	m := NewModel()
-	m.cursor = 1
+	m.cursor = 2
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.protocols == nil {
 		t.Fatalf("protocol manager was not opened")
@@ -160,7 +160,7 @@ func TestSubscriptionMenuEntryOpens(t *testing.T) {
 	withSubscriptionDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 2
+	m.cursor = 3
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.subscribe == nil {
 		t.Fatalf("subscription manager was not opened")
@@ -185,7 +185,7 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 	withMonitorDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 4
+	m.cursor = 5
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.monitor == nil {
 		t.Fatalf("monitor manager was not opened")
@@ -203,7 +203,7 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 	withCoreDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 6
+	m.cursor = 7
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.core == nil {
 		t.Fatalf("core manager was not opened")
@@ -222,7 +222,7 @@ func TestUninstallMenuEntryOpens(t *testing.T) {
 
 	m := NewModel()
 	m.SetSize(180, 40)
-	m.cursor = 8
+	m.cursor = 9
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.uninstall == nil {
 		t.Fatalf("uninstall manager was not opened")

@@ -72,6 +72,7 @@ type Model struct {
 	core        *coreManager
 	selfupdate  *selfUpdateManager
 	uninstall   *uninstallManager
+	nodes       *nodeManager
 	placeholder *placeholderManager
 }
 
@@ -82,7 +83,10 @@ func NewModel() *Model {
 
 func defaultGroups() []MenuGroup {
 	return []MenuGroup{
-		{Title: "Setup", Items: []MenuItem{{Label: "Install / Reinstall"}}},
+		{Title: "Setup", Items: []MenuItem{
+			{Label: "Install / Reinstall"},
+			{Label: "Node Management"},
+		}},
 		{Title: "Proxy", Items: []MenuItem{
 			{Label: "Protocol settings"},
 			{Label: "Subscription settings"},
@@ -215,6 +219,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.nodes != nil {
+		n := m.nodes
+		cmd, done := m.nodes.Update(msg)
+		if done {
+			if n.phase == nodePhaseDone && n.runErr == nil {
+				m.RefreshStatus()
+			}
+			m.nodes = nil
+		}
+		return m, cmd
+	}
 	if m.placeholder != nil {
 		cmd, done := m.placeholder.Update(msg)
 		if done {
@@ -246,30 +261,34 @@ func (m *Model) activate() tea.Cmd {
 		flow.setSize(m.width, m.height)
 		m.install = flow
 	case 1:
+		n := newNodeManager()
+		n.setSize(m.width, m.height)
+		m.nodes = n
+	case 2:
 		p := newProtocolManager()
 		p.setSize(m.width, m.height)
 		m.protocols = p
-	case 2:
+	case 3:
 		s := newSubscriptionManager()
 		s.setSize(m.width, m.height)
 		m.subscribe = s
-	case 3:
-		m.placeholder = newPlaceholderManager("Certificate & site")
 	case 4:
+		m.placeholder = newPlaceholderManager("Certificate & site")
+	case 5:
 		t := newMonitorManager()
 		t.setSize(m.width, m.height)
 		m.monitor = t
-	case 5:
-		m.placeholder = newPlaceholderManager("Routing rules")
 	case 6:
+		m.placeholder = newPlaceholderManager("Routing rules")
+	case 7:
 		c := newCoreManager()
 		c.setSize(m.width, m.height)
 		m.core = c
-	case 7:
+	case 8:
 		s := newSelfUpdateManager()
 		s.setSize(m.width, m.height)
 		m.selfupdate = s
-	case 8:
+	case 9:
 		u := newUninstallManager()
 		u.setSize(m.width, m.height)
 		m.uninstall = u
@@ -366,6 +385,10 @@ func (m *Model) contentView(width, height int) string {
 		m.uninstall.setSize(width, height)
 		return m.uninstall.View()
 	}
+	if m.nodes != nil {
+		m.nodes.setSize(width, height)
+		return m.nodes.View()
+	}
 	if m.placeholder != nil {
 		return m.placeholder.View()
 	}
@@ -375,7 +398,7 @@ func (m *Model) contentView(width, height int) string {
 func (m *Model) footerView() string {
 	var parts []operationHint
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.selfupdate == nil && m.uninstall == nil && m.placeholder == nil {
+		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.selfupdate == nil && m.uninstall == nil && m.nodes == nil && m.placeholder == nil {
 			parts = append(parts, menuFooterHints()...)
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
@@ -389,6 +412,8 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.selfupdate.footerHints()...)
 		} else if m.uninstall != nil {
 			parts = append(parts, m.uninstall.footerHints()...)
+		} else if m.nodes != nil {
+			parts = append(parts, m.nodes.footerHints()...)
 		} else if m.placeholder != nil {
 			parts = append(parts, m.placeholder.footerHints()...)
 		}
