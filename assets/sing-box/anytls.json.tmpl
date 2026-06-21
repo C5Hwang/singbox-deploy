@@ -14,5 +14,9 @@
     "server_name": {{ .Domain | json }},
     "certificate_path": {{ .CertPath | json }},
     "key_path": {{ .KeyPath | json }}
+  },
+  "fallback": {
+    "server": "127.0.0.1",
+    "server_port": 443
   }
 }
