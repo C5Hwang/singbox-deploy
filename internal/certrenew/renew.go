@@ -1,5 +1,7 @@
 // Package certrenew checks managed TLS certificates and renews them via ACME
-// when they are near expiry.
+// when they are near expiry. It covers both the master's local certificate
+// and every cluster node's certificate, pushing renewed material to nodes
+// over the WireGuard agent API.
 package certrenew
 
 import (
@@ -7,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -32,10 +36,19 @@ type Renewer struct {
 	Output      io.Writer
 }
 
-// Run renews the managed certificate if it is missing, invalid, or expiring
-// within RenewBefore. Otherwise it exits successfully without changes.
+// Run renews the master's certificate if it is missing, invalid, or expiring
+// within RenewBefore, then walks every registered cluster node and renews
+// each node's certificate the same way (pushing the renewed material via the
+// agent API).
 func (r Renewer) Run(ctx context.Context) error {
 	r.defaults()
+	if err := r.renewLocal(ctx); err != nil {
+		return err
+	}
+	return r.renewNodes(ctx)
+}
+
+func (r Renewer) renewLocal(ctx context.Context) error {
 	req, err := r.requestFromState()
 	if err != nil {
 		return err
@@ -81,6 +94,68 @@ func (r Renewer) Run(ctx context.Context) error {
 		return err
 	}
 	stoppedNginx = false
+	return nil
+}
+
+// renewNodes walks every registered cluster node and renews each node's
+// certificate if it is missing or expiring within RenewBefore. The renewed
+// certificate is pushed to the node via the agent API. Per-node failures are
+// logged but do not abort the loop; one unreachable node should not block the
+// rest of the fleet.
+func (r Renewer) renewNodes(ctx context.Context) error {
+	registry := cluster.NewRegistry(r.Layout)
+	nodes, err := registry.List()
+	if err != nil {
+		r.logf("list cluster nodes: %v\n", err)
+		return nil
+	}
+	for _, node := range nodes {
+		if !node.HasTLSProtocol() {
+			continue
+		}
+		if err := r.renewOneNode(ctx, registry, node); err != nil {
+			r.logf("renew node %s (%s): %v\n", node.Alias, node.Domain, err)
+		}
+	}
+	return nil
+}
+
+func (r Renewer) renewOneNode(ctx context.Context, registry cluster.Registry, node cluster.Node) error {
+	agent := cluster.NewAgentClient(node)
+	status, err := agent.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch status: %w", err)
+	}
+	if status.CertExpiry != "" {
+		expiry, perr := time.Parse(time.RFC3339, status.CertExpiry)
+		if perr == nil && r.now().Add(r.RenewBefore).Before(expiry) {
+			r.logf("node %s cert not due (expires %s)\n", node.Alias, expiry.Format(time.RFC3339))
+			return nil
+		}
+	}
+	creds, err := registry.DNS().FindForDomain(node.Domain)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no DNS credentials configured for root domain matching %s", node.Domain)
+		}
+		return fmt.Errorf("find dns credentials: %w", err)
+	}
+	cert, err := r.ACME.Obtain(ctx, acme.Request{
+		Domain:      node.Domain,
+		Challenge:   acme.ChallengeDNS01,
+		DNSProvider: creds.Provider,
+		Credentials: creds.EnvMap(),
+	})
+	if err != nil {
+		return fmt.Errorf("acme: %w", err)
+	}
+	r.logf("issuing renewed cert for node %s (%s)\n", node.Alias, node.Domain)
+	if err := agent.DeployCert(ctx, cluster.CertDeploy{
+		Cert: string(cert.CertificatePEM),
+		Key:  string(cert.PrivateKeyPEM),
+	}); err != nil {
+		return fmt.Errorf("push cert to node: %w", err)
+	}
 	return nil
 }
 
