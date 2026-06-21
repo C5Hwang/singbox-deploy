@@ -166,11 +166,8 @@ func TestSubscriptionMenuEntryOpens(t *testing.T) {
 		t.Fatalf("subscription manager was not opened")
 	}
 	view := m.View()
-	if !strings.Contains(view, "Manage Subscriptions") || !strings.Contains(view, "Remote subscriptions") || !strings.Contains(view, "Edit display name") {
+	if !strings.Contains(view, "Manage Subscriptions") || !strings.Contains(view, "Edit display name") {
 		t.Fatalf("subscription manager view missing expected content:\n%s", view)
-	}
-	if !strings.Contains(view, "Delete remote subscription") || strings.Contains(strings.ToLower(view), "aggregation") {
-		t.Fatalf("subscription manager should use remote subscription wording:\n%s", view)
 	}
 }
 
@@ -194,7 +191,7 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 		t.Fatalf("monitor manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust traffic counters", "Add monitor source", "Delete monitor sources"} {
+	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust traffic counters", "Edit monitor settings", "Start monitor service"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("monitor manager view missing %q:\n%s", want, view)
 		}
@@ -331,72 +328,6 @@ func TestCoreChangeStableListsEightReleases(t *testing.T) {
 	_, done := cm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || cm.phase != corePhaseConfirm || cm.targetTag != "v1.12.2" {
 		t.Fatalf("select eighth release: done=%v phase=%v target=%q", done, cm.phase, cm.targetTag)
-	}
-}
-
-func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
-	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
-	remotes := []deploy.RemoteSubscription{
-		{Domain: "one.example.com", Port: 9443, Salt: "salt-one"},
-		{Domain: "two.example.com", Port: 9444, Salt: "salt-two"},
-	}
-	if err := deploy.SaveRemoteSubscriptions(layout, remotes); err != nil {
-		t.Fatalf("save remotes: %v", err)
-	}
-	withSubscriptionDeps(t, layout)
-
-	sm := newSubscriptionManager()
-	sm.setSize(100, 30)
-	if sm.loadErr != nil {
-		t.Fatalf("load subscription manager: %v", sm.loadErr)
-	}
-	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDeleteRemotes)
-	_, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || sm.phase != subscriptionPhaseForm {
-		t.Fatalf("enter should open delete multi-select, phase=%v done=%v", sm.phase, done)
-	}
-	view := sm.View()
-	for _, want := range []string{"Remote subscriptions to delete", "[ ] one.example.com (one.example.com:9443)", "[ ] two.example.com (two.example.com:9444)"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("delete multi-select missing %q:\n%s", want, view)
-		}
-	}
-	if got := hintText(sm.footerHints()...); !strings.Contains(got, "Space: Toggle") {
-		t.Fatalf("delete multi-select footer missing toggle hint: %s", got)
-	}
-
-	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
-	if done || !strings.Contains(sm.View(), "[x] one.example.com (one.example.com:9443)") {
-		t.Fatalf("space should select first remote, done=%v:\n%s", done, sm.View())
-	}
-	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || sm.phase != subscriptionPhaseConfirm {
-		t.Fatalf("enter should confirm selected delete, phase=%v done=%v", sm.phase, done)
-	}
-	view = sm.View()
-	for _, want := range []string{"Delete remote subscriptions", "Remaining remote subscriptions", "Delete", "one.example.com (one.example.com:9443)", "Keep", "two.example.com (two.example.com:9444)"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("delete confirm missing %q:\n%s", want, view)
-		}
-	}
-	target := sm.targetRemotes()
-	if len(target) != 1 || target[0].Domain != "two.example.com" {
-		t.Fatalf("target remotes = %#v, want only two.example.com", target)
-	}
-}
-
-func TestSubscriptionDeleteRemoteRequiresConfiguredRemote(t *testing.T) {
-	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
-	withSubscriptionDeps(t, layout)
-
-	sm := newSubscriptionManager()
-	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDeleteRemotes)
-	_, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || sm.phase != subscriptionPhaseAction {
-		t.Fatalf("empty delete should stay on action phase, phase=%v done=%v", sm.phase, done)
-	}
-	if !strings.Contains(sm.View(), "no remote subscriptions to delete") {
-		t.Fatalf("missing empty delete warning:\n%s", sm.View())
 	}
 }
 
@@ -745,17 +676,6 @@ func withUninstallDeps(t *testing.T, layout paths.Layout) {
 	uninstallUILayout = func() paths.Layout { return layout }
 	detectUninstallHost = func() (system.Host, error) { return supportedTestHost(), nil }
 	uninstallRun = func(context.Context, uninstall.Options) error { return nil }
-}
-
-func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subscriptionAction) int {
-	t.Helper()
-	for i, item := range sm.actions() {
-		if item.action == action {
-			return i
-		}
-	}
-	t.Fatalf("subscription action %v not found", action)
-	return 0
 }
 
 func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {

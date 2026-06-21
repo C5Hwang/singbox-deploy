@@ -41,66 +41,45 @@ type ManageConfig struct {
 	SubscribePort          int
 }
 
-// ManageMonitorSource describes a remote monitor source for aggregation.
-type ManageMonitorSource struct {
-	Domain            string
-	Alias             string
-	MonitorPublicPort int
-}
-
-// ManageFetcher fetches remote monitor JSON endpoints.
-type ManageFetcher func(context.Context, string) ([]byte, error)
-
-// UpdateOptions describes updates to the local monitor settings, current
-// cycle usage counters, and selected remote monitor sources.
-//
-// All heavy deploy operations are injected as function fields so
-// that the monitor package does not import the deploy package
-// (which already imports monitor for runtime types).
+// UpdateOptions describes updates to the local monitor settings and current
+// cycle usage counters. Remote monitor aggregation is driven by the cluster
+// registry on the master side; it is no longer a per-update concern here.
 type UpdateOptions struct {
 	Layout paths.Layout
 	Runner system.Runner
 
-	SetLocal          bool
-	SetMonitor        bool
-	DeployMonitor     bool
+	SetLocal              bool
+	SetMonitor            bool
+	DeployMonitor         bool
 	DeployMonitorFrontend bool
-	MonitorAlias      string
-	MonitorPublicPort int
-	MonitorPort       int
-	Interface         string
-	IntervalSeconds   int
-	InLimitBytes      uint64
-	OutLimitBytes     uint64
-	TotalLimitBytes   uint64
-	ResetDay          int
-	ResetHour         int
+	MonitorAlias          string
+	MonitorPublicPort     int
+	MonitorPort           int
+	Interface             string
+	IntervalSeconds       int
+	InLimitBytes          uint64
+	OutLimitBytes         uint64
+	TotalLimitBytes       uint64
+	ResetDay              int
+	ResetHour             int
 
 	SetCurrentTotals bool
 	CurrentInBytes   uint64
 	CurrentOutBytes  uint64
 
-	SetMonitorSources bool
-	MonitorSources    []ManageMonitorSource
-
 	Firewall      system.Firewall
 	CheckPorts    func(context.Context, ManageConfig, []system.Port) error
-	Fetch         ManageFetcher
 	Now           func(context.Context) (time.Time, error)
 	Progress      func(ManageEvent)
 	NginxConfPath string
 	SystemdDir    string
-	DeployBin     string
+	MonitorBin    string
 
 	// Deploy callbacks — wired by the caller to concrete deploy functions.
 	LoadConfig              func(paths.Layout) (ManageConfig, error)
-	LoadMonitorSources      func(paths.Layout) ([]ManageMonitorSource, error)
-	ValidateMonitorSources  func([]ManageMonitorSource) error
-	SaveMonitorSources      func(paths.Layout, []ManageMonitorSource) error
 	WriteState              func(stateDir string, cfg ManageConfig) error
 	WriteManagedNginxConfig func(layout paths.Layout, cfg ManageConfig, confPath string) error
-	RenderMonitorUnit       func(layout paths.Layout, deployBin string, cfg ManageConfig) (string, error)
-	RefreshRemoteMonitor    func(ctx context.Context, layout paths.Layout, sources []ManageMonitorSource, fetch func(context.Context, string) ([]byte, error)) error
+	RenderMonitorUnit       func(layout paths.Layout, monitorBin string, cfg ManageConfig) (string, error)
 	RunCommands             func(runner system.Runner, cmds ...system.Command) error
 }
 
@@ -126,18 +105,7 @@ func UpdateSettings(ctx context.Context, opts UpdateOptions) (ManageConfig, erro
 		return ManageConfig{}, err
 	}
 
-	sources := opts.MonitorSources
-	if !opts.SetMonitorSources {
-		sources, err = opts.LoadMonitorSources(opts.Layout)
-		if err != nil {
-			return ManageConfig{}, err
-		}
-	}
-	if err := opts.ValidateMonitorSources(sources); err != nil {
-		return ManageConfig{}, err
-	}
-
-	steps := manageUpdateSteps(opts, old, cfg, sources)
+	steps := manageUpdateSteps(opts, old, cfg)
 	for i, s := range steps {
 		emitManageProgress(opts.Progress, ManageEvent{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx, cfg); err != nil {
@@ -185,8 +153,8 @@ func defaultUpdateOptions(opts UpdateOptions) UpdateOptions {
 	if opts.SystemdDir == "" {
 		opts.SystemdDir = "/etc/systemd/system"
 	}
-	if opts.DeployBin == "" {
-		opts.DeployBin = "/usr/bin/singbox-deploy"
+	if opts.MonitorBin == "" {
+		opts.MonitorBin = "/usr/bin/singbox-monitor"
 	}
 	return opts
 }
@@ -245,7 +213,7 @@ func validateManageConfig(cfg ManageConfig) error {
 	return nil
 }
 
-func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, sources []ManageMonitorSource) []manageUpdateStep {
+func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig) []manageUpdateStep {
 	var steps []manageUpdateStep
 	changedPorts := manageChangedPortChecks(old, cfg)
 	if opts.SetLocal && len(changedPorts) > 0 {
@@ -283,19 +251,11 @@ func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, sources []Mana
 			return setManageCurrentTrafficTotals(ctx, opts, cfg)
 		}})
 	}
-	if opts.SetMonitorSources {
-		steps = append(steps, manageUpdateStep{label: "Remote monitor", detail: "refresh selected remote monitors", run: func(ctx context.Context, _ ManageConfig) error {
-			return opts.RefreshRemoteMonitor(ctx, opts.Layout, sources, opts.Fetch)
-		}})
-	}
 	steps = append(steps, manageUpdateStep{label: "State", detail: "persist monitor settings", run: func(_ context.Context, cfg ManageConfig) error {
 		if opts.SetLocal || opts.SetCurrentTotals {
 			if err := opts.WriteState(opts.Layout.StateDir, cfg); err != nil {
 				return err
 			}
-		}
-		if opts.SetMonitorSources {
-			return opts.SaveMonitorSources(opts.Layout, sources)
 		}
 		return nil
 	}})
@@ -332,7 +292,7 @@ func applyManageMonitorService(opts UpdateOptions, cfg ManageConfig) error {
 			system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
 		)
 	}
-	unit, err := opts.RenderMonitorUnit(opts.Layout, opts.DeployBin, cfg)
+	unit, err := opts.RenderMonitorUnit(opts.Layout, opts.MonitorBin, cfg)
 	if err != nil {
 		return err
 	}

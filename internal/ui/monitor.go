@@ -27,7 +27,6 @@ const (
 	monitorPhaseDone
 	monitorPhaseServiceConfirm
 	monitorPhaseLogs
-	monitorPhaseReorder
 )
 
 type monitorAction int
@@ -35,10 +34,6 @@ type monitorAction int
 const (
 	monitorActionLocal monitorAction = iota
 	monitorActionUsage
-	monitorActionAddSource
-	monitorActionEditSource
-	monitorActionDeleteSources
-	monitorActionReorder
 	monitorActionStart
 	monitorActionStop
 	monitorActionRestart
@@ -62,12 +57,11 @@ type monitorManager struct {
 	width  int
 	height int
 
-	host           system.Host
-	hostErr        error
-	cfg            deploy.Config
-	monitorSources []deploy.MonitorSource
-	totals         monitor.TrafficTotals
-	loadErr        error
+	host    system.Host
+	hostErr error
+	cfg     deploy.Config
+	totals  monitor.TrafficTotals
+	loadErr error
 
 	serviceState string
 	fieldErr     string
@@ -76,10 +70,7 @@ type monitorManager struct {
 	logErr       error
 	svcLogScroll int
 
-	cursor          int
-	editSourceIndex int
-	localPosition   int
-	reorder         reorderForm
+	cursor int
 	parameterForm
 	commandRun
 	result deploy.Config
@@ -87,11 +78,10 @@ type monitorManager struct {
 
 func newMonitorManager() *monitorManager {
 	tm := &monitorManager{
-		phase:           monitorPhaseAction,
-		cursor:          1,
-		editSourceIndex: -1,
-		parameterForm:   newParameterForm(nil),
-		commandRun:      newCommandRun(),
+		phase:         monitorPhaseAction,
+		cursor:        1,
+		parameterForm: newParameterForm(nil),
+		commandRun:    newCommandRun(),
 	}
 	tm.host, tm.hostErr = detectMonitorHost()
 	tm.refreshServiceState()
@@ -102,17 +92,6 @@ func newMonitorManager() *monitorManager {
 		return tm
 	}
 	tm.cfg = cfg
-	if err := deploy.MigrateMonitorSources(layout); err != nil {
-		tm.loadErr = err
-		return tm
-	}
-	sources, err := deploy.LoadMonitorSources(layout)
-	if err != nil {
-		tm.loadErr = err
-		return tm
-	}
-	tm.monitorSources = sources
-	tm.localPosition = deploy.LoadLocalMonitorPosition(layout)
 	totals, err := monitor.CurrentTrafficTotals(layout, cfg.ResetDay, cfg.ResetHour, time.Now().UTC())
 	if err == nil {
 		tm.totals = totals
@@ -168,26 +147,10 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case monitorPhaseForm:
 		cmd, done, handled := tm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
-				if tm.action == monitorActionEditSource && tm.editSourceIndex < 0 {
-					selectedLabel := tm.values["edit_source_select"]
-					for i, s := range tm.monitorSources {
-						if monitorSourceOptionLabel(s) == selectedLabel {
-							tm.editSourceIndex = i
-							break
-						}
-					}
-					tm.startEditSourceForm()
-					return
-				}
 				tm.phase = monitorPhaseConfirm
 			},
 			Back: func() {
 				if !tm.previousField() {
-					if tm.action == monitorActionEditSource && tm.editSourceIndex >= 0 {
-						tm.editSourceIndex = -1
-						tm.startForm(tm.editSourceSelectField())
-						return
-					}
 					tm.phase = monitorPhaseAction
 				}
 			},
@@ -196,23 +159,12 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if handled {
 			return cmd, done
 		}
-	case monitorPhaseReorder:
-		confirm, cancel := tm.reorder.handleKey(msg)
-		if confirm {
-			tm.phase = monitorPhaseConfirm
-			return nil, false
-		}
-		if cancel {
-			return nil, true
-		}
 	case monitorPhaseConfirm:
 		switch {
 		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
 			return tm.startRun(), false
 		case isSelectionBackKey(msg):
-			if tm.action == monitorActionReorder {
-				tm.phase = monitorPhaseReorder
-			} else if len(tm.fields) > 0 {
+			if len(tm.fields) > 0 {
 				tm.phase = monitorPhaseForm
 				tm.backToLastField()
 			} else {
@@ -313,10 +265,6 @@ func (tm *monitorManager) reloadState() {
 		tm.cfg = cfg
 		tm.result = cfg
 	}
-	if sources, err := deploy.LoadMonitorSources(layout); err == nil {
-		tm.monitorSources = sources
-	}
-	tm.localPosition = deploy.LoadLocalMonitorPosition(layout)
 	if totals, err := monitor.CurrentTrafficTotals(layout, tm.cfg.ResetDay, tm.cfg.ResetHour, time.Now().UTC()); err == nil {
 		tm.totals = totals
 	}
@@ -330,7 +278,6 @@ func (tm *monitorManager) moveAction(delta int) {
 
 func (tm *monitorManager) activateAction() {
 	tm.fieldErr = ""
-	tm.editSourceIndex = -1
 	actions := tm.actions()
 	idx, ok := selectedIndex(tm.cursor, len(actions))
 	if !ok {
@@ -342,23 +289,6 @@ func (tm *monitorManager) activateAction() {
 		tm.startForm(tm.localFields())
 	case monitorActionUsage:
 		tm.startForm(tm.usageFields())
-	case monitorActionAddSource:
-		tm.startForm(tm.addMonitorSourceFields())
-	case monitorActionEditSource:
-		if len(tm.monitorSources) == 0 {
-			tm.fieldErr = "no monitor sources to edit"
-			return
-		}
-		tm.startForm(tm.editSourceSelectField())
-	case monitorActionDeleteSources:
-		if len(tm.monitorSources) == 0 {
-			tm.fieldErr = "no monitor sources configured"
-			return
-		}
-		tm.startForm(tm.deleteMonitorSourceFields())
-	case monitorActionReorder:
-		tm.reorder = newReorderForm(tm.buildReorderItems())
-		tm.phase = monitorPhaseReorder
 	case monitorActionLogs:
 		tm.loadServiceLogs()
 		return
@@ -389,151 +319,7 @@ func (tm *monitorManager) usageFields() []field {
 	return fieldsFromParameters(uiparams.MonitorUsageFields(tm.totals.InBytes, tm.totals.OutBytes))
 }
 
-func (tm *monitorManager) addMonitorSourceFields() []field {
-	return []field{
-		{key: "monitor_source_domain", label: "Monitor source domain", note: "Domain name of the remote server whose /monitor/api/summary will be aggregated."},
-		{key: "monitor_source_alias", label: "Monitor source alias", note: "Alias used as the traffic source label on /monitor."},
-		{key: "monitor_source_port", label: "Monitor HTTPS port", def: strconv.Itoa(deploy.DefaultMonitorPublicPort), note: "Public HTTPS port serving the remote /monitor page."},
-	}
-}
-
-func (tm *monitorManager) deleteMonitorSourceFields() []field {
-	options := make([]string, 0, len(tm.monitorSources))
-	for _, src := range tm.monitorSources {
-		options = append(options, monitorSourceOptionLabel(src))
-	}
-	return []field{{
-		key:     "delete_monitor_sources",
-		label:   "Monitor sources to delete",
-		options: options,
-		multi:   true,
-		note:    "Select one or more monitor sources to delete.",
-	}}
-}
-
-func (tm *monitorManager) editSourceSelectField() []field {
-	options := make([]string, 0, len(tm.monitorSources))
-	for _, src := range tm.monitorSources {
-		options = append(options, monitorSourceOptionLabel(src))
-	}
-	return []field{{
-		key:     "edit_source_select",
-		label:   "Monitor source to edit",
-		options: options,
-		note:    "Select a monitor source to edit.",
-	}}
-}
-
-func (tm *monitorManager) startEditSourceForm() {
-	if tm.editSourceIndex < 0 || tm.editSourceIndex >= len(tm.monitorSources) {
-		return
-	}
-	src := tm.monitorSources[tm.editSourceIndex]
-	fields := tm.addMonitorSourceFields()
-	tm.parameterForm.setFields(fields)
-	tm.parameterForm.values["monitor_source_domain"] = strings.TrimSpace(src.Domain)
-	tm.parameterForm.values["monitor_source_alias"] = strings.TrimSpace(src.Alias)
-	tm.parameterForm.values["monitor_source_port"] = strconv.Itoa(src.MonitorPublicPort)
-	tm.parameterForm.validate = validateMonitorField
-	tm.phase = monitorPhaseForm
-	if tm.parameterForm.advanceField() {
-		tm.phase = monitorPhaseConfirm
-	}
-}
-
-func (tm *monitorManager) buildReorderItems() []reorderItem {
-	total := 1 + len(tm.monitorSources)
-	items := make([]reorderItem, 0, total)
-	localPos := deploy.ClampLocalPosition(tm.localPosition, len(tm.monitorSources))
-	localLabel := "Local"
-	alias := tm.cfg.MonitorAlias
-	if alias == "" {
-		alias = deploy.DefaultMonitorAlias
-	}
-	if alias != deploy.DefaultMonitorAlias {
-		localLabel = "Local (" + alias + ")"
-	}
-	remoteIdx := 0
-	for i := 0; i < total; i++ {
-		if i == localPos {
-			items = append(items, reorderItem{key: "local", label: localLabel})
-		} else {
-			items = append(items, reorderItem{key: strconv.Itoa(remoteIdx), label: monitorSourceOptionLabel(tm.monitorSources[remoteIdx])})
-			remoteIdx++
-		}
-	}
-	return items
-}
-
-func (tm *monitorManager) targetLocalPosition() int {
-	if tm.action == monitorActionReorder {
-		for i, item := range tm.reorder.items {
-			if item.key == "local" {
-				return i
-			}
-		}
-	}
-	return tm.localPosition
-}
-
-func (tm *monitorManager) targetMonitorSources() []deploy.MonitorSource {
-	switch tm.action {
-	case monitorActionEditSource:
-		sources := append([]deploy.MonitorSource(nil), tm.monitorSources...)
-		if tm.editSourceIndex >= 0 && tm.editSourceIndex < len(sources) {
-			port, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_source_port"]))
-			sources[tm.editSourceIndex] = deploy.MonitorSource{
-				Domain:            strings.TrimSpace(tm.values["monitor_source_domain"]),
-				Alias:             strings.TrimSpace(tm.values["monitor_source_alias"]),
-				MonitorPublicPort: port,
-			}
-		}
-		return sources
-	case monitorActionReorder:
-		sources := make([]deploy.MonitorSource, 0, len(tm.monitorSources))
-		for _, item := range tm.reorder.items {
-			if item.key == "local" {
-				continue
-			}
-			idx, _ := strconv.Atoi(item.key)
-			if idx >= 0 && idx < len(tm.monitorSources) {
-				sources = append(sources, tm.monitorSources[idx])
-			}
-		}
-		return sources
-	default:
-		return nil
-	}
-}
-
-func monitorSourceOptionLabel(src deploy.MonitorSource) string {
-	alias := strings.TrimSpace(src.Alias)
-	if alias == "" {
-		alias = strings.TrimSpace(src.Domain)
-	}
-	return fmt.Sprintf("%s (%s:%d)", alias, strings.TrimSpace(src.Domain), src.MonitorPublicPort)
-}
-
 func validateMonitorField(f field, val string, _ map[string]string) error {
-	switch f.key {
-	case "monitor_source_domain":
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("monitor source domain is required")
-		}
-		return nil
-	case "monitor_source_alias":
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("monitor source alias is required")
-		}
-		return nil
-	case "monitor_source_port":
-		return uiparams.ValidateMonitorParameterValue("monitor_public_port", val)
-	case "delete_monitor_sources":
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("select at least one monitor source to delete")
-		}
-		return nil
-	}
 	return uiparams.ValidateMonitorParameterValue(f.key, val)
 }
 
@@ -583,7 +369,7 @@ func (tm *monitorManager) startRun() tea.Cmd {
 }
 
 func (tm *monitorManager) updateOptions() monitor.UpdateOptions {
-	base := tm.monitorDeployCallbacksWithPosition()
+	base := monitorDeployCallbacks()
 	switch tm.action {
 	case monitorActionLocal:
 		return tm.localUpdateOptions()
@@ -594,41 +380,6 @@ func (tm *monitorManager) updateOptions() monitor.UpdateOptions {
 		opts.SetCurrentTotals = true
 		opts.CurrentInBytes = inBytes
 		opts.CurrentOutBytes = outBytes
-		return opts
-	case monitorActionAddSource:
-		opts := base
-		opts.SetMonitorSources = true
-		port, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_source_port"]))
-		sources := append([]deploy.MonitorSource(nil), tm.monitorSources...)
-		sources = append(sources, deploy.MonitorSource{
-			Domain:            strings.TrimSpace(tm.values["monitor_source_domain"]),
-			Alias:             strings.TrimSpace(tm.values["monitor_source_alias"]),
-			MonitorPublicPort: port,
-		})
-		opts.MonitorSources = toManageMonitorSources(sources)
-		return opts
-	case monitorActionEditSource:
-		opts := base
-		opts.SetMonitorSources = true
-		opts.MonitorSources = toManageMonitorSources(tm.targetMonitorSources())
-		return opts
-	case monitorActionDeleteSources:
-		opts := base
-		opts.SetMonitorSources = true
-		deleted := selectedOptions(tm.values["delete_monitor_sources"])
-		sources := make([]deploy.MonitorSource, 0, len(tm.monitorSources))
-		for _, src := range tm.monitorSources {
-			if deleted[monitorSourceOptionLabel(src)] {
-				continue
-			}
-			sources = append(sources, src)
-		}
-		opts.MonitorSources = toManageMonitorSources(sources)
-		return opts
-	case monitorActionReorder:
-		opts := base
-		opts.SetMonitorSources = true
-		opts.MonitorSources = toManageMonitorSources(tm.targetMonitorSources())
 		return opts
 	default:
 		return base
@@ -662,7 +413,6 @@ func (tm *monitorManager) localUpdateOptions() monitor.UpdateOptions {
 	return opts
 }
 
-
 func (tm *monitorManager) handleRun(msg runMsg) tea.Cmd { return handleCommandRun(tm, msg) }
 
 func (tm *monitorManager) runState() *commandRun { return &tm.commandRun }
@@ -678,8 +428,6 @@ func (tm *monitorManager) View() string {
 		return tm.actionView()
 	case monitorPhaseForm:
 		return tm.parameterForm.View("Monitor · Parameters")
-	case monitorPhaseReorder:
-		return tm.reorder.View("Monitor · Reorder")
 	case monitorPhaseConfirm:
 		return tm.confirmView()
 	case monitorPhaseRunning:
@@ -709,7 +457,6 @@ func (tm *monitorManager) actionView() string {
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(tm.cfg), uiparams.DefaultResetHour(tm.cfg))),
 		summaryRow("Current inbound", byteSize(tm.totals.InBytes)),
 		summaryRow("Current outbound", byteSize(tm.totals.OutBytes)),
-		summaryRow("Monitor sources", strconv.Itoa(len(tm.monitorSources))),
 		summaryRow("Monitor service", or(tm.serviceState, "unknown")),
 	}
 	var b strings.Builder
@@ -748,51 +495,6 @@ func (tm *monitorManager) confirmView() string {
 			summaryRow("Current inbound", byteSize(tm.totals.InBytes)+" -> "+tm.values["current_in_traffic"]),
 			summaryRow("Current outbound", byteSize(tm.totals.OutBytes)+" -> "+tm.values["current_out_traffic"]),
 		)
-	case monitorActionAddSource:
-		rows = append(rows,
-			summaryRow("Add monitor source domain", tm.values["monitor_source_domain"]),
-			summaryRow("Monitor source alias", tm.values["monitor_source_alias"]),
-			summaryRow("Monitor HTTPS port", tm.values["monitor_source_port"]),
-		)
-	case monitorActionEditSource:
-		if tm.editSourceIndex >= 0 && tm.editSourceIndex < len(tm.monitorSources) {
-			old := tm.monitorSources[tm.editSourceIndex]
-			rows = append(rows,
-				summaryRow("Current domain", old.Domain),
-				summaryRow("New domain", tm.values["monitor_source_domain"]),
-				summaryRow("Current alias", old.Alias),
-				summaryRow("New alias", tm.values["monitor_source_alias"]),
-				summaryRow("Current port", strconv.Itoa(old.MonitorPublicPort)),
-				summaryRow("New port", tm.values["monitor_source_port"]),
-			)
-		}
-	case monitorActionDeleteSources:
-		selected := selectedOptions(tm.values["delete_monitor_sources"])
-		remaining := make([]deploy.MonitorSource, 0, len(tm.monitorSources))
-		for _, src := range tm.monitorSources {
-			if !selected[monitorSourceOptionLabel(src)] {
-				remaining = append(remaining, src)
-			}
-		}
-		rows = append(rows, summaryRow("Delete monitor sources", strconv.Itoa(len(selected))))
-		for _, src := range tm.monitorSources {
-			label := monitorSourceOptionLabel(src)
-			if selected[label] {
-				rows = append(rows, summaryIndentedRow(2, "Delete", label))
-			}
-		}
-		rows = append(rows, summaryRow("Remaining monitor sources", strconv.Itoa(len(remaining))))
-		if len(remaining) == 0 {
-			rows = append(rows, summaryIndentedRow(2, "Keep", "none"))
-		}
-		for _, src := range remaining {
-			rows = append(rows, summaryIndentedRow(2, "Keep", monitorSourceOptionLabel(src)))
-		}
-	case monitorActionReorder:
-		rows = append(rows, summaryRow("New order", ""))
-		for i, item := range tm.reorder.items {
-			rows = append(rows, summaryIndentedRow(2, strconv.Itoa(i+1), item.label))
-		}
 	}
 	rows = append(rows, summaryBlank(), summaryText("This will update monitor state and refresh /monitor data."))
 	return flowTitle.Render("Monitor · Confirm") + "\n\n" + renderSummary(rows)
@@ -809,7 +511,6 @@ func (tm *monitorManager) doneSummary() string {
 		summaryRow("Monitor alias", or(cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 		summaryRow("Monitor UI port", strconv.Itoa(cfg.MonitorPublicPort)),
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
-		summaryRow("Monitor sources", strconv.Itoa(len(tm.monitorSources))),
 	})
 }
 
@@ -822,8 +523,6 @@ func (tm *monitorManager) footerHints() []operationHint {
 		return actionFooterHints("Select")
 	case monitorPhaseForm:
 		return tm.parameterForm.footerHints()
-	case monitorPhaseReorder:
-		return tm.reorder.footerHints()
 	case monitorPhaseConfirm:
 		return applyFooterHints("Apply")
 	case monitorPhaseRunning:
@@ -844,10 +543,6 @@ func (tm *monitorManager) actions() []monitorActionItem {
 		{separator: true, label: "Monitor"},
 		{action: monitorActionLocal, label: "Edit monitor settings"},
 		{action: monitorActionUsage, label: "Adjust traffic counters"},
-		{action: monitorActionAddSource, label: "Add monitor source"},
-		{action: monitorActionEditSource, label: "Edit monitor source"},
-		{action: monitorActionDeleteSources, label: "Delete monitor sources"},
-		{action: monitorActionReorder, label: "Reorder monitor sources"},
 		{separator: true, label: "Service"},
 		{action: monitorActionStart, label: "Start monitor service"},
 		{action: monitorActionStop, label: "Stop monitor service"},
@@ -855,7 +550,6 @@ func (tm *monitorManager) actions() []monitorActionItem {
 		{action: monitorActionLogs, label: "View monitor service logs"},
 	}
 }
-
 
 func (tm *monitorManager) serviceConfirmView() string {
 	rows := []summaryLine{
@@ -993,19 +687,6 @@ func defaultMonitorLogOutput(ctx context.Context, lines int) (string, error) {
 	return string(out), nil
 }
 
-func (tm *monitorManager) monitorDeployCallbacksWithPosition() monitor.UpdateOptions {
-	opts := monitorDeployCallbacks()
-	targetPos := tm.targetLocalPosition()
-	origSave := opts.SaveMonitorSources
-	opts.SaveMonitorSources = func(l paths.Layout, sources []monitor.ManageMonitorSource) error {
-		if err := origSave(l, sources); err != nil {
-			return err
-		}
-		return deploy.SaveLocalMonitorPosition(l, targetPos)
-	}
-	return opts
-}
-
 func monitorDeployCallbacks() monitor.UpdateOptions {
 	return monitor.UpdateOptions{
 		LoadConfig: func(l paths.Layout) (monitor.ManageConfig, error) {
@@ -1029,19 +710,6 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				ResetHour:              dcfg.ResetHour,
 				SubscribePort:          dcfg.SubscribePort,
 			}, nil
-		},
-		LoadMonitorSources: func(l paths.Layout) ([]monitor.ManageMonitorSource, error) {
-			srcs, err := deploy.LoadMonitorSources(l)
-			if err != nil {
-				return nil, err
-			}
-			return toManageMonitorSources(srcs), nil
-		},
-		ValidateMonitorSources: func(sources []monitor.ManageMonitorSource) error {
-			return deploy.ValidateMonitorSources(fromManageMonitorSources(sources))
-		},
-		SaveMonitorSources: func(l paths.Layout, sources []monitor.ManageMonitorSource) error {
-			return deploy.SaveMonitorSources(l, fromManageMonitorSources(sources))
 		},
 		WriteState: func(stateDir string, mcfg monitor.ManageConfig) error {
 			layout := monitorUILayout()
@@ -1075,7 +743,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			dcfg.SubscribePort = mcfg.SubscribePort
 			return deploy.WriteManagedNginxConfig(l, dcfg, confPath)
 		},
-		RenderMonitorUnit: func(l paths.Layout, deployBin string, mcfg monitor.ManageConfig) (string, error) {
+		RenderMonitorUnit: func(l paths.Layout, monitorBin string, mcfg monitor.ManageConfig) (string, error) {
 			dcfg, err := deploy.LoadProtocolConfig(l)
 			if err != nil {
 				return "", err
@@ -1092,29 +760,10 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			dcfg.TrafficTotalLimitBytes = mcfg.TrafficTotalLimitBytes
 			dcfg.ResetDay = mcfg.ResetDay
 			dcfg.ResetHour = mcfg.ResetHour
-			return deploy.RenderMonitorUnit(l, deployBin, dcfg)
-		},
-		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, sources []monitor.ManageMonitorSource, fetch func(context.Context, string) ([]byte, error)) error {
-			return deploy.RefreshRemoteMonitor(ctx, l, fromManageMonitorSources(sources), deploy.SubscriptionFetcher(fetch))
+			return deploy.RenderMonitorUnit(l, monitorBin, dcfg)
 		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error {
 			return deploy.RunCommands(r, cmds...)
 		},
 	}
-}
-
-func toManageMonitorSources(sources []deploy.MonitorSource) []monitor.ManageMonitorSource {
-	out := make([]monitor.ManageMonitorSource, len(sources))
-	for i, s := range sources {
-		out[i] = monitor.ManageMonitorSource{Domain: s.Domain, Alias: s.Alias, MonitorPublicPort: s.MonitorPublicPort}
-	}
-	return out
-}
-
-func fromManageMonitorSources(sources []monitor.ManageMonitorSource) []deploy.MonitorSource {
-	out := make([]deploy.MonitorSource, len(sources))
-	for i, s := range sources {
-		out[i] = deploy.MonitorSource{Domain: s.Domain, Alias: s.Alias, MonitorPublicPort: s.MonitorPublicPort}
-	}
-	return out
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -18,21 +19,18 @@ type UpdateOptions struct {
 	Layout      paths.Layout
 	Runner      system.Runner
 	DisplayName string
-	Fetch       deploy.SubscriptionFetcher
 	Progress    func(deploy.Event)
 }
 
 // Update updates the single account display name and regenerates all
-// dependent config/subscription output.
+// dependent config/subscription output (including aggregated entries for
+// every registered cluster node).
 func Update(ctx context.Context, opts UpdateOptions) (deploy.Config, error) {
 	if opts.Layout.Root == "" {
 		opts.Layout = paths.DefaultLayout()
 	}
 	if opts.Runner == nil {
 		opts.Runner = system.NewExecRunner(nil)
-	}
-	if opts.Fetch == nil {
-		opts.Fetch = deploy.DefaultSubscriptionFetch
 	}
 	displayName := strings.TrimSpace(opts.DisplayName)
 	if displayName == "" {
@@ -43,12 +41,9 @@ func Update(ctx context.Context, opts UpdateOptions) (deploy.Config, error) {
 		return deploy.Config{}, err
 	}
 	cfg.DisplayName = displayName
-	remotes, err := deploy.LoadRemoteSubscriptions(opts.Layout)
-	if err != nil {
-		return deploy.Config{}, err
-	}
+	registry := cluster.NewRegistry(opts.Layout)
 
-	steps := updateSteps(opts, remotes)
+	steps := updateSteps(opts, registry)
 	for i, s := range steps {
 		deploy.EmitProgress(opts.Progress, deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx, cfg); err != nil {
@@ -66,7 +61,7 @@ type updateStep struct {
 	run    func(context.Context, deploy.Config) error
 }
 
-func updateSteps(opts UpdateOptions, remotes []deploy.RemoteSubscription) []updateStep {
+func updateSteps(opts UpdateOptions, registry cluster.Registry) []updateStep {
 	return []updateStep{
 		{label: "Config", detail: "render candidate config.json", run: func(_ context.Context, cfg deploy.Config) error {
 			return deploy.WriteProtocolConfigCandidate(opts.Layout, cfg)
@@ -77,8 +72,8 @@ func updateSteps(opts UpdateOptions, remotes []deploy.RemoteSubscription) []upda
 		{label: "Activate config", detail: "replace config.json after validation", run: func(_ context.Context, _ deploy.Config) error {
 			return os.Rename(deploy.ProtocolConfigCandidate(opts.Layout), opts.Layout.ConfigJSON)
 		}},
-		{label: "Subscriptions", detail: "regenerate subscription files", run: func(ctx context.Context, cfg deploy.Config) error {
-			return deploy.WriteSubscriptionsWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch, deploy.LoadLocalSubscriptionPosition(opts.Layout))
+		{label: "Subscriptions", detail: "regenerate subscription files for fleet", run: func(_ context.Context, cfg deploy.Config) error {
+			return registry.WriteFleetSubscriptions(opts.Layout, cfg)
 		}},
 		{label: "State", detail: "persist account display name", run: func(_ context.Context, cfg deploy.Config) error {
 			return deploy.WriteInstallState(opts.Layout.StateDir, cfg)

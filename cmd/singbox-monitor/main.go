@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -75,6 +76,7 @@ func run(args []string) error {
 		return err
 	}
 
+	registry := cluster.NewRegistry(layout)
 	cfg := monitor.Config{
 		Listen:            *listen,
 		Interface:         selectedIface,
@@ -87,7 +89,10 @@ func run(args []string) error {
 		Alias:             *alias,
 		RemoteMonitorPath: *remoteMonitorPath,
 		LocalPositionPath: filepath.Join(layout.StateDir, "local_monitor_position"),
-		Now:               clock.Now,
+		RefreshRemoteSources: func(ctx context.Context) error {
+			return registry.RefreshMonitorSnapshot(ctx, layout)
+		},
+		Now: clock.Now,
 	}
 	m := monitor.New(store, cfg, systemdSingBox{})
 
