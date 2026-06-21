@@ -76,13 +76,12 @@ func (o ServerOptions) fragmentFor(proto Protocol, shortID string) (string, map[
 		}
 	case ProtocolHysteria2:
 		return "sing-box/hysteria2.json.tmpl", map[string]any{
-			"Port":          o.Ports.Hysteria2,
-			"Password":      o.User.HysteriaPassword,
-			"Name":          name("-Hysteria2"),
-			"Domain":        o.Domain,
-			"SubscribePort": o.SubscribePort,
-			"CertPath":      o.TLSCert,
-			"KeyPath":       o.TLSKey,
+			"Port":     o.Ports.Hysteria2,
+			"Password": o.User.HysteriaPassword,
+			"Name":     name("-Hysteria2"),
+			"Domain":   o.Domain,
+			"CertPath": o.TLSCert,
+			"KeyPath":  o.TLSKey,
 		}
 	case ProtocolTUIC:
 		return "sing-box/tuic.json.tmpl", map[string]any{
