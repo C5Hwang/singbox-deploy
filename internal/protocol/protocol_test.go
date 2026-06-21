@@ -169,12 +169,12 @@ func TestUpdateAppliesCredentialAndPortOverrides(t *testing.T) {
 	runner := &recordingRunner{}
 	var checked []config.Protocol
 	updated, err := Update(context.Background(), UpdateOptions{
-		Layout:            layout,
-		Runner:            runner,
-		Firewall:          system.FirewallUFW,
-		Selected:          []config.Protocol{config.ProtocolHysteria2},
-		Ports:             config.Ports{Hysteria2: 18443},
-		Creds:             deploy.Credentials{HysteriaPassword: "newpass"},
+		Layout:   layout,
+		Runner:   runner,
+		Firewall: system.FirewallUFW,
+		Selected: []config.Protocol{config.ProtocolHysteria2},
+		Ports:    config.Ports{Hysteria2: 18443},
+		Creds:    deploy.Credentials{HysteriaPassword: "newpass"},
 		CheckPorts: func(_ context.Context, _ deploy.Config, changed []config.Protocol) error {
 			checked = append([]config.Protocol(nil), changed...)
 			return nil

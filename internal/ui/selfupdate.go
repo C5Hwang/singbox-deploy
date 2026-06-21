@@ -17,7 +17,7 @@ import (
 type selfUpdatePhase int
 
 const (
-	selfUpdatePhaseCheck   selfUpdatePhase = iota
+	selfUpdatePhaseCheck selfUpdatePhase = iota
 	selfUpdatePhaseConfirm
 	selfUpdatePhaseRunning
 	selfUpdatePhaseDone

@@ -38,10 +38,10 @@ const (
 // AgentState holds the small set of values an agent needs to bootstrap itself
 // independently of the master.
 type AgentState struct {
-	APIToken          string
-	WGIP              string
-	MasterPublicKey   string
-	MasterEndpoint    string
+	APIToken        string
+	WGIP            string
+	MasterPublicKey string
+	MasterEndpoint  string
 }
 
 // LoadAgentState reads the agent's persisted state.

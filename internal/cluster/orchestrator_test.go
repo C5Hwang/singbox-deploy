@@ -33,14 +33,14 @@ func newFakeSSHClient() *fakeSSHClient {
 	return &fakeSSHClient{
 		writes: map[string][]byte{},
 		responses: map[string]sshexec.RunResult{
-			"command -v apt-get":         {ExitCode: 0},
-			"command -v dnf":             {ExitCode: 1},
-			"command -v yum":             {ExitCode: 1},
-			"apt-get update":             {ExitCode: 0},
-			"uname -m":                   {Stdout: "x86_64\n", ExitCode: 0},
-			"curl -fsSL":                 {ExitCode: 0},
-			"systemctl enable --now wg":  {ExitCode: 0},
-			"systemctl daemon-reload &&": {ExitCode: 0},
+			"command -v apt-get":          {ExitCode: 0},
+			"command -v dnf":              {ExitCode: 1},
+			"command -v yum":              {ExitCode: 1},
+			"apt-get update":              {ExitCode: 0},
+			"uname -m":                    {Stdout: "x86_64\n", ExitCode: 0},
+			"curl -fsSL":                  {ExitCode: 0},
+			"systemctl enable --now wg":   {ExitCode: 0},
+			"systemctl daemon-reload &&":  {ExitCode: 0},
 			"/usr/bin/singbox-node setup": {ExitCode: 0},
 		},
 	}

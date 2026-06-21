@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/assets"
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 )
 
 const DefaultSiteTemplate = "massively"

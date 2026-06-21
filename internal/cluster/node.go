@@ -14,17 +14,17 @@ import (
 // enough information to (a) generate subscription entries pointing at the node
 // and (b) drive the node agent via the internal HTTP API.
 type Node struct {
-	ID                string // 3-digit zero-padded dir name, e.g. "001"
-	Alias             string // human label shown in TUI and subscription
-	PublicIP          string // public IP or hostname (for WireGuard endpoint, if applicable)
-	Domain            string // public TLS domain, used as subscription server address
-	WGIP              string // assigned internal WireGuard IP
-	WGPublicKey       string // node's WireGuard public key (master keeps only the public key)
-	APIToken          string // shared bearer secret for the node agent HTTP API
-	EnabledProtocols  []config.Protocol
-	Ports             config.Ports
-	Creds             deploy.Credentials
-	RealityServerName string
+	ID                   string // 3-digit zero-padded dir name, e.g. "001"
+	Alias                string // human label shown in TUI and subscription
+	PublicIP             string // public IP or hostname (for WireGuard endpoint, if applicable)
+	Domain               string // public TLS domain, used as subscription server address
+	WGIP                 string // assigned internal WireGuard IP
+	WGPublicKey          string // node's WireGuard public key (master keeps only the public key)
+	APIToken             string // shared bearer secret for the node agent HTTP API
+	EnabledProtocols     []config.Protocol
+	Ports                config.Ports
+	Creds                deploy.Credentials
+	RealityServerName    string
 	RealityHandshakePort int
 
 	// Per-node monitor configuration. Quotas are enforced locally by the

@@ -41,12 +41,12 @@ type Status struct {
 
 // ConfigUpdate is the payload accepted by POST /api/config/update.
 type ConfigUpdate struct {
-	EnabledProtocols []string          `json:"enabledProtocols"`
-	ProtocolPorts    map[string]int    `json:"protocolPorts"`
-	Domain           string            `json:"domain"`
-	Credentials      map[string]string `json:"credentials"`
-	RealityServerName string           `json:"realityServerName,omitempty"`
-	RealityHandshakePort int           `json:"realityHandshakePort,omitempty"`
+	EnabledProtocols     []string          `json:"enabledProtocols"`
+	ProtocolPorts        map[string]int    `json:"protocolPorts"`
+	Domain               string            `json:"domain"`
+	Credentials          map[string]string `json:"credentials"`
+	RealityServerName    string            `json:"realityServerName,omitempty"`
+	RealityHandshakePort int               `json:"realityHandshakePort,omitempty"`
 }
 
 // MonitorUpdate is the payload accepted by POST /api/monitor/config.

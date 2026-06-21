@@ -32,10 +32,10 @@ func TestDNSStoreSaveRequiresFields(t *testing.T) {
 	dir := t.TempDir()
 	store := NewRegistry(paths.LayoutForRoot(dir)).DNS()
 	cases := []DNSCredentials{
-		{},                                                                 // missing root
-		{RootDomain: "x"},                                                  // missing provider
-		{RootDomain: "x", Provider: "cloudflare"},                          // missing token
-		{RootDomain: "x", Provider: "aliyun", APIToken: "k"},               // missing secret
+		{},                // missing root
+		{RootDomain: "x"}, // missing provider
+		{RootDomain: "x", Provider: "cloudflare"},            // missing token
+		{RootDomain: "x", Provider: "aliyun", APIToken: "k"}, // missing secret
 	}
 	for i, c := range cases {
 		if err := store.Save(c); err == nil {
@@ -78,11 +78,11 @@ func TestDNSStoreFindForDomainLongestMatch(t *testing.T) {
 	must(store.Save(DNSCredentials{RootDomain: "sub.example.com", Provider: "cloudflare", APIToken: "inner"}))
 
 	tests := map[string]string{
-		"jp.example.com":      "outer",
-		"hk.example.com":      "outer",
-		"example.com":         "outer",
+		"jp.example.com":        "outer",
+		"hk.example.com":        "outer",
+		"example.com":           "outer",
 		"tokyo.sub.example.com": "inner",
-		"sub.example.com":     "inner",
+		"sub.example.com":       "inner",
 	}
 	for host, wantToken := range tests {
 		got, err := store.FindForDomain(host)
