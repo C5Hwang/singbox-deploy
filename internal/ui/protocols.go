@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -19,7 +20,8 @@ import (
 type protocolPhase int
 
 const (
-	protocolPhaseAction protocolPhase = iota
+	protocolPhaseTarget protocolPhase = iota
+	protocolPhaseAction
 	protocolPhaseSelect
 	protocolPhaseEditPick
 	protocolPhaseForm
@@ -63,6 +65,9 @@ type protocolManager struct {
 
 	editProto config.Protocol
 
+	picker        targetPicker
+	agentOutcomes []agentOutcome
+
 	commandRun
 	result deploy.Config
 }
@@ -77,6 +82,10 @@ func newProtocolManager() *protocolManager {
 	host, err := detectProtocolHost()
 	pm.host = host
 	pm.hostErr = err
+	pm.picker = newTargetPicker(protocolUILayout())
+	if pm.picker.hasNodes() {
+		pm.phase = protocolPhaseTarget
+	}
 	cfg, err := deploy.LoadProtocolConfig(protocolUILayout())
 	if err != nil {
 		pm.loadErr = err
@@ -117,12 +126,32 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	switch pm.phase {
+	case protocolPhaseTarget:
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move: pm.moveTarget,
+			Confirm: func() (tea.Cmd, bool) {
+				pm.phase = protocolPhaseAction
+				pm.cursor = 0
+				return nil, false
+			},
+			Cancel: func() (tea.Cmd, bool) { return nil, true },
+		})
+		if handled {
+			return cmd, done
+		}
 	case protocolPhaseAction:
 		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
 			Move: pm.moveAction,
 			Confirm: func() (tea.Cmd, bool) {
 				pm.activateAction()
 				return nil, false
+			},
+			Back: func() (tea.Cmd, bool) {
+				if pm.picker.hasNodes() {
+					pm.phase = protocolPhaseTarget
+					return nil, false
+				}
+				return nil, true
 			},
 			Cancel: func() (tea.Cmd, bool) {
 				return nil, true
@@ -247,6 +276,11 @@ func (pm *protocolManager) moveAction(delta int) {
 	pm.fieldErr = ""
 }
 
+func (pm *protocolManager) moveTarget(delta int) {
+	pm.picker.move(delta)
+	pm.fieldErr = ""
+}
+
 func (pm *protocolManager) activateAction() {
 	pm.fieldErr = ""
 	actions := pm.actions()
@@ -294,7 +328,7 @@ func (pm *protocolManager) prepareChangeConfirm() {
 		pm.fieldErr = "select at least one protocol"
 		return
 	}
-	if !pm.canApply() {
+	if pm.picker.selected().isLocal() && !pm.canApply() {
 		pm.fieldErr = pm.applyBlocker()
 		return
 	}
@@ -312,7 +346,7 @@ func (pm *protocolManager) prepareChangeConfirm() {
 }
 
 func (pm *protocolManager) startEditForm() {
-	if !pm.canApply() {
+	if pm.picker.selected().isLocal() && !pm.canApply() {
 		pm.fieldErr = pm.applyBlocker()
 		return
 	}
@@ -327,7 +361,7 @@ func (pm *protocolManager) startEditForm() {
 }
 
 func (pm *protocolManager) startRealitySNIForm() {
-	if !pm.canApply() {
+	if pm.picker.selected().isLocal() && !pm.canApply() {
 		pm.fieldErr = pm.applyBlocker()
 		return
 	}
@@ -436,20 +470,131 @@ func (pm *protocolManager) startRun() tea.Cmd {
 	pm.phase = protocolPhaseRunning
 	pm.resetRun(make(chan runMsg, 64))
 	ch := pm.ch
-	opts := pm.updateOptions()
-	logs := &logWriter{ch: ch}
-	opts.Layout = protocolUILayout()
-	opts.Runner = system.NewExecRunner(logs)
-	opts.Firewall = pm.host.Firewall
-	opts.Progress = func(e deploy.Event) {
-		ev := e
-		ch <- runMsg{event: &ev}
+	pm.agentOutcomes = nil
+	t := pm.picker.selected()
+	if t.isLocal() {
+		opts := pm.updateOptions()
+		logs := &logWriter{ch: ch}
+		opts.Layout = protocolUILayout()
+		opts.Runner = system.NewExecRunner(logs)
+		opts.Firewall = pm.host.Firewall
+		opts.Progress = func(e deploy.Event) {
+			ev := e
+			ch <- runMsg{event: &ev}
+		}
+		go func() {
+			_, err := updateProtocolsRun(context.Background(), opts)
+			ch <- runMsg{done: true, err: err}
+		}()
+		return pm.waitForRun()
 	}
-	go func() {
-		_, err := updateProtocolsRun(context.Background(), opts)
-		ch <- runMsg{done: true, err: err}
-	}()
+	go pm.runAgentProtocolUpdate(ch, t)
 	return pm.waitForRun()
+}
+
+func (pm *protocolManager) runAgentProtocolUpdate(ch chan runMsg, t target) {
+	nodes := []cluster.Node{t.node}
+	if t.isAll() {
+		nodes = agentNodes(pm.picker)
+		opts := pm.updateOptions()
+		logs := &logWriter{ch: ch}
+		opts.Layout = protocolUILayout()
+		opts.Runner = system.NewExecRunner(logs)
+		opts.Firewall = pm.host.Firewall
+		opts.Progress = func(e deploy.Event) {
+			ev := e
+			ev.Label = "Local " + ev.Label
+			ch <- runMsg{event: &ev}
+		}
+		if _, err := updateProtocolsRun(context.Background(), opts); err != nil {
+			ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Local protocol update", Detail: err.Error(), Status: "failed", Err: err}}
+		} else {
+			ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Local protocol update", Detail: "done", Status: "done"}}
+		}
+	}
+	var firstErr error
+	pm.agentOutcomes = make([]agentOutcome, 0, len(nodes))
+	for i, node := range nodes {
+		ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "running"}}
+		req := pm.agentConfigRequest(node)
+		client := cluster.NewAgentClient(node)
+		err := client.UpdateConfig(context.Background(), req)
+		pm.agentOutcomes = append(pm.agentOutcomes, agentOutcome{node: node, err: err})
+		if err != nil {
+			ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: err.Error(), Status: "failed", Err: err}}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "done"}}
+	}
+	ch <- runMsg{done: true, err: firstErr}
+}
+
+func (pm *protocolManager) agentConfigRequest(node cluster.Node) cluster.ConfigUpdate {
+	enabledProtocols := node.EnabledProtocols
+	if pm.action == protocolActionChange {
+		enabledProtocols = pm.targetProtocols()
+	}
+	enabled := make([]string, 0, len(enabledProtocols))
+	for _, p := range enabledProtocols {
+		enabled = append(enabled, string(p))
+	}
+	req := cluster.ConfigUpdate{
+		EnabledProtocols:     enabled,
+		ProtocolPorts:        map[string]int{},
+		Domain:               node.Domain,
+		Credentials:          map[string]string{},
+		RealityServerName:    node.RealityServerName,
+		RealityHandshakePort: node.RealityHandshakePort,
+	}
+	applyAgentPort := func(key string, current int, name string) {
+		if v := strings.TrimSpace(pm.values[key]); v != "" {
+			if port, err := strconv.Atoi(v); err == nil && port > 0 {
+				req.ProtocolPorts[name] = port
+				return
+			}
+		}
+		if current > 0 {
+			req.ProtocolPorts[name] = current
+		}
+	}
+	applyAgentPort("reality_vision_port", node.Ports.RealityVision, string(config.ProtocolRealityVision))
+	applyAgentPort("reality_grpc_port", node.Ports.RealityGRPC, string(config.ProtocolRealityGRPC))
+	applyAgentPort("hysteria2_port", node.Ports.Hysteria2, string(config.ProtocolHysteria2))
+	applyAgentPort("tuic_port", node.Ports.TUIC, string(config.ProtocolTUIC))
+	applyAgentPort("anytls_port", node.Ports.AnyTLS, string(config.ProtocolAnyTLS))
+	applyAgentCred := func(key string, current string, name string) {
+		if v := strings.TrimSpace(pm.values[key]); v != "" {
+			req.Credentials[name] = v
+			return
+		}
+		if current != "" {
+			req.Credentials[name] = current
+		}
+	}
+	applyAgentCred("reality_vision_uuid", node.Creds.RealityVisionUUID, "reality_vision_uuid")
+	applyAgentCred("reality_grpc_uuid", node.Creds.RealityGRPCUUID, "reality_grpc_uuid")
+	applyAgentCred("hysteria2_password", node.Creds.HysteriaPassword, "hysteria2_password")
+	applyAgentCred("tuic_uuid", node.Creds.TUICUUID, "tuic_uuid")
+	applyAgentCred("tuic_password", node.Creds.TUICPassword, "tuic_password")
+	applyAgentCred("anytls_password", node.Creds.AnyTLSPassword, "anytls_password")
+	if node.Creds.RealityPrivateKey != "" {
+		req.Credentials["reality_private_key"] = node.Creds.RealityPrivateKey
+	}
+	if node.Creds.RealityPublicKey != "" {
+		req.Credentials["reality_public_key"] = node.Creds.RealityPublicKey
+	}
+	if node.Creds.RealityShortID != "" {
+		req.Credentials["reality_short_id"] = node.Creds.RealityShortID
+	}
+	if v := strings.TrimSpace(pm.values["reality_sni"]); v != "" {
+		if host, err := uiparams.NormalizeRealityServerName(v); err == nil {
+			req.RealityServerName = host
+		}
+	}
+	return req
 }
 
 func (pm *protocolManager) updateOptions() protocol.UpdateOptions {
@@ -504,6 +649,8 @@ func (pm *protocolManager) View() string {
 		return flowTitle.Render("Protocol Management") + "\n\n" + flowErr.Render(pm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run install first.")
 	}
 	switch pm.phase {
+	case protocolPhaseTarget:
+		return renderTargetPicker("Protocol Management · Target", pm.picker)
 	case protocolPhaseAction:
 		return pm.actionView()
 	case protocolPhaseSelect:
@@ -529,9 +676,17 @@ func (pm *protocolManager) View() string {
 func (pm *protocolManager) actionView() string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("Protocol Management") + "\n\n")
-	b.WriteString(dimStyle.Render("Current: ") + protocolLabels(pm.cfg.Enabled) + "\n")
-	if !pm.canApply() {
-		b.WriteString(flowErr.Render(pm.applyBlocker()) + "\n")
+	if pm.picker.hasNodes() {
+		b.WriteString(renderTargetBadge(pm.picker.selected()) + "\n\n")
+	}
+	t := pm.picker.selected()
+	if t.isLocal() {
+		b.WriteString(dimStyle.Render("Current: ") + protocolLabels(pm.cfg.Enabled) + "\n")
+		if !pm.canApply() {
+			b.WriteString(flowErr.Render(pm.applyBlocker()) + "\n")
+		}
+	} else if t.isNode() {
+		b.WriteString(dimStyle.Render("Node protocols: ") + protocolLabels(t.node.EnabledProtocols) + "\n")
 	}
 	if pm.fieldErr != "" {
 		b.WriteString(flowErr.Render(pm.fieldErr) + "\n")
@@ -604,13 +759,14 @@ func (pm *protocolManager) protocolOptionsView() string {
 }
 
 func (pm *protocolManager) confirmView() string {
-	var rows []summaryLine
+	t := pm.picker.selected()
+	rows := []summaryLine{summaryRow("Target", t.badge())}
 	switch pm.action {
 	case protocolActionRealitySNI:
 		rows = append(rows,
 			summaryRow("Edit", "Reality SNI"),
 			summaryRow("Current", or(pm.cfg.RealityServerName, "not set")),
-			summaryRow("Target", or(pm.values["reality_sni"], "not set")),
+			summaryRow("Selection", or(pm.values["reality_sni"], "not set")),
 		)
 	case protocolActionEdit:
 		rows = append(rows, summaryRow("Edit", string(pm.editProto)))
@@ -618,10 +774,14 @@ func (pm *protocolManager) confirmView() string {
 			rows = append(rows, summaryRow(f.label, or(pm.values[f.key], "generate/keep current")))
 		}
 	default:
-		added, removed := protocolDiff(pm.cfg.Enabled, pm.targetProtocols())
+		current := pm.cfg.Enabled
+		if !t.isLocal() && t.isNode() {
+			current = t.node.EnabledProtocols
+		}
+		added, removed := protocolDiff(current, pm.targetProtocols())
 		rows = append(rows,
-			summaryRow("Current", protocolLabels(pm.cfg.Enabled)),
-			summaryRow("Target", protocolLabels(pm.targetProtocols())),
+			summaryRow("Current", protocolLabels(current)),
+			summaryRow("Selection", protocolLabels(pm.targetProtocols())),
 			summaryRow("Add", or(protocolStrings(added), "none")),
 			summaryRow("Remove", or(protocolStrings(removed), "none")),
 		)
@@ -632,10 +792,15 @@ func (pm *protocolManager) confirmView() string {
 			}
 		}
 	}
-	rows = append(rows,
-		summaryBlank(),
-		summaryText("This will regenerate sing-box config and all subscription files."),
-	)
+	rows = append(rows, summaryBlank())
+	switch {
+	case t.isLocal():
+		rows = append(rows, summaryText("This will regenerate sing-box config and all subscription files."))
+	case t.isNode():
+		rows = append(rows, summaryText("This will push the new config to node "+t.node.Alias+" and restart its sing-box service."))
+	case t.isAll():
+		rows = append(rows, summaryText("This will apply locally and broadcast the same config to every registered node."))
+	}
 	return flowTitle.Render("Protocol Management · Confirm") + "\n\n" + renderSummary(rows)
 }
 
@@ -648,15 +813,31 @@ func (pm *protocolManager) failedView() string {
 }
 
 func (pm *protocolManager) doneSummary() string {
+	t := pm.picker.selected()
 	cfg := pm.result
 	if len(cfg.Enabled) == 0 {
 		cfg = pm.cfg
 	}
-	return renderSummary([]summaryLine{
-		summaryRow("Protocols", protocolLabels(cfg.Enabled)),
-		summaryRow("Ports", installedPortsSummary(cfg.Enabled, cfg.Ports)),
-		summaryRow("Subscriptions", "refreshed"),
-	})
+	rows := []summaryLine{summaryRow("Target", t.badge())}
+	if t.isLocal() {
+		rows = append(rows,
+			summaryRow("Protocols", protocolLabels(cfg.Enabled)),
+			summaryRow("Ports", installedPortsSummary(cfg.Enabled, cfg.Ports)),
+			summaryRow("Subscriptions", "refreshed"),
+		)
+	}
+	if len(pm.agentOutcomes) > 0 {
+		rows = append(rows, summaryBlank(), summaryText("Per-node outcomes:"))
+		for _, o := range pm.agentOutcomes {
+			label := o.node.Alias + " (" + o.node.WGIP + ")"
+			value := "ok"
+			if o.err != nil {
+				value = "failed: " + o.err.Error()
+			}
+			rows = append(rows, summaryIndentedRow(2, label, value))
+		}
+	}
+	return renderSummary(rows)
 }
 
 func (pm *protocolManager) footerHints() []operationHint {
@@ -664,7 +845,12 @@ func (pm *protocolManager) footerHints() []operationHint {
 		return returnFooterHints()
 	}
 	switch pm.phase {
+	case protocolPhaseTarget:
+		return actionFooterHints("Select")
 	case protocolPhaseAction:
+		if pm.picker.hasNodes() {
+			return actionBackFooterHints("Select")
+		}
 		return actionFooterHints("Select")
 	case protocolPhaseSelect:
 		return []operationHint{hint(keyMove, "Move"), hint(keySpace, "Toggle"), hint(keyEnter, "Continue"), hint(keyBack, "Back"), hint(keyCancel, "Cancel")}

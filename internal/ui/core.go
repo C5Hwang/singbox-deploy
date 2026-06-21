@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	corepkg "github.com/C5Hwang/singbox-deploy/internal/core"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -20,7 +21,8 @@ import (
 type corePhase int
 
 const (
-	corePhaseAction corePhase = iota
+	corePhaseTarget corePhase = iota
+	corePhaseAction
 	corePhaseStableSelect
 	corePhaseConfirm
 	corePhaseRunning
@@ -70,6 +72,9 @@ type coreManager struct {
 	targetTag  string
 	resultTag  string
 
+	picker       targetPicker
+	upgradeStats []cluster.UpgradeOutcome
+
 	logs      string
 	logErr    error
 	logScroll int
@@ -80,6 +85,11 @@ type coreManager struct {
 func newCoreManager() *coreManager {
 	cm := &coreManager{phase: corePhaseAction, cursor: 1, commandRun: newCommandRun()}
 	cm.host, cm.hostErr = detectCoreHost()
+	cm.picker = newTargetPicker(coreUILayout())
+	if cm.picker.hasNodes() {
+		cm.phase = corePhaseTarget
+		cm.cursor = 0
+	}
 	cm.refreshSnapshot()
 	return cm
 }
@@ -111,12 +121,33 @@ func (cm *coreManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 
 func (cm *coreManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch cm.phase {
+	case corePhaseTarget:
+		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+			Move: cm.moveTarget,
+			Confirm: func() (tea.Cmd, bool) {
+				cm.phase = corePhaseAction
+				cm.cursor = 1
+				return nil, false
+			},
+			Cancel: func() (tea.Cmd, bool) { return nil, true },
+		})
+		if handled {
+			return cmd, done
+		}
 	case corePhaseAction:
 		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
 			Move: cm.moveAction,
 			Confirm: func() (tea.Cmd, bool) {
 				cm.activateAction()
 				return nil, false
+			},
+			Back: func() (tea.Cmd, bool) {
+				if cm.picker.hasNodes() {
+					cm.phase = corePhaseTarget
+					cm.cursor = 0
+					return nil, false
+				}
+				return nil, true
 			},
 			Cancel: func() (tea.Cmd, bool) {
 				return nil, true
@@ -238,6 +269,11 @@ func (cm *coreManager) moveAction(delta int) {
 	cm.fieldErr = ""
 }
 
+func (cm *coreManager) moveTarget(delta int) {
+	cm.picker.move(delta)
+	cm.fieldErr = ""
+}
+
 func (cm *coreManager) moveStable(delta int) {
 	if len(cm.stableTags) == 0 {
 		return
@@ -258,7 +294,7 @@ func (cm *coreManager) activateAction() {
 		cm.loadLogs()
 		return
 	}
-	if !cm.canApply() {
+	if cm.picker.selected().isLocal() && !cm.canApply() {
 		cm.fieldErr = cm.applyBlocker()
 		return
 	}
@@ -321,14 +357,68 @@ func (cm *coreManager) startRun() tea.Cmd {
 	cm.phase = corePhaseRunning
 	cm.resetRun(make(chan runMsg, 64))
 	ch := cm.ch
-	logs := &logWriter{ch: ch}
-	mgr := cm.backendManager(logs)
-	action, tag := cm.backendAction()
-	go func() {
-		res, err := mgr.Run(context.Background(), action, tag)
-		ch <- runMsg{done: true, err: err, resultTag: res.Tag}
-	}()
+	cm.upgradeStats = nil
+	t := cm.picker.selected()
+	if t.isLocal() {
+		logs := &logWriter{ch: ch}
+		mgr := cm.backendManager(logs)
+		action, tag := cm.backendAction()
+		go func() {
+			res, err := mgr.Run(context.Background(), action, tag)
+			ch <- runMsg{done: true, err: err, resultTag: res.Tag}
+		}()
+		return cm.waitForRun()
+	}
+	go cm.runAgentUpgrade(ch, t)
 	return cm.waitForRun()
+}
+
+func (cm *coreManager) runAgentUpgrade(ch chan runMsg, t target) {
+	if cm.action != coreActionChangeStable {
+		ch <- runMsg{done: true, err: fmt.Errorf("only version change is supported on non-local targets")}
+		return
+	}
+	req := cluster.UpgradeRequest{CoreVersion: cm.targetTag}
+	var nodes []cluster.Node
+	if t.isAll() {
+		nodes = agentNodes(cm.picker)
+		ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Local upgrade", Detail: "running on master", Status: "running"}}
+		logs := &logWriter{ch: ch}
+		mgr := cm.backendManager(logs)
+		action, tag := cm.backendAction()
+		res, err := mgr.Run(context.Background(), action, tag)
+		if err != nil {
+			ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Local upgrade", Detail: err.Error(), Status: "failed", Err: err}}
+		} else {
+			ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Local upgrade", Detail: res.Tag, Status: "done"}}
+			cm.resultTag = res.Tag
+		}
+	} else {
+		nodes = []cluster.Node{t.node}
+	}
+	for i, node := range nodes {
+		ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Upgrade node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "running"}}
+	}
+	outcomes := cluster.BroadcastUpgrade(context.Background(), nodes, req)
+	cm.upgradeStats = outcomes
+	var firstErr error
+	for i, outcome := range outcomes {
+		status := "done"
+		detail := outcome.Node.Alias + " (" + outcome.Node.WGIP + ")"
+		var ev *deploy.Event
+		if outcome.Err != nil {
+			status = "failed"
+			detail = outcome.Err.Error()
+			ev = &deploy.Event{Index: i + 1, Total: len(outcomes), Label: "Upgrade node", Detail: detail, Status: status, Err: outcome.Err}
+			if firstErr == nil {
+				firstErr = outcome.Err
+			}
+		} else {
+			ev = &deploy.Event{Index: i + 1, Total: len(outcomes), Label: "Upgrade node", Detail: detail, Status: status}
+		}
+		ch <- runMsg{event: ev}
+	}
+	ch <- runMsg{done: true, err: firstErr}
 }
 
 func (cm *coreManager) backendManager(logs *logWriter) *corepkg.Manager {
@@ -376,6 +466,8 @@ func (cm *coreManager) markRunFailed() { cm.phase = corePhaseDone }
 
 func (cm *coreManager) View() string {
 	switch cm.phase {
+	case corePhaseTarget:
+		return renderTargetPicker("sing-box Core · Target", cm.picker)
 	case corePhaseAction:
 		return cm.actionView()
 	case corePhaseStableSelect:
@@ -397,15 +489,20 @@ func (cm *coreManager) View() string {
 }
 
 func (cm *coreManager) actionView() string {
-	rows := []summaryLine{
-		summaryRow("Current version", or(cm.currentVersion, "not installed")),
-		summaryRow("Service", or(cm.serviceState, "unknown")),
-		summaryRow("Binary", coreUILayout().SingBoxBin),
-		summaryRow("Config", coreUILayout().ConfigJSON),
-	}
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("sing-box Core Management") + "\n\n")
-	b.WriteString(renderSummary(rows) + "\n")
+	if cm.picker.hasNodes() {
+		b.WriteString(renderTargetBadge(cm.picker.selected()) + "\n\n")
+	}
+	if cm.picker.selected().isLocal() {
+		rows := []summaryLine{
+			summaryRow("Current version", or(cm.currentVersion, "not installed")),
+			summaryRow("Service", or(cm.serviceState, "unknown")),
+			summaryRow("Binary", coreUILayout().SingBoxBin),
+			summaryRow("Config", coreUILayout().ConfigJSON),
+		}
+		b.WriteString(renderSummary(rows) + "\n")
+	}
 	if cm.fieldErr != "" {
 		b.WriteString(flowErr.Render(cm.fieldErr) + "\n")
 	}
@@ -429,31 +526,59 @@ func (cm *coreManager) stableView() string {
 }
 
 func (cm *coreManager) confirmView() string {
+	t := cm.picker.selected()
 	rows := []summaryLine{
+		summaryRow("Target", t.badge()),
 		summaryRow("Action", cm.actionLabel()),
-		summaryRow("Current version", or(cm.currentVersion, "not installed")),
-		summaryRow("Service", or(cm.serviceState, "unknown")),
+	}
+	if t.isLocal() {
+		rows = append(rows,
+			summaryRow("Current version", or(cm.currentVersion, "not installed")),
+			summaryRow("Service", or(cm.serviceState, "unknown")),
+		)
 	}
 	if cm.action == coreActionChangeStable {
 		rows = append(rows, summaryRow("Target release", cm.targetTag))
 	}
 	rows = append(rows, summaryBlank())
-	if cm.isReplaceAction() {
+	switch {
+	case cm.isReplaceAction() && t.isLocal():
 		rows = append(rows, summaryText("This will stop sing-box.service, download the selected stable release, replace the managed binary, validate config.json, and restart sing-box.service."))
-	} else {
+	case cm.isReplaceAction() && t.isNode():
+		rows = append(rows, summaryText("This will ask node "+t.node.Alias+" to download the release and restart sing-box."))
+	case cm.isReplaceAction() && t.isAll():
+		rows = append(rows, summaryText("This will run the local upgrade on the master and broadcast the version change to every registered node. Failures are collected and shown in the summary."))
+	default:
 		rows = append(rows, summaryText("This will run systemctl "+cm.systemctlAction()+" sing-box.service."))
 	}
 	return flowTitle.Render("sing-box Core · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (cm *coreManager) doneSummary() string {
+	t := cm.picker.selected()
 	rows := []summaryLine{
+		summaryRow("Target", t.badge()),
 		summaryRow("Action", cm.actionLabel()),
-		summaryRow("Current version", or(cm.currentVersion, "unknown")),
-		summaryRow("Service", or(cm.serviceState, "unknown")),
+	}
+	if t.isLocal() {
+		rows = append(rows,
+			summaryRow("Current version", or(cm.currentVersion, "unknown")),
+			summaryRow("Service", or(cm.serviceState, "unknown")),
+		)
 	}
 	if cm.resultTag != "" {
 		rows = append(rows, summaryRow("Applied release", cm.resultTag))
+	}
+	if len(cm.upgradeStats) > 0 {
+		rows = append(rows, summaryBlank(), summaryText("Per-node outcomes:"))
+		for _, o := range cm.upgradeStats {
+			label := o.Node.Alias + " (" + o.Node.WGIP + ")"
+			value := "ok"
+			if o.Err != nil {
+				value = "failed: " + o.Err.Error()
+			}
+			rows = append(rows, summaryIndentedRow(2, label, value))
+		}
 	}
 	return renderSummary(rows)
 }
@@ -473,7 +598,12 @@ func (cm *coreManager) logsView() string {
 
 func (cm *coreManager) footerHints() []operationHint {
 	switch cm.phase {
+	case corePhaseTarget:
+		return actionFooterHints("Select")
 	case corePhaseAction:
+		if cm.picker.hasNodes() {
+			return actionBackFooterHints("Select")
+		}
 		return actionFooterHints("Select")
 	case corePhaseStableSelect:
 		return actionBackFooterHints("Continue")
@@ -491,15 +621,20 @@ func (cm *coreManager) footerHints() []operationHint {
 }
 
 func (cm *coreManager) actions() []coreActionItem {
-	return []coreActionItem{
+	items := []coreActionItem{
 		{separator: true, label: "Config"},
 		{action: coreActionChangeStable, label: "Change sing-box version"},
-		{separator: true, label: "Service"},
-		{action: coreActionStart, label: "Start sing-box.service"},
-		{action: coreActionStop, label: "Stop sing-box.service"},
-		{action: coreActionRestart, label: "Restart sing-box.service"},
-		{action: coreActionLogs, label: "View sing-box.service logs"},
 	}
+	if cm.picker.selected().isLocal() {
+		items = append(items,
+			coreActionItem{separator: true, label: "Service"},
+			coreActionItem{action: coreActionStart, label: "Start sing-box.service"},
+			coreActionItem{action: coreActionStop, label: "Stop sing-box.service"},
+			coreActionItem{action: coreActionRestart, label: "Restart sing-box.service"},
+			coreActionItem{action: coreActionLogs, label: "View sing-box.service logs"},
+		)
+	}
+	return items
 }
 
 func (cm *coreManager) actionLabel() string {

@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
@@ -213,6 +214,105 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("core manager view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestCoreManagementTargetPickerOpensWhenNodesRegistered(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	registerTestNode(t, layout)
+	withCoreDeps(t, layout)
+
+	cm := newCoreManager()
+	if cm.phase != corePhaseTarget {
+		t.Fatalf("phase = %v, want corePhaseTarget", cm.phase)
+	}
+	view := cm.View()
+	for _, want := range []string{"sing-box Core · Target", "Local (master)", "Tokyo", "All (master + every node)"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("target picker missing %q:\n%s", want, view)
+		}
+	}
+	_, done := cm.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if done {
+		t.Fatalf("down should not close core manager")
+	}
+	_, done = cm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || cm.phase != corePhaseAction {
+		t.Fatalf("enter should move to action phase, phase=%v done=%v", cm.phase, done)
+	}
+	actionView := cm.View()
+	if !strings.Contains(actionView, "Target: Tokyo (10.10.0.2)") {
+		t.Fatalf("action view should show selected target badge:\n%s", actionView)
+	}
+	for _, hidden := range []string{"Start sing-box.service", "View sing-box.service logs"} {
+		if strings.Contains(actionView, hidden) {
+			t.Fatalf("non-local target should hide %q:\n%s", hidden, actionView)
+		}
+	}
+}
+
+func TestMonitorTargetPickerHidesLocalOnlyActionsForNode(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	writeStatusState(t, layout.StateDir, "monitor", "yes")
+	registerTestNode(t, layout)
+	withMonitorDeps(t, layout)
+
+	tm := newMonitorManager()
+	if tm.phase != monitorPhaseTarget {
+		t.Fatalf("phase = %v, want monitorPhaseTarget", tm.phase)
+	}
+	_, _ = tm.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	_, _ = tm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if tm.phase != monitorPhaseAction {
+		t.Fatalf("enter should advance to action, phase=%v", tm.phase)
+	}
+	view := tm.View()
+	if !strings.Contains(view, "Edit monitor settings") {
+		t.Fatalf("monitor settings action should remain available:\n%s", view)
+	}
+	for _, hidden := range []string{"Adjust traffic counters", "Start monitor service", "View monitor service logs"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("non-local target should hide %q:\n%s", hidden, view)
+		}
+	}
+}
+
+func TestProtocolTargetPickerShowsBadgeAndForAllAddsOption(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	registerTestNode(t, layout)
+	withProtocolManagerDeps(t, layout)
+
+	pm := newProtocolManager()
+	if pm.phase != protocolPhaseTarget {
+		t.Fatalf("phase = %v, want protocolPhaseTarget", pm.phase)
+	}
+	view := pm.View()
+	for _, want := range []string{"Protocol Management · Target", "Local (master)", "Tokyo", "All (master + every node)"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("target picker missing %q:\n%s", want, view)
+		}
+	}
+	_, _ = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if pm.phase != protocolPhaseAction {
+		t.Fatalf("enter should advance to action, phase=%v", pm.phase)
+	}
+	if !strings.Contains(pm.View(), "Target: Local") {
+		t.Fatalf("action view should show Local target badge:\n%s", pm.View())
+	}
+}
+
+func registerTestNode(t *testing.T, layout paths.Layout) {
+	t.Helper()
+	registry := cluster.NewRegistry(layout)
+	node := cluster.Node{
+		ID:       "001",
+		Alias:    "Tokyo",
+		Domain:   "jp.example.com",
+		WGIP:     "10.10.0.2",
+		APIToken: "tok",
+	}
+	if err := registry.Save(node); err != nil {
+		t.Fatalf("register test node: %v", err)
 	}
 }
 
