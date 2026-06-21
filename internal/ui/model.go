@@ -73,6 +73,7 @@ type Model struct {
 	selfupdate  *selfUpdateManager
 	uninstall   *uninstallManager
 	nodes       *nodeManager
+	cert        *certManager
 	placeholder *placeholderManager
 }
 
@@ -230,6 +231,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.cert != nil {
+		cmd, done := m.cert.Update(msg)
+		if done {
+			m.cert = nil
+		}
+		return m, cmd
+	}
 	if m.placeholder != nil {
 		cmd, done := m.placeholder.Update(msg)
 		if done {
@@ -273,7 +281,9 @@ func (m *Model) activate() tea.Cmd {
 		s.setSize(m.width, m.height)
 		m.subscribe = s
 	case 4:
-		m.placeholder = newPlaceholderManager("Certificate & site")
+		c := newCertManager()
+		c.setSize(m.width, m.height)
+		m.cert = c
 	case 5:
 		t := newMonitorManager()
 		t.setSize(m.width, m.height)
@@ -389,6 +399,10 @@ func (m *Model) contentView(width, height int) string {
 		m.nodes.setSize(width, height)
 		return m.nodes.View()
 	}
+	if m.cert != nil {
+		m.cert.setSize(width, height)
+		return m.cert.View()
+	}
 	if m.placeholder != nil {
 		return m.placeholder.View()
 	}
@@ -398,7 +412,7 @@ func (m *Model) contentView(width, height int) string {
 func (m *Model) footerView() string {
 	var parts []operationHint
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.selfupdate == nil && m.uninstall == nil && m.nodes == nil && m.placeholder == nil {
+		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.selfupdate == nil && m.uninstall == nil && m.nodes == nil && m.cert == nil && m.placeholder == nil {
 			parts = append(parts, menuFooterHints()...)
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
@@ -414,6 +428,8 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.uninstall.footerHints()...)
 		} else if m.nodes != nil {
 			parts = append(parts, m.nodes.footerHints()...)
+		} else if m.cert != nil {
+			parts = append(parts, m.cert.footerHints()...)
 		} else if m.placeholder != nil {
 			parts = append(parts, m.placeholder.footerHints()...)
 		}

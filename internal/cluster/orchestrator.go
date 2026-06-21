@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
@@ -36,6 +37,14 @@ type AddNodeRequest struct {
 	// Version is the release tag the node should download to match the master.
 	Version string
 
+	// CoreVersion is the sing-box core version (without leading "v") the node
+	// downloads from upstream. Required so node and master run matching cores.
+	CoreVersion string
+
+	// SiteTemplate names the masquerade site template the node serves when
+	// TLS protocols are enabled. Defaults to deploy.DefaultSiteTemplate.
+	SiteTemplate string
+
 	// MasterPublicEndpoint is the master's externally-reachable host:port the
 	// node uses as its WireGuard Endpoint.
 	MasterPublicEndpoint string
@@ -57,6 +66,10 @@ type Orchestrator struct {
 	Registry Registry
 	Runner   system.Runner // executes WireGuard reload on the master
 
+	// ACME issues node certificates via DNS-01 using the registry's DNS
+	// credential store. Required when adding nodes that use TLS protocols.
+	ACME *acme.Manager
+
 	// SSHDial opens an SSH connection to a node. Defaults to sshexec.Dial.
 	SSHDial func(ctx context.Context, target sshexec.Target, auth sshexec.Auth) (sshClient, error)
 
@@ -64,6 +77,12 @@ type Orchestrator struct {
 	// WireGuard IP. Defaults to a TCP dial against the agent port with a
 	// 15s deadline. Tests can substitute a faster check.
 	VerifyConnectivity func(ctx context.Context, node Node) error
+
+	// PostRegister runs after the node is saved to the registry. Default does
+	// nothing; the AddNode flow appends the cert / site / initial-config
+	// steps automatically. Callers (mostly tests) can use this hook to inject
+	// extra behaviour or stub out the live agent calls entirely.
+	PostRegister func(ctx context.Context, node Node) error
 
 	// Progress receives a step Event for every orchestration phase.
 	Progress func(Event)
@@ -86,10 +105,15 @@ type addStep struct {
 }
 
 // AddNode runs the full add-node flow. On success, the new node is registered
-// and the master's WireGuard config has been reloaded with the new peer.
+// and the master's WireGuard config has been reloaded with the new peer. The
+// master's own WireGuard setup is ensured (installing wireguard-tools,
+// rendering wg-sdeploy.conf, enabling wg-quick) before any remote action.
 func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, error) {
 	if err := req.Validate(); err != nil {
 		return Node{}, err
+	}
+	if err := o.EnsureMasterWireGuard(ctx); err != nil {
+		return Node{}, fmt.Errorf("ensure master WireGuard: %w", err)
 	}
 
 	// Allocate identity and credentials before any remote action — failure
@@ -169,12 +193,26 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 		return Node{}, fmt.Errorf("render node wg config: %w", err)
 	}
 
+	siteTemplate := strings.TrimSpace(req.SiteTemplate)
+	if siteTemplate == "" {
+		siteTemplate = deploy.DefaultSiteTemplate
+	}
+
 	steps := []addStep{
 		{"Preflight", "install WireGuard on the node", func(ctx context.Context) error {
 			return installWireGuard(ctx, client)
 		}},
 		{"Binaries", "download singbox-node and singbox-monitor", func(ctx context.Context) error {
 			return downloadAgentBinaries(ctx, client, req.Version)
+		}},
+		{"sing-box core", "download sing-box core on the node", func(ctx context.Context) error {
+			return downloadSingBoxCore(ctx, client, req.CoreVersion)
+		}},
+		{"sing-box unit", "install sing-box systemd unit (started later)", func(ctx context.Context) error {
+			return installSingBoxUnit(ctx, client)
+		}},
+		{"Firewall", "open protocol ports on the node", func(ctx context.Context) error {
+			return openNodeFirewall(ctx, client, node.Ports, node.EnabledProtocols)
 		}},
 		{"WireGuard", "write node config and start tunnel", func(ctx context.Context) error {
 			if err := client.WriteFile(ctx, wireguard.ConfigPath, []byte(wgConfig), 0o600); err != nil {
@@ -199,6 +237,27 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 		{"Register node", "save node to state/nodes/", func(ctx context.Context) error {
 			return o.Registry.Save(node)
 		}},
+	}
+	if o.PostRegister != nil {
+		steps = append(steps, addStep{"Post-register", "run caller-provided post-registration hook", func(ctx context.Context) error {
+			return o.PostRegister(ctx, node)
+		}})
+	} else {
+		if node.HasTLSProtocol() {
+			steps = append(steps,
+				addStep{"Issue cert", "issue TLS certificate via DNS-01", func(ctx context.Context) error {
+					return o.issueAndDeployNodeCert(ctx, node)
+				}},
+				addStep{"Site", "deploy masquerade site and start Nginx on the node", func(ctx context.Context) error {
+					return o.deployNodeSite(ctx, node, siteTemplate)
+				}},
+			)
+		}
+		steps = append(steps,
+			addStep{"Initial config", "push initial sing-box config and start the service", func(ctx context.Context) error {
+				return o.pushInitialConfig(ctx, node)
+			}},
+		)
 	}
 
 	for i, s := range steps {
@@ -359,6 +418,9 @@ func (r AddNodeRequest) Validate() error {
 	}
 	if strings.TrimSpace(r.Version) == "" {
 		return fmt.Errorf("version is required so the node downloads matching binaries")
+	}
+	if strings.TrimSpace(r.CoreVersion) == "" {
+		return fmt.Errorf("core version is required so the node downloads a matching sing-box core")
 	}
 	return nil
 }

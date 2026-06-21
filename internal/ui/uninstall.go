@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -28,6 +29,7 @@ const (
 	uninstallMonitorDBKey     = "monitor_db"
 	uninstallSiteKey          = "site"
 	uninstallSubscriptionsKey = "subscriptions"
+	uninstallNodesKey         = "nodes"
 )
 
 var (
@@ -205,8 +207,10 @@ func (um *uninstallManager) startRun() tea.Cmd {
 	um.resetRun(make(chan runMsg, 64))
 	ch := um.ch
 	logs := &logWriter{ch: ch}
+	layout := uninstallUILayout()
+	tearDownNodes := um.selected(uninstallNodesKey)
 	opts := uninstall.Options{
-		Layout:              uninstallUILayout(),
+		Layout:              layout,
 		Runner:              system.NewExecRunner(logs),
 		DeleteRuntime:       um.selected(uninstallRuntimeKey),
 		DeleteCertificates:  um.selected(uninstallCertificatesKey),
@@ -219,6 +223,23 @@ func (um *uninstallManager) startRun() tea.Cmd {
 		},
 	}
 	go func() {
+		if tearDownNodes {
+			registry := cluster.NewRegistry(layout)
+			orch := &cluster.Orchestrator{
+				Registry: registry,
+				Runner:   system.NewExecRunner(logs),
+				Progress: func(e cluster.Event) {
+					ev := deploy.Event{Index: e.Index, Total: e.Total, Label: "Node " + e.Label, Detail: e.Detail, Status: e.Status, Err: e.Err}
+					ch <- runMsg{event: &ev}
+				},
+			}
+			nodes, lerr := registry.List()
+			if lerr == nil {
+				for _, n := range nodes {
+					_ = orch.RemoveNode(context.Background(), n.ID, true)
+				}
+			}
+		}
 		err := uninstallRun(context.Background(), opts)
 		ch <- runMsg{done: true, err: err}
 	}()
@@ -320,6 +341,7 @@ func (um *uninstallManager) footerHints() []operationHint {
 
 func uninstallOptions(layout paths.Layout) []uninstallDataOption {
 	return []uninstallDataOption{
+		{key: uninstallNodesKey, label: "Tear down cluster nodes", path: "remote /api/teardown on each node"},
 		{key: uninstallRuntimeKey, label: "Runtime state/config", path: layout.StateDir + " and " + filepath.Dir(layout.SingBoxBin), defaultDelete: true},
 		{key: uninstallCertificatesKey, label: "Certificates", path: layout.TLSDir},
 		{key: uninstallMonitorDBKey, label: "SQLite monitor database", path: layout.MonitorDB},

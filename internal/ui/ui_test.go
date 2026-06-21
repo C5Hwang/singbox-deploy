@@ -249,7 +249,7 @@ func TestUninstallConfirmTogglesOptionalData(t *testing.T) {
 	if um.selected(uninstallCertificatesKey) {
 		t.Fatalf("certificates should be kept by default")
 	}
-	um.cursor = 1
+	um.cursor = 2
 	_, done := um.handleKey(tea.KeyMsg{Type: tea.KeySpace})
 	if done || !um.selected(uninstallCertificatesKey) {
 		t.Fatalf("space should toggle certificates, done=%v selected=%v", done, um.selected(uninstallCertificatesKey))

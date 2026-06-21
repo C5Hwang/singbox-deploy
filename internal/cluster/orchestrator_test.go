@@ -108,6 +108,7 @@ func TestAddNodeRequestValidate(t *testing.T) {
 		EnabledProtocols:     []config.Protocol{config.ProtocolRealityVision},
 		MasterPublicEndpoint: "5.6.7.8:51820",
 		Version:              "v1.0.0",
+		CoreVersion:          "1.12.0",
 	}
 	if err := good.Validate(); err != nil {
 		t.Errorf("good request rejected: %v", err)
@@ -154,6 +155,7 @@ func TestAddNodeFlowSucceeds(t *testing.T) {
 	client := newFakeSSHClient()
 	o, registry := newTestOrchestrator(t, client)
 	o.VerifyConnectivity = func(ctx context.Context, n Node) error { return nil }
+	o.PostRegister = func(context.Context, Node) error { return nil }
 
 	req := AddNodeRequest{
 		Alias:                "Tokyo",
@@ -161,11 +163,12 @@ func TestAddNodeFlowSucceeds(t *testing.T) {
 		SSHTarget:            sshexec.Target{Host: "203.0.113.10"},
 		SSHAuth:              sshexec.Auth{User: "root", Password: "x"},
 		Domain:               "jp.example.com",
-		EnabledProtocols:     []config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2},
-		Ports:                config.Ports{RealityVision: 443, Hysteria2: 34567},
+		EnabledProtocols:     []config.Protocol{config.ProtocolRealityVision},
+		Ports:                config.Ports{RealityVision: 443},
 		RealityServerName:    "www.microsoft.com",
 		MasterPublicEndpoint: "198.51.100.1:51820",
 		Version:              "v1.2.3",
+		CoreVersion:          "1.12.0",
 	}
 
 	node, err := o.AddNode(context.Background(), req)
