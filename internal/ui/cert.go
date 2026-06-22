@@ -198,15 +198,42 @@ func (cm *certManager) activateAction() {
 }
 
 func (cm *certManager) addFields(existing *cluster.DNSCredentials) []field {
-	var rootDef, providerDef, tokenDef, secretDef string
+	var rootDef, providerDef, cfTokenDef, aliyunKeyDef, aliyunSecretDef string
 	if existing != nil {
-		rootDef, providerDef, tokenDef, secretDef = existing.RootDomain, existing.Provider, existing.APIToken, existing.APISecret
+		rootDef, providerDef = existing.RootDomain, existing.Provider
+		switch existing.Provider {
+		case "cloudflare":
+			cfTokenDef = existing.APIToken
+		case "aliyun":
+			aliyunKeyDef = existing.APIToken
+			aliyunSecretDef = existing.APISecret
+		}
+	}
+	if providerDef == "" {
+		providerDef = "cloudflare"
 	}
 	return []field{
 		{key: "root_domain", label: "Root domain", def: rootDef, note: "Root zone where the DNS-01 TXT records will be written (e.g. example.com)."},
 		{key: "provider", label: "DNS provider", def: providerDef, options: []string{"cloudflare", "aliyun"}},
-		{key: "api_token", label: "API token / AccessKey ID", def: tokenDef},
-		{key: "api_secret", label: "API secret (Aliyun only)", def: secretDef, note: "Leave blank for Cloudflare."},
+		{
+			key:   "cf_token",
+			label: "Cloudflare API Token",
+			def:   cfTokenDef,
+			note:  "API Token with Zone:DNS:Edit permission on the root zone.",
+			skip:  func(vals map[string]string) bool { return vals["provider"] != "cloudflare" },
+		},
+		{
+			key:   "aliyun_access_key_id",
+			label: "Aliyun AccessKey ID",
+			def:   aliyunKeyDef,
+			skip:  func(vals map[string]string) bool { return vals["provider"] != "aliyun" },
+		},
+		{
+			key:   "aliyun_access_key_secret",
+			label: "Aliyun AccessKey Secret",
+			def:   aliyunSecretDef,
+			skip:  func(vals map[string]string) bool { return vals["provider"] != "aliyun" },
+		},
 	}
 }
 
@@ -233,8 +260,13 @@ func (cm *certManager) startEditForm() {
 	cm.parameterForm.values = map[string]string{
 		"root_domain": creds.RootDomain,
 		"provider":    creds.Provider,
-		"api_token":   creds.APIToken,
-		"api_secret":  creds.APISecret,
+	}
+	switch creds.Provider {
+	case "cloudflare":
+		cm.parameterForm.values["cf_token"] = creds.APIToken
+	case "aliyun":
+		cm.parameterForm.values["aliyun_access_key_id"] = creds.APIToken
+		cm.parameterForm.values["aliyun_access_key_secret"] = creds.APISecret
 	}
 	cm.parameterForm.validate = validateCertField
 	cm.phase = certPhaseForm
@@ -277,13 +309,17 @@ func validateCertField(f field, val string, vals map[string]string) error {
 		if v != "cloudflare" && v != "aliyun" {
 			return fmt.Errorf("pick cloudflare or aliyun")
 		}
-	case "api_token":
+	case "cf_token":
 		if v == "" {
 			return fmt.Errorf("api token is required")
 		}
-	case "api_secret":
-		if vals["provider"] == "aliyun" && v == "" {
-			return fmt.Errorf("aliyun requires an api secret")
+	case "aliyun_access_key_id":
+		if v == "" {
+			return fmt.Errorf("accesskey id is required")
+		}
+	case "aliyun_access_key_secret":
+		if v == "" {
+			return fmt.Errorf("accesskey secret is required")
 		}
 	case "target_root":
 		if v == "" {
@@ -297,21 +333,11 @@ func (cm *certManager) apply() error {
 	store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
 	switch cm.action {
 	case certActionAdd:
-		creds := cluster.DNSCredentials{
-			RootDomain: strings.TrimSpace(cm.values["root_domain"]),
-			Provider:   strings.TrimSpace(cm.values["provider"]),
-			APIToken:   strings.TrimSpace(cm.values["api_token"]),
-			APISecret:  strings.TrimSpace(cm.values["api_secret"]),
-		}
+		creds := dnsCredentialsFromValues(cm.values)
 		cm.doneMsg = fmt.Sprintf("Saved credentials for %s.", creds.RootDomain)
 		return store.Save(creds)
 	case certActionEdit:
-		creds := cluster.DNSCredentials{
-			RootDomain: strings.TrimSpace(cm.values["root_domain"]),
-			Provider:   strings.TrimSpace(cm.values["provider"]),
-			APIToken:   strings.TrimSpace(cm.values["api_token"]),
-			APISecret:  strings.TrimSpace(cm.values["api_secret"]),
-		}
+		creds := dnsCredentialsFromValues(cm.values)
 		cm.doneMsg = fmt.Sprintf("Updated credentials for %s.", creds.RootDomain)
 		// Edit may rename root; remove the old entry first.
 		if creds.RootDomain != cm.selectedRoot {
@@ -376,22 +402,16 @@ func (cm *certManager) confirmView() string {
 			summaryRow("Action", "Add DNS credentials"),
 			summaryRow("Root domain", cm.values["root_domain"]),
 			summaryRow("Provider", cm.values["provider"]),
-			summaryRow("API token", maskedSecret(cm.values["api_token"])),
 		)
-		if cm.values["provider"] == "aliyun" {
-			rows = append(rows, summaryRow("API secret", maskedSecret(cm.values["api_secret"])))
-		}
+		rows = append(rows, providerCredRows(cm.values)...)
 	case certActionEdit:
 		rows = append(rows,
 			summaryRow("Action", "Update DNS credentials"),
 			summaryRow("Original root", cm.selectedRoot),
 			summaryRow("New root domain", cm.values["root_domain"]),
 			summaryRow("Provider", cm.values["provider"]),
-			summaryRow("API token", maskedSecret(cm.values["api_token"])),
 		)
-		if cm.values["provider"] == "aliyun" {
-			rows = append(rows, summaryRow("API secret", maskedSecret(cm.values["api_secret"])))
-		}
+		rows = append(rows, providerCredRows(cm.values)...)
 	case certActionDelete:
 		rows = append(rows,
 			summaryRow("Action", "Delete DNS credentials"),
@@ -399,6 +419,21 @@ func (cm *certManager) confirmView() string {
 		)
 	}
 	return flowTitle.Render("Certificate & site · Confirm") + "\n\n" + renderSummary(rows)
+}
+
+// providerCredRows returns the masked credential rows for the confirm view,
+// keyed off the provider selection.
+func providerCredRows(vals map[string]string) []summaryLine {
+	switch vals["provider"] {
+	case "cloudflare":
+		return []summaryLine{summaryRow("Cloudflare API Token", maskedSecret(vals["cf_token"]))}
+	case "aliyun":
+		return []summaryLine{
+			summaryRow("Aliyun AccessKey ID", maskedSecret(vals["aliyun_access_key_id"])),
+			summaryRow("Aliyun AccessKey Secret", maskedSecret(vals["aliyun_access_key_secret"])),
+		}
+	}
+	return nil
 }
 
 func maskedSecret(s string) string {

@@ -51,8 +51,9 @@ func newDNSCredentialForm(presetDomain string, store dnsCredentialSaver) *dnsCre
 	return f
 }
 
-// dnsCredentialFields returns the four fields the form collects. presetRoot
-// pre-fills root_domain.
+// dnsCredentialFields returns the fields the form collects. The provider
+// selection gates which credential fields are visible: Cloudflare needs only
+// an API token; Aliyun needs an AccessKey ID and Secret pair.
 func dnsCredentialFields(presetRoot string) []field {
 	return []field{
 		{
@@ -62,8 +63,22 @@ func dnsCredentialFields(presetRoot string) []field {
 			note:  "Root zone where the DNS-01 TXT records will be written (e.g. example.com). Adjust for multi-label TLDs such as co.uk; use the punycode form for IDN.",
 		},
 		{key: "provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}},
-		{key: "api_token", label: "API token / AccessKey ID"},
-		{key: "api_secret", label: "API secret (Aliyun only)", note: "Leave blank for Cloudflare."},
+		{
+			key:   "cf_token",
+			label: "Cloudflare API Token",
+			note:  "API Token with Zone:DNS:Edit permission on the root zone.",
+			skip:  func(vals map[string]string) bool { return vals["provider"] != "cloudflare" },
+		},
+		{
+			key:   "aliyun_access_key_id",
+			label: "Aliyun AccessKey ID",
+			skip:  func(vals map[string]string) bool { return vals["provider"] != "aliyun" },
+		},
+		{
+			key:   "aliyun_access_key_secret",
+			label: "Aliyun AccessKey Secret",
+			skip:  func(vals map[string]string) bool { return vals["provider"] != "aliyun" },
+		},
 	}
 }
 
@@ -143,12 +158,7 @@ func (f *dnsCredentialForm) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (f *dnsCredentialForm) complete() {
-	creds := cluster.DNSCredentials{
-		RootDomain: strings.TrimSpace(f.values["root_domain"]),
-		Provider:   strings.TrimSpace(f.values["provider"]),
-		APIToken:   strings.TrimSpace(f.values["api_token"]),
-		APISecret:  strings.TrimSpace(f.values["api_secret"]),
-	}
+	creds := dnsCredentialsFromValues(f.values)
 	if err := f.store.Save(creds); err != nil {
 		f.saveErr = err.Error()
 		// Jump back to the last field so the user can fix and retry.
@@ -182,4 +192,23 @@ func (f *dnsCredentialForm) View() string {
 
 func (f *dnsCredentialForm) footerHints() []operationHint {
 	return f.parameterForm.footerHints()
+}
+
+// dnsCredentialsFromValues maps the provider-conditional form values back to
+// the storage struct: Cloudflare's cf_token becomes APIToken; Aliyun's
+// AccessKey ID/Secret become APIToken/APISecret. Shared with cert.go.
+func dnsCredentialsFromValues(vals map[string]string) cluster.DNSCredentials {
+	provider := strings.TrimSpace(vals["provider"])
+	creds := cluster.DNSCredentials{
+		RootDomain: strings.TrimSpace(vals["root_domain"]),
+		Provider:   provider,
+	}
+	switch provider {
+	case "cloudflare":
+		creds.APIToken = strings.TrimSpace(vals["cf_token"])
+	case "aliyun":
+		creds.APIToken = strings.TrimSpace(vals["aliyun_access_key_id"])
+		creds.APISecret = strings.TrimSpace(vals["aliyun_access_key_secret"])
+	}
+	return creds
 }

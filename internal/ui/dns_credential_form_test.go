@@ -41,30 +41,73 @@ func (s *fakeDNSSaver) Save(c cluster.DNSCredentials) error {
 	return nil
 }
 
-func TestDNSCredentialFormPrefillsAndSaves(t *testing.T) {
+func TestDNSCredentialFormCloudflarePath(t *testing.T) {
 	saver := &fakeDNSSaver{}
 	f := newDNSCredentialForm("tokyo.example.com", saver)
 	if got := f.fields[0].def; got != "example.com" {
 		t.Fatalf("root_domain pre-fill default = %q, want example.com", got)
 	}
-	// Walk through the four fields: root_domain (default), provider
-	// (cloudflare default), api_token (typed), api_secret (skipped/empty).
+	// Cloudflare path is three steps: root_domain (default), provider
+	// (cloudflare default), cf_token (typed). The aliyun fields are skipped.
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // accept default root_domain
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // accept default provider=cloudflare
 	f.input.SetValue("tok")
-	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit api_token
-	f.input.SetValue("")
-	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit empty api_secret (cloudflare doesn't need it)
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit cf_token → form completes
 
 	saved, cancelled, creds := f.State()
 	if !saved || cancelled {
 		t.Fatalf("expected saved=true cancelled=false, got saved=%v cancelled=%v", saved, cancelled)
 	}
-	if creds.RootDomain != "example.com" || creds.Provider != "cloudflare" || creds.APIToken != "tok" {
+	if creds.RootDomain != "example.com" || creds.Provider != "cloudflare" || creds.APIToken != "tok" || creds.APISecret != "" {
 		t.Fatalf("saved credentials wrong: %#v", creds)
 	}
-	if saver.last.APIToken != "tok" {
-		t.Fatalf("saver did not receive token: %#v", saver.last)
+	if saver.last.APIToken != "tok" || saver.last.APISecret != "" {
+		t.Fatalf("saver did not receive cloudflare token only: %#v", saver.last)
+	}
+}
+
+func TestDNSCredentialFormAliyunPath(t *testing.T) {
+	saver := &fakeDNSSaver{}
+	f := newDNSCredentialForm("tokyo.example.com", saver)
+	// Switch the provider selection to aliyun before committing it.
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit default root_domain
+	f.Update(tea.KeyMsg{Type: tea.KeyDown})  // move provider option to aliyun
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit provider=aliyun
+	f.input.SetValue("LTAI-key")
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit aliyun_access_key_id
+	f.input.SetValue("LTAI-secret")
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit aliyun_access_key_secret → form completes
+
+	saved, cancelled, creds := f.State()
+	if !saved || cancelled {
+		t.Fatalf("expected saved=true cancelled=false, got saved=%v cancelled=%v", saved, cancelled)
+	}
+	if creds.Provider != "aliyun" || creds.APIToken != "LTAI-key" || creds.APISecret != "LTAI-secret" {
+		t.Fatalf("saved aliyun credentials wrong: %#v", creds)
+	}
+	if saver.last.APIToken != "LTAI-key" || saver.last.APISecret != "LTAI-secret" {
+		t.Fatalf("saver did not receive aliyun access key + secret: %#v", saver.last)
+	}
+}
+
+func TestDNSCredentialFormAliyunRequiresSecret(t *testing.T) {
+	saver := &fakeDNSSaver{}
+	f := newDNSCredentialForm("example.com", saver)
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // root_domain
+	f.Update(tea.KeyMsg{Type: tea.KeyDown})  // provider → aliyun
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit provider
+	f.input.SetValue("LTAI-key")
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit access key id
+	// Leave access key secret blank — validation should reject and form must
+	// remain on the aliyun_access_key_secret field, not saved.
+	f.input.SetValue("")
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	saved, cancelled, _ := f.State()
+	if saved || cancelled {
+		t.Fatalf("blank aliyun secret should not save: saved=%v cancelled=%v", saved, cancelled)
+	}
+	if got := f.parameterForm.currentFieldKey(); got != "aliyun_access_key_secret" {
+		t.Fatalf("cursor should remain on aliyun_access_key_secret, got %q", got)
 	}
 }
 
