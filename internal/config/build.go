@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 )
@@ -34,6 +35,10 @@ func Build(o ServerOptions) ([]byte, error) {
 
 	inbounds := make([]any, 0, len(o.enabledSet()))
 	for _, proto := range o.enabledSet() {
+		if port := protocolListenPort(o.Ports, proto); port == MasqueradeSitePort {
+			slog.Warn("protocol listen_port conflicts with masquerade site; existing install kept as-is, change via 'Manage protocols'",
+				"protocol", string(proto), "port", port)
+		}
 		tmpl, data := o.fragmentFor(proto, shortID)
 		frag, err := templatefs.Render(tmpl, data)
 		if err != nil {
@@ -112,4 +117,20 @@ func positiveOrDefault(value, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+func protocolListenPort(ports Ports, proto Protocol) int {
+	switch proto {
+	case ProtocolRealityVision:
+		return ports.RealityVision
+	case ProtocolRealityGRPC:
+		return ports.RealityGRPC
+	case ProtocolHysteria2:
+		return ports.Hysteria2
+	case ProtocolTUIC:
+		return ports.TUIC
+	case ProtocolAnyTLS:
+		return ports.AnyTLS
+	}
+	return 0
 }

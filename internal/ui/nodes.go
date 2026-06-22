@@ -14,6 +14,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/sshexec"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
 type nodePhase int
@@ -218,9 +219,16 @@ func (nm *nodeManager) addNodeFields() []field {
 	for _, p := range config.AllProtocols {
 		protoOpts = append(protoOpts, string(p))
 	}
-	publicIP := strings.TrimSpace(nm.host.Arch) // unused; placeholder
-	_ = publicIP
-	return []field{
+	// The install-flow helper protocolSelected treats an empty value as
+	// "everything", which fits the install form's default-all behaviour.
+	// Node forms start with no protocols picked, so use a stricter predicate
+	// that hides per-protocol port fields until the operator selects them.
+	missingProtocol := func(p config.Protocol) func(map[string]string) bool {
+		return func(v map[string]string) bool {
+			return !selectedOptions(v["protocols"])[string(p)]
+		}
+	}
+	fields := []field{
 		{key: "alias", label: "Node alias", note: "Human label shown in subscriptions and the TUI (e.g. Tokyo, Singapore)."},
 		{key: "public_ip", label: "Node public IP or host", note: "Where the node is reachable from the public internet for the initial SSH handshake."},
 		{key: "ssh_port", label: "SSH port", def: "22"},
@@ -228,9 +236,22 @@ func (nm *nodeManager) addNodeFields() []field {
 		{key: "ssh_password", label: "SSH password", note: "Used only during initial provisioning. Not persisted on the master."},
 		{key: "domain", label: "Node TLS domain", note: "Fully qualified domain the node will terminate TLS on (e.g. jp.example.com)."},
 		{key: "protocols", label: "Enabled protocols", options: protoOpts, multi: true, note: "Pick one or more protocols this node will serve."},
-		{key: "master_endpoint", label: "Master public host:port for WireGuard", note: "How the node should reach the master on port 51820/udp (e.g. master.example.com:51820)."},
-		{key: "version", label: "Release tag to deploy on the node", def: getVersion(), note: "Defaults to the master's current release."},
 	}
+	for _, p := range config.AllProtocols {
+		for _, port := range uiparams.ProtocolInstallFieldsForProtocol(p) {
+			if !strings.HasSuffix(port.Key, "_port") {
+				continue
+			}
+			f := fieldFromParameter(port)
+			f.skip = missingProtocol(p)
+			fields = append(fields, f)
+		}
+	}
+	fields = append(fields,
+		field{key: "master_endpoint", label: "Master public host:port for WireGuard", note: "How the node should reach the master on port 51820/udp (e.g. master.example.com:51820)."},
+		field{key: "version", label: "Release tag to deploy on the node", def: getVersion(), note: "Defaults to the master's current release."},
+	)
+	return fields
 }
 
 func (nm *nodeManager) deleteSelectFields() []field {
@@ -278,6 +299,9 @@ func validateNodeField(f field, val string, _ map[string]string) error {
 			return fmt.Errorf("select a node to delete")
 		}
 	}
+	if strings.HasSuffix(f.key, "_port") && f.key != "ssh_port" {
+		return uiparams.ValidateSharedParameterValue(f.key, v)
+	}
 	return nil
 }
 
@@ -322,7 +346,13 @@ func (nm *nodeManager) startRun() tea.Cmd {
 	}
 	switch nm.action {
 	case nodeActionAdd:
-		req := nm.buildAddRequest()
+		req, err := nm.buildAddRequest()
+		if err != nil {
+			nm.fieldErr = err.Error()
+			nm.phase = nodePhaseAction
+			ch <- runMsg{done: true, err: err}
+			return nm.waitForRun()
+		}
 		go func() {
 			node, err := orch.AddNode(context.Background(), req)
 			if err == nil {
@@ -344,13 +374,17 @@ func (nm *nodeManager) startRun() tea.Cmd {
 	return nm.waitForRun()
 }
 
-func (nm *nodeManager) buildAddRequest() cluster.AddNodeRequest {
+func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 	v := nm.values
 	sshPort, _ := strconv.Atoi(strings.TrimSpace(v["ssh_port"]))
 	if sshPort == 0 {
 		sshPort = 22
 	}
 	protocols := protocolListFromCSV(v["protocols"])
+	ports, err := allocateNodeProtocolPorts(protocols, v)
+	if err != nil {
+		return cluster.AddNodeRequest{}, err
+	}
 	return cluster.AddNodeRequest{
 		Alias:    strings.TrimSpace(v["alias"]),
 		PublicIP: strings.TrimSpace(v["public_ip"]),
@@ -364,9 +398,54 @@ func (nm *nodeManager) buildAddRequest() cluster.AddNodeRequest {
 		},
 		Domain:               strings.TrimSpace(v["domain"]),
 		EnabledProtocols:     protocols,
+		Ports:                ports,
 		MasterPublicEndpoint: strings.TrimSpace(v["master_endpoint"]),
 		Version:              strings.TrimSpace(v["version"]),
+	}, nil
+}
+
+// allocateNodeProtocolPorts honours user-supplied port values from the form
+// and fills any blanks with a random unprivileged port. 80 is reserved (HTTP
+// challenge / nginx) and 443 is rejected by config.ValidateProtocolPort as
+// the masquerade site.
+func allocateNodeProtocolPorts(selected []config.Protocol, vals map[string]string) (config.Ports, error) {
+	used := map[int]bool{80: true}
+	var ports config.Ports
+	for _, p := range selected {
+		key := portFieldKey(p)
+		raw := strings.TrimSpace(vals[key])
+		var port int
+		if raw == "" {
+			alloc, err := config.RandomProtocolPort(used)
+			if err != nil {
+				return config.Ports{}, err
+			}
+			port = alloc
+		} else {
+			n, err := strconv.Atoi(raw)
+			if err != nil {
+				return config.Ports{}, fmt.Errorf("%s port: must be between 1 and 65535", p)
+			}
+			if err := config.ValidateProtocolPort(n, used); err != nil {
+				return config.Ports{}, fmt.Errorf("%s: %w", p, err)
+			}
+			used[n] = true
+			port = n
+		}
+		switch p {
+		case config.ProtocolRealityVision:
+			ports.RealityVision = port
+		case config.ProtocolRealityGRPC:
+			ports.RealityGRPC = port
+		case config.ProtocolHysteria2:
+			ports.Hysteria2 = port
+		case config.ProtocolTUIC:
+			ports.TUIC = port
+		case config.ProtocolAnyTLS:
+			ports.AnyTLS = port
+		}
 	}
+	return ports, nil
 }
 
 func protocolListFromCSV(raw string) []config.Protocol {

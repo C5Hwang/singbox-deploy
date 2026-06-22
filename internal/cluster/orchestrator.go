@@ -243,17 +243,13 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 			return o.PostRegister(ctx, node)
 		}})
 	} else {
-		if node.HasTLSProtocol() {
-			steps = append(steps,
-				addStep{"Issue cert", "issue TLS certificate via DNS-01", func(ctx context.Context) error {
-					return o.issueAndDeployNodeCert(ctx, node)
-				}},
-				addStep{"Site", "deploy masquerade site and start Nginx on the node", func(ctx context.Context) error {
-					return o.deployNodeSite(ctx, node, siteTemplate)
-				}},
-			)
-		}
 		steps = append(steps,
+			addStep{"Issue cert", "issue TLS certificate via DNS-01", func(ctx context.Context) error {
+				return o.issueAndDeployNodeCert(ctx, node)
+			}},
+			addStep{"Site", "deploy masquerade site and start Nginx on the node", func(ctx context.Context) error {
+				return o.deployNodeSite(ctx, node, siteTemplate)
+			}},
 			addStep{"Initial config", "push initial sing-box config and start the service", func(ctx context.Context) error {
 				return o.pushInitialConfig(ctx, node)
 			}},

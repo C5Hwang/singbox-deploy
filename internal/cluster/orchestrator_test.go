@@ -208,6 +208,56 @@ func TestAddNodeFlowSucceeds(t *testing.T) {
 	}
 }
 
+// TestAddNodeAttemptsCertAndSiteForRealityOnly confirms that the orchestrator
+// no longer skips the cert/site steps for Reality-only nodes: those steps are
+// scheduled unconditionally because every node serves the 443 masquerade.
+// We provoke the failure at "Issue cert" (ACME == nil) so the test does not
+// depend on real DNS-01 or agent connectivity, and assert the running event
+// fired for that step — proving it is part of the plan.
+func TestAddNodeAttemptsCertAndSiteForRealityOnly(t *testing.T) {
+	redirectWGConfig(t)
+	client := newFakeSSHClient()
+	o, _ := newTestOrchestrator(t, client)
+	o.VerifyConnectivity = func(ctx context.Context, n Node) error { return nil }
+	// Leaving o.PostRegister == nil hits the default branch with Issue cert /
+	// Site / Initial config, which is what this test is exercising.
+
+	var events []Event
+	o.Progress = func(e Event) { events = append(events, e) }
+
+	req := AddNodeRequest{
+		Alias:                "Tokyo",
+		PublicIP:             "203.0.113.10",
+		SSHTarget:            sshexec.Target{Host: "203.0.113.10"},
+		SSHAuth:              sshexec.Auth{User: "root", Password: "x"},
+		Domain:               "jp.example.com",
+		EnabledProtocols:     []config.Protocol{config.ProtocolRealityVision},
+		Ports:                config.Ports{RealityVision: 27443},
+		RealityServerName:    "www.microsoft.com",
+		MasterPublicEndpoint: "198.51.100.1:51820",
+		Version:              "v1.2.3",
+		CoreVersion:          "1.12.0",
+	}
+
+	_, err := o.AddNode(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected Issue cert to fail because ACME is unset, got nil")
+	}
+	if !strings.Contains(err.Error(), "ACME") {
+		t.Fatalf("expected error to mention ACME, got %v", err)
+	}
+
+	sawCertRunning := false
+	for _, e := range events {
+		if e.Label == "Issue cert" && e.Status == "running" {
+			sawCertRunning = true
+		}
+	}
+	if !sawCertRunning {
+		t.Errorf("expected Issue cert step to be scheduled for Reality-only node; events: %+v", events)
+	}
+}
+
 func TestRemoveNodeForceContinuesPastError(t *testing.T) {
 	redirectWGConfig(t)
 	o, registry := newTestOrchestrator(t, newFakeSSHClient())

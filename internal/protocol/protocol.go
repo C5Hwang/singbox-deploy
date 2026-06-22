@@ -4,9 +4,7 @@ package protocol
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"os"
 	"strings"
 
@@ -208,8 +206,8 @@ func ensureProtocolMaterial(cfg *deploy.Config, old, selected []config.Protocol)
 		if port <= 0 {
 			continue
 		}
-		if used[port] {
-			return fmt.Errorf("%s port %d conflicts with another managed port", p, port)
+		if err := config.ValidateProtocolPort(port, used); err != nil {
+			return fmt.Errorf("%s: %w", p, err)
 		}
 		used[port] = true
 	}
@@ -221,7 +219,7 @@ func ensureProtocolMaterial(cfg *deploy.Config, old, selected []config.Protocol)
 			if oldSet[p] {
 				return fmt.Errorf("missing stored port for installed protocol %s", p)
 			}
-			port, err := randomManagedPort(used)
+			port, err := config.RandomProtocolPort(used)
 			if err != nil {
 				return err
 			}
@@ -377,24 +375,6 @@ func setProtocolPort(cfg *deploy.Config, proto config.Protocol, port int) {
 	case config.ProtocolAnyTLS:
 		cfg.Ports.AnyTLS = port
 	}
-}
-
-func randomManagedPort(used map[int]bool) (int, error) {
-	const minPort = 20000
-	const maxPort = 59999
-	span := big.NewInt(maxPort - minPort + 1)
-	for range 1000 {
-		n, err := rand.Int(rand.Reader, span)
-		if err != nil {
-			return 0, err
-		}
-		port := int(n.Int64()) + minPort
-		if !used[port] {
-			used[port] = true
-			return port, nil
-		}
-	}
-	return 0, fmt.Errorf("could not choose an unused random port")
 }
 
 func addedLocalPortChecks(cfg deploy.Config, added []config.Protocol) []system.Port {

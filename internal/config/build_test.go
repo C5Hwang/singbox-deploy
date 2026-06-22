@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -23,7 +26,7 @@ func sampleOptions() ServerOptions {
 			TUICPassword:      "tuic-pass",
 			AnyTLSPassword:    "any-pass",
 		},
-		Ports: Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
+		Ports: Ports{RealityVision: 27443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
 	}
 }
 
@@ -131,4 +134,26 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestBuildWarnsOnLegacy443Port ensures old installs whose protocol port
+// happens to be 443 still render — Build only logs a warning, it does not
+// reject the config.
+func TestBuildWarnsOnLegacy443Port(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	o := sampleOptions()
+	o.Enabled = []Protocol{ProtocolHysteria2}
+	o.Ports.Hysteria2 = MasqueradeSitePort
+
+	if _, err := Build(o); err != nil {
+		t.Fatalf("Build with legacy 443 port returned error: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "masquerade") || !strings.Contains(got, "hysteria2") {
+		t.Errorf("expected warning mentioning masquerade and hysteria2, got %q", got)
+	}
 }

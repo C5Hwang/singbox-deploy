@@ -71,13 +71,9 @@ WantedBy=multi-user.target
 // detected, the node ports are assumed to be already accessible.
 func openNodeFirewall(ctx context.Context, client sshClient, ports config.Ports, protocols []config.Protocol) error {
 	specs := protocolFirewallSpecs(ports, protocols)
-	// Always allow inbound 443 for the masquerade site if any TLS protocol is enabled.
-	for _, p := range protocols {
-		if p == config.ProtocolHysteria2 || p == config.ProtocolTUIC || p == config.ProtocolAnyTLS {
-			specs = append(specs, firewallSpec{port: 443, proto: "tcp"})
-			break
-		}
-	}
+	// 443/tcp is always opened for the masquerade site; every node serves it
+	// regardless of which sing-box protocols are enabled.
+	specs = append(specs, firewallSpec{port: 443, proto: "tcp"})
 	if len(specs) == 0 {
 		return nil
 	}
@@ -127,13 +123,11 @@ func protocolFirewallSpecs(ports config.Ports, protocols []config.Protocol) []fi
 
 // issueAndDeployNodeCert issues a TLS certificate for the node's domain via
 // DNS-01 ACME and pushes the renewed material to the node via the agent API.
-// Skipped silently for nodes that only run Reality (no public TLS needed).
+// Every node serves the masquerade site on 443, so the certificate is
+// required regardless of which protocol set the node runs.
 func (o *Orchestrator) issueAndDeployNodeCert(ctx context.Context, node Node) error {
 	if o.ACME == nil {
 		return fmt.Errorf("ACME manager is not configured")
-	}
-	if !node.HasTLSProtocol() {
-		return nil
 	}
 	creds, err := o.Registry.DNS().FindForDomain(node.Domain)
 	if err != nil {
@@ -158,12 +152,8 @@ func (o *Orchestrator) issueAndDeployNodeCert(ctx context.Context, node Node) er
 	return nil
 }
 
-// deployNodeSite asks the node to install Nginx and the masquerade site. Only
-// invoked for nodes running TLS-needing protocols.
+// deployNodeSite asks the node to install Nginx and the masquerade site.
 func (o *Orchestrator) deployNodeSite(ctx context.Context, node Node, siteTemplate string) error {
-	if !node.HasTLSProtocol() {
-		return nil
-	}
 	agent := NewAgentClient(node)
 	return agent.DeploySite(ctx, SiteDeploy{
 		Domain:       node.Domain,

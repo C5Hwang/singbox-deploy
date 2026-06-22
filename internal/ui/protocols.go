@@ -514,12 +514,22 @@ func (pm *protocolManager) runAgentProtocolUpdate(ch chan runMsg, t target) {
 	}
 	var firstErr error
 	pm.agentOutcomes = make([]agentOutcome, 0, len(nodes))
+	registry := cluster.NewRegistry(protocolUILayout())
 	for i, node := range nodes {
 		ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "running"}}
-		req := pm.agentConfigRequest(node)
-		client := cluster.NewAgentClient(node)
-		err := client.UpdateConfig(context.Background(), req)
-		pm.agentOutcomes = append(pm.agentOutcomes, agentOutcome{node: node, err: err})
+		updated, err := cluster.EnsureNodeProtocolPorts(registry, node, pm.targetForNode(node), pm.portOverrides())
+		if err != nil {
+			pm.agentOutcomes = append(pm.agentOutcomes, agentOutcome{node: node, err: err})
+			ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: err.Error(), Status: "failed", Err: err}}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		req := pm.agentConfigRequest(updated)
+		client := cluster.NewAgentClient(updated)
+		err = client.UpdateConfig(context.Background(), req)
+		pm.agentOutcomes = append(pm.agentOutcomes, agentOutcome{node: updated, err: err})
 		if err != nil {
 			ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: err.Error(), Status: "failed", Err: err}}
 			if firstErr == nil {
@@ -527,9 +537,49 @@ func (pm *protocolManager) runAgentProtocolUpdate(ch chan runMsg, t target) {
 			}
 			continue
 		}
-		ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "done"}}
+		ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: updated.Alias + " (" + updated.WGIP + ")", Status: "done"}}
 	}
 	ch <- runMsg{done: true, err: firstErr}
+}
+
+// targetForNode is the protocol set the orchestrator should push to one node.
+// Install/remove actions broadcast the same selection to every node; edit and
+// Reality-SNI actions keep each node's existing protocol set.
+func (pm *protocolManager) targetForNode(node cluster.Node) []config.Protocol {
+	if pm.action == protocolActionChange {
+		return pm.targetProtocols()
+	}
+	return node.EnabledProtocols
+}
+
+// portOverrides surfaces any per-protocol port values the operator typed into
+// the form so cluster.EnsureNodeProtocolPorts can prefer them over random
+// allocation. Empty / invalid entries are skipped; the validator on the field
+// has already rejected obviously bad values like 443.
+func (pm *protocolManager) portOverrides() map[config.Protocol]int {
+	out := map[config.Protocol]int{}
+	pairs := []struct {
+		proto config.Protocol
+		key   string
+	}{
+		{config.ProtocolRealityVision, "reality_vision_port"},
+		{config.ProtocolRealityGRPC, "reality_grpc_port"},
+		{config.ProtocolHysteria2, "hysteria2_port"},
+		{config.ProtocolTUIC, "tuic_port"},
+		{config.ProtocolAnyTLS, "anytls_port"},
+	}
+	for _, p := range pairs {
+		raw := strings.TrimSpace(pm.values[p.key])
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			continue
+		}
+		out[p.proto] = n
+	}
+	return out
 }
 
 func (pm *protocolManager) agentConfigRequest(node cluster.Node) cluster.ConfigUpdate {

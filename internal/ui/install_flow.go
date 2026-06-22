@@ -2,9 +2,7 @@ package ui
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"strconv"
 	"strings"
 
@@ -696,14 +694,14 @@ func (w *installForm) portForProtocol(proto config.Protocol, used map[int]bool) 
 	key := portFieldKey(proto)
 	raw := strings.TrimSpace(w.values[key])
 	if raw == "" {
-		return randomListenPort(used)
+		return config.RandomProtocolPort(used)
 	}
 	port, err := strconv.Atoi(raw)
-	if err != nil || port < 1 || port > 65535 {
+	if err != nil {
 		return 0, fmt.Errorf("%s port must be between 1 and 65535", proto)
 	}
-	if used[port] {
-		return 0, fmt.Errorf("%s port %d conflicts with another selected port", proto, port)
+	if err := config.ValidateProtocolPort(port, used); err != nil {
+		return 0, fmt.Errorf("%s %w", proto, err)
 	}
 	used[port] = true
 	return port, nil
@@ -749,24 +747,6 @@ func installedPort(proto config.Protocol, ports config.Ports) int {
 	default:
 		return 0
 	}
-}
-
-func randomListenPort(used map[int]bool) (int, error) {
-	const minPort = 20000
-	const maxPort = 59999
-	span := big.NewInt(maxPort - minPort + 1)
-	for range 1000 {
-		n, err := rand.Int(rand.Reader, span)
-		if err != nil {
-			return 0, err
-		}
-		port := int(n.Int64()) + minPort
-		if !used[port] {
-			used[port] = true
-			return port, nil
-		}
-	}
-	return 0, fmt.Errorf("could not choose an unused random port")
 }
 
 var (

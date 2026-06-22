@@ -131,9 +131,10 @@ func ValidateSharedParameterValue(key, val string) error {
 			return nil
 		}
 		port, err := strconv.Atoi(val)
-		if err != nil || port < 1 || port > 65535 {
+		if err != nil {
 			return fmt.Errorf("port must be between 1 and 65535")
 		}
+		return config.ValidateProtocolPort(port, nil)
 	case strings.HasSuffix(key, "_uuid"):
 		if val != "" && !ValidUUID(val) {
 			return fmt.Errorf("uuid must be an RFC 4122 value")

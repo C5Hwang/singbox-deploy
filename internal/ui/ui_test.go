@@ -1314,3 +1314,52 @@ func fieldIndex(t *testing.T, fields []field, key string) int {
 	t.Fatalf("field %q not found", key)
 	return -1
 }
+
+// TestAddNodeFieldsIncludePerProtocolPort confirms the add-node form exposes
+// a port field for every protocol, and that the field is skipped when the
+// protocol isn't selected.
+func TestAddNodeFieldsIncludePerProtocolPort(t *testing.T) {
+	nm := &nodeManager{parameterForm: newParameterForm(nil)}
+	fields := nm.addNodeFields()
+	for _, p := range config.AllProtocols {
+		key := portFieldKey(p)
+		idx := fieldIndex(t, fields, key)
+		// Without the protocol selected, the skip predicate must return true.
+		if fields[idx].skip == nil {
+			t.Fatalf("field %s has no skip predicate", key)
+		}
+		if !fields[idx].skip(map[string]string{"protocols": ""}) {
+			t.Errorf("field %s should be skipped when protocols is empty", key)
+		}
+		// With the protocol selected, it must NOT be skipped.
+		if fields[idx].skip(map[string]string{"protocols": string(p)}) {
+			t.Errorf("field %s should not be skipped when its protocol is selected", key)
+		}
+	}
+}
+
+// TestAllocateNodeProtocolPortsFillsBlanks confirms that selected protocols
+// without an explicit port get a random allocation, and explicit values are
+// preserved.
+func TestAllocateNodeProtocolPortsFillsBlanks(t *testing.T) {
+	vals := map[string]string{"hysteria2_port": "29443"}
+	ports, err := allocateNodeProtocolPorts([]config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2}, vals)
+	if err != nil {
+		t.Fatalf("allocateNodeProtocolPorts: %v", err)
+	}
+	if ports.Hysteria2 != 29443 {
+		t.Errorf("explicit value not preserved: got %d", ports.Hysteria2)
+	}
+	if ports.RealityVision == 0 || ports.RealityVision == 443 {
+		t.Errorf("RealityVision must be randomly assigned and != 443, got %d", ports.RealityVision)
+	}
+}
+
+// TestAllocateNodeProtocolPortsRejects443 confirms an explicit 443 input is
+// rejected at allocation time even if validation slipped past the form.
+func TestAllocateNodeProtocolPortsRejects443(t *testing.T) {
+	vals := map[string]string{"hysteria2_port": "443"}
+	if _, err := allocateNodeProtocolPorts([]config.Protocol{config.ProtocolHysteria2}, vals); err == nil {
+		t.Fatalf("expected error for 443 input")
+	}
+}
