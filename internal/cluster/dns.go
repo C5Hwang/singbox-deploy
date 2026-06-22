@@ -50,7 +50,7 @@ func (r Registry) DNS() DNSStore {
 
 // Save persists creds for one root domain, overwriting any existing entry.
 func (s DNSStore) Save(creds DNSCredentials) error {
-	root := strings.ToLower(strings.TrimSpace(creds.RootDomain))
+	root := normalizeHost(creds.RootDomain)
 	if root == "" {
 		return fmt.Errorf("root domain is empty")
 	}
@@ -86,7 +86,7 @@ func (s DNSStore) Save(creds DNSCredentials) error {
 // Load returns the credentials for one root domain, or os.ErrNotExist if no
 // credentials are stored for it.
 func (s DNSStore) Load(root string) (DNSCredentials, error) {
-	root = strings.ToLower(strings.TrimSpace(root))
+	root = normalizeHost(root)
 	if root == "" {
 		return DNSCredentials{}, fmt.Errorf("root domain is empty")
 	}
@@ -104,7 +104,7 @@ func (s DNSStore) Load(root string) (DNSCredentials, error) {
 
 // Delete removes the credential set for one root domain.
 func (s DNSStore) Delete(root string) error {
-	root = strings.ToLower(strings.TrimSpace(root))
+	root = normalizeHost(root)
 	if root == "" {
 		return fmt.Errorf("root domain is empty")
 	}
@@ -139,7 +139,7 @@ func (s DNSStore) List() ([]DNSCredentials, error) {
 // given (possibly subdomain) hostname. Returns os.ErrNotExist if no stored
 // root domain is a suffix of host.
 func (s DNSStore) FindForDomain(host string) (DNSCredentials, error) {
-	host = strings.ToLower(strings.TrimSpace(host))
+	host = normalizeHost(host)
 	if host == "" {
 		return DNSCredentials{}, fmt.Errorf("host is empty")
 	}
@@ -154,7 +154,7 @@ func (s DNSStore) FindForDomain(host string) (DNSCredentials, error) {
 	var best DNSCredentials
 	bestLen := -1
 	for _, creds := range all {
-		root := strings.ToLower(creds.RootDomain)
+		root := normalizeHost(creds.RootDomain)
 		if host == root || strings.HasSuffix(host, "."+root) {
 			if len(root) > bestLen {
 				best = creds
@@ -166,6 +166,14 @@ func (s DNSStore) FindForDomain(host string) (DNSCredentials, error) {
 		return DNSCredentials{}, os.ErrNotExist
 	}
 	return best, nil
+}
+
+// normalizeHost canonicalises a hostname for store key lookup: lowercase,
+// trimmed of whitespace, and with any trailing FQDN dot removed so
+// "example.com." and "example.com" compare equal.
+func normalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return strings.TrimSuffix(host, ".")
 }
 
 func readFileTrim(dir, name string) string {

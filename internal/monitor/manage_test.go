@@ -29,7 +29,6 @@ func testConfig(t *testing.T) deploy.Config {
 	}
 	return deploy.Config{
 		Domain:                 "example.com",
-		Email:                  "admin@example.com",
 		DisplayName:            "US-vps1",
 		Salt:                   "testsalt",
 		SubscribePort:          deploy.DefaultSubscribePort,

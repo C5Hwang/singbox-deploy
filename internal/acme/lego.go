@@ -12,7 +12,6 @@ import (
 	"sync"
 
 	"github.com/go-acme/lego/v4/certificate"
-	"github.com/go-acme/lego/v4/challenge/http01"
 	"github.com/go-acme/lego/v4/lego"
 	legolog "github.com/go-acme/lego/v4/log"
 	"github.com/go-acme/lego/v4/providers/dns/alidns"
@@ -35,10 +34,6 @@ func (u *legoUser) GetPrivateKey() crypto.PrivateKey        { return u.key }
 
 // LegoIssuer is the production Issuer backed by lego and Let's Encrypt.
 type LegoIssuer struct {
-	// HTTP01Port is the port lego's standalone HTTP-01 server binds to. The
-	// installer frees this port (stopping Nginx) during issuance. Defaults to
-	// "80" when empty.
-	HTTP01Port string
 	// Staging selects the Let's Encrypt staging directory when true.
 	Staging bool
 	// Output receives lego's own informational logs. When nil, lego keeps its
@@ -46,8 +41,8 @@ type LegoIssuer struct {
 	Output io.Writer
 }
 
-// NewLegoIssuer returns a LegoIssuer using the production directory and port 80.
-func NewLegoIssuer() *LegoIssuer { return &LegoIssuer{HTTP01Port: "80"} }
+// NewLegoIssuer returns a LegoIssuer using the production directory.
+func NewLegoIssuer() *LegoIssuer { return &LegoIssuer{} }
 
 // Issue obtains a certificate for r.Domain via Let's Encrypt. The request is
 // assumed pre-validated by Manager.Obtain.
@@ -79,7 +74,7 @@ func (i *LegoIssuer) issue(ctx context.Context, r Request) (Certificate, error) 
 	if err != nil {
 		return Certificate{}, fmt.Errorf("generate account key: %w", err)
 	}
-	user := &legoUser{email: r.Email, key: accountKey}
+	user := &legoUser{key: accountKey}
 
 	cfg := lego.NewConfig(user)
 	if i.Staging {
@@ -93,8 +88,12 @@ func (i *LegoIssuer) issue(ctx context.Context, r Request) (Certificate, error) 
 		return Certificate{}, fmt.Errorf("new acme client: %w", err)
 	}
 
-	if err := i.configureChallenge(client, r); err != nil {
+	provider, err := dnsProvider(r)
+	if err != nil {
 		return Certificate{}, err
+	}
+	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
+		return Certificate{}, fmt.Errorf("configure dns-01: %w", err)
 	}
 
 	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
@@ -111,26 +110,6 @@ func (i *LegoIssuer) issue(ctx context.Context, r Request) (Certificate, error) 
 		return Certificate{}, fmt.Errorf("obtain certificate: %w", err)
 	}
 	return Certificate{CertificatePEM: res.Certificate, PrivateKeyPEM: res.PrivateKey}, nil
-}
-
-// configureChallenge wires the selected challenge provider onto the client.
-func (i *LegoIssuer) configureChallenge(client *lego.Client, r Request) error {
-	switch r.Challenge {
-	case ChallengeHTTP01:
-		port := i.HTTP01Port
-		if port == "" {
-			port = "80"
-		}
-		return client.Challenge.SetHTTP01Provider(http01.NewProviderServer("", port))
-	case ChallengeDNS01:
-		provider, err := dnsProvider(r)
-		if err != nil {
-			return err
-		}
-		return client.Challenge.SetDNS01Provider(provider)
-	default:
-		return fmt.Errorf("unsupported challenge %q", r.Challenge)
-	}
 }
 
 // dnsProvider constructs the lego DNS-01 provider for Cloudflare or Aliyun from

@@ -190,6 +190,24 @@ func (f *parameterForm) backToLastField() {
 	}
 }
 
+// backToFieldKey moves the cursor to the named field, or to the first
+// non-skipped field if no such key exists. Used when an external transition
+// (e.g. cancelled sub-form) needs to return focus to a specific field.
+func (f *parameterForm) backToFieldKey(key string) {
+	f.ensureValues()
+	for i, field := range f.fields {
+		if field.key != key {
+			continue
+		}
+		if field.skip != nil && field.skip(f.values) {
+			continue
+		}
+		f.setField(i)
+		return
+	}
+	f.startForm()
+}
+
 func (f *parameterForm) saveFieldDraft() {
 	f.ensureValues()
 	if f.fieldIx < 0 || f.fieldIx >= len(f.fields) {
@@ -233,6 +251,15 @@ func (f *parameterForm) updateInput(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(msg)
 	return cmd
+}
+
+// currentFieldKey returns the key of the field the cursor is on, or "" if no
+// field is active (e.g. all fields have been committed).
+func (f *parameterForm) currentFieldKey() string {
+	if f.fieldIx < 0 || f.fieldIx >= len(f.fields) {
+		return ""
+	}
+	return f.fields[f.fieldIx].key
 }
 
 func (f *parameterForm) currentFieldHasOptions() bool {

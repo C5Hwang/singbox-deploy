@@ -135,7 +135,6 @@ func (o *Orchestrator) issueAndDeployNodeCert(ctx context.Context, node Node) er
 	}
 	cert, err := o.ACME.Obtain(ctx, acme.Request{
 		Domain:      node.Domain,
-		Challenge:   acme.ChallengeDNS01,
 		DNSProvider: creds.Provider,
 		Credentials: creds.EnvMap(),
 	})

@@ -9,7 +9,7 @@ files on Linux servers, and includes a built-in resource monitor.
 
 - Interactive terminal UI for deployment and management.
 - Automated deployment of sing-box, Nginx, certificates, and subscriptions.
-- Let's Encrypt certificate issuance and renewal via HTTP-01 and DNS-01 challenges.
+- Let's Encrypt certificate issuance and renewal via DNS-01 (Cloudflare, Aliyun).
 - Subscription output in share-link, Clash Meta, and sing-box formats.
 - Selectable HTML5 UP masquerade site templates served by Nginx.
 - Resource monitor with a web dashboard and quota enforcement.

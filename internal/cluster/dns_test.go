@@ -102,6 +102,23 @@ func TestDNSStoreFindForDomainReturnsNotExist(t *testing.T) {
 	}
 }
 
+func TestDNSStoreNormalizesTrailingDot(t *testing.T) {
+	store := NewRegistry(paths.LayoutForRoot(t.TempDir())).DNS()
+	if err := store.Save(DNSCredentials{RootDomain: "example.com.", Provider: "cloudflare", APIToken: "t"}); err != nil {
+		t.Fatalf("Save with trailing dot: %v", err)
+	}
+	// Both with and without trailing dot must resolve to the same stored entry.
+	for _, host := range []string{"example.com", "example.com.", "sub.example.com", "sub.example.com."} {
+		got, err := store.FindForDomain(host)
+		if err != nil {
+			t.Fatalf("%s: %v", host, err)
+		}
+		if got.APIToken != "t" {
+			t.Errorf("%s: got token %q, want t", host, got.APIToken)
+		}
+	}
+}
+
 func TestDNSStoreFindForDomainRejectsIP(t *testing.T) {
 	store := NewRegistry(paths.LayoutForRoot(t.TempDir())).DNS()
 	if _, err := store.FindForDomain("192.0.2.1"); err == nil {

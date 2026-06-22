@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,12 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 )
+
+// DNSCredentialLookup resolves DNS-01 API credentials for the longest matching
+// stored root domain. Returns (provider, env-form credentials, error); error
+// wraps os.ErrNotExist when no stored root domain covers host. The adapter is
+// a plain function to avoid a cycle between deploy and cluster.
+type DNSCredentialLookup func(host string) (provider string, credentials map[string]string, err error)
 
 // Event reports the progress of one install step to the UI.
 type Event struct {
@@ -39,6 +46,7 @@ type Orchestrator struct {
 	LatestSingBox  func(ctx context.Context) (string, error)
 	CheckConflicts func(ctx context.Context, cfg Config) error
 	CheckPorts     func(ctx context.Context, cfg Config) error
+	DNSLookup      DNSCredentialLookup
 	Progress       func(Event)
 
 	GOOS, GOARCH  string
@@ -198,16 +206,20 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	// HTTP-01 binds port 80; free it by stopping Nginx (ignore if not running).
-	if cfg.Challenge == acme.ChallengeHTTP01 {
-		_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
+	if o.DNSLookup == nil {
+		return fmt.Errorf("no DNS credential lookup configured")
+	}
+	provider, creds, err := o.DNSLookup(cfg.Domain)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no DNS credentials configured for %s; add them in the Certificate & site menu", cfg.Domain)
+		}
+		return fmt.Errorf("find dns credentials for %s: %w", cfg.Domain, err)
 	}
 	cert, err := o.ACME.Obtain(ctx, acme.Request{
 		Domain:      cfg.Domain,
-		Email:       cfg.Email,
-		Challenge:   cfg.Challenge,
-		DNSProvider: cfg.DNSProvider,
-		Credentials: cfg.DNSCredentials,
+		DNSProvider: provider,
+		Credentials: creds,
 	})
 	if err != nil {
 		return err
@@ -363,11 +375,7 @@ func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 // WriteInstallState persists the full install config as individual state files.
 func WriteInstallState(stateDir string, cfg Config) error {
 	state := map[string]string{
-		"acme_challenge":         string(cfg.Challenge),
 		"domain":                 cfg.Domain,
-		"dns_credential":         dnsCredentialForState(cfg),
-		"dns_provider":           cfg.DNSProvider,
-		"email":                  cfg.Email,
 		"enabled_protocols":      protocolStateValue(cfg.EnabledProtocols()),
 		"display_name":           cfg.DisplayName,
 		"subscribe_salt":         cfg.Salt,

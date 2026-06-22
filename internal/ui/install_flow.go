@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
@@ -26,6 +29,7 @@ type installPhase int
 const (
 	phasePreflight installPhase = iota
 	phaseForm
+	phaseMissingDNSCreds
 	phaseConfirm
 	phaseRunning
 	phaseDone
@@ -33,7 +37,6 @@ const (
 
 // installFields defines the install form's input sequence.
 func installFields() []field {
-	isDNS := func(v map[string]string) bool { return v["challenge"] != "dns-01" }
 	missingProtocol := func(p config.Protocol) func(map[string]string) bool {
 		return func(v map[string]string) bool { return !protocolSelected(v, p) }
 	}
@@ -43,10 +46,6 @@ func installFields() []field {
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
 		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
-		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
-		{key: "challenge", label: "ACME challenge", def: "http-01", options: []string{"http-01", "dns-01"}, note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
-		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
-		{key: "dns_credential", label: "DNS API credential", skip: isDNS, noteFunc: dnsCredentialNote},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
 		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
@@ -85,13 +84,6 @@ func protocolParameterBadge(protocols ...config.Protocol) func(map[string]string
 	}
 }
 
-func dnsCredentialNote(vals map[string]string) string {
-	if vals["dns_provider"] == "aliyun" {
-		return "Aliyun uses accessKey:secretKey (AccessKey ID:AccessKey Secret).\nYou can apply at https://ram.console.aliyun.com/manage/ak"
-	}
-	return "Cloudflare uses an API token.\nYou can apply at https://dash.cloudflare.com/profile/api-tokens"
-}
-
 // runMsg carries an orchestrator progress event, a streamed log line, or
 // completion into the UI. It is the only channel the orchestrator goroutine
 // uses to communicate, so all UI state stays mutated on the UI goroutine.
@@ -118,9 +110,12 @@ type installFlow struct {
 	host  system.Host
 	hosts string // preflight summary / error text
 
-	form installForm
-	run  commandRun
-	cfg  deploy.Config
+	form      installForm
+	run       commandRun
+	cfg       deploy.Config
+	dnsStore  cluster.DNSStore
+	subForm   *dnsCredentialForm
+	statusErr string // optional banner shown above the form after a cancelled sub-form
 }
 
 func newInstallForm() installForm {
@@ -133,9 +128,10 @@ func newInstallForm() installForm {
 // newInstallFlow builds the install flow, running host preflight immediately.
 func newInstallFlow() *installFlow {
 	flow := &installFlow{
-		phase: phasePreflight,
-		form:  newInstallForm(),
-		run:   newCommandRun(),
+		phase:    phasePreflight,
+		form:     newInstallForm(),
+		run:      newCommandRun(),
+		dnsStore: cluster.NewRegistry(paths.DefaultLayout()).DNS(),
 	}
 	host, err := system.DetectHost()
 	flow.host = host
@@ -307,10 +303,77 @@ func (f *installFlow) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.MouseMsg:
 		return f.handleMouse(msg), false
 	}
+	if f.phase == phaseMissingDNSCreds && f.subForm != nil {
+		cmd := f.subForm.Update(msg)
+		f.advanceSubFormState()
+		return cmd, false
+	}
 	if f.phase == phaseForm && !f.form.currentFieldHasOptions() {
 		return f.form.updateInput(msg), false
 	}
 	return nil, false
+}
+
+// enterMissingDNSCreds switches to the inline DNS credential sub-form for
+// domain. headerErr, when non-empty, is shown above the form to explain why
+// the previous attempt (if any) did not succeed.
+func (f *installFlow) enterMissingDNSCreds(domain, headerErr string) {
+	f.phase = phaseMissingDNSCreds
+	f.subForm = newDNSCredentialForm(domain, f.dnsStore)
+	if headerErr != "" {
+		f.subForm.SetHeaderError(headerErr)
+	}
+	f.subForm.setSize(f.form.width, f.form.height)
+}
+
+func (f *installFlow) handleMissingDNSKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	if f.subForm == nil {
+		f.phase = phaseForm
+		return nil, false
+	}
+	cmd := f.subForm.Update(msg)
+	f.advanceSubFormState()
+	return cmd, false
+}
+
+// advanceSubFormState consumes a saved/cancelled signal from the sub-form and
+// either resumes the install (when the saved root now covers the install
+// domain) or returns the user to the form with a banner.
+func (f *installFlow) advanceSubFormState() {
+	if f.subForm == nil {
+		return
+	}
+	saved, cancelled, _ := f.subForm.State()
+	switch {
+	case saved:
+		domain := f.form.values["domain"]
+		if _, err := f.dnsStore.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
+			f.enterMissingDNSCreds(domain, fmt.Sprintf("Saved credentials do not cover %s — adjust the root domain.", domain))
+			return
+		}
+		f.subForm = nil
+		f.phase = phaseForm
+	case cancelled:
+		f.subForm = nil
+		f.phase = phaseForm
+		f.statusErr = "DNS credentials are still required. Configure them before continuing."
+		f.form.backToFieldKey("domain")
+	}
+}
+
+// ensureDNSCredentials runs the lookup one last time at Complete. Returns true
+// when the lookup succeeds and the flow can advance to confirm; false when it
+// transitioned to the missing-creds sub-form.
+func (f *installFlow) ensureDNSCredentials() bool {
+	domain := f.form.values["domain"]
+	if domain == "" {
+		return true
+	}
+	if _, err := f.dnsStore.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
+		f.enterMissingDNSCreds(domain, "")
+		return false
+	}
+	return true
 }
 
 func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
@@ -326,8 +389,12 @@ func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	case phaseForm:
+		prevKey := f.form.currentFieldKey()
 		cmd, done, handled := f.form.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
+				if !f.ensureDNSCredentials() {
+					return
+				}
 				f.phase = phaseConfirm
 			},
 			Back: func() { f.form.previousField() },
@@ -336,8 +403,17 @@ func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			},
 		})
 		if handled {
+			if prevKey == "domain" && f.form.currentFieldKey() != "domain" && f.form.fieldErr == "" {
+				if domain := f.form.values["domain"]; domain != "" {
+					if _, err := f.dnsStore.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
+						f.enterMissingDNSCreds(domain, "")
+					}
+				}
+			}
 			return cmd, done
 		}
+	case phaseMissingDNSCreds:
+		return f.handleMissingDNSKey(msg)
 	case phaseConfirm:
 		switch msg.String() {
 		case "up", "k":
@@ -480,13 +556,15 @@ func (w *installFlow) startRun() tea.Cmd {
 	acmeManager := acme.NewManager(issuer)
 	releases := release.NewClient("", nil)
 
+	dnsStore := cluster.NewRegistry(layout).DNS()
 	orch := &deploy.Orchestrator{
-		Runner:   runner,
-		Layout:   layout,
-		ACME:     acmeManager,
-		Releases: releases,
-		GOOS:     "linux",
-		GOARCH:   w.host.Arch,
+		Runner:    runner,
+		Layout:    layout,
+		ACME:      acmeManager,
+		Releases:  releases,
+		GOOS:      "linux",
+		GOARCH:    w.host.Arch,
+		DNSLookup: dnsLookupAdapter(dnsStore),
 	}
 	orch.Progress = func(e deploy.Event) {
 		ev := e
@@ -565,20 +643,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		monitorAlias = deploy.DefaultMonitorAlias
 	}
 
-	challenge := acme.Challenge(vals["challenge"])
-	dnsCreds := map[string]string{}
-	if challenge == acme.ChallengeDNS01 {
-		switch vals["dns_provider"] {
-		case "cloudflare":
-			dnsCreds["CF_API_TOKEN"] = vals["dns_credential"]
-		case "aliyun":
-			if key, secret, ok := strings.Cut(vals["dns_credential"], ":"); ok {
-				dnsCreds["ALICLOUD_ACCESS_KEY"] = key
-				dnsCreds["ALICLOUD_SECRET_KEY"] = secret
-			}
-		}
-	}
-
 	iface := ""
 	if deployMonitor {
 		iface, _ = monitor.DefaultInterface()
@@ -593,10 +657,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 
 	return deploy.Config{
 		Domain:                 vals["domain"],
-		Email:                  vals["email"],
-		Challenge:              challenge,
-		DNSProvider:            vals["dns_provider"],
-		DNSCredentials:         dnsCreds,
 		Ports:                  ports,
 		Enabled:                enabled,
 		DisplayName:            vals["display_name"],
@@ -621,6 +681,18 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		Firewall:               w.host.Firewall,
 		Creds:                  creds,
 	}, nil
+}
+
+// dnsLookupAdapter wraps a cluster.DNSStore so the deploy orchestrator can
+// look up credentials without importing cluster (which would be a cycle).
+func dnsLookupAdapter(store cluster.DNSStore) deploy.DNSCredentialLookup {
+	return func(host string) (string, map[string]string, error) {
+		creds, err := store.FindForDomain(host)
+		if err != nil {
+			return "", nil, err
+		}
+		return creds.Provider, creds.EnvMap(), nil
+	}
 }
 
 func parseInstallPort(value string, fallback int, label string) (int, error) {
@@ -756,6 +828,15 @@ func (w *installFlow) View() string {
 		}
 		return flowTitle.Render("Install · Preflight") + "\n\n" + body
 	case phaseForm:
+		view := w.form.View()
+		if w.statusErr != "" {
+			view = flowErr.Render(w.statusErr) + "\n\n" + view
+		}
+		return view
+	case phaseMissingDNSCreds:
+		if w.subForm != nil {
+			return w.subForm.View()
+		}
 		return w.form.View()
 	case phaseConfirm:
 		return w.form.confirmView(w.host)
@@ -782,6 +863,11 @@ func (w *installFlow) footerHints() []operationHint {
 		}
 		return []operationHint{hint(keyCancel, "Cancel")}
 	case phaseForm:
+		return w.form.footerHints()
+	case phaseMissingDNSCreds:
+		if w.subForm != nil {
+			return w.subForm.footerHints()
+		}
 		return w.form.footerHints()
 	case phaseConfirm:
 		return []operationHint{
@@ -871,8 +957,7 @@ func (w *installForm) summary(host system.Host) string {
 	deployMonitor := monitorEnabled(w.values)
 	rows := []summaryLine{
 		summaryRow("Domain", w.values["domain"]),
-		summaryRow("Email", or(w.values["email"], "not set")),
-		summaryRow("ACME challenge", w.values["challenge"]),
+		summaryRow("DNS credentials", dnsCredentialSummary(w.values["domain"])),
 		summaryRow("Protocols", protocolLabels(protocols)),
 		summaryRow("Display name", w.values["display_name"]),
 		summaryRow("Masquerade site", or(w.values["site_template"], deploy.DefaultSiteTemplate)),
@@ -919,6 +1004,22 @@ func nextResetFromValues(dayStr, hourStr string) string {
 		hour = deploy.DefaultResetHour
 	}
 	return nextResetLabel(day, hour)
+}
+
+// dnsCredentialSummary resolves the DNS credentials for the given install
+// domain at confirm-render time, returning a short "<root> (<provider>)"
+// label or "(none configured)" when nothing matches.
+func dnsCredentialSummary(domain string) string {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return "(none configured)"
+	}
+	store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
+	creds, err := store.FindForDomain(domain)
+	if err != nil {
+		return "(none configured)"
+	}
+	return fmt.Sprintf("%s (%s)", creds.RootDomain, creds.Provider)
 }
 
 func trafficLimitSummary(value string) string {

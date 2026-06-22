@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
+	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
@@ -41,7 +42,7 @@ func TestRunSkipsCertificateNotNearExpiry(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	domain := "example.com"
-	writeRenewalState(t, layout, map[string]string{"domain": domain, "email": "", "acme_challenge": "http-01"})
+	writeRenewalState(t, layout, map[string]string{"domain": domain})
 	writeTestCertificatePair(t, filepath.Join(layout.TLSDir, domain+".crt"), filepath.Join(layout.TLSDir, domain+".key"), domain, time.Now().Add(90*24*time.Hour))
 	issuer := &fakeIssuer{}
 	runner := &recordingRunner{}
@@ -68,12 +69,11 @@ func TestRunRenewsNearExpiryCertificate(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	domain := "example.com"
-	writeRenewalState(t, layout, map[string]string{
-		"domain":         domain,
-		"email":          "",
-		"acme_challenge": "dns-01",
-		"dns_provider":   "cloudflare",
-		"dns_credential": "cf-token",
+	writeRenewalState(t, layout, map[string]string{"domain": domain})
+	seedDNSCredentials(t, layout, cluster.DNSCredentials{
+		RootDomain: "example.com",
+		Provider:   "cloudflare",
+		APIToken:   "cf-token",
 	})
 	certPath := filepath.Join(layout.TLSDir, domain+".crt")
 	keyPath := filepath.Join(layout.TLSDir, domain+".key")
@@ -94,10 +94,7 @@ func TestRunRenewsNearExpiryCertificate(t *testing.T) {
 	if issuer.calls != 1 {
 		t.Fatalf("expected one ACME call, got %d", issuer.calls)
 	}
-	if issuer.got.Email != "" {
-		t.Fatalf("email = %q, want empty", issuer.got.Email)
-	}
-	if issuer.got.Challenge != acme.ChallengeDNS01 || issuer.got.DNSProvider != "cloudflare" {
+	if issuer.got.DNSProvider != "cloudflare" {
 		t.Fatalf("bad ACME request: %#v", issuer.got)
 	}
 	if issuer.got.Credentials["CF_API_TOKEN"] != "cf-token" {
@@ -119,6 +116,43 @@ func TestRunRenewsNearExpiryCertificate(t *testing.T) {
 	}
 }
 
+func TestRunRemovesLegacyState(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	domain := "example.com"
+	// Seed both the legacy state files AND the current state files plus DNS
+	// credentials, then renew a near-expiry cert and verify the legacy files
+	// are gone.
+	writeRenewalState(t, layout, map[string]string{
+		"domain":         domain,
+		"acme_challenge": "http-01",
+		"dns_provider":   "cloudflare",
+		"dns_credential": "old-token",
+	})
+	seedDNSCredentials(t, layout, cluster.DNSCredentials{
+		RootDomain: "example.com",
+		Provider:   "cloudflare",
+		APIToken:   "cf-token",
+	})
+	writeTestCertificatePair(t, filepath.Join(layout.TLSDir, domain+".crt"), filepath.Join(layout.TLSDir, domain+".key"), domain, time.Now().Add(5*24*time.Hour))
+
+	r := Renewer{
+		Layout:      layout,
+		ACME:        acme.NewManager(&fakeIssuer{}),
+		Runner:      &recordingRunner{},
+		Now:         time.Now,
+		RenewBefore: 30 * 24 * time.Hour,
+	}
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	for _, name := range []string{"acme_challenge", "dns_provider", "dns_credential"} {
+		if _, err := os.Stat(filepath.Join(layout.StateDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("expected legacy state %q to be removed, got err=%v", name, err)
+		}
+	}
+}
+
 func writeRenewalState(t *testing.T, layout paths.Layout, values map[string]string) {
 	t.Helper()
 	if err := os.MkdirAll(layout.StateDir, 0o700); err != nil {
@@ -128,6 +162,14 @@ func writeRenewalState(t *testing.T, layout paths.Layout, values map[string]stri
 		if err := os.WriteFile(filepath.Join(layout.StateDir, name), []byte(value+"\n"), 0o600); err != nil {
 			t.Fatalf("write state %s: %v", name, err)
 		}
+	}
+}
+
+func seedDNSCredentials(t *testing.T, layout paths.Layout, creds cluster.DNSCredentials) {
+	t.Helper()
+	store := cluster.NewRegistry(layout).DNS()
+	if err := store.Save(creds); err != nil {
+		t.Fatalf("seed dns credentials: %v", err)
 	}
 }
 

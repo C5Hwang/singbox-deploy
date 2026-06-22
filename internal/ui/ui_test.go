@@ -106,7 +106,6 @@ func confirmInstallFlowForTest() *installFlow {
 		phase: phaseConfirm,
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":              "example.com",
-			"challenge":           "http-01",
 			"protocols":           defaultProtocolValue(),
 			"reality_sni":         "www.microsoft.com",
 			"display_name":        "Node",
@@ -948,57 +947,6 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 	}
 }
 
-func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
-	w := installFormForTest()
-	w.startForm()
-	w.input.SetValue("example.com")
-	w.commitField()
-	w.commitField()
-
-	if got := w.fields[w.fieldIx].key; got != "challenge" {
-		t.Fatalf("current field = %q, want challenge", got)
-	}
-	if !strings.Contains(w.View(), "> http-01") {
-		t.Fatalf("challenge should render as a selection:\n%s", w.View())
-	}
-	w.moveOption(1)
-	w.commitField()
-	if got := w.values["challenge"]; got != "dns-01" {
-		t.Fatalf("challenge = %q, want dns-01", got)
-	}
-	if got := w.fields[w.fieldIx].key; got != "dns_provider" {
-		t.Fatalf("current field = %q, want dns_provider", got)
-	}
-}
-
-func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
-	fields := installFields()
-	for _, tc := range []struct {
-		provider string
-		want     string
-		link     string
-		avoid    string
-	}{
-		{provider: "cloudflare", want: "Cloudflare uses an API token.", link: "https://dash.cloudflare.com/profile/api-tokens", avoid: "Aliyun uses"},
-		{provider: "aliyun", want: "Aliyun uses accessKey:secretKey", link: "https://ram.console.aliyun.com/manage/ak", avoid: "Cloudflare uses"},
-	} {
-		w := installFormWithValuesForTest(map[string]string{"dns_provider": tc.provider})
-		w.fields = fields
-		w.width = 100
-		w.setField(fieldIndex(t, fields, "dns_credential"))
-		view := w.View()
-		if !strings.Contains(view, tc.want) || !strings.Contains(view, tc.link) {
-			t.Fatalf("%s note missing provider text or link:\n%s", tc.provider, view)
-		}
-		if !strings.Contains(view, "You can apply at "+tc.link) {
-			t.Fatalf("%s note should use application hint format:\n%s", tc.provider, view)
-		}
-		if strings.Contains(view, tc.avoid) {
-			t.Fatalf("%s note should not include other provider text:\n%s", tc.provider, view)
-		}
-	}
-}
-
 func TestProtocolMultiSelectRequiresAtLeastOne(t *testing.T) {
 	w := installFormForTest()
 	w.setField(fieldIndex(t, w.fields, "protocols"))
@@ -1069,7 +1017,6 @@ func TestBuildConfigRejectsInvalidSiteTemplate(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":        "example.com",
-			"challenge":     "http-01",
 			"protocols":     "tuic",
 			"display_name":  "Node",
 			"site_template": "unknown",
@@ -1131,7 +1078,6 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":                   "example.com",
-			"challenge":                "http-01",
 			"protocols":                "vless-reality-vision,tuic",
 			"reality_sni":              "https://www.cloudflare.com/cdn-cgi/trace",
 			"reality_vision_uuid":      "11111111-1111-4111-8111-111111111111",
@@ -1203,7 +1149,6 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":         "example.com",
-			"challenge":      "http-01",
 			"protocols":      "tuic",
 			"tuic_port":      "24444",
 			"display_name":   "Node",
@@ -1238,7 +1183,6 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":              "example.com",
-			"challenge":           "http-01",
 			"protocols":           "hysteria2,anytls",
 			"display_name":        "Node",
 			"monitor":             "yes",
@@ -1281,7 +1225,6 @@ func TestBuildConfigDisablesMonitor(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":              "example.com",
-			"challenge":           "http-01",
 			"protocols":           "tuic",
 			"tuic_uuid":           "22222222-2222-4222-8222-222222222222",
 			"display_name":        "Node",

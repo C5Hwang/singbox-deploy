@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -22,6 +24,7 @@ type nodePhase int
 const (
 	nodePhaseAction nodePhase = iota
 	nodePhaseForm
+	nodePhaseMissingDNSCreds
 	nodePhaseConfirm
 	nodePhaseRunning
 	nodePhaseDone
@@ -54,8 +57,10 @@ type nodeManager struct {
 	parameterForm
 	commandRun
 
-	deleteID string
-	result   *cluster.Node
+	deleteID  string
+	result    *cluster.Node
+	subForm   *dnsCredentialForm
+	statusErr string
 }
 
 func newNodeManager() *nodeManager {
@@ -99,6 +104,11 @@ func (nm *nodeManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.KeyMsg:
 		return nm.handleKey(msg)
 	}
+	if nm.phase == nodePhaseMissingDNSCreds && nm.subForm != nil {
+		cmd := nm.subForm.Update(msg)
+		nm.advanceSubFormState()
+		return cmd, false
+	}
 	if nm.phase == nodePhaseForm && !nm.currentFieldHasOptions() {
 		return nm.updateInput(msg), false
 	}
@@ -127,8 +137,12 @@ func (nm *nodeManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return cmd, done
 		}
 	case nodePhaseForm:
+		prevKey := nm.parameterForm.currentFieldKey()
 		cmd, done, handled := nm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
+				if !nm.ensureNodeDNSCredentials() {
+					return
+				}
 				nm.phase = nodePhaseConfirm
 			},
 			Back: func() {
@@ -139,8 +153,24 @@ func (nm *nodeManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			Cancel: func() (tea.Cmd, bool) { return nil, true },
 		})
 		if handled {
+			if prevKey == "domain" && nm.parameterForm.currentFieldKey() != "domain" && nm.parameterForm.fieldErr == "" {
+				if domain := nm.values["domain"]; domain != "" {
+					store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
+					if _, err := store.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
+						nm.enterMissingDNSCreds(domain, "")
+					}
+				}
+			}
 			return cmd, done
 		}
+	case nodePhaseMissingDNSCreds:
+		if nm.subForm == nil {
+			nm.phase = nodePhaseForm
+			return nil, false
+		}
+		cmd := nm.subForm.Update(msg)
+		nm.advanceSubFormState()
+		return cmd, false
 	case nodePhaseDeleteSelect:
 		cmd, done, handled := nm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
@@ -316,6 +346,59 @@ func (nm *nodeManager) applyBlocker() string {
 		return "SELinux is enforcing; node management is blocked"
 	}
 	return "cannot manage nodes"
+}
+
+// enterMissingDNSCreds opens the inline DNS credential sub-form for the given
+// node domain. headerErr is shown above the form when the previous save did
+// not cover the domain.
+func (nm *nodeManager) enterMissingDNSCreds(domain, headerErr string) {
+	store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
+	nm.phase = nodePhaseMissingDNSCreds
+	nm.subForm = newDNSCredentialForm(domain, store)
+	if headerErr != "" {
+		nm.subForm.SetHeaderError(headerErr)
+	}
+	nm.subForm.setSize(nm.width, nm.height)
+}
+
+// ensureNodeDNSCredentials runs the lookup at Complete. Returns true on hit so
+// the form can advance to confirm; false when it transitioned to the
+// missing-creds sub-form.
+func (nm *nodeManager) ensureNodeDNSCredentials() bool {
+	domain := strings.TrimSpace(nm.values["domain"])
+	if domain == "" {
+		return true
+	}
+	store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
+	if _, err := store.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
+		nm.enterMissingDNSCreds(domain, "")
+		return false
+	}
+	return true
+}
+
+// advanceSubFormState consumes saved/cancelled signals from the sub-form.
+func (nm *nodeManager) advanceSubFormState() {
+	if nm.subForm == nil {
+		return
+	}
+	saved, cancelled, _ := nm.subForm.State()
+	switch {
+	case saved:
+		domain := strings.TrimSpace(nm.values["domain"])
+		store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
+		if _, err := store.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
+			nm.enterMissingDNSCreds(domain, fmt.Sprintf("Saved credentials do not cover %s — adjust the root domain.", domain))
+			return
+		}
+		nm.subForm = nil
+		nm.phase = nodePhaseForm
+	case cancelled:
+		nm.subForm = nil
+		nm.phase = nodePhaseForm
+		nm.statusErr = "DNS credentials are still required for this node."
+		nm.parameterForm.backToFieldKey("domain")
+	}
 }
 
 func (nm *nodeManager) startRun() tea.Cmd {
@@ -509,6 +592,15 @@ func (nm *nodeManager) View() string {
 	case nodePhaseAction:
 		return nm.actionView()
 	case nodePhaseForm, nodePhaseDeleteSelect:
+		view := nm.parameterForm.View("Node Management · Parameters")
+		if nm.statusErr != "" {
+			view = flowErr.Render(nm.statusErr) + "\n\n" + view
+		}
+		return view
+	case nodePhaseMissingDNSCreds:
+		if nm.subForm != nil {
+			return nm.subForm.View()
+		}
 		return nm.parameterForm.View("Node Management · Parameters")
 	case nodePhaseConfirm:
 		return nm.confirmView()
@@ -608,6 +700,11 @@ func (nm *nodeManager) footerHints() []operationHint {
 	case nodePhaseAction:
 		return actionFooterHints("Select")
 	case nodePhaseForm, nodePhaseDeleteSelect:
+		return nm.parameterForm.footerHints()
+	case nodePhaseMissingDNSCreds:
+		if nm.subForm != nil {
+			return nm.subForm.footerHints()
+		}
 		return nm.parameterForm.footerHints()
 	case nodePhaseConfirm:
 		return applyFooterHints("Apply")
