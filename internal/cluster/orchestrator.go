@@ -206,8 +206,8 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 	}
 
 	steps := []addStep{
-		{"Preflight", "install WireGuard on the node", func(ctx context.Context) error {
-			return installWireGuard(ctx, client)
+		{"Preflight", "install base packages (curl, ca-certificates, tar, WireGuard) on the node", func(ctx context.Context) error {
+			return installNodeBasePackages(ctx, client)
 		}},
 		{"Binaries", "download singbox-node and singbox-monitor", func(ctx context.Context) error {
 			return downloadAgentBinaries(ctx, client, req.Version)
@@ -442,15 +442,17 @@ func canonicalProtocols(in []config.Protocol) []config.Protocol {
 	return out
 }
 
-// installWireGuard installs the wireguard-tools package on the node using its
-// detected package manager. Supports Debian-family (apt) and RHEL-family
+// installNodeBasePackages installs the packages every node needs before the
+// rest of the add-node flow runs: curl (binary/core downloads), ca-certificates
+// (TLS verification for those downloads), tar (sing-box core extraction), and
+// the WireGuard userspace tools. Supports Debian-family (apt) and RHEL-family
 // (dnf/yum) hosts.
-func installWireGuard(ctx context.Context, client sshClient) error {
+func installNodeBasePackages(ctx context.Context, client sshClient) error {
 	// Detect package manager.
 	for _, candidate := range []struct{ check, install string }{
-		{"command -v apt-get", "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard"},
-		{"command -v dnf", "dnf install -y wireguard-tools"},
-		{"command -v yum", "yum install -y wireguard-tools"},
+		{"command -v apt-get", "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates tar wireguard"},
+		{"command -v dnf", "dnf install -y curl ca-certificates tar wireguard-tools"},
+		{"command -v yum", "yum install -y curl ca-certificates tar wireguard-tools"},
 	} {
 		if res, _ := client.Run(ctx, candidate.check); res.ExitCode == 0 {
 			_, err := client.MustRun(ctx, candidate.install)
