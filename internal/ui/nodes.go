@@ -228,25 +228,22 @@ func (nm *nodeManager) addNodeFields() []field {
 			return !selectedOptions(v["protocols"])[string(p)]
 		}
 	}
+	noReality := func(v map[string]string) bool {
+		selected := selectedOptions(v["protocols"])
+		return !selected[string(config.ProtocolRealityVision)] && !selected[string(config.ProtocolRealityGRPC)]
+	}
 	fields := []field{
 		{key: "alias", label: "Node alias", note: "Human label shown in subscriptions and the TUI (e.g. Tokyo, Singapore)."},
 		{key: "public_ip", label: "Node public IP or host", note: "Where the node is reachable from the public internet for the initial SSH handshake."},
 		{key: "ssh_port", label: "SSH port", def: "22"},
 		{key: "ssh_user", label: "SSH user", def: "root"},
 		{key: "ssh_password", label: "SSH password", note: "Used only during initial provisioning. Not persisted on the master."},
-		{key: "domain", label: "Node TLS domain", note: "Fully qualified domain the node will terminate TLS on (e.g. jp.example.com)."},
+		{key: "domain", label: "Domain (must resolve to this node)", note: "Used for certificate issuance, Nginx server_name, and TLS SNI."},
 		{key: "protocols", label: "Enabled protocols", options: protoOpts, multi: true, note: "Pick one or more protocols this node will serve."},
 	}
-	for _, p := range config.AllProtocols {
-		for _, port := range uiparams.ProtocolInstallFieldsForProtocol(p) {
-			if !strings.HasSuffix(port.Key, "_port") {
-				continue
-			}
-			f := fieldFromParameter(port)
-			f.skip = missingProtocol(p)
-			fields = append(fields, f)
-		}
-	}
+	// Reality SNI + per-protocol UUID/password/port fields mirror the install
+	// form so the add-node interaction matches the host install flow.
+	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields,
 		field{key: "master_endpoint", label: "Master public host:port for WireGuard", note: "How the node should reach the master on port 51820/udp (e.g. master.example.com:51820)."},
 		field{key: "version", label: "Release tag to deploy on the node", def: getVersion(), note: "Defaults to the master's current release."},
@@ -282,11 +279,8 @@ func validateNodeField(f field, val string, _ map[string]string) error {
 		if err != nil || n <= 0 || n > 65535 {
 			return fmt.Errorf("ssh port must be 1-65535")
 		}
-	case "ssh_user":
-		if v == "" {
-			return fmt.Errorf("%s is required", f.label)
-		}
-	case "ssh_password":
+		return nil
+	case "ssh_user", "ssh_password":
 		if v == "" {
 			return fmt.Errorf("%s is required", f.label)
 		}
@@ -299,10 +293,9 @@ func validateNodeField(f field, val string, _ map[string]string) error {
 			return fmt.Errorf("select a node to delete")
 		}
 	}
-	if strings.HasSuffix(f.key, "_port") && f.key != "ssh_port" {
-		return uiparams.ValidateSharedParameterValue(f.key, v)
-	}
-	return nil
+	// Protocol parameter fields (reality_sni, *_uuid, *_password, *_port) share
+	// the install flow's validator. Unknown keys fall through to no-op.
+	return uiparams.ValidateSharedParameterValue(f.key, v)
 }
 
 func (nm *nodeManager) canApply() bool {
@@ -385,6 +378,17 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 	if err != nil {
 		return cluster.AddNodeRequest{}, err
 	}
+	coreVersion := parseSingBoxCoreVersion(coreCurrentVersion(paths.DefaultLayout()))
+	if coreVersion == "" {
+		return cluster.AddNodeRequest{}, fmt.Errorf("could not detect master sing-box core version; install sing-box on the master before adding nodes")
+	}
+	realityServerName := ""
+	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
+		realityServerName, err = uiparams.NormalizeRealityServerName(v["reality_sni"])
+		if err != nil {
+			return cluster.AddNodeRequest{}, fmt.Errorf("reality SNI: %w", err)
+		}
+	}
 	return cluster.AddNodeRequest{
 		Alias:    strings.TrimSpace(v["alias"]),
 		PublicIP: strings.TrimSpace(v["public_ip"]),
@@ -399,9 +403,37 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 		Domain:               strings.TrimSpace(v["domain"]),
 		EnabledProtocols:     protocols,
 		Ports:                ports,
+		RealityServerName:    realityServerName,
 		MasterPublicEndpoint: strings.TrimSpace(v["master_endpoint"]),
 		Version:              strings.TrimSpace(v["version"]),
+		CoreVersion:          coreVersion,
+		CredentialOverrides: deploy.Credentials{
+			RealityVisionUUID: strings.TrimSpace(v["reality_vision_uuid"]),
+			RealityGRPCUUID:   strings.TrimSpace(v["reality_grpc_uuid"]),
+			HysteriaPassword:  strings.TrimSpace(v["hysteria2_password"]),
+			TUICUUID:          strings.TrimSpace(v["tuic_uuid"]),
+			TUICPassword:      strings.TrimSpace(v["tuic_password"]),
+			AnyTLSPassword:    strings.TrimSpace(v["anytls_password"]),
+		},
 	}, nil
+}
+
+// parseSingBoxCoreVersion extracts the bare version number (e.g. "1.12.0") from
+// the first line of `sing-box version` output ("sing-box version 1.12.0"). It
+// returns an empty string when the raw value is empty or unparseable so the
+// caller can surface a useful error.
+func parseSingBoxCoreVersion(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	fields := strings.Fields(raw)
+	for i, f := range fields {
+		if strings.EqualFold(f, "version") && i+1 < len(fields) {
+			return strings.TrimPrefix(fields[i+1], "v")
+		}
+	}
+	return ""
 }
 
 // allocateNodeProtocolPorts honours user-supplied port values from the form
@@ -519,14 +551,24 @@ func (nm *nodeManager) confirmView() string {
 	var rows []summaryLine
 	switch nm.action {
 	case nodeActionAdd:
+		protocols := protocolListFromCSV(nm.values["protocols"])
 		rows = append(rows,
 			summaryRow("Add node", nm.values["alias"]),
 			summaryRow("SSH target", nm.values["public_ip"]+":"+orDefault(nm.values["ssh_port"], "22")),
 			summaryRow("Domain", nm.values["domain"]),
-			summaryRow("Protocols", nm.values["protocols"]),
+			summaryRow("Protocols", protocolLabels(protocols)),
 			summaryRow("Master endpoint", nm.values["master_endpoint"]),
 			summaryRow("Release tag", nm.values["version"]),
 		)
+		if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
+			rows = append(rows, summaryRow("Reality URL/SNI", nm.values["reality_sni"]))
+		}
+		if len(protocols) > 0 {
+			rows = append(rows, summaryText("Protocol parameters:"))
+			for _, p := range protocols {
+				rows = append(rows, nm.protocolParamRows(p)...)
+			}
+		}
 	case nodeActionDelete:
 		rows = append(rows,
 			summaryRow("Delete node", nm.deleteID),
@@ -534,6 +576,31 @@ func (nm *nodeManager) confirmView() string {
 		)
 	}
 	return flowTitle.Render("Node Management · Confirm") + "\n\n" + renderSummary(rows)
+}
+
+// protocolParamRows renders the indented credential/port summary lines for one
+// selected protocol, matching the install confirm view so the two flows stay
+// visually consistent.
+func (nm *nodeManager) protocolParamRows(p config.Protocol) []summaryLine {
+	rows := []summaryLine{
+		summaryIndentedRow(2, string(p)+" port", summaryValueOrRandom(nm.values[portFieldKey(p)])),
+	}
+	switch p {
+	case config.ProtocolRealityVision:
+		rows = append(rows, summaryIndentedRow(2, "VLESS Reality Vision UUID", summaryValueOrRandom(nm.values["reality_vision_uuid"])))
+	case config.ProtocolRealityGRPC:
+		rows = append(rows, summaryIndentedRow(2, "VLESS Reality gRPC UUID", summaryValueOrRandom(nm.values["reality_grpc_uuid"])))
+	case config.ProtocolHysteria2:
+		rows = append(rows, summaryIndentedRow(2, "Hysteria2 password", summaryValueOrRandom(nm.values["hysteria2_password"])))
+	case config.ProtocolTUIC:
+		rows = append(rows,
+			summaryIndentedRow(2, "TUIC UUID", summaryValueOrRandom(nm.values["tuic_uuid"])),
+			summaryIndentedRow(2, "TUIC password", summaryValueOrRandom(nm.values["tuic_password"])),
+		)
+	case config.ProtocolAnyTLS:
+		rows = append(rows, summaryIndentedRow(2, "AnyTLS password", summaryValueOrRandom(nm.values["anytls_password"])))
+	}
+	return rows
 }
 
 func (nm *nodeManager) footerHints() []operationHint {

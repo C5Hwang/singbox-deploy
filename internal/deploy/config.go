@@ -7,6 +7,8 @@
 package deploy
 
 import (
+	"strings"
+
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
@@ -64,6 +66,30 @@ func GenerateCredentials() (Credentials, error) {
 	c.RealityPrivateKey = kp.PrivateKey
 	c.RealityPublicKey = kp.PublicKey
 	return c, nil
+}
+
+// ApplyOverrides overwrites this Credentials' per-protocol fields with any
+// non-empty values from override. Reality key material is always derived from
+// the generated keypair and is intentionally not overrideable here.
+func (c *Credentials) ApplyOverrides(override Credentials) {
+	if v := strings.TrimSpace(override.RealityVisionUUID); v != "" {
+		c.RealityVisionUUID = v
+	}
+	if v := strings.TrimSpace(override.RealityGRPCUUID); v != "" {
+		c.RealityGRPCUUID = v
+	}
+	if v := strings.TrimSpace(override.HysteriaPassword); v != "" {
+		c.HysteriaPassword = v
+	}
+	if v := strings.TrimSpace(override.TUICUUID); v != "" {
+		c.TUICUUID = v
+	}
+	if v := strings.TrimSpace(override.TUICPassword); v != "" {
+		c.TUICPassword = v
+	}
+	if v := strings.TrimSpace(override.AnyTLSPassword); v != "" {
+		c.AnyTLSPassword = v
+	}
 }
 
 // Config is the complete input to an installation.

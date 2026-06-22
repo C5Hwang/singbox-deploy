@@ -1363,3 +1363,78 @@ func TestAllocateNodeProtocolPortsRejects443(t *testing.T) {
 		t.Fatalf("expected error for 443 input")
 	}
 }
+
+// TestAddNodeFieldsMirrorInstallProtocolSection confirms the add-node form
+// exposes the same Reality SNI + per-protocol UUID/password fields the install
+// flow collects, with the same skip-when-not-selected behaviour.
+func TestAddNodeFieldsMirrorInstallProtocolSection(t *testing.T) {
+	nm := &nodeManager{parameterForm: newParameterForm(nil)}
+	fields := nm.addNodeFields()
+	credentialKeys := []struct {
+		key   string
+		proto config.Protocol
+	}{
+		{"reality_vision_uuid", config.ProtocolRealityVision},
+		{"reality_grpc_uuid", config.ProtocolRealityGRPC},
+		{"hysteria2_password", config.ProtocolHysteria2},
+		{"tuic_uuid", config.ProtocolTUIC},
+		{"tuic_password", config.ProtocolTUIC},
+		{"anytls_password", config.ProtocolAnyTLS},
+	}
+	for _, tc := range credentialKeys {
+		f := fields[fieldIndex(t, fields, tc.key)]
+		if f.skip == nil {
+			t.Fatalf("%s missing skip predicate", tc.key)
+		}
+		if !f.skip(map[string]string{"protocols": ""}) {
+			t.Errorf("%s should be hidden when its protocol is not selected", tc.key)
+		}
+		if f.skip(map[string]string{"protocols": string(tc.proto)}) {
+			t.Errorf("%s should be visible when %s is selected", tc.key, tc.proto)
+		}
+	}
+
+	sni := fields[fieldIndex(t, fields, "reality_sni")]
+	if sni.skip == nil {
+		t.Fatalf("reality_sni missing skip predicate")
+	}
+	if !sni.skip(map[string]string{"protocols": string(config.ProtocolHysteria2)}) {
+		t.Errorf("reality_sni should be hidden when no Reality protocol is selected")
+	}
+	if sni.skip(map[string]string{"protocols": string(config.ProtocolRealityGRPC)}) {
+		t.Errorf("reality_sni should be visible when a Reality protocol is selected")
+	}
+}
+
+// TestAddNodeFieldsDomainPositionedBeforeProtocols pins the node form layout
+// to match the master install flow: domain follows the SSH basics block and
+// precedes the protocols selector (and all per-protocol parameter fields).
+func TestAddNodeFieldsDomainPositionedBeforeProtocols(t *testing.T) {
+	nm := &nodeManager{parameterForm: newParameterForm(nil)}
+	fields := nm.addNodeFields()
+	if fieldIndex(t, fields, "domain") >= fieldIndex(t, fields, "protocols") {
+		t.Fatalf("domain field must come before protocols selector")
+	}
+	if fieldIndex(t, fields, "ssh_password") >= fieldIndex(t, fields, "domain") {
+		// sanity: domain should still follow the SSH basics block
+		t.Fatalf("domain field must follow the SSH basics block")
+	}
+}
+
+// TestParseSingBoxCoreVersionExtractsBareVersion confirms the helper used by
+// buildAddRequest pulls "1.12.0" out of "sing-box version 1.12.0" so the node
+// downloads a core matching the master.
+func TestParseSingBoxCoreVersionExtractsBareVersion(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"sing-box version 1.12.0", "1.12.0"},
+		{"sing-box version v1.12.0", "1.12.0"},
+		{"  sing-box version 1.13.0-beta.2 \n", "1.13.0-beta.2"},
+		{"", ""},
+		{"installed", ""},
+	}
+	for _, tc := range cases {
+		if got := parseSingBoxCoreVersion(tc.in); got != tc.want {
+			t.Errorf("parseSingBoxCoreVersion(%q) = %q want %q", tc.in, got, tc.want)
+		}
+	}
+}

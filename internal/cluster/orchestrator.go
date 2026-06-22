@@ -48,6 +48,12 @@ type AddNodeRequest struct {
 	// MasterPublicEndpoint is the master's externally-reachable host:port the
 	// node uses as its WireGuard Endpoint.
 	MasterPublicEndpoint string
+
+	// CredentialOverrides lets the caller supply explicit UUID/password values
+	// for individual protocols; non-empty fields replace the auto-generated
+	// secrets, blank fields keep the random ones. Reality key material is
+	// always derived from the freshly generated keypair.
+	CredentialOverrides deploy.Credentials
 }
 
 // Event reports the progress of one orchestration step to the caller (TUI).
@@ -146,6 +152,7 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 	if err != nil {
 		return Node{}, err
 	}
+	creds.ApplyOverrides(req.CredentialOverrides)
 
 	node := Node{
 		ID:                     id,

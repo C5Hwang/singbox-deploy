@@ -636,24 +636,14 @@ func parseInstallPort(value string, fallback int, label string) (int, error) {
 }
 
 func (w *installForm) applyCredentialOverrides(creds *deploy.Credentials) {
-	if v := strings.TrimSpace(w.values["reality_vision_uuid"]); v != "" {
-		creds.RealityVisionUUID = v
-	}
-	if v := strings.TrimSpace(w.values["reality_grpc_uuid"]); v != "" {
-		creds.RealityGRPCUUID = v
-	}
-	if v := strings.TrimSpace(w.values["hysteria2_password"]); v != "" {
-		creds.HysteriaPassword = v
-	}
-	if v := strings.TrimSpace(w.values["tuic_uuid"]); v != "" {
-		creds.TUICUUID = v
-	}
-	if v := strings.TrimSpace(w.values["tuic_password"]); v != "" {
-		creds.TUICPassword = v
-	}
-	if v := strings.TrimSpace(w.values["anytls_password"]); v != "" {
-		creds.AnyTLSPassword = v
-	}
+	creds.ApplyOverrides(deploy.Credentials{
+		RealityVisionUUID: strings.TrimSpace(w.values["reality_vision_uuid"]),
+		RealityGRPCUUID:   strings.TrimSpace(w.values["reality_grpc_uuid"]),
+		HysteriaPassword:  strings.TrimSpace(w.values["hysteria2_password"]),
+		TUICUUID:          strings.TrimSpace(w.values["tuic_uuid"]),
+		TUICPassword:      strings.TrimSpace(w.values["tuic_password"]),
+		AnyTLSPassword:    strings.TrimSpace(w.values["anytls_password"]),
+	})
 }
 
 func (w *installForm) protocolPorts(enabled []config.Protocol, subscribePort, monitorPublicPort, monitorPort int, deployMonitor bool) (config.Ports, error) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/sshexec"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -255,6 +256,61 @@ func TestAddNodeAttemptsCertAndSiteForRealityOnly(t *testing.T) {
 	}
 	if !sawCertRunning {
 		t.Errorf("expected Issue cert step to be scheduled for Reality-only node; events: %+v", events)
+	}
+}
+
+// TestAddNodeAppliesCredentialOverrides confirms that user-supplied UUID and
+// password values from the TUI flow through into the persisted node's
+// credentials instead of being silently replaced by the auto-generated
+// secrets.
+func TestAddNodeAppliesCredentialOverrides(t *testing.T) {
+	redirectWGConfig(t)
+	client := newFakeSSHClient()
+	o, _ := newTestOrchestrator(t, client)
+	o.VerifyConnectivity = func(ctx context.Context, n Node) error { return nil }
+
+	var captured Node
+	o.PostRegister = func(_ context.Context, n Node) error {
+		captured = n
+		return nil
+	}
+
+	const userVisionUUID = "11111111-2222-3333-4444-555555555555"
+	const userHysteriaPw = "user-supplied-hysteria-password"
+	req := AddNodeRequest{
+		Alias:                "Tokyo",
+		PublicIP:             "203.0.113.10",
+		SSHTarget:            sshexec.Target{Host: "203.0.113.10"},
+		SSHAuth:              sshexec.Auth{User: "root", Password: "x"},
+		Domain:               "jp.example.com",
+		EnabledProtocols:     []config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2},
+		Ports:                config.Ports{RealityVision: 27443, Hysteria2: 28443},
+		RealityServerName:    "www.microsoft.com",
+		MasterPublicEndpoint: "198.51.100.1:51820",
+		Version:              "v1.2.3",
+		CoreVersion:          "1.12.0",
+		CredentialOverrides: deploy.Credentials{
+			RealityVisionUUID: userVisionUUID,
+			HysteriaPassword:  userHysteriaPw,
+		},
+	}
+
+	if _, err := o.AddNode(context.Background(), req); err != nil {
+		t.Fatalf("AddNode: %v", err)
+	}
+
+	if captured.Creds.RealityVisionUUID != userVisionUUID {
+		t.Errorf("RealityVisionUUID = %q want %q", captured.Creds.RealityVisionUUID, userVisionUUID)
+	}
+	if captured.Creds.HysteriaPassword != userHysteriaPw {
+		t.Errorf("HysteriaPassword = %q want %q", captured.Creds.HysteriaPassword, userHysteriaPw)
+	}
+	// Fields without overrides must still be populated by GenerateCredentials.
+	if captured.Creds.RealityGRPCUUID == "" {
+		t.Errorf("RealityGRPCUUID must still be auto-generated when no override is supplied")
+	}
+	if captured.Creds.RealityPrivateKey == "" || captured.Creds.RealityPublicKey == "" {
+		t.Errorf("Reality key material must always be auto-generated, got %+v", captured.Creds)
 	}
 }
 
