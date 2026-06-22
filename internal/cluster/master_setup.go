@@ -33,7 +33,7 @@ func (o *Orchestrator) EnsureMasterWireGuard(_ context.Context) error {
 		PrivateKey: keys.PrivateKey,
 		ListenPort: wireguard.DefaultListenPort,
 		Peers:      peers,
-	})
+	}, false)
 	if err != nil {
 		return err
 	}

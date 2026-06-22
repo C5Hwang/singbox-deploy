@@ -92,7 +92,7 @@ func TestRenderMaster(t *testing.T) {
 			{Alias: "Singapore", PublicKey: "SGPPUBKEY==", IP: "10.10.0.3"},
 		},
 	}
-	got, err := RenderMaster(cfg)
+	got, err := RenderMaster(cfg, false)
 	if err != nil {
 		t.Fatalf("RenderMaster: %v", err)
 	}
@@ -113,8 +113,38 @@ func TestRenderMaster(t *testing.T) {
 	}
 }
 
+// TestRenderMasterForSyncOmitsAddress guards the regression that produced
+// `wg syncconf ...: exit status 1` — wg(8) syncconf rejects the wg-quick
+// Address= line, so the forSync=true render must not emit it.
+func TestRenderMasterForSync(t *testing.T) {
+	cfg := MasterConfig{
+		PrivateKey: "MASTERPRIVKEY==",
+		ListenPort: 51820,
+		Peers: []Peer{
+			{Alias: "Tokyo", PublicKey: "TOKYOPUBKEY==", IP: "10.10.0.2"},
+		},
+	}
+	got, err := RenderMaster(cfg, true)
+	if err != nil {
+		t.Fatalf("RenderMaster: %v", err)
+	}
+	if strings.Contains(got, "Address") {
+		t.Errorf("forSync render must not contain Address=; wg syncconf will reject it:\n%s", got)
+	}
+	for _, must := range []string{
+		"PrivateKey = MASTERPRIVKEY==",
+		"ListenPort = 51820",
+		"PublicKey = TOKYOPUBKEY==",
+		"AllowedIPs = 10.10.0.2/32",
+	} {
+		if !strings.Contains(got, must) {
+			t.Errorf("forSync render missing %q\n%s", must, got)
+		}
+	}
+}
+
 func TestRenderMasterDefaultsPort(t *testing.T) {
-	got, err := RenderMaster(MasterConfig{PrivateKey: "PRIV"})
+	got, err := RenderMaster(MasterConfig{PrivateKey: "PRIV"}, false)
 	if err != nil {
 		t.Fatalf("RenderMaster: %v", err)
 	}
@@ -133,7 +163,7 @@ func TestRenderMasterPeerOrder(t *testing.T) {
 			{PublicKey: "C", IP: "10.10.0.10"},
 		},
 	}
-	got, err := RenderMaster(cfg)
+	got, err := RenderMaster(cfg, false)
 	if err != nil {
 		t.Fatalf("RenderMaster: %v", err)
 	}

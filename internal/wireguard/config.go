@@ -20,8 +20,12 @@ type NodeConfig struct {
 	MasterEndpoint  string // host:port reachable from the node, e.g. "1.2.3.4:51820"
 }
 
-// RenderMaster returns the wg-quick config body for the master.
-func RenderMaster(cfg MasterConfig) (string, error) {
+// RenderMaster returns the master config body. When forSync is false the
+// output is a full wg-quick(8) config (includes Address=) suitable for
+// /etc/wireguard/wg-sdeploy.conf; when forSync is true the Address= line is
+// omitted so the body is accepted by wg(8) syncconf, which only understands
+// protocol-layer keys.
+func RenderMaster(cfg MasterConfig, forSync bool) (string, error) {
 	if cfg.PrivateKey == "" {
 		return "", fmt.Errorf("master private key is empty")
 	}
@@ -32,7 +36,9 @@ func RenderMaster(cfg MasterConfig) (string, error) {
 	var b strings.Builder
 	b.WriteString("[Interface]\n")
 	fmt.Fprintf(&b, "PrivateKey = %s\n", cfg.PrivateKey)
-	fmt.Fprintf(&b, "Address = %s\n", MasterCIDR)
+	if !forSync {
+		fmt.Fprintf(&b, "Address = %s\n", MasterCIDR)
+	}
 	fmt.Fprintf(&b, "ListenPort = %d\n", port)
 	for _, peer := range SortPeersByIP(cfg.Peers) {
 		if err := peer.Validate(); err != nil {

@@ -336,15 +336,20 @@ func (o *Orchestrator) applyMasterPeers(newNode Node) error {
 	peers = append(peers, wireguard.Peer{
 		Alias: newNode.Alias, PublicKey: newNode.WGPublicKey, IP: newNode.WGIP,
 	})
-	body, err := wireguard.RenderMaster(wireguard.MasterConfig{
+	cfg := wireguard.MasterConfig{
 		PrivateKey: keys.PrivateKey,
 		ListenPort: wireguard.DefaultListenPort,
 		Peers:      peers,
-	})
+	}
+	fullBody, err := wireguard.RenderMaster(cfg, false)
 	if err != nil {
 		return err
 	}
-	return wireguard.SyncPeers(o.Runner, body)
+	syncBody, err := wireguard.RenderMaster(cfg, true)
+	if err != nil {
+		return err
+	}
+	return wireguard.SyncPeers(o.Runner, fullBody, syncBody)
 }
 
 // removeMasterPeer regenerates the master WireGuard config without the named
@@ -367,15 +372,20 @@ func (o *Orchestrator) removeMasterPeer(removed Node) error {
 			Alias: n.Alias, PublicKey: n.WGPublicKey, IP: n.WGIP,
 		})
 	}
-	body, err := wireguard.RenderMaster(wireguard.MasterConfig{
+	cfg := wireguard.MasterConfig{
 		PrivateKey: keys.PrivateKey,
 		ListenPort: wireguard.DefaultListenPort,
 		Peers:      peers,
-	})
+	}
+	fullBody, err := wireguard.RenderMaster(cfg, false)
 	if err != nil {
 		return err
 	}
-	return wireguard.SyncPeers(o.Runner, body)
+	syncBody, err := wireguard.RenderMaster(cfg, true)
+	if err != nil {
+		return err
+	}
+	return wireguard.SyncPeers(o.Runner, fullBody, syncBody)
 }
 
 // verifyConnectivity pings the node's WireGuard IP from the master.

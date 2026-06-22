@@ -32,26 +32,24 @@ func EnableAndStart(runner system.Runner) error {
 	return nil
 }
 
-// SyncPeers writes a fresh master config and applies the diff to a running
-// interface via "wg syncconf". The interface is reloaded in-place without
-// dropping existing peer sessions.
-func SyncPeers(runner system.Runner, body string) error {
-	if err := WriteConfig(body); err != nil {
+// SyncPeers persists fullBody as the canonical wg-quick config and reloads
+// the running interface with syncBody via "wg syncconf". fullBody is the
+// complete wg-quick(8) config (with Address=) so a service restart picks up
+// the latest peer set; syncBody must be the protocol-only form rendered with
+// forSync=true, because wg(8) syncconf rejects wg-quick-specific keys. The
+// interface is reloaded in-place without dropping existing peer sessions.
+func SyncPeers(runner system.Runner, fullBody, syncBody string) error {
+	if err := WriteConfig(fullBody); err != nil {
 		return err
 	}
-	// wg syncconf accepts only the [Interface]/[Peer] form, not wg-quick's
-	// post-up scripts. Strip the AllowedIPs and Address sections nothing —
-	// our config has only Interface/Peer entries, which wg accepts as-is.
-	stripped, err := stripPath()
+	tmp, err := writeSyncTempFile(syncBody)
 	if err != nil {
 		return err
 	}
-	for _, cmd := range []system.Command{
-		{Name: "wg", Args: []string{"syncconf", InterfaceName, stripped}},
-	} {
-		if err := runner.Run(cmd); err != nil {
-			return fmt.Errorf("%s: %w", cmd.String(), err)
-		}
+	defer os.Remove(tmp)
+	cmd := system.Command{Name: "wg", Args: []string{"syncconf", InterfaceName, tmp}}
+	if err := runner.Run(cmd); err != nil {
+		return fmt.Errorf("%s: %w", cmd.String(), err)
 	}
 	return nil
 }
@@ -77,21 +75,16 @@ func RemoveConfig() error {
 	return nil
 }
 
-// stripPath writes the current config to a temp file that "wg syncconf" can
-// consume. wg syncconf rejects the Address= line that wg-quick injects, so we
-// emit only the Interface and Peer sections we generate ourselves (they
-// already exclude wg-quick-specific keys).
-func stripPath() (string, error) {
-	body, err := os.ReadFile(ConfigPath)
-	if err != nil {
-		return "", err
-	}
+// writeSyncTempFile drops syncBody to a temp file that "wg syncconf" can
+// consume and returns the path. The caller is responsible for removing it.
+func writeSyncTempFile(syncBody string) (string, error) {
 	tmp, err := os.CreateTemp("", "wg-sync-*.conf")
 	if err != nil {
 		return "", err
 	}
 	defer tmp.Close()
-	if _, err := tmp.Write(body); err != nil {
+	if _, err := tmp.Write([]byte(syncBody)); err != nil {
+		os.Remove(tmp.Name())
 		return "", err
 	}
 	return tmp.Name(), nil
