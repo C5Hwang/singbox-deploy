@@ -17,6 +17,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/sshexec"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
+	"github.com/C5Hwang/singbox-deploy/internal/wireguard"
 )
 
 type nodePhase int
@@ -280,7 +281,7 @@ func (nm *nodeManager) addNodeFields() []field {
 	// form so the add-node interaction matches the host install flow.
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields,
-		field{key: "master_endpoint", label: "Master public host:port for WireGuard", note: "How the node should reach the master on port 51820/udp (e.g. master.example.com:51820)."},
+		field{key: "master_host", label: "Master public IP or domain", note: "Where the node reaches the master over WireGuard (e.g. master.example.com or 198.51.100.1)."},
 		field{key: "version", label: "Release tag to deploy on the node", def: getVersion(), note: "Defaults to the master's current release."},
 	)
 	return fields
@@ -302,9 +303,16 @@ func (nm *nodeManager) deleteSelectFields() []field {
 func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]string) error {
 	v := strings.TrimSpace(val)
 	switch f.key {
-	case "alias", "public_ip", "master_endpoint", "version":
+	case "alias", "public_ip", "version":
 		if v == "" {
 			return fmt.Errorf("%s is required", f.label)
+		}
+	case "master_host":
+		if v == "" {
+			return fmt.Errorf("%s is required", f.label)
+		}
+		if strings.ContainsAny(v, ":/ ") {
+			return fmt.Errorf("%s must be a bare IP or domain (no port or path); port %d is added automatically", f.label, wireguard.DefaultListenPort)
 		}
 	case "ssh_port":
 		if v == "" {
@@ -525,7 +533,7 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 		EnabledProtocols:     protocols,
 		Ports:                ports,
 		RealityServerName:    realityServerName,
-		MasterPublicEndpoint: strings.TrimSpace(v["master_endpoint"]),
+		MasterPublicEndpoint: fmt.Sprintf("%s:%d", strings.TrimSpace(v["master_host"]), wireguard.DefaultListenPort),
 		Version:              strings.TrimSpace(v["version"]),
 		CoreVersion:          coreVersion,
 		CredentialOverrides: deploy.Credentials{
@@ -687,7 +695,7 @@ func (nm *nodeManager) confirmView() string {
 			summaryRow("SSH target", nm.values["public_ip"]+":"+orDefault(nm.values["ssh_port"], "22")),
 			summaryRow("Domain", nm.values["domain"]),
 			summaryRow("Protocols", protocolLabels(protocols)),
-			summaryRow("Master endpoint", nm.values["master_endpoint"]),
+			summaryRow("Master endpoint", fmt.Sprintf("%s:%d", nm.values["master_host"], wireguard.DefaultListenPort)),
 			summaryRow("Release tag", nm.values["version"]),
 		)
 		if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
