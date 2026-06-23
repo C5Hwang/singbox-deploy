@@ -35,8 +35,7 @@ const (
 type nodeAction int
 
 const (
-	nodeActionList nodeAction = iota
-	nodeActionAdd
+	nodeActionAdd nodeAction = iota
 	nodeActionDelete
 )
 
@@ -228,8 +227,6 @@ func (nm *nodeManager) activateAction() {
 	}
 	nm.action = actions[idx].action
 	switch nm.action {
-	case nodeActionList:
-		nm.phase = nodePhaseAction
 	case nodeActionAdd:
 		if parseSingBoxCoreVersion(coreCurrentVersion(paths.DefaultLayout())) == "" {
 			nm.fieldErr = "install sing-box on the master before adding nodes"
@@ -768,8 +765,6 @@ func (nm *nodeManager) footerHints() []operationHint {
 
 func (nm *nodeManager) actions() []nodeActionItem {
 	return []nodeActionItem{
-		{separator: true, label: "View"},
-		{action: nodeActionList, label: "Refresh node list"},
 		{separator: true, label: "Manage"},
 		{action: nodeActionAdd, label: "Add node"},
 		{action: nodeActionDelete, label: "Delete node"},
