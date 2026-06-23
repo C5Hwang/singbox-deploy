@@ -231,6 +231,10 @@ func (nm *nodeManager) activateAction() {
 	case nodeActionList:
 		nm.phase = nodePhaseAction
 	case nodeActionAdd:
+		if parseSingBoxCoreVersion(coreCurrentVersion(paths.DefaultLayout())) == "" {
+			nm.fieldErr = "install sing-box on the master before adding nodes"
+			return
+		}
 		nm.startForm(nm.addNodeFields(), nodePhaseForm)
 	case nodeActionDelete:
 		if len(nm.nodes) == 0 {

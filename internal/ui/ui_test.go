@@ -1364,6 +1364,45 @@ func TestAddNodeFieldsDomainPositionedBeforeProtocols(t *testing.T) {
 	}
 }
 
+// TestAddNodeBlockedWhenSingBoxNotInstalled confirms that selecting "Add node"
+// before sing-box has a parseable version surfaces an inline error and keeps
+// the user on the action menu, instead of letting them fill the entire form
+// only to fail at buildAddRequest.
+func TestAddNodeBlockedWhenSingBoxNotInstalled(t *testing.T) {
+	oldVersion := coreCurrentVersion
+	t.Cleanup(func() { coreCurrentVersion = oldVersion })
+	coreCurrentVersion = func(paths.Layout) string { return "" }
+
+	nm := &nodeManager{
+		phase:         nodePhaseAction,
+		parameterForm: newParameterForm(nil),
+		commandRun:    newCommandRun(),
+	}
+	nm.action = nodeActionAdd
+	for i, a := range nm.actions() {
+		if a.action == nodeActionAdd {
+			nm.cursor = i
+		}
+	}
+	nm.activateAction()
+	if nm.phase != nodePhaseAction {
+		t.Fatalf("phase = %v, want nodePhaseAction so the form does not open", nm.phase)
+	}
+	if !strings.Contains(nm.fieldErr, "install sing-box") {
+		t.Fatalf("fieldErr = %q, want install-required hint", nm.fieldErr)
+	}
+
+	coreCurrentVersion = func(paths.Layout) string { return "sing-box version 1.12.0" }
+	nm.fieldErr = ""
+	nm.activateAction()
+	if nm.phase != nodePhaseForm {
+		t.Fatalf("phase = %v, want nodePhaseForm once sing-box reports a version", nm.phase)
+	}
+	if nm.fieldErr != "" {
+		t.Fatalf("fieldErr = %q, want empty after the gate passes", nm.fieldErr)
+	}
+}
+
 // TestParseSingBoxCoreVersionExtractsBareVersion confirms the helper used by
 // buildAddRequest pulls "1.12.0" out of "sing-box version 1.12.0" so the node
 // downloads a core matching the master.
