@@ -61,14 +61,19 @@ type nodeManager struct {
 	result    *cluster.Node
 	subForm   *dnsCredentialForm
 	statusErr string
+
+	validateDomain func(ctx context.Context, domain, expectedIP string) error
+	validateSSH    func(ctx context.Context, target sshexec.Target, auth sshexec.Auth) error
 }
 
 func newNodeManager() *nodeManager {
 	nm := &nodeManager{
-		phase:         nodePhaseAction,
-		cursor:        1,
-		parameterForm: newParameterForm(nil),
-		commandRun:    newCommandRun(),
+		phase:          nodePhaseAction,
+		cursor:         1,
+		parameterForm:  newParameterForm(nil),
+		commandRun:     newCommandRun(),
+		validateDomain: validateDomainResolvesToIP,
+		validateSSH:    validateSSHReachable,
 	}
 	host, err := system.DetectHost()
 	nm.host = host
@@ -237,7 +242,7 @@ func (nm *nodeManager) activateAction() {
 
 func (nm *nodeManager) startForm(fields []field, phase nodePhase) {
 	nm.parameterForm.setFields(fields)
-	nm.parameterForm.validate = validateNodeField
+	nm.parameterForm.validate = nm.validateNodeField
 	nm.phase = phase
 	if nm.parameterForm.advanceField() {
 		nm.phase = nodePhaseConfirm
@@ -294,10 +299,10 @@ func (nm *nodeManager) deleteSelectFields() []field {
 	}}
 }
 
-func validateNodeField(f field, val string, _ map[string]string) error {
+func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]string) error {
 	v := strings.TrimSpace(val)
 	switch f.key {
-	case "alias", "public_ip", "domain", "master_endpoint", "version":
+	case "alias", "public_ip", "master_endpoint", "version":
 		if v == "" {
 			return fmt.Errorf("%s is required", f.label)
 		}
@@ -310,10 +315,45 @@ func validateNodeField(f field, val string, _ map[string]string) error {
 			return fmt.Errorf("ssh port must be 1-65535")
 		}
 		return nil
-	case "ssh_user", "ssh_password":
+	case "ssh_user":
 		if v == "" {
 			return fmt.Errorf("%s is required", f.label)
 		}
+	case "ssh_password":
+		if v == "" {
+			return fmt.Errorf("%s is required", f.label)
+		}
+		if nm.validateSSH == nil {
+			return nil
+		}
+		host := strings.TrimSpace(vals["public_ip"])
+		if host == "" {
+			return fmt.Errorf("node public IP must be entered before the SSH password")
+		}
+		port, _ := strconv.Atoi(strings.TrimSpace(vals["ssh_port"]))
+		if port == 0 {
+			port = 22
+		}
+		user := strings.TrimSpace(vals["ssh_user"])
+		if user == "" {
+			user = "root"
+		}
+		return nm.validateSSH(context.Background(),
+			sshexec.Target{Host: host, Port: port},
+			sshexec.Auth{User: user, Password: v},
+		)
+	case "domain":
+		if v == "" {
+			return fmt.Errorf("%s is required", f.label)
+		}
+		if nm.validateDomain == nil {
+			return nil
+		}
+		host := strings.TrimSpace(vals["public_ip"])
+		if host == "" {
+			return nil
+		}
+		return nm.validateDomain(context.Background(), v, host)
 	case "protocols":
 		if v == "" {
 			return fmt.Errorf("select at least one protocol")
@@ -323,8 +363,6 @@ func validateNodeField(f field, val string, _ map[string]string) error {
 			return fmt.Errorf("select a node to delete")
 		}
 	}
-	// Protocol parameter fields (reality_sni, *_uuid, *_password, *_port) share
-	// the install flow's validator. Unknown keys fall through to no-op.
 	return uiparams.ValidateSharedParameterValue(f.key, v)
 }
 
