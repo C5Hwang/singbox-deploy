@@ -721,7 +721,7 @@ func (nm *nodeManager) actions() []nodeActionItem {
 		{separator: true, label: "View"},
 		{action: nodeActionList, label: "Refresh node list"},
 		{separator: true, label: "Manage"},
-		{action: nodeActionAdd, label: "Add node (SSH provisioning)"},
+		{action: nodeActionAdd, label: "Add node"},
 		{action: nodeActionDelete, label: "Delete node"},
 	}
 }
