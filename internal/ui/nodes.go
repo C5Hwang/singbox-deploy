@@ -282,7 +282,6 @@ func (nm *nodeManager) addNodeFields() []field {
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields,
 		field{key: "master_host", label: "Master public IP or domain", note: "Where the node reaches the master over WireGuard (e.g. master.example.com or 198.51.100.1)."},
-		field{key: "version", label: "Release tag to deploy on the node", def: getVersion(), note: "Defaults to the master's current release."},
 	)
 	return fields
 }
@@ -303,7 +302,7 @@ func (nm *nodeManager) deleteSelectFields() []field {
 func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]string) error {
 	v := strings.TrimSpace(val)
 	switch f.key {
-	case "alias", "public_ip", "version":
+	case "alias", "public_ip":
 		if v == "" {
 			return fmt.Errorf("%s is required", f.label)
 		}
@@ -534,7 +533,7 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 		Ports:                ports,
 		RealityServerName:    realityServerName,
 		MasterPublicEndpoint: fmt.Sprintf("%s:%d", strings.TrimSpace(v["master_host"]), wireguard.DefaultListenPort),
-		Version:              strings.TrimSpace(v["version"]),
+		Version:              toolVersion,
 		CoreVersion:          coreVersion,
 		CredentialOverrides: deploy.Credentials{
 			RealityVisionUUID: strings.TrimSpace(v["reality_vision_uuid"]),
@@ -696,7 +695,8 @@ func (nm *nodeManager) confirmView() string {
 			summaryRow("Domain", nm.values["domain"]),
 			summaryRow("Protocols", protocolLabels(protocols)),
 			summaryRow("Master endpoint", fmt.Sprintf("%s:%d", nm.values["master_host"], wireguard.DefaultListenPort)),
-			summaryRow("Release tag", nm.values["version"]),
+			summaryRow("Release tag", toolVersion),
+			summaryRow("sing-box core version", orDefault(parseSingBoxCoreVersion(coreCurrentVersion(paths.DefaultLayout())), "unknown")),
 		)
 		if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
 			rows = append(rows, summaryRow("Reality URL/SNI", nm.values["reality_sni"]))
@@ -786,6 +786,3 @@ func orDefault(v, def string) string {
 	}
 	return v
 }
-
-// getVersion returns the master's current version for use as a form default.
-func getVersion() string { return toolVersion }
