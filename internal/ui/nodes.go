@@ -252,14 +252,6 @@ func (nm *nodeManager) startForm(fields []field, phase nodePhase) {
 }
 
 func (nm *nodeManager) addNodeFields() []field {
-	protoOpts := make([]string, 0, len(config.AllProtocols))
-	for _, p := range config.AllProtocols {
-		protoOpts = append(protoOpts, string(p))
-	}
-	// The install-flow helper protocolSelected treats an empty value as
-	// "everything", which fits the install form's default-all behaviour.
-	// Node forms start with no protocols picked, so use a stricter predicate
-	// that hides per-protocol port fields until the operator selects them.
 	missingProtocol := func(p config.Protocol) func(map[string]string) bool {
 		return func(v map[string]string) bool {
 			return !selectedOptions(v["protocols"])[string(p)]
@@ -276,7 +268,7 @@ func (nm *nodeManager) addNodeFields() []field {
 		{key: "ssh_user", label: "SSH user", def: "root"},
 		{key: "ssh_password", label: "SSH password", note: "Used only during initial provisioning."},
 		{key: "domain", label: "Domain (must resolve to this node)", note: "Used for certificate issuance, Nginx server_name, and TLS SNI."},
-		{key: "protocols", label: "Enabled protocols", options: protoOpts, multi: true, note: "Pick one or more protocols this node will serve."},
+		{key: "protocols", label: "Enabled protocols", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Pick one or more protocols this node will serve."},
 	}
 	// Reality SNI + per-protocol UUID/password/port fields mirror the install
 	// form so the add-node interaction matches the host install flow.
