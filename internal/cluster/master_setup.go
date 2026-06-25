@@ -11,10 +11,14 @@ import (
 
 // EnsureMasterWireGuard makes sure the master is fully set up to serve as the
 // hub of its WireGuard subnet: wireguard-tools installed, the master config
-// rendered with the current peer set, and wg-quick@wg-sdeploy enabled. Safe
-// to call repeatedly — every step is idempotent.
+// rendered with the current peer set, wg-quick@wg-sdeploy enabled, and the
+// WireGuard UDP listen port allowed through the local firewall. Safe to call
+// repeatedly — every step is idempotent.
 func (o *Orchestrator) EnsureMasterWireGuard(_ context.Context) error {
 	if err := o.installMasterWireGuardPackage(); err != nil {
+		return err
+	}
+	if err := o.openMasterWireGuardPort(); err != nil {
 		return err
 	}
 	keys, err := o.Registry.EnsureMasterKeys()
@@ -41,6 +45,29 @@ func (o *Orchestrator) EnsureMasterWireGuard(_ context.Context) error {
 		return err
 	}
 	return wireguard.EnableAndStart(o.Runner)
+}
+
+// openMasterWireGuardPort opens UDP DefaultListenPort on whichever managed
+// firewall the master uses (ufw / firewalld). Without this, nodes' WireGuard
+// handshake packets to the master are silently dropped on hosts where the
+// installer's initial `Firewall` step left default-deny inbound in place.
+// Both ufw and firewalld treat re-adding an existing rule as a no-op so this
+// is safe to run on every AddNode.
+func (o *Orchestrator) openMasterWireGuardPort() error {
+	fw := system.DetectFirewall()
+	if fw == system.FirewallNone {
+		return nil
+	}
+	cmds := system.FirewallCommands(fw, []system.Port{{Number: wireguard.DefaultListenPort, Proto: "udp"}})
+	if fw == system.FirewallFirewalld {
+		cmds = append(cmds, system.Command{Name: "firewall-cmd", Args: []string{"--reload"}})
+	}
+	for _, c := range cmds {
+		if err := o.Runner.Run(c); err != nil {
+			return fmt.Errorf("open WireGuard listen port: %w", err)
+		}
+	}
+	return nil
 }
 
 // installMasterWireGuardPackage installs wireguard-tools on the master using

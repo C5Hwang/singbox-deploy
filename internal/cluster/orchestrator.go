@@ -3,9 +3,8 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"net"
+	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -234,7 +233,20 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 		{"Register peer", "add node to master WireGuard peers", func(ctx context.Context) error {
 			return o.applyMasterPeers(node)
 		}},
-		{"Connectivity", "verify WireGuard handshake", func(ctx context.Context) error {
+		{"Initiate tunnel", "ping master from node to trigger initial WireGuard handshake", func(ctx context.Context) error {
+			// wg-quick is already up on the node and the master now knows
+			// the node's public key. Linux WireGuard only sends a handshake
+			// init when something tries to send a packet to the peer or
+			// when PersistentKeepalive fires (every 25s). Sending one
+			// ICMP burst forces the kernel to attempt the handshake right
+			// away so the verify step below succeeds without waiting for
+			// the first keepalive tick. Exit status is ignored on purpose:
+			// the first replies typically arrive only after the handshake
+			// completes, and we only care that the packets were sent.
+			_, _ = client.Run(ctx, "ping -c 3 -W 1 "+wireguard.MasterIP+" || true")
+			return nil
+		}},
+		{"Connectivity", "verify node agent reachable over WireGuard", func(ctx context.Context) error {
 			verify := o.VerifyConnectivity
 			if verify == nil {
 				verify = o.verifyConnectivity
@@ -388,20 +400,34 @@ func (o *Orchestrator) removeMasterPeer(removed Node) error {
 	return wireguard.SyncPeers(o.Runner, fullBody, syncBody)
 }
 
-// verifyConnectivity pings the node's WireGuard IP from the master.
+// verifyConnectivity confirms the node agent answers an authenticated GET
+// /api/status over the WireGuard tunnel. A bare TCP dial was not enough:
+// it could not distinguish "kernel routed but agent not bound" from "agent
+// listening but rejecting auth", and gave up before the node's first
+// PersistentKeepalive (25s) could trigger the handshake on a fresh tunnel.
+// 60s deadline covers the worst case where Initiate tunnel raced ahead of
+// wg-quick fully settling.
 func (o *Orchestrator) verifyConnectivity(ctx context.Context, node Node) error {
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
+	agent := NewAgentClient(node)
+	agent.HTTPClient = &http.Client{Timeout: 3 * time.Second}
+	var lastErr error
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(node.WGIP, strconv.Itoa(19091)), 2*time.Second)
+		attemptCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		_, err := agent.Status(attemptCtx)
+		cancel()
 		if err == nil {
-			_ = conn.Close()
 			return nil
 		}
+		lastErr = err
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(1 * time.Second):
 		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("node %s did not become reachable on %s: %w", node.Alias, node.WGIP, lastErr)
 	}
 	return fmt.Errorf("node %s did not become reachable on %s", node.Alias, node.WGIP)
 }
