@@ -459,6 +459,9 @@ func (tm *monitorManager) runAgentMonitorUpdate(ch chan runMsg, t target) {
 }
 
 func (tm *monitorManager) agentMonitorRequest() cluster.MonitorUpdate {
+	if !monitorEnabled(tm.values) {
+		return cluster.MonitorUpdate{Disabled: true}
+	}
 	inLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_in_limit"])
 	outLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_out_limit"])
 	totalLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_total_limit"])
@@ -507,7 +510,6 @@ func (tm *monitorManager) localUpdateOptions() monitor.UpdateOptions {
 	opts.SetLocal = true
 	opts.SetMonitor = true
 	opts.DeployMonitor = monitorEnabled(tm.values)
-	opts.DeployMonitorFrontend = monitorFrontendEnabled(tm.values)
 	opts.MonitorAlias = strings.TrimSpace(tm.values["monitor_alias"])
 	opts.MonitorPublicPort = monitorPublicPort
 	opts.MonitorPort = monitorPort
@@ -562,10 +564,15 @@ func (tm *monitorManager) actionView() string {
 	if tm.picker.hasNodes() {
 		b.WriteString(renderTargetBadge(tm.picker.selected()) + "\n\n")
 	}
+	if !tm.cfg.DeployMonitor {
+		b.WriteString(dimStyle.Render("Monitor was not deployed at install time.") + "\n")
+		b.WriteString(dimStyle.Render("Traffic/resource sampling, quota auto-stop, slave summary fetch, and the /monitor endpoint are all off.") + "\n")
+		b.WriteString(dimStyle.Render("To enable monitoring, run install again.") + "\n")
+		return b.String()
+	}
 	if tm.picker.selected().isLocal() {
 		rows := []summaryLine{
 			summaryRow("Monitor", yesNoString(tm.cfg.DeployMonitor)),
-			summaryRow("Monitor frontend", yesNoString(tm.cfg.DeployMonitorFrontend)),
 			summaryRow("Monitor alias", or(tm.cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 			summaryRow("Monitor UI port", strconv.Itoa(tm.cfg.MonitorPublicPort)),
 			summaryRow("Monitor local port", strconv.Itoa(tm.cfg.MonitorPort)),
@@ -595,7 +602,6 @@ func (tm *monitorManager) confirmView() string {
 	case monitorActionLocal:
 		rows = append(rows,
 			summaryRow("Deploy monitor", tm.values["monitor"]),
-			summaryRow("Monitor frontend", tm.values["monitor_frontend"]),
 			summaryRow("Monitor alias", tm.values["monitor_alias"]),
 			summaryRow("Monitor UI port", tm.values["monitor_public_port"]),
 			summaryRow("Monitor local port", tm.values["monitor_port"]),
@@ -634,7 +640,6 @@ func (tm *monitorManager) doneSummary() string {
 	if t.isLocal() {
 		rows = append(rows,
 			summaryRow("Monitor", yesNoString(cfg.DeployMonitor)),
-			summaryRow("Monitor frontend", yesNoString(cfg.DeployMonitorFrontend)),
 			summaryRow("Monitor alias", or(cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
 			summaryRow("Monitor UI port", strconv.Itoa(cfg.MonitorPublicPort)),
 			summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
@@ -662,6 +667,9 @@ func (tm *monitorManager) footerHints() []operationHint {
 	case monitorPhaseTarget:
 		return actionFooterHints("Select")
 	case monitorPhaseAction:
+		if !tm.cfg.DeployMonitor {
+			return returnFooterHints()
+		}
 		if tm.picker.hasNodes() {
 			return actionBackFooterHints("Select")
 		}
@@ -684,6 +692,9 @@ func (tm *monitorManager) footerHints() []operationHint {
 }
 
 func (tm *monitorManager) actions() []monitorActionItem {
+	if !tm.cfg.DeployMonitor {
+		return nil
+	}
 	items := []monitorActionItem{
 		{separator: true, label: "Monitor"},
 		{action: monitorActionLocal, label: "Edit monitor settings"},
@@ -847,7 +858,6 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			return monitor.ManageConfig{
 				Domain:                 dcfg.Domain,
 				DeployMonitor:          dcfg.DeployMonitor,
-				DeployMonitorFrontend:  dcfg.DeployMonitorFrontend,
 				MonitorAlias:           dcfg.MonitorAlias,
 				MonitorPublicPort:      dcfg.MonitorPublicPort,
 				MonitorPort:            dcfg.MonitorPort,
@@ -868,7 +878,6 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				return err
 			}
 			dcfg.DeployMonitor = mcfg.DeployMonitor
-			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
 			dcfg.MonitorAlias = mcfg.MonitorAlias
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort
@@ -887,7 +896,6 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				return err
 			}
 			dcfg.DeployMonitor = mcfg.DeployMonitor
-			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort
 			dcfg.SubscribePort = mcfg.SubscribePort
@@ -899,7 +907,6 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				return "", err
 			}
 			dcfg.DeployMonitor = mcfg.DeployMonitor
-			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
 			dcfg.MonitorAlias = mcfg.MonitorAlias
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort

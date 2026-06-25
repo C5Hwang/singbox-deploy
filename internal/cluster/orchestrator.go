@@ -48,6 +48,11 @@ type AddNodeRequest struct {
 	// node uses as its WireGuard Endpoint.
 	MasterPublicEndpoint string
 
+	// DeployMonitor mirrors the master's monitor flag. When false the node
+	// install skips downloading singbox-monitor and the node never runs the
+	// monitor service. Toggling the master to on later requires a re-install.
+	DeployMonitor bool
+
 	// CredentialOverrides lets the caller supply explicit UUID/password values
 	// for individual protocols; non-empty fields replace the auto-generated
 	// secrets, blank fields keep the random ones. Reality key material is
@@ -208,8 +213,8 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 		{"Preflight", "install base packages (curl, ca-certificates, tar, WireGuard) on the node", func(ctx context.Context) error {
 			return installNodeBasePackages(ctx, client)
 		}},
-		{"Binaries", "download singbox-node and singbox-monitor", func(ctx context.Context) error {
-			return downloadAgentBinaries(ctx, client, req.Version)
+		{"Binaries", binariesStepDetail(req.DeployMonitor), func(ctx context.Context) error {
+			return downloadAgentBinaries(ctx, client, req.Version, req.DeployMonitor)
 		}},
 		{"sing-box core", "download sing-box core on the node", func(ctx context.Context) error {
 			return downloadSingBoxCore(ctx, client, req.CoreVersion)
@@ -498,15 +503,20 @@ func installNodeBasePackages(ctx context.Context, client sshClient) error {
 	return fmt.Errorf("could not detect a supported package manager (apt/dnf/yum)")
 }
 
-// downloadAgentBinaries fetches singbox-node and singbox-monitor for the
-// node's architecture from the master's matching release tag.
-func downloadAgentBinaries(ctx context.Context, client sshClient, version string) error {
+// downloadAgentBinaries fetches singbox-node (and singbox-monitor when
+// includeMonitor is true) for the node's architecture from the master's
+// matching release tag.
+func downloadAgentBinaries(ctx context.Context, client sshClient, version string, includeMonitor bool) error {
 	arch, err := detectArch(ctx, client)
 	if err != nil {
 		return err
 	}
 	const repo = "C5Hwang/singbox-deploy"
-	for _, name := range []string{"singbox-node", "singbox-monitor"} {
+	binaries := []string{"singbox-node"}
+	if includeMonitor {
+		binaries = append(binaries, "singbox-monitor")
+	}
+	for _, name := range binaries {
 		asset := fmt.Sprintf("%s-linux-%s", name, arch)
 		url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, version, asset)
 		dest := "/usr/bin/" + name
@@ -517,6 +527,13 @@ func downloadAgentBinaries(ctx context.Context, client sshClient, version string
 		}
 	}
 	return nil
+}
+
+func binariesStepDetail(includeMonitor bool) string {
+	if includeMonitor {
+		return "download singbox-node and singbox-monitor"
+	}
+	return "download singbox-node (monitor disabled on master)"
 }
 
 func detectArch(ctx context.Context, client sshClient) (string, error) {

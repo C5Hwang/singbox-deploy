@@ -80,16 +80,15 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 	certPath := filepath.Join(layout.TLSDir, cfg.Domain+".crt")
 	keyPath := filepath.Join(layout.TLSDir, cfg.Domain+".key")
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":         cfg.SubscribePort,
-		"MonitorPublicPort":     cfg.MonitorPublicPort,
-		"Domain":                cfg.Domain,
-		"CertificatePath":       certPath,
-		"KeyPath":               keyPath,
-		"WebRoot":               layout.WebRoot,
-		"SubscribeDir":          layout.SubscribeDir,
-		"EnableMonitor":         cfg.DeployMonitor,
-		"EnableMonitorFrontend": cfg.DeployMonitorFrontend,
-		"MonitorPort":           cfg.MonitorPort,
+		"SubscribePort":     cfg.SubscribePort,
+		"MonitorPublicPort": cfg.MonitorPublicPort,
+		"Domain":            cfg.Domain,
+		"CertificatePath":   certPath,
+		"KeyPath":           keyPath,
+		"WebRoot":           layout.WebRoot,
+		"SubscribeDir":      layout.SubscribeDir,
+		"EnableMonitor":     cfg.DeployMonitor,
+		"MonitorPort":       cfg.MonitorPort,
 	})
 	if err != nil {
 		return err

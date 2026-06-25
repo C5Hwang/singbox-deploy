@@ -110,7 +110,6 @@ type Config struct {
 	MonitorPort       int
 
 	DeployMonitor          bool
-	DeployMonitorFrontend  bool
 	MonitorAlias           string
 	TrafficInLimitBytes    uint64
 	TrafficOutLimitBytes   uint64

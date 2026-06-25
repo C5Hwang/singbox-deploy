@@ -503,6 +503,10 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 	if coreVersion == "" {
 		return cluster.AddNodeRequest{}, fmt.Errorf("could not detect master sing-box core version; install sing-box on the master before adding nodes")
 	}
+	masterCfg, err := deploy.LoadProtocolConfig(paths.DefaultLayout())
+	if err != nil {
+		return cluster.AddNodeRequest{}, fmt.Errorf("load master config: %w", err)
+	}
 	realityServerName := ""
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
 		realityServerName, err = uiparams.NormalizeRealityServerName(v["reality_sni"])
@@ -526,6 +530,7 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 		Ports:                ports,
 		RealityServerName:    realityServerName,
 		MasterPublicEndpoint: fmt.Sprintf("%s:%d", strings.TrimSpace(v["master_host"]), wireguard.DefaultListenPort),
+		DeployMonitor:        masterCfg.DeployMonitor,
 		Version:              toolVersion,
 		CoreVersion:          coreVersion,
 		CredentialOverrides: deploy.Credentials{

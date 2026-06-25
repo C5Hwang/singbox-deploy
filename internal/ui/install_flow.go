@@ -224,14 +224,6 @@ func monitorEnabled(vals map[string]string) bool {
 	return value == "yes"
 }
 
-func monitorFrontendEnabled(vals map[string]string) bool {
-	value := vals["monitor_frontend"]
-	if value == "" {
-		value = "yes"
-	}
-	return value == "yes"
-}
-
 func hasProtocol(protocols []config.Protocol, want config.Protocol) bool {
 	for _, p := range protocols {
 		if p == want {
@@ -590,7 +582,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		enabled = config.AllProtocols
 	}
 	deployMonitor := monitorEnabled(vals)
-	deployMonitorFrontend := monitorFrontendEnabled(vals)
 	siteTemplate, err := deploy.NormalizeSiteTemplate(vals["site_template"])
 	if err != nil {
 		return deploy.Config{}, err
@@ -668,7 +659,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		MonitorPublicPort:      monitorPublicPort,
 		MonitorPort:            monitorPort,
 		DeployMonitor:          deployMonitor,
-		DeployMonitorFrontend:  deployMonitorFrontend,
 		MonitorAlias:           monitorAlias,
 		TrafficInLimitBytes:    inLimitBytes,
 		TrafficOutLimitBytes:   outLimitBytes,
@@ -965,9 +955,6 @@ func (w *installForm) summary(host system.Host) string {
 		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
 		summaryRow("Monitor", yesNoString(deployMonitor)),
 	}
-	if deployMonitor {
-		rows = append(rows, summaryRow("Monitor frontend", yesNoString(monitorFrontendEnabled(w.values))))
-	}
 	rows = append(rows,
 		summaryRow("Operating system / architecture", host.OS.ID+" / "+host.Arch),
 		summaryRow("Firewall", firewallName(host.Firewall)),
@@ -1053,10 +1040,10 @@ func (w *installFlow) doneSummary() string {
 	}
 	if w.cfg.DeployMonitor {
 		monitorBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.MonitorPublicPort)
-		if w.cfg.DeployMonitorFrontend {
-			rows = append(rows, summaryRow("Monitor UI", monitorBase+"/monitor/"))
-		}
-		rows = append(rows, summaryRow("Monitor API", monitorBase+"/monitor/api/summary"))
+		rows = append(rows,
+			summaryRow("Monitor UI", monitorBase+"/monitor/"),
+			summaryRow("Monitor API", monitorBase+"/monitor/api/summary"),
+		)
 	}
 	return renderSummary(rows)
 }

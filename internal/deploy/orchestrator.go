@@ -402,7 +402,6 @@ func WriteInstallState(stateDir string, cfg Config) error {
 		"monitor_port":           itoa(cfg.MonitorPort),
 		"monitor_interface":      cfg.MonitorInterface,
 		"monitor":                yesNoString(cfg.DeployMonitor),
-		"monitor_frontend":       yesNoString(cfg.DeployMonitorFrontend),
 	}
 	if cfg.DeployMonitor {
 		state["monitor_alias"] = cfg.MonitorAlias

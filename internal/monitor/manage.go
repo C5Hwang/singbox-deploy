@@ -27,7 +27,6 @@ type ManageEvent struct {
 type ManageConfig struct {
 	Domain                 string
 	DeployMonitor          bool
-	DeployMonitorFrontend  bool
 	MonitorAlias           string
 	MonitorPublicPort      int
 	MonitorPort            int
@@ -48,20 +47,19 @@ type UpdateOptions struct {
 	Layout paths.Layout
 	Runner system.Runner
 
-	SetLocal              bool
-	SetMonitor            bool
-	DeployMonitor         bool
-	DeployMonitorFrontend bool
-	MonitorAlias          string
-	MonitorPublicPort     int
-	MonitorPort           int
-	Interface             string
-	IntervalSeconds       int
-	InLimitBytes          uint64
-	OutLimitBytes         uint64
-	TotalLimitBytes       uint64
-	ResetDay              int
-	ResetHour             int
+	SetLocal          bool
+	SetMonitor        bool
+	DeployMonitor     bool
+	MonitorAlias      string
+	MonitorPublicPort int
+	MonitorPort       int
+	Interface         string
+	IntervalSeconds   int
+	InLimitBytes      uint64
+	OutLimitBytes     uint64
+	TotalLimitBytes   uint64
+	ResetDay          int
+	ResetHour         int
 
 	SetCurrentTotals bool
 	CurrentInBytes   uint64
@@ -162,7 +160,6 @@ func defaultUpdateOptions(opts UpdateOptions) UpdateOptions {
 func applyUpdateOptions(cfg *ManageConfig, opts UpdateOptions) {
 	if opts.SetMonitor {
 		cfg.DeployMonitor = opts.DeployMonitor
-		cfg.DeployMonitorFrontend = opts.DeployMonitorFrontend
 	}
 	if strings.TrimSpace(opts.MonitorAlias) != "" {
 		cfg.MonitorAlias = strings.TrimSpace(opts.MonitorAlias)
@@ -281,16 +278,31 @@ func managePublicPortChanged(old, cfg ManageConfig) bool {
 }
 
 func manageNginxChanged(old, cfg ManageConfig) bool {
-	return old.DeployMonitor != cfg.DeployMonitor || old.DeployMonitorFrontend != cfg.DeployMonitorFrontend || old.MonitorPublicPort != cfg.MonitorPublicPort || old.MonitorPort != cfg.MonitorPort
+	return old.DeployMonitor != cfg.DeployMonitor || old.MonitorPublicPort != cfg.MonitorPublicPort || old.MonitorPort != cfg.MonitorPort
 }
 
 func applyManageMonitorService(opts UpdateOptions, cfg ManageConfig) error {
 	unitPath := filepath.Join(opts.SystemdDir, system.MonitorService)
 	if !cfg.DeployMonitor {
-		return opts.RunCommands(opts.Runner,
+		if err := opts.RunCommands(opts.Runner,
 			system.Command{Name: "systemctl", Args: []string{"disable", "--now", system.MonitorService}},
+		); err != nil {
+			return err
+		}
+		if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := opts.RunCommands(opts.Runner,
 			system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
-		)
+		); err != nil {
+			return err
+		}
+		if opts.MonitorBin != "" {
+			if err := os.Remove(opts.MonitorBin); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
 	}
 	unit, err := opts.RenderMonitorUnit(opts.Layout, opts.MonitorBin, cfg)
 	if err != nil {

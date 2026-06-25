@@ -49,8 +49,12 @@ type ConfigUpdate struct {
 	RealityHandshakePort int               `json:"realityHandshakePort,omitempty"`
 }
 
-// MonitorUpdate is the payload accepted by POST /api/monitor/config.
+// MonitorUpdate is the payload accepted by POST /api/monitor/config. When
+// Disabled is true the node tears down singbox-deploy-monitor (stops/disables
+// the unit, removes the unit file and binary) and the other fields are
+// ignored.
 type MonitorUpdate struct {
+	Disabled         bool   `json:"disabled,omitempty"`
 	Interface        string `json:"interface"`
 	SamplingInterval string `json:"samplingInterval"`
 	InLimitBytes     uint64 `json:"inLimitBytes"`

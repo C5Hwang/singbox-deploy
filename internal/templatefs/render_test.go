@@ -7,16 +7,15 @@ import (
 
 func TestRenderNginxTemplate(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":         2096,
-		"MonitorPublicPort":     2097,
-		"Domain":                "example.com",
-		"CertificatePath":       "/etc/singbox-deploy/tls/example.com.crt",
-		"KeyPath":               "/etc/singbox-deploy/tls/example.com.key",
-		"WebRoot":               "/etc/singbox-deploy/www",
-		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
-		"EnableMonitor":         true,
-		"EnableMonitorFrontend": true,
-		"MonitorPort":           19090,
+		"SubscribePort":     2096,
+		"MonitorPublicPort": 2097,
+		"Domain":            "example.com",
+		"CertificatePath":   "/etc/singbox-deploy/tls/example.com.crt",
+		"KeyPath":           "/etc/singbox-deploy/tls/example.com.key",
+		"WebRoot":           "/etc/singbox-deploy/www",
+		"SubscribeDir":      "/etc/singbox-deploy/subscribe",
+		"EnableMonitor":     true,
+		"MonitorPort":       19090,
 	})
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -42,16 +41,15 @@ func TestRenderNginxTemplate(t *testing.T) {
 
 func TestRenderNginxTemplateWithoutMonitor(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":         2096,
-		"MonitorPublicPort":     2097,
-		"Domain":                "example.com",
-		"CertificatePath":       "/etc/singbox-deploy/tls/example.com.crt",
-		"KeyPath":               "/etc/singbox-deploy/tls/example.com.key",
-		"WebRoot":               "/etc/singbox-deploy/www",
-		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
-		"EnableMonitor":         false,
-		"EnableMonitorFrontend": false,
-		"MonitorPort":           19090,
+		"SubscribePort":     2096,
+		"MonitorPublicPort": 2097,
+		"Domain":            "example.com",
+		"CertificatePath":   "/etc/singbox-deploy/tls/example.com.crt",
+		"KeyPath":           "/etc/singbox-deploy/tls/example.com.key",
+		"WebRoot":           "/etc/singbox-deploy/www",
+		"SubscribeDir":      "/etc/singbox-deploy/subscribe",
+		"EnableMonitor":     false,
+		"MonitorPort":       19090,
 	})
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -68,48 +66,17 @@ func TestRenderNginxTemplateWithoutMonitor(t *testing.T) {
 	}
 }
 
-func TestRenderNginxTemplateWithoutFrontend(t *testing.T) {
-	out, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":         2096,
-		"MonitorPublicPort":     2097,
-		"Domain":                "example.com",
-		"CertificatePath":       "/etc/singbox-deploy/tls/example.com.crt",
-		"KeyPath":               "/etc/singbox-deploy/tls/example.com.key",
-		"WebRoot":               "/etc/singbox-deploy/www",
-		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
-		"EnableMonitor":         true,
-		"EnableMonitorFrontend": false,
-		"MonitorPort":           19090,
-	})
-	if err != nil {
-		t.Fatalf("Render error: %v", err)
-	}
-	if !strings.Contains(out, "listen 2097 ssl;") {
-		t.Fatalf("rendered output missing monitor server block:\n%s", out)
-	}
-	if !strings.Contains(out, "/monitor/api/") {
-		t.Fatalf("rendered output missing API proxy:\n%s", out)
-	}
-	if strings.Contains(out, "return 302 /monitor/") {
-		t.Fatalf("rendered output should not redirect to frontend when disabled:\n%s", out)
-	}
-	if strings.Contains(out, "location /monitor/ {") {
-		t.Fatalf("rendered output should not include frontend proxy when disabled:\n%s", out)
-	}
-}
-
 func TestRenderNginxTemplateSubscribeOn443(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":         443,
-		"MonitorPublicPort":     2097,
-		"Domain":                "example.com",
-		"CertificatePath":       "/etc/singbox-deploy/tls/example.com.crt",
-		"KeyPath":               "/etc/singbox-deploy/tls/example.com.key",
-		"WebRoot":               "/etc/singbox-deploy/www",
-		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
-		"EnableMonitor":         true,
-		"EnableMonitorFrontend": true,
-		"MonitorPort":           19090,
+		"SubscribePort":     443,
+		"MonitorPublicPort": 2097,
+		"Domain":            "example.com",
+		"CertificatePath":   "/etc/singbox-deploy/tls/example.com.crt",
+		"KeyPath":           "/etc/singbox-deploy/tls/example.com.key",
+		"WebRoot":           "/etc/singbox-deploy/www",
+		"SubscribeDir":      "/etc/singbox-deploy/subscribe",
+		"EnableMonitor":     true,
+		"MonitorPort":       19090,
 	})
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -129,16 +96,15 @@ func TestRenderNginxTemplateSubscribeOn443(t *testing.T) {
 
 func TestRenderNginxTemplateMonitorOn443(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":         2096,
-		"MonitorPublicPort":     443,
-		"Domain":                "example.com",
-		"CertificatePath":       "/etc/singbox-deploy/tls/example.com.crt",
-		"KeyPath":               "/etc/singbox-deploy/tls/example.com.key",
-		"WebRoot":               "/etc/singbox-deploy/www",
-		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
-		"EnableMonitor":         true,
-		"EnableMonitorFrontend": true,
-		"MonitorPort":           19090,
+		"SubscribePort":     2096,
+		"MonitorPublicPort": 443,
+		"Domain":            "example.com",
+		"CertificatePath":   "/etc/singbox-deploy/tls/example.com.crt",
+		"KeyPath":           "/etc/singbox-deploy/tls/example.com.key",
+		"WebRoot":           "/etc/singbox-deploy/www",
+		"SubscribeDir":      "/etc/singbox-deploy/subscribe",
+		"EnableMonitor":     true,
+		"MonitorPort":       19090,
 	})
 	if err != nil {
 		t.Fatalf("Render error: %v", err)

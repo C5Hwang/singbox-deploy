@@ -94,11 +94,20 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMonitorConfig accepts a new quota/sampling configuration and restarts
-// the monitor service to pick it up.
+// the monitor service to pick it up. When req.Disabled is true the monitor
+// unit and binary are torn down instead.
 func (s *Server) handleMonitorConfig(w http.ResponseWriter, r *http.Request) {
 	var req cluster.MonitorUpdate
 	if err := decodeJSON(r, &req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Disabled {
+		if err := teardownNodeMonitor(s.Runner); err != nil {
+			http.Error(w, "teardown monitor: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 	if err := writeMonitorState(s.Layout, req); err != nil {
@@ -110,6 +119,23 @@ func (s *Server) handleMonitorConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// teardownNodeMonitor stops and disables the monitor service, removes its
+// systemd unit, and deletes the monitor binary. Missing files are ignored so
+// the call is safe to invoke when monitor was never installed.
+func teardownNodeMonitor(runner system.Runner) error {
+	_ = runner.Run(system.Command{Name: "systemctl", Args: []string{"disable", "--now", system.MonitorService}})
+	if err := os.Remove(filepath.Join("/etc/systemd/system", system.MonitorService)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := runner.Run(system.Command{Name: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
+		return err
+	}
+	if err := os.Remove("/usr/bin/singbox-monitor"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // handleUpgrade asks the node to download replacement binaries from the
