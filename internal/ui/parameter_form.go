@@ -247,7 +247,10 @@ func (f *parameterForm) fieldValue(field field) string {
 }
 
 func (f *parameterForm) updateInput(msg tea.Msg) tea.Cmd {
-	f.fieldErr = ""
+	// Only clear fieldErr on real key presses.
+	if _, ok := msg.(tea.KeyMsg); ok {
+		f.fieldErr = ""
+	}
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(msg)
 	return cmd

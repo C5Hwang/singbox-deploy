@@ -274,7 +274,7 @@ func (nm *nodeManager) addNodeFields() []field {
 		{key: "public_ip", label: "Node public IP or host", note: "Where the node is reachable from the public internet for the initial SSH handshake."},
 		{key: "ssh_port", label: "SSH port", def: "22"},
 		{key: "ssh_user", label: "SSH user", def: "root"},
-		{key: "ssh_password", label: "SSH password", note: "Used only during initial provisioning. Not persisted on the master."},
+		{key: "ssh_password", label: "SSH password", note: "Used only during initial provisioning."},
 		{key: "domain", label: "Domain (must resolve to this node)", note: "Used for certificate issuance, Nginx server_name, and TLS SNI."},
 		{key: "protocols", label: "Enabled protocols", options: protoOpts, multi: true, note: "Pick one or more protocols this node will serve."},
 	}

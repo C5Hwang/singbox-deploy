@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -944,6 +945,32 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 	}
 	if !strings.Contains(w.View(), "domain resolves elsewhere") {
 		t.Fatalf("validation error missing from view:\n%s", w.View())
+	}
+}
+
+// Validation errors must persist across cursor-blink ticks: the textinput
+// model emits cursor.BlinkMsg every few hundred ms, and the form's Update path
+// forwards non-key messages to updateInput. Clearing fieldErr there would make
+// validation errors flash and vanish before the user can read them.
+func TestFieldErrSurvivesCursorBlink(t *testing.T) {
+	w := installFormForTest()
+	w.validateDomain = func(_ context.Context, _ string) error {
+		return fmt.Errorf("domain resolves elsewhere")
+	}
+	w.startForm()
+	w.input.SetValue("bad.example")
+	w.commitField()
+
+	if w.fieldErr == "" {
+		t.Fatalf("fieldErr should be set after validation failure")
+	}
+	w.updateInput(cursor.BlinkMsg{})
+	if w.fieldErr == "" {
+		t.Fatalf("fieldErr should survive a cursor blink tick")
+	}
+	w.updateInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if w.fieldErr != "" {
+		t.Fatalf("fieldErr should clear on user key press, got %q", w.fieldErr)
 	}
 }
 
