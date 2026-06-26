@@ -85,7 +85,7 @@ func newSubscriptionManager() *subscriptionManager {
 func (sm *subscriptionManager) setSize(width, height int) {
 	sm.width = width
 	sm.height = height
-	sm.parameterForm.setSize(width, height)
+	sm.parameterForm.SetSize(width, height)
 	sm.commandRun.setSize(width, height)
 }
 
@@ -100,8 +100,8 @@ func (sm *subscriptionManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.MouseMsg:
 		return sm.handleMouse(msg), false
 	}
-	if sm.phase == subscriptionPhaseForm && !sm.currentFieldHasOptions() {
-		return sm.updateInput(msg), false
+	if sm.phase == subscriptionPhaseForm && !sm.CurrentFieldHasOptions() {
+		return sm.UpdateInput(msg), false
 	}
 	return nil, false
 }
@@ -128,12 +128,12 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return cmd, done
 		}
 	case subscriptionPhaseForm:
-		cmd, done, handled := sm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
+		cmd, done, handled := sm.parameterForm.HandleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
 				sm.phase = subscriptionPhaseConfirm
 			},
 			Back: func() {
-				if !sm.previousField() {
+				if !sm.PreviousField() {
 					sm.phase = subscriptionPhaseAction
 				}
 			},
@@ -147,9 +147,9 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
 			return sm.startRun(), false
 		case isSelectionBackKey(msg):
-			if len(sm.fields) > 0 {
+			if len(sm.Fields) > 0 {
 				sm.phase = subscriptionPhaseForm
-				sm.backToLastField()
+				sm.BackToLastField()
 			} else {
 				sm.phase = subscriptionPhaseAction
 			}
@@ -172,11 +172,11 @@ func (sm *subscriptionManager) handleMouse(_ tea.MouseMsg) tea.Cmd {
 
 func (sm *subscriptionManager) moveAction(delta int) {
 	sm.cursor = moveActionCursor(sm.cursor, sm.actions(), delta)
-	sm.fieldErr = ""
+	sm.FieldErr = ""
 }
 
 func (sm *subscriptionManager) activateAction() {
-	sm.fieldErr = ""
+	sm.FieldErr = ""
 	actions := sm.actions()
 	idx, ok := selectedIndex(sm.cursor, len(actions))
 	if !ok {
@@ -194,10 +194,10 @@ func (sm *subscriptionManager) activateAction() {
 }
 
 func (sm *subscriptionManager) startForm(fields []field) {
-	sm.parameterForm.setFields(fields)
-	sm.parameterForm.validate = validateSubscriptionField
+	sm.parameterForm.SetFields(fields)
+	sm.parameterForm.Validate = validateSubscriptionField
 	sm.phase = subscriptionPhaseForm
-	if sm.parameterForm.advanceField() {
+	if sm.parameterForm.AdvanceField() {
 		sm.phase = subscriptionPhaseConfirm
 	}
 }
@@ -211,7 +211,7 @@ func (sm *subscriptionManager) localFields() []field {
 }
 
 func validateSubscriptionField(f field, val string, _ map[string]string) error {
-	return uiparams.ValidateSubscriptionParameterValue(f.key, val)
+	return uiparams.ValidateSubscriptionParameterValue(f.Key, val)
 }
 
 func (sm *subscriptionManager) canApply() bool {
@@ -236,7 +236,7 @@ func (sm *subscriptionManager) applyBlocker() string {
 
 func (sm *subscriptionManager) startRun() tea.Cmd {
 	if !sm.canApply() {
-		sm.fieldErr = sm.applyBlocker()
+		sm.FieldErr = sm.applyBlocker()
 		sm.phase = subscriptionPhaseAction
 		return nil
 	}
@@ -248,7 +248,7 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 		opts := account.UpdateOptions{
 			Layout:      subscriptionUILayout(),
 			Runner:      system.NewExecRunner(logs),
-			DisplayName: sm.values["display_name"],
+			DisplayName: sm.Values["display_name"],
 			Progress: func(e deploy.Event) {
 				ev := e
 				ch <- runMsg{event: &ev}
@@ -319,8 +319,8 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 		},
 	}
 	if sm.action == subscriptionActionLocal {
-		opts.Salt = strings.TrimSpace(sm.values["subscribe_salt"])
-		if port, err := strconv.Atoi(strings.TrimSpace(sm.values["subscribe_port"])); err == nil {
+		opts.Salt = strings.TrimSpace(sm.Values["subscribe_salt"])
+		if port, err := strconv.Atoi(strings.TrimSpace(sm.Values["subscribe_port"])); err == nil {
 			opts.SubscribePort = port
 		}
 	}
@@ -370,8 +370,8 @@ func (sm *subscriptionManager) actionView() string {
 	if !sm.canApply() {
 		b.WriteString(flowErr.Render(sm.applyBlocker()) + "\n")
 	}
-	if sm.fieldErr != "" {
-		b.WriteString(flowErr.Render(sm.fieldErr) + "\n")
+	if sm.FieldErr != "" {
+		b.WriteString(flowErr.Render(sm.FieldErr) + "\n")
 	}
 	b.WriteString("\n")
 	b.WriteString(renderActionList(sm.actions(), sm.cursor))
@@ -384,14 +384,14 @@ func (sm *subscriptionManager) confirmView() string {
 	case subscriptionActionDisplayName:
 		rows = append(rows,
 			summaryRow("Current display name", sm.cfg.DisplayName),
-			summaryRow("New display name", sm.values["display_name"]),
+			summaryRow("New display name", sm.Values["display_name"]),
 		)
 	case subscriptionActionLocal:
 		rows = append(rows,
 			summaryRow("Current salt", sm.cfg.Salt),
-			summaryRow("New salt", sm.values["subscribe_salt"]),
+			summaryRow("New salt", sm.Values["subscribe_salt"]),
 			summaryRow("Current port", strconv.Itoa(sm.cfg.SubscribePort)),
-			summaryRow("New port", sm.values["subscribe_port"]),
+			summaryRow("New port", sm.Values["subscribe_port"]),
 		)
 	case subscriptionActionRefresh:
 		registry := cluster.NewRegistry(subscriptionUILayout())
@@ -430,7 +430,7 @@ func (sm *subscriptionManager) footerHints() []operationHint {
 	case subscriptionPhaseAction:
 		return actionFooterHints("Select")
 	case subscriptionPhaseForm:
-		return sm.parameterForm.footerHints()
+		return sm.parameterForm.FooterHints()
 	case subscriptionPhaseConfirm:
 		return applyFooterHints("Apply")
 	case subscriptionPhaseRunning:

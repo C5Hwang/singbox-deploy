@@ -123,7 +123,7 @@ func newMonitorManager() *monitorManager {
 func (tm *monitorManager) setSize(width, height int) {
 	tm.width = width
 	tm.height = height
-	tm.parameterForm.setSize(width, height)
+	tm.parameterForm.SetSize(width, height)
 	tm.commandRun.setSize(width, height)
 }
 
@@ -138,8 +138,8 @@ func (tm *monitorManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.MouseMsg:
 		return tm.handleMouse(msg), false
 	}
-	if tm.phase == monitorPhaseForm && !tm.currentFieldHasOptions() {
-		return tm.updateInput(msg), false
+	if tm.phase == monitorPhaseForm && !tm.CurrentFieldHasOptions() {
+		return tm.UpdateInput(msg), false
 	}
 	return nil, false
 }
@@ -187,12 +187,12 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return cmd, done
 		}
 	case monitorPhaseForm:
-		cmd, done, handled := tm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
+		cmd, done, handled := tm.parameterForm.HandleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
 				tm.phase = monitorPhaseConfirm
 			},
 			Back: func() {
-				if !tm.previousField() {
+				if !tm.PreviousField() {
 					tm.phase = monitorPhaseAction
 				}
 			},
@@ -206,9 +206,9 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
 			return tm.startRun(), false
 		case isSelectionBackKey(msg):
-			if len(tm.fields) > 0 {
+			if len(tm.Fields) > 0 {
 				tm.phase = monitorPhaseForm
-				tm.backToLastField()
+				tm.BackToLastField()
 			} else {
 				tm.phase = monitorPhaseAction
 			}
@@ -315,16 +315,16 @@ func (tm *monitorManager) reloadState() {
 
 func (tm *monitorManager) moveAction(delta int) {
 	tm.cursor = moveActionCursor(tm.cursor, tm.actions(), delta)
-	tm.fieldErr = ""
+	tm.FieldErr = ""
 }
 
 func (tm *monitorManager) moveTarget(delta int) {
 	tm.picker.move(delta)
-	tm.fieldErr = ""
+	tm.FieldErr = ""
 }
 
 func (tm *monitorManager) activateAction() {
-	tm.fieldErr = ""
+	tm.FieldErr = ""
 	actions := tm.actions()
 	idx, ok := selectedIndex(tm.cursor, len(actions))
 	if !ok {
@@ -341,7 +341,7 @@ func (tm *monitorManager) activateAction() {
 		return
 	case monitorActionStart, monitorActionStop, monitorActionRestart:
 		if !tm.canApply() {
-			tm.fieldErr = tm.applyBlocker()
+			tm.FieldErr = tm.applyBlocker()
 			return
 		}
 		tm.phase = monitorPhaseServiceConfirm
@@ -351,10 +351,10 @@ func (tm *monitorManager) activateAction() {
 func (tm *monitorManager) requiresLocalCheck() bool { return tm.picker.selected().isLocal() }
 
 func (tm *monitorManager) startForm(fields []field) {
-	tm.parameterForm.setFields(fields)
-	tm.parameterForm.validate = tm.validateMonitorField
+	tm.parameterForm.SetFields(fields)
+	tm.parameterForm.Validate = tm.validateMonitorField
 	tm.phase = monitorPhaseForm
-	if tm.parameterForm.advanceField() {
+	if tm.parameterForm.AdvanceField() {
 		tm.phase = monitorPhaseConfirm
 	}
 }
@@ -407,12 +407,12 @@ func (tm *monitorManager) validateMonitorField(f field, val string, _ map[string
 		// already omits --interface when empty. The install-side validator
 		// requires both, which is correct for the master form but blocks the
 		// per-node edit form (Def is empty for a freshly added node).
-		switch f.key {
+		switch f.Key {
 		case "monitor_alias", "monitor_interface":
 			return nil
 		}
 	}
-	return uiparams.ValidateMonitorParameterValue(f.key, val)
+	return uiparams.ValidateMonitorParameterValue(f.Key, val)
 }
 
 func (tm *monitorManager) canApply() bool {
@@ -440,7 +440,7 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	tm.agentOutcomes = nil
 	if t.isLocal() {
 		if !tm.canApply() {
-			tm.fieldErr = tm.applyBlocker()
+			tm.FieldErr = tm.applyBlocker()
 			tm.phase = monitorPhaseAction
 			return nil
 		}
@@ -549,21 +549,21 @@ func persistNodeMonitorUpdate(registry cluster.Registry, node cluster.Node, req 
 }
 
 func (tm *monitorManager) agentMonitorRequest() cluster.MonitorUpdate {
-	if !monitorEnabled(tm.values) {
+	if !monitorEnabled(tm.Values) {
 		return cluster.MonitorUpdate{Disabled: true}
 	}
-	inLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_in_limit"])
-	outLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_out_limit"])
-	totalLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_total_limit"])
-	interval, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_interval_seconds"]))
-	resetDay, _ := strconv.Atoi(strings.TrimSpace(tm.values["reset_day"]))
-	resetHour, _ := strconv.Atoi(strings.TrimSpace(tm.values["reset_hour"]))
+	inLimit, _ := uiparams.ParseTrafficSize(tm.Values["traffic_in_limit"])
+	outLimit, _ := uiparams.ParseTrafficSize(tm.Values["traffic_out_limit"])
+	totalLimit, _ := uiparams.ParseTrafficSize(tm.Values["traffic_total_limit"])
+	interval, _ := strconv.Atoi(strings.TrimSpace(tm.Values["monitor_interval_seconds"]))
+	resetDay, _ := strconv.Atoi(strings.TrimSpace(tm.Values["reset_day"]))
+	resetHour, _ := strconv.Atoi(strings.TrimSpace(tm.Values["reset_hour"]))
 	// monitor_alias is required by validation and the form substitutes a
 	// non-empty Def when input is blank, so this is always non-empty for the
 	// non-Disabled path.
-	alias := strings.TrimSpace(tm.values["monitor_alias"])
+	alias := strings.TrimSpace(tm.Values["monitor_alias"])
 	return cluster.MonitorUpdate{
-		Interface: strings.TrimSpace(tm.values["monitor_interface"]),
+		Interface: strings.TrimSpace(tm.Values["monitor_interface"]),
 		// The node parses SamplingInterval via time.ParseDuration, which
 		// requires a unit suffix — a bare "60" would silently zero on the
 		// other side. Use a Go duration string.
@@ -583,8 +583,8 @@ func (tm *monitorManager) updateOptions() monitor.UpdateOptions {
 	case monitorActionLocal:
 		return tm.localUpdateOptions()
 	case monitorActionUsage:
-		inBytes, _ := uiparams.ParseTrafficSize(tm.values["current_in_traffic"])
-		outBytes, _ := uiparams.ParseTrafficSize(tm.values["current_out_traffic"])
+		inBytes, _ := uiparams.ParseTrafficSize(tm.Values["current_in_traffic"])
+		outBytes, _ := uiparams.ParseTrafficSize(tm.Values["current_out_traffic"])
 		opts := base
 		opts.SetCurrentTotals = true
 		opts.CurrentInBytes = inBytes
@@ -596,22 +596,22 @@ func (tm *monitorManager) updateOptions() monitor.UpdateOptions {
 }
 
 func (tm *monitorManager) localUpdateOptions() monitor.UpdateOptions {
-	inLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_in_limit"])
-	outLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_out_limit"])
-	totalLimit, _ := uiparams.ParseTrafficSize(tm.values["traffic_total_limit"])
-	monitorPublicPort, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_public_port"]))
-	monitorPort, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_port"]))
-	interval, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_interval_seconds"]))
-	resetDay, _ := strconv.Atoi(strings.TrimSpace(tm.values["reset_day"]))
-	resetHour, _ := strconv.Atoi(strings.TrimSpace(tm.values["reset_hour"]))
+	inLimit, _ := uiparams.ParseTrafficSize(tm.Values["traffic_in_limit"])
+	outLimit, _ := uiparams.ParseTrafficSize(tm.Values["traffic_out_limit"])
+	totalLimit, _ := uiparams.ParseTrafficSize(tm.Values["traffic_total_limit"])
+	monitorPublicPort, _ := strconv.Atoi(strings.TrimSpace(tm.Values["monitor_public_port"]))
+	monitorPort, _ := strconv.Atoi(strings.TrimSpace(tm.Values["monitor_port"]))
+	interval, _ := strconv.Atoi(strings.TrimSpace(tm.Values["monitor_interval_seconds"]))
+	resetDay, _ := strconv.Atoi(strings.TrimSpace(tm.Values["reset_day"]))
+	resetHour, _ := strconv.Atoi(strings.TrimSpace(tm.Values["reset_hour"]))
 	opts := monitorDeployCallbacks()
 	opts.SetLocal = true
 	opts.SetMonitor = true
-	opts.DeployMonitor = monitorEnabled(tm.values)
-	opts.MonitorAlias = strings.TrimSpace(tm.values["monitor_alias"])
+	opts.DeployMonitor = monitorEnabled(tm.Values)
+	opts.MonitorAlias = strings.TrimSpace(tm.Values["monitor_alias"])
 	opts.MonitorPublicPort = monitorPublicPort
 	opts.MonitorPort = monitorPort
-	opts.Interface = strings.TrimSpace(tm.values["monitor_interface"])
+	opts.Interface = strings.TrimSpace(tm.Values["monitor_interface"])
 	opts.IntervalSeconds = interval
 	opts.InLimitBytes = inLimit
 	opts.OutLimitBytes = outLimit
@@ -685,8 +685,8 @@ func (tm *monitorManager) actionView() string {
 			b.WriteString(flowErr.Render(tm.applyBlocker()) + "\n")
 		}
 	}
-	if tm.fieldErr != "" {
-		b.WriteString(flowErr.Render(tm.fieldErr) + "\n")
+	if tm.FieldErr != "" {
+		b.WriteString(flowErr.Render(tm.FieldErr) + "\n")
 	}
 	b.WriteString("\n")
 	b.WriteString(renderActionList(tm.actions(), tm.cursor))
@@ -699,30 +699,30 @@ func (tm *monitorManager) confirmView() string {
 	switch tm.action {
 	case monitorActionLocal:
 		rows = append(rows,
-			summaryRow("Deploy monitor", tm.values["monitor"]),
-			summaryRow("Monitor alias", tm.values["monitor_alias"]),
+			summaryRow("Deploy monitor", tm.Values["monitor"]),
+			summaryRow("Monitor alias", tm.Values["monitor_alias"]),
 		)
 		// Monitor UI / local ports are only collected on the master form —
 		// MonitorNodeFields drops them because each node reuses the agent's
 		// well-known port and has no public dashboard backend of its own.
 		if !t.isNode() {
 			rows = append(rows,
-				summaryRow("Monitor UI port", tm.values["monitor_public_port"]),
-				summaryRow("Monitor local port", tm.values["monitor_port"]),
+				summaryRow("Monitor UI port", tm.Values["monitor_public_port"]),
+				summaryRow("Monitor local port", tm.Values["monitor_port"]),
 			)
 		}
 		rows = append(rows,
-			summaryRow("Monitor interface", tm.values["monitor_interface"]),
-			summaryRow("Sampling interval", tm.values["monitor_interval_seconds"]+" seconds"),
-			summaryRow("Inbound limit", tm.values["traffic_in_limit"]),
-			summaryRow("Outbound limit", tm.values["traffic_out_limit"]),
-			summaryRow("Total limit", tm.values["traffic_total_limit"]),
-			summaryRow("Next reset", nextResetFromValues(tm.values["reset_day"], tm.values["reset_hour"])),
+			summaryRow("Monitor interface", tm.Values["monitor_interface"]),
+			summaryRow("Sampling interval", tm.Values["monitor_interval_seconds"]+" seconds"),
+			summaryRow("Inbound limit", tm.Values["traffic_in_limit"]),
+			summaryRow("Outbound limit", tm.Values["traffic_out_limit"]),
+			summaryRow("Total limit", tm.Values["traffic_total_limit"]),
+			summaryRow("Next reset", nextResetFromValues(tm.Values["reset_day"], tm.Values["reset_hour"])),
 		)
 	case monitorActionUsage:
 		rows = append(rows,
-			summaryRow("Current inbound", byteSize(tm.totals.InBytes)+" -> "+tm.values["current_in_traffic"]),
-			summaryRow("Current outbound", byteSize(tm.totals.OutBytes)+" -> "+tm.values["current_out_traffic"]),
+			summaryRow("Current inbound", byteSize(tm.totals.InBytes)+" -> "+tm.Values["current_in_traffic"]),
+			summaryRow("Current outbound", byteSize(tm.totals.OutBytes)+" -> "+tm.Values["current_out_traffic"]),
 		)
 	}
 	rows = append(rows, summaryBlank())
@@ -780,7 +780,7 @@ func (tm *monitorManager) footerHints() []operationHint {
 		}
 		return actionFooterHints("Select")
 	case monitorPhaseForm:
-		return tm.parameterForm.footerHints()
+		return tm.parameterForm.FooterHints()
 	case monitorPhaseConfirm:
 		return applyFooterHints("Apply")
 	case monitorPhaseRunning:
@@ -851,7 +851,7 @@ func (tm *monitorManager) serviceSystemctlAction() string {
 
 func (tm *monitorManager) startServiceRun() tea.Cmd {
 	if !tm.canApply() {
-		tm.fieldErr = tm.applyBlocker()
+		tm.FieldErr = tm.applyBlocker()
 		tm.phase = monitorPhaseAction
 		return nil
 	}

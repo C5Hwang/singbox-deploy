@@ -97,7 +97,7 @@ func (nm *nodeManager) reloadNodes() {
 func (nm *nodeManager) setSize(width, height int) {
 	nm.width = width
 	nm.height = height
-	nm.parameterForm.setSize(width, height)
+	nm.parameterForm.SetSize(width, height)
 	nm.commandRun.setSize(width, height)
 }
 
@@ -115,8 +115,8 @@ func (nm *nodeManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 		nm.advanceSubFormState()
 		return cmd, false
 	}
-	if nm.phase == nodePhaseForm && !nm.currentFieldHasOptions() {
-		return nm.updateInput(msg), false
+	if nm.phase == nodePhaseForm && !nm.CurrentFieldHasOptions() {
+		return nm.UpdateInput(msg), false
 	}
 	return nil, false
 }
@@ -143,8 +143,8 @@ func (nm *nodeManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return cmd, done
 		}
 	case nodePhaseForm:
-		prevKey := nm.parameterForm.currentFieldKey()
-		cmd, done, handled := nm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
+		prevKey := nm.parameterForm.CurrentFieldKey()
+		cmd, done, handled := nm.parameterForm.HandleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
 				if !nm.ensureNodeDNSCredentials() {
 					return
@@ -152,15 +152,15 @@ func (nm *nodeManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				nm.phase = nodePhaseConfirm
 			},
 			Back: func() {
-				if !nm.previousField() {
+				if !nm.PreviousField() {
 					nm.phase = nodePhaseAction
 				}
 			},
 			Cancel: func() (tea.Cmd, bool) { return nil, true },
 		})
 		if handled {
-			if prevKey == "domain" && nm.parameterForm.currentFieldKey() != "domain" && nm.parameterForm.fieldErr == "" {
-				if domain := nm.values["domain"]; domain != "" {
+			if prevKey == "domain" && nm.parameterForm.CurrentFieldKey() != "domain" && nm.parameterForm.FieldErr == "" {
+				if domain := nm.Values["domain"]; domain != "" {
 					store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
 					if _, err := store.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
 						nm.enterMissingDNSCreds(domain, "")
@@ -178,17 +178,17 @@ func (nm *nodeManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		nm.advanceSubFormState()
 		return cmd, false
 	case nodePhaseDeleteSelect:
-		cmd, done, handled := nm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
+		cmd, done, handled := nm.parameterForm.HandleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
-				nm.deleteID = strings.TrimSpace(nm.values["delete_id"])
+				nm.deleteID = strings.TrimSpace(nm.Values["delete_id"])
 				if nm.deleteID == "" {
-					nm.fieldErr = "select a node to delete"
+					nm.FieldErr = "select a node to delete"
 					return
 				}
 				nm.phase = nodePhaseConfirm
 			},
 			Back: func() {
-				if !nm.previousField() {
+				if !nm.PreviousField() {
 					nm.phase = nodePhaseAction
 				}
 			},
@@ -216,11 +216,11 @@ func (nm *nodeManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 
 func (nm *nodeManager) moveAction(delta int) {
 	nm.cursor = moveActionCursor(nm.cursor, nm.actions(), delta)
-	nm.fieldErr = ""
+	nm.FieldErr = ""
 }
 
 func (nm *nodeManager) activateAction() {
-	nm.fieldErr = ""
+	nm.FieldErr = ""
 	actions := nm.actions()
 	idx, ok := selectedIndex(nm.cursor, len(actions))
 	if !ok {
@@ -230,13 +230,13 @@ func (nm *nodeManager) activateAction() {
 	switch nm.action {
 	case nodeActionAdd:
 		if parseSingBoxCoreVersion(coreCurrentVersion(paths.DefaultLayout())) == "" {
-			nm.fieldErr = "install sing-box on the master before adding nodes"
+			nm.FieldErr = "install sing-box on the master before adding nodes"
 			return
 		}
 		nm.startForm(nm.addNodeFields(), nodePhaseForm)
 	case nodeActionDelete:
 		if len(nm.nodes) == 0 {
-			nm.fieldErr = "no nodes to delete"
+			nm.FieldErr = "no nodes to delete"
 			return
 		}
 		nm.startForm(nm.deleteSelectFields(), nodePhaseDeleteSelect)
@@ -244,10 +244,10 @@ func (nm *nodeManager) activateAction() {
 }
 
 func (nm *nodeManager) startForm(fields []field, phase nodePhase) {
-	nm.parameterForm.setFields(fields)
-	nm.parameterForm.validate = nm.validateNodeField
+	nm.parameterForm.SetFields(fields)
+	nm.parameterForm.Validate = nm.validateNodeField
 	nm.phase = phase
-	if nm.parameterForm.advanceField() {
+	if nm.parameterForm.AdvanceField() {
 		nm.phase = nodePhaseConfirm
 	}
 }
@@ -263,19 +263,19 @@ func (nm *nodeManager) addNodeFields() []field {
 		return !selected[string(config.ProtocolRealityVision)] && !selected[string(config.ProtocolRealityGRPC)]
 	}
 	fields := []field{
-		{key: "alias", label: "Node alias", note: "Human label shown in subscriptions and the TUI (e.g. Tokyo, Singapore)."},
-		{key: "public_ip", label: "Node public IP or host", note: "Where the node is reachable from the public internet for the initial SSH handshake."},
-		{key: "ssh_port", label: "SSH port", def: "22"},
-		{key: "ssh_user", label: "SSH user", def: "root"},
-		{key: "ssh_password", label: "SSH password", note: "Used only during initial provisioning."},
-		{key: "domain", label: "Domain (must resolve to this node)", note: "Used for certificate issuance, Nginx server_name, and TLS SNI."},
-		{key: "protocols", label: "Enabled protocols", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Pick one or more protocols this node will serve."},
+		{Key: "alias", Label: "Node alias", Note: "Human label shown in subscriptions and the TUI (e.g. Tokyo, Singapore)."},
+		{Key: "public_ip", Label: "Node public IP or host", Note: "Where the node is reachable from the public internet for the initial SSH handshake."},
+		{Key: "ssh_port", Label: "SSH port", Def: "22"},
+		{Key: "ssh_user", Label: "SSH user", Def: "root"},
+		{Key: "ssh_password", Label: "SSH password", Note: "Used only during initial provisioning."},
+		{Key: "domain", Label: "Domain (must resolve to this node)", Note: "Used for certificate issuance, Nginx server_name, and TLS SNI."},
+		{Key: "protocols", Label: "Enabled protocols", Def: defaultProtocolValue(), Options: protocolOptions(), Multi: true, Note: "Pick one or more protocols this node will serve."},
 	}
 	// Reality SNI + per-protocol UUID/password/port fields mirror the install
 	// form so the add-node interaction matches the host install flow.
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields,
-		field{key: "master_host", label: "Master public IP or domain", note: "Where the node reaches the master over WireGuard (e.g. master.example.com or 198.51.100.1)."},
+		field{Key: "master_host", Label: "Master public IP or domain", Note: "Where the node reaches the master over WireGuard (e.g. master.example.com or 198.51.100.1)."},
 	)
 	fields = append(fields, nm.addNodeMonitorFields()...)
 	return fields
@@ -323,26 +323,26 @@ func (nm *nodeManager) deleteSelectFields() []field {
 		options = append(options, nodeOptionLabel(n))
 	}
 	return []field{{
-		key:     "delete_id",
-		label:   "Node to delete",
-		options: options,
-		note:    "Removes the WireGuard peer, asks the node to self-destruct, then deletes the registry entry.",
+		Key:     "delete_id",
+		Label:   "Node to delete",
+		Options: options,
+		Note:    "Removes the WireGuard peer, asks the node to self-destruct, then deletes the registry entry.",
 	}}
 }
 
 func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]string) error {
 	v := strings.TrimSpace(val)
-	switch f.key {
+	switch f.Key {
 	case "alias", "public_ip":
 		if v == "" {
-			return fmt.Errorf("%s is required", f.label)
+			return fmt.Errorf("%s is required", f.Label)
 		}
 	case "master_host":
 		if v == "" {
-			return fmt.Errorf("%s is required", f.label)
+			return fmt.Errorf("%s is required", f.Label)
 		}
 		if strings.ContainsAny(v, ":/ ") {
-			return fmt.Errorf("%s must be a bare IP or domain (no port or path); port %d is added automatically", f.label, wireguard.DefaultListenPort)
+			return fmt.Errorf("%s must be a bare IP or domain (no port or path); port %d is added automatically", f.Label, wireguard.DefaultListenPort)
 		}
 	case "ssh_port":
 		if v == "" {
@@ -355,11 +355,11 @@ func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]st
 		return nil
 	case "ssh_user":
 		if v == "" {
-			return fmt.Errorf("%s is required", f.label)
+			return fmt.Errorf("%s is required", f.Label)
 		}
 	case "ssh_password":
 		if v == "" {
-			return fmt.Errorf("%s is required", f.label)
+			return fmt.Errorf("%s is required", f.Label)
 		}
 		if nm.validateSSH == nil {
 			return nil
@@ -382,7 +382,7 @@ func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]st
 		)
 	case "domain":
 		if v == "" {
-			return fmt.Errorf("%s is required", f.label)
+			return fmt.Errorf("%s is required", f.Label)
 		}
 		if nm.validateDomain == nil {
 			return nil
@@ -405,10 +405,10 @@ func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]st
 		// dashboard display name. Skip the install-side "required" check.
 		return nil
 	}
-	if err := uiparams.ValidateSharedParameterValue(f.key, v); err != nil {
+	if err := uiparams.ValidateSharedParameterValue(f.Key, v); err != nil {
 		return err
 	}
-	return uiparams.ValidateMonitorParameterValue(f.key, v)
+	return uiparams.ValidateMonitorParameterValue(f.Key, v)
 }
 
 func (nm *nodeManager) canApply() bool {
@@ -441,14 +441,14 @@ func (nm *nodeManager) enterMissingDNSCreds(domain, headerErr string) {
 	if headerErr != "" {
 		nm.subForm.SetHeaderError(headerErr)
 	}
-	nm.subForm.setSize(nm.width, nm.height)
+	nm.subForm.SetSize(nm.width, nm.height)
 }
 
 // ensureNodeDNSCredentials runs the lookup at Complete. Returns true on hit so
 // the form can advance to confirm; false when it transitioned to the
 // missing-creds sub-form.
 func (nm *nodeManager) ensureNodeDNSCredentials() bool {
-	domain := strings.TrimSpace(nm.values["domain"])
+	domain := strings.TrimSpace(nm.Values["domain"])
 	if domain == "" {
 		return true
 	}
@@ -468,7 +468,7 @@ func (nm *nodeManager) advanceSubFormState() {
 	saved, cancelled, _ := nm.subForm.State()
 	switch {
 	case saved:
-		domain := strings.TrimSpace(nm.values["domain"])
+		domain := strings.TrimSpace(nm.Values["domain"])
 		store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
 		if _, err := store.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
 			nm.enterMissingDNSCreds(domain, fmt.Sprintf("Saved credentials do not cover %s — adjust the root domain.", domain))
@@ -480,13 +480,13 @@ func (nm *nodeManager) advanceSubFormState() {
 		nm.subForm = nil
 		nm.phase = nodePhaseForm
 		nm.statusErr = "DNS credentials are still required for this node."
-		nm.parameterForm.backToFieldKey("domain")
+		nm.parameterForm.BackToFieldKey("domain")
 	}
 }
 
 func (nm *nodeManager) startRun() tea.Cmd {
 	if !nm.canApply() {
-		nm.fieldErr = nm.applyBlocker()
+		nm.FieldErr = nm.applyBlocker()
 		nm.phase = nodePhaseAction
 		return nil
 	}
@@ -510,7 +510,7 @@ func (nm *nodeManager) startRun() tea.Cmd {
 	case nodeActionAdd:
 		req, err := nm.buildAddRequest()
 		if err != nil {
-			nm.fieldErr = err.Error()
+			nm.FieldErr = err.Error()
 			nm.phase = nodePhaseAction
 			ch <- runMsg{done: true, err: err}
 			return nm.waitForRun()
@@ -537,7 +537,7 @@ func (nm *nodeManager) startRun() tea.Cmd {
 }
 
 func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
-	v := nm.values
+	v := nm.Values
 	sshPort, _ := strconv.Atoi(strings.TrimSpace(v["ssh_port"]))
 	if sshPort == 0 {
 		sshPort = 22
@@ -752,8 +752,8 @@ func (nm *nodeManager) actionView() string {
 	if !nm.canApply() {
 		b.WriteString(flowErr.Render(nm.applyBlocker()) + "\n")
 	}
-	if nm.fieldErr != "" {
-		b.WriteString(flowErr.Render(nm.fieldErr) + "\n")
+	if nm.FieldErr != "" {
+		b.WriteString(flowErr.Render(nm.FieldErr) + "\n")
 	}
 	b.WriteString("\n")
 	b.WriteString(renderActionList(nm.actions(), nm.cursor))
@@ -772,18 +772,18 @@ func (nm *nodeManager) confirmView() string {
 	var rows []summaryLine
 	switch nm.action {
 	case nodeActionAdd:
-		protocols := protocolListFromCSV(nm.values["protocols"])
+		protocols := protocolListFromCSV(nm.Values["protocols"])
 		rows = append(rows,
-			summaryRow("Add node", nm.values["alias"]),
-			summaryRow("SSH target", nm.values["public_ip"]+":"+orDefault(nm.values["ssh_port"], "22")),
-			summaryRow("Domain", nm.values["domain"]),
+			summaryRow("Add node", nm.Values["alias"]),
+			summaryRow("SSH target", nm.Values["public_ip"]+":"+orDefault(nm.Values["ssh_port"], "22")),
+			summaryRow("Domain", nm.Values["domain"]),
 			summaryRow("Protocols", protocolLabels(protocols)),
-			summaryRow("Master endpoint", fmt.Sprintf("%s:%d", nm.values["master_host"], wireguard.DefaultListenPort)),
+			summaryRow("Master endpoint", fmt.Sprintf("%s:%d", nm.Values["master_host"], wireguard.DefaultListenPort)),
 			summaryRow("Release tag", toolVersion),
 			summaryRow("sing-box core version", orDefault(parseSingBoxCoreVersion(coreCurrentVersion(paths.DefaultLayout())), "unknown")),
 		)
 		if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
-			rows = append(rows, summaryRow("Reality URL/SNI", nm.values["reality_sni"]))
+			rows = append(rows, summaryRow("Reality URL/SNI", nm.Values["reality_sni"]))
 		}
 		rows = append(rows, nm.monitorSummaryRows()...)
 		if len(protocols) > 0 {
@@ -806,7 +806,7 @@ func (nm *nodeManager) confirmView() string {
 // the form section, so the values map has no monitor entries to show. When
 // the user disabled monitor on this node, only the toggle row is shown.
 func (nm *nodeManager) monitorSummaryRows() []summaryLine {
-	toggle, ok := nm.values["monitor"]
+	toggle, ok := nm.Values["monitor"]
 	if !ok || toggle == "" {
 		return nil
 	}
@@ -814,17 +814,17 @@ func (nm *nodeManager) monitorSummaryRows() []summaryLine {
 	if toggle == "no" {
 		return rows
 	}
-	alias := strings.TrimSpace(nm.values["monitor_alias"])
+	alias := strings.TrimSpace(nm.Values["monitor_alias"])
 	if alias == "" {
-		alias = strings.TrimSpace(nm.values["alias"])
+		alias = strings.TrimSpace(nm.Values["alias"])
 	}
 	rows = append(rows,
 		summaryRow("Monitor alias", alias),
-		summaryRow("Sampling interval", orDefault(nm.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
-		summaryRow("Inbound traffic limit", trafficLimitSummary(nm.values["traffic_in_limit"])),
-		summaryRow("Outbound traffic limit", trafficLimitSummary(nm.values["traffic_out_limit"])),
-		summaryRow("Total traffic limit", trafficLimitSummary(nm.values["traffic_total_limit"])),
-		summaryRow("Next reset", nextResetFromValues(nm.values["reset_day"], nm.values["reset_hour"])),
+		summaryRow("Sampling interval", orDefault(nm.Values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
+		summaryRow("Inbound traffic limit", trafficLimitSummary(nm.Values["traffic_in_limit"])),
+		summaryRow("Outbound traffic limit", trafficLimitSummary(nm.Values["traffic_out_limit"])),
+		summaryRow("Total traffic limit", trafficLimitSummary(nm.Values["traffic_total_limit"])),
+		summaryRow("Next reset", nextResetFromValues(nm.Values["reset_day"], nm.Values["reset_hour"])),
 	)
 	return rows
 }
@@ -834,22 +834,22 @@ func (nm *nodeManager) monitorSummaryRows() []summaryLine {
 // visually consistent.
 func (nm *nodeManager) protocolParamRows(p config.Protocol) []summaryLine {
 	rows := []summaryLine{
-		summaryIndentedRow(2, string(p)+" port", summaryValueOrRandom(nm.values[portFieldKey(p)])),
+		summaryIndentedRow(2, string(p)+" port", summaryValueOrRandom(nm.Values[portFieldKey(p)])),
 	}
 	switch p {
 	case config.ProtocolRealityVision:
-		rows = append(rows, summaryIndentedRow(2, "VLESS Reality Vision UUID", summaryValueOrRandom(nm.values["reality_vision_uuid"])))
+		rows = append(rows, summaryIndentedRow(2, "VLESS Reality Vision UUID", summaryValueOrRandom(nm.Values["reality_vision_uuid"])))
 	case config.ProtocolRealityGRPC:
-		rows = append(rows, summaryIndentedRow(2, "VLESS Reality gRPC UUID", summaryValueOrRandom(nm.values["reality_grpc_uuid"])))
+		rows = append(rows, summaryIndentedRow(2, "VLESS Reality gRPC UUID", summaryValueOrRandom(nm.Values["reality_grpc_uuid"])))
 	case config.ProtocolHysteria2:
-		rows = append(rows, summaryIndentedRow(2, "Hysteria2 password", summaryValueOrRandom(nm.values["hysteria2_password"])))
+		rows = append(rows, summaryIndentedRow(2, "Hysteria2 password", summaryValueOrRandom(nm.Values["hysteria2_password"])))
 	case config.ProtocolTUIC:
 		rows = append(rows,
-			summaryIndentedRow(2, "TUIC UUID", summaryValueOrRandom(nm.values["tuic_uuid"])),
-			summaryIndentedRow(2, "TUIC password", summaryValueOrRandom(nm.values["tuic_password"])),
+			summaryIndentedRow(2, "TUIC UUID", summaryValueOrRandom(nm.Values["tuic_uuid"])),
+			summaryIndentedRow(2, "TUIC password", summaryValueOrRandom(nm.Values["tuic_password"])),
 		)
 	case config.ProtocolAnyTLS:
-		rows = append(rows, summaryIndentedRow(2, "AnyTLS password", summaryValueOrRandom(nm.values["anytls_password"])))
+		rows = append(rows, summaryIndentedRow(2, "AnyTLS password", summaryValueOrRandom(nm.Values["anytls_password"])))
 	}
 	return rows
 }
@@ -859,12 +859,12 @@ func (nm *nodeManager) footerHints() []operationHint {
 	case nodePhaseAction:
 		return actionFooterHints("Select")
 	case nodePhaseForm, nodePhaseDeleteSelect:
-		return nm.parameterForm.footerHints()
+		return nm.parameterForm.FooterHints()
 	case nodePhaseMissingDNSCreds:
 		if nm.subForm != nil {
-			return nm.subForm.footerHints()
+			return nm.subForm.FooterHints()
 		}
-		return nm.parameterForm.footerHints()
+		return nm.parameterForm.FooterHints()
 	case nodePhaseConfirm:
 		return applyFooterHints("Apply")
 	case nodePhaseRunning:

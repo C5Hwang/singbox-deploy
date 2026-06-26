@@ -5,6 +5,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/C5Hwang/singbox-deploy/internal/ui/common"
 )
 
 // LayoutMode selects between the side-by-side and single-column layouts.
@@ -309,8 +311,8 @@ func (m *Model) activate() tea.Cmd {
 var (
 	panelStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	titleStyle  = lipgloss.NewStyle().Bold(true)
-	selStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	dimStyle    = lipgloss.NewStyle().Faint(true)
+	selStyle    = common.SelStyle
+	dimStyle    = common.DimStyle
 	statusOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	statusBad   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	statusWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))

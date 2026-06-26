@@ -66,8 +66,8 @@ func TestWideInstallContentUsesAvailableHeightAndMenuAdapts(t *testing.T) {
 	if got := lipgloss.Height(view); got != 60 {
 		t.Fatalf("view height = %d, want 60:\n%s", got, view)
 	}
-	if want := 60 - 1 - panelStyle.GetVerticalFrameSize(); w.form.height != want {
-		t.Fatalf("install flow height = %d, want available content height %d", w.form.height, want)
+	if want := 60 - 1 - panelStyle.GetVerticalFrameSize(); w.form.Height != want {
+		t.Fatalf("install flow height = %d, want available content height %d", w.form.Height, want)
 	}
 
 	body := m.bodyView(160, 59)
@@ -127,13 +127,13 @@ func installFormForTest() installForm {
 
 func installFormWithValuesForTest(values map[string]string) installForm {
 	w := installFormForTest()
-	w.values = values
+	w.Values = values
 	return w
 }
 
 func TestInstallFieldShowsUsageNote(t *testing.T) {
 	w := installFormForTest()
-	w.width = 80
+	w.Width = 80
 	w.startForm()
 	view := w.View()
 	if !strings.Contains(view, "Used for certificate issuance") {
@@ -497,16 +497,16 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 }
 
 func TestParameterInputShowsTwoCharacterDefaultWhenUnsized(t *testing.T) {
-	form := newParameterForm([]field{{key: "hysteria2_port", label: "Hysteria2 port", def: "50"}})
-	form.startForm()
-	form.input.Cursor.Blink = true
-	if got := form.input.View(); !strings.Contains(got, "50") {
+	pf := newParameterForm([]field{{Key: "hysteria2_port", Label: "Hysteria2 port", Def: "50"}})
+	pf.StartForm()
+	pf.Input.Cursor.Blink = true
+	if got := pf.Input.View(); !strings.Contains(got, "50") {
 		t.Fatalf("unsized placeholder = %q, want full default 50", got)
 	}
 
-	form.setSize(0, 0)
-	form.input.Cursor.Blink = true
-	if got := form.input.View(); !strings.Contains(got, "50") {
+	pf.SetSize(0, 0)
+	pf.Input.Cursor.Blink = true
+	if got := pf.Input.View(); !strings.Contains(got, "50") {
 		t.Fatalf("zero-width placeholder = %q, want full default 50", got)
 	}
 }
@@ -870,8 +870,8 @@ func TestRunningViewFitsAssignedHeightWithWrappedLog(t *testing.T) {
 	w := &installFlow{phase: phaseRunning, run: commandRun{bar: progressBarForTest()}}
 	w.setSize(32, 10)
 	w.run.appendLog(strings.Repeat("long-command ", 20))
-	if got := lipgloss.Height(w.View()); got > w.form.height {
-		t.Fatalf("running view height = %d, want <= %d:\n%s", got, w.form.height, w.View())
+	if got := lipgloss.Height(w.View()); got > w.form.Height {
+		t.Fatalf("running view height = %d, want <= %d:\n%s", got, w.form.Height, w.View())
 	}
 }
 
@@ -913,14 +913,14 @@ func progressBarForTest() progress.Model {
 func TestInstallFormCanGoBackToPreviousField(t *testing.T) {
 	w := installFormForTest()
 	w.startForm()
-	w.input.SetValue("example.com")
+	w.Input.SetValue("example.com")
 	w.commitField()
-	w.input.SetValue("admin@example.com")
-	w.previousField()
-	if w.fieldIx != 0 {
-		t.Fatalf("fieldIx = %d, want 0", w.fieldIx)
+	w.Input.SetValue("admin@example.com")
+	w.PreviousField()
+	if w.FieldIx != 0 {
+		t.Fatalf("fieldIx = %d, want 0", w.FieldIx)
 	}
-	if got := w.input.Value(); got != "example.com" {
+	if got := w.Input.Value(); got != "example.com" {
 		t.Fatalf("restored input = %q, want domain", got)
 	}
 }
@@ -934,13 +934,13 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 		return fmt.Errorf("domain resolves elsewhere")
 	}
 	w.startForm()
-	w.input.SetValue("bad.example")
+	w.Input.SetValue("bad.example")
 	w.commitField()
 
-	if w.fieldIx != 0 {
-		t.Fatalf("fieldIx = %d, want domain field", w.fieldIx)
+	if w.FieldIx != 0 {
+		t.Fatalf("fieldIx = %d, want domain field", w.FieldIx)
 	}
-	if w.values["domain"] != "" {
+	if w.Values["domain"] != "" {
 		t.Fatalf("domain should not be committed on validation failure")
 	}
 	if !strings.Contains(w.View(), "domain resolves elsewhere") {
@@ -958,32 +958,32 @@ func TestFieldErrSurvivesCursorBlink(t *testing.T) {
 		return fmt.Errorf("domain resolves elsewhere")
 	}
 	w.startForm()
-	w.input.SetValue("bad.example")
+	w.Input.SetValue("bad.example")
 	w.commitField()
 
-	if w.fieldErr == "" {
+	if w.FieldErr == "" {
 		t.Fatalf("fieldErr should be set after validation failure")
 	}
-	w.updateInput(cursor.BlinkMsg{})
-	if w.fieldErr == "" {
+	w.UpdateInput(cursor.BlinkMsg{})
+	if w.FieldErr == "" {
 		t.Fatalf("fieldErr should survive a cursor blink tick")
 	}
-	w.updateInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	if w.fieldErr != "" {
-		t.Fatalf("fieldErr should clear on user key press, got %q", w.fieldErr)
+	w.UpdateInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if w.FieldErr != "" {
+		t.Fatalf("fieldErr should clear on user key press, got %q", w.FieldErr)
 	}
 }
 
 func TestProtocolMultiSelectRequiresAtLeastOne(t *testing.T) {
 	w := installFormForTest()
-	w.setField(fieldIndex(t, w.fields, "protocols"))
-	for _, opt := range w.fields[w.fieldIx].options {
-		w.optionIx = optionIndex(w.fields[w.fieldIx].options, opt)
-		w.toggleOption()
+	w.SetField(fieldIndex(t, w.Fields, "protocols"))
+	for _, opt := range w.Fields[w.FieldIx].Options {
+		w.OptionIx = optionIndex(w.Fields[w.FieldIx].Options, opt)
+		w.ToggleOption()
 	}
 	w.commitField()
 
-	if w.values["protocols"] != "" {
+	if w.Values["protocols"] != "" {
 		t.Fatalf("protocols should not commit when none selected")
 	}
 	if !strings.Contains(w.View(), "select at least one protocol") {
@@ -995,15 +995,15 @@ func TestRealityFieldsHiddenWhenRealityNotSelected(t *testing.T) {
 	vals := map[string]string{"protocols": string(config.ProtocolTUIC)}
 	fields := installFields()
 	reality := fields[fieldIndex(t, fields, "reality_sni")]
-	if reality.skip == nil || !reality.skip(vals) {
+	if reality.Skip == nil || !reality.Skip(vals) {
 		t.Fatalf("reality field should be hidden when no reality protocol is selected")
 	}
 	tuic := fields[fieldIndex(t, fields, "tuic_uuid")]
-	if tuic.skip != nil && tuic.skip(vals) {
+	if tuic.Skip != nil && tuic.Skip(vals) {
 		t.Fatalf("tuic field should be visible when tuic is selected")
 	}
 	tuicPassword := fields[fieldIndex(t, fields, "tuic_password")]
-	if tuicPassword.skip != nil && tuicPassword.skip(vals) {
+	if tuicPassword.Skip != nil && tuicPassword.Skip(vals) {
 		t.Fatalf("tuic password field should be visible when tuic is selected")
 	}
 }
@@ -1013,7 +1013,7 @@ func TestMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 	fields := installFields()
 	for _, key := range []string{"monitor_alias", "monitor_public_port", "monitor_port", "monitor_interval_seconds", "traffic_in_limit", "traffic_out_limit", "traffic_total_limit", "reset_day", "reset_hour"} {
 		f := fields[fieldIndex(t, fields, key)]
-		if f.skip == nil || !f.skip(vals) {
+		if f.Skip == nil || !f.Skip(vals) {
 			t.Fatalf("%s should be hidden when monitor is disabled", key)
 		}
 	}
@@ -1021,8 +1021,8 @@ func TestMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 
 func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 	w := installFormWithValuesForTest(map[string]string{"protocols": string(config.ProtocolRealityVision)})
-	w.width = 80
-	w.setField(fieldIndex(t, w.fields, "reality_vision_uuid"))
+	w.Width = 80
+	w.SetField(fieldIndex(t, w.Fields, "reality_vision_uuid"))
 	view := w.View()
 	if !strings.Contains(view, "Setting parameters for: vless-reality-vision") {
 		t.Fatalf("current protocol marker missing:\n%s", view)
@@ -1032,11 +1032,11 @@ func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 func TestInstallFieldsIncludeSiteTemplates(t *testing.T) {
 	fields := installFields()
 	field := fields[fieldIndex(t, fields, "site_template")]
-	if field.def != deploy.DefaultSiteTemplate {
-		t.Fatalf("site template default = %q", field.def)
+	if field.Def != deploy.DefaultSiteTemplate {
+		t.Fatalf("site template default = %q", field.Def)
 	}
-	if strings.Join(field.options, ",") != strings.Join(deploy.SiteTemplateOptions(), ",") {
-		t.Fatalf("site template options = %#v", field.options)
+	if strings.Join(field.Options, ",") != strings.Join(deploy.SiteTemplateOptions(), ",") {
+		t.Fatalf("site template options = %#v", field.Options)
 	}
 }
 
@@ -1189,17 +1189,17 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 		t.Fatalf("expected subscribe/protocol port conflict, got %v", err)
 	}
 
-	w.form.values["tuic_port"] = "24445"
-	w.form.values["monitor"] = "yes"
-	w.form.values["monitor_public_port"] = "24444"
-	w.form.values["monitor_port"] = "24446"
+	w.form.Values["tuic_port"] = "24445"
+	w.form.Values["monitor"] = "yes"
+	w.form.Values["monitor_public_port"] = "24444"
+	w.form.Values["monitor_port"] = "24446"
 	_, err = w.buildConfig()
 	if err == nil || !strings.Contains(err.Error(), "monitor public port 24444 conflicts") {
 		t.Fatalf("expected subscribe/monitor port conflict, got %v", err)
 	}
 
-	w.form.values["monitor_public_port"] = "24446"
-	w.form.values["monitor_port"] = "24444"
+	w.form.Values["monitor_public_port"] = "24446"
+	w.form.Values["monitor_port"] = "24444"
 	_, err = w.buildConfig()
 	if err == nil || !strings.Contains(err.Error(), "monitor service port 24444 conflicts") {
 		t.Fatalf("expected subscribe/monitor local port conflict, got %v", err)
@@ -1277,7 +1277,7 @@ func TestBuildConfigDisablesMonitor(t *testing.T) {
 func fieldIndex(t *testing.T, fields []field, key string) int {
 	t.Helper()
 	for i, f := range fields {
-		if f.key == key {
+		if f.Key == key {
 			return i
 		}
 	}
@@ -1295,14 +1295,14 @@ func TestAddNodeFieldsIncludePerProtocolPort(t *testing.T) {
 		key := portFieldKey(p)
 		idx := fieldIndex(t, fields, key)
 		// Without the protocol selected, the skip predicate must return true.
-		if fields[idx].skip == nil {
+		if fields[idx].Skip == nil {
 			t.Fatalf("field %s has no skip predicate", key)
 		}
-		if !fields[idx].skip(map[string]string{"protocols": ""}) {
+		if !fields[idx].Skip(map[string]string{"protocols": ""}) {
 			t.Errorf("field %s should be skipped when protocols is empty", key)
 		}
 		// With the protocol selected, it must NOT be skipped.
-		if fields[idx].skip(map[string]string{"protocols": string(p)}) {
+		if fields[idx].Skip(map[string]string{"protocols": string(p)}) {
 			t.Errorf("field %s should not be skipped when its protocol is selected", key)
 		}
 	}
@@ -1353,25 +1353,25 @@ func TestAddNodeFieldsMirrorInstallProtocolSection(t *testing.T) {
 	}
 	for _, tc := range credentialKeys {
 		f := fields[fieldIndex(t, fields, tc.key)]
-		if f.skip == nil {
+		if f.Skip == nil {
 			t.Fatalf("%s missing skip predicate", tc.key)
 		}
-		if !f.skip(map[string]string{"protocols": ""}) {
+		if !f.Skip(map[string]string{"protocols": ""}) {
 			t.Errorf("%s should be hidden when its protocol is not selected", tc.key)
 		}
-		if f.skip(map[string]string{"protocols": string(tc.proto)}) {
+		if f.Skip(map[string]string{"protocols": string(tc.proto)}) {
 			t.Errorf("%s should be visible when %s is selected", tc.key, tc.proto)
 		}
 	}
 
 	sni := fields[fieldIndex(t, fields, "reality_sni")]
-	if sni.skip == nil {
+	if sni.Skip == nil {
 		t.Fatalf("reality_sni missing skip predicate")
 	}
-	if !sni.skip(map[string]string{"protocols": string(config.ProtocolHysteria2)}) {
+	if !sni.Skip(map[string]string{"protocols": string(config.ProtocolHysteria2)}) {
 		t.Errorf("reality_sni should be hidden when no Reality protocol is selected")
 	}
-	if sni.skip(map[string]string{"protocols": string(config.ProtocolRealityGRPC)}) {
+	if sni.Skip(map[string]string{"protocols": string(config.ProtocolRealityGRPC)}) {
 		t.Errorf("reality_sni should be visible when a Reality protocol is selected")
 	}
 }
@@ -1415,18 +1415,18 @@ func TestAddNodeBlockedWhenSingBoxNotInstalled(t *testing.T) {
 	if nm.phase != nodePhaseAction {
 		t.Fatalf("phase = %v, want nodePhaseAction so the form does not open", nm.phase)
 	}
-	if !strings.Contains(nm.fieldErr, "install sing-box") {
-		t.Fatalf("fieldErr = %q, want install-required hint", nm.fieldErr)
+	if !strings.Contains(nm.FieldErr, "install sing-box") {
+		t.Fatalf("fieldErr = %q, want install-required hint", nm.FieldErr)
 	}
 
 	coreCurrentVersion = func(paths.Layout) string { return "sing-box version 1.12.0" }
-	nm.fieldErr = ""
+	nm.FieldErr = ""
 	nm.activateAction()
 	if nm.phase != nodePhaseForm {
 		t.Fatalf("phase = %v, want nodePhaseForm once sing-box reports a version", nm.phase)
 	}
-	if nm.fieldErr != "" {
-		t.Fatalf("fieldErr = %q, want empty after the gate passes", nm.fieldErr)
+	if nm.FieldErr != "" {
+		t.Fatalf("fieldErr = %q, want empty after the gate passes", nm.FieldErr)
 	}
 }
 

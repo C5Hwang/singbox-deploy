@@ -10,6 +10,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/ui/form"
 )
 
 type certPhase int
@@ -74,7 +75,7 @@ func (cm *certManager) reload() {
 func (cm *certManager) setSize(width, height int) {
 	cm.width = width
 	cm.height = height
-	cm.parameterForm.setSize(width, height)
+	cm.parameterForm.SetSize(width, height)
 }
 
 func (cm *certManager) Update(msg tea.Msg) (tea.Cmd, bool) {
@@ -84,11 +85,11 @@ func (cm *certManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.KeyMsg:
 		return cm.handleKey(msg)
 	}
-	if cm.phase == certPhaseForm && !cm.currentFieldHasOptions() {
-		return cm.updateInput(msg), false
+	if cm.phase == certPhaseForm && !cm.CurrentFieldHasOptions() {
+		return cm.UpdateInput(msg), false
 	}
-	if cm.phase == certPhaseSelect && !cm.currentFieldHasOptions() {
-		return cm.updateInput(msg), false
+	if cm.phase == certPhaseSelect && !cm.CurrentFieldHasOptions() {
+		return cm.UpdateInput(msg), false
 	}
 	return nil, false
 }
@@ -115,9 +116,9 @@ func (cm *certManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return cmd, done
 		}
 	case certPhaseSelect:
-		cmd, done, handled := cm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
+		cmd, done, handled := cm.parameterForm.HandleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
-				root := strings.TrimSpace(cm.values["target_root"])
+				root := strings.TrimSpace(cm.Values["target_root"])
 				if root == "" {
 					cm.fieldErr = "select a root domain"
 					return
@@ -131,7 +132,7 @@ func (cm *certManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				}
 			},
 			Back: func() {
-				if !cm.previousField() {
+				if !cm.PreviousField() {
 					cm.phase = certPhaseAction
 				}
 			},
@@ -141,12 +142,12 @@ func (cm *certManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return cmd, done
 		}
 	case certPhaseForm:
-		cmd, done, handled := cm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
+		cmd, done, handled := cm.parameterForm.HandleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
 				cm.phase = certPhaseConfirm
 			},
 			Back: func() {
-				if !cm.previousField() {
+				if !cm.PreviousField() {
 					cm.phase = certPhaseAction
 				}
 			},
@@ -213,37 +214,37 @@ func (cm *certManager) addFields(existing *cluster.DNSCredentials) []field {
 		providerDef = "cloudflare"
 	}
 	return []field{
-		{key: "root_domain", label: "Root domain", def: rootDef, note: "Root zone where the DNS-01 TXT records will be written (e.g. example.com)."},
-		{key: "provider", label: "DNS provider", def: providerDef, options: []string{"cloudflare", "aliyun"}},
+		{Key: "root_domain", Label: "Root domain", Def: rootDef, Note: "Root zone where the DNS-01 TXT records will be written (e.g. example.com)."},
+		{Key: "provider", Label: "DNS provider", Def: providerDef, Options: []string{"cloudflare", "aliyun"}},
 		{
-			key:   "cf_token",
-			label: "Cloudflare API Token",
-			def:   cfTokenDef,
-			note:  "API Token with Zone:DNS:Edit permission on the root zone.",
-			skip:  func(vals map[string]string) bool { return vals["provider"] != "cloudflare" },
+			Key:   "cf_token",
+			Label: "Cloudflare API Token",
+			Def:   cfTokenDef,
+			Note:  "API Token with Zone:DNS:Edit permission on the root zone.",
+			Skip:  func(vals map[string]string) bool { return vals["provider"] != "cloudflare" },
 		},
 		{
-			key:   "aliyun_access_key_id",
-			label: "Aliyun AccessKey ID",
-			def:   aliyunKeyDef,
-			skip:  func(vals map[string]string) bool { return vals["provider"] != "aliyun" },
+			Key:   "aliyun_access_key_id",
+			Label: "Aliyun AccessKey ID",
+			Def:   aliyunKeyDef,
+			Skip:  func(vals map[string]string) bool { return vals["provider"] != "aliyun" },
 		},
 		{
-			key:   "aliyun_access_key_secret",
-			label: "Aliyun AccessKey Secret",
-			def:   aliyunSecretDef,
-			skip:  func(vals map[string]string) bool { return vals["provider"] != "aliyun" },
+			Key:   "aliyun_access_key_secret",
+			Label: "Aliyun AccessKey Secret",
+			Def:   aliyunSecretDef,
+			Skip:  func(vals map[string]string) bool { return vals["provider"] != "aliyun" },
 		},
 	}
 }
 
 func (cm *certManager) startAddForm() {
-	cm.values = nil
+	cm.Values = nil
 	cm.selectedRoot = ""
-	cm.parameterForm.setFields(cm.addFields(nil))
-	cm.parameterForm.validate = validateCertField
+	cm.parameterForm.SetFields(cm.addFields(nil))
+	cm.parameterForm.Validate = validateCertField
 	cm.phase = certPhaseForm
-	if cm.parameterForm.advanceField() {
+	if cm.parameterForm.AdvanceField() {
 		cm.phase = certPhaseConfirm
 	}
 }
@@ -256,21 +257,21 @@ func (cm *certManager) startEditForm() {
 		cm.phase = certPhaseAction
 		return
 	}
-	cm.parameterForm.setFields(cm.addFields(&creds))
-	cm.parameterForm.values = map[string]string{
+	cm.parameterForm.SetFields(cm.addFields(&creds))
+	cm.parameterForm.Values = map[string]string{
 		"root_domain": creds.RootDomain,
 		"provider":    creds.Provider,
 	}
 	switch creds.Provider {
 	case "cloudflare":
-		cm.parameterForm.values["cf_token"] = creds.APIToken
+		cm.parameterForm.Values["cf_token"] = creds.APIToken
 	case "aliyun":
-		cm.parameterForm.values["aliyun_access_key_id"] = creds.APIToken
-		cm.parameterForm.values["aliyun_access_key_secret"] = creds.APISecret
+		cm.parameterForm.Values["aliyun_access_key_id"] = creds.APIToken
+		cm.parameterForm.Values["aliyun_access_key_secret"] = creds.APISecret
 	}
-	cm.parameterForm.validate = validateCertField
+	cm.parameterForm.Validate = validateCertField
 	cm.phase = certPhaseForm
-	if cm.parameterForm.advanceField() {
+	if cm.parameterForm.AdvanceField() {
 		cm.phase = certPhaseConfirm
 	}
 }
@@ -280,12 +281,12 @@ func (cm *certManager) startSelectForm() {
 	for _, c := range cm.creds {
 		opts = append(opts, fmt.Sprintf("%s (%s)", c.RootDomain, c.Provider))
 	}
-	cm.parameterForm.setFields([]field{
-		{key: "target_root", label: "Root domain", options: optionsRootOnly(cm.creds), note: "Pick the credential set to operate on."},
+	cm.parameterForm.SetFields([]field{
+		{Key: "target_root", Label: "Root domain", Options: optionsRootOnly(cm.creds), Note: "Pick the credential set to operate on."},
 	})
-	cm.parameterForm.validate = validateCertField
+	cm.parameterForm.Validate = validateCertField
 	cm.phase = certPhaseSelect
-	if cm.parameterForm.advanceField() {
+	if cm.parameterForm.AdvanceField() {
 		cm.phase = certPhaseConfirm
 	}
 }
@@ -299,32 +300,11 @@ func optionsRootOnly(creds []cluster.DNSCredentials) []string {
 }
 
 func validateCertField(f field, val string, vals map[string]string) error {
-	v := strings.TrimSpace(val)
-	switch f.key {
-	case "root_domain":
-		if v == "" {
-			return fmt.Errorf("root domain is required")
-		}
-	case "provider":
-		if v != "cloudflare" && v != "aliyun" {
-			return fmt.Errorf("pick cloudflare or aliyun")
-		}
-	case "cf_token":
-		if v == "" {
-			return fmt.Errorf("api token is required")
-		}
-	case "aliyun_access_key_id":
-		if v == "" {
-			return fmt.Errorf("accesskey id is required")
-		}
-	case "aliyun_access_key_secret":
-		if v == "" {
-			return fmt.Errorf("accesskey secret is required")
-		}
-	case "target_root":
-		if v == "" {
-			return fmt.Errorf("select a root domain")
-		}
+	if err := form.ValidateDNSCredentialField(f, val, vals); err != nil {
+		return err
+	}
+	if f.Key == "target_root" && strings.TrimSpace(val) == "" {
+		return fmt.Errorf("select a root domain")
 	}
 	return nil
 }
@@ -333,11 +313,11 @@ func (cm *certManager) apply() error {
 	store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
 	switch cm.action {
 	case certActionAdd:
-		creds := dnsCredentialsFromValues(cm.values)
+		creds := dnsCredentialsFromValues(cm.Values)
 		cm.doneMsg = fmt.Sprintf("Saved credentials for %s.", creds.RootDomain)
 		return store.Save(creds)
 	case certActionEdit:
-		creds := dnsCredentialsFromValues(cm.values)
+		creds := dnsCredentialsFromValues(cm.Values)
 		cm.doneMsg = fmt.Sprintf("Updated credentials for %s.", creds.RootDomain)
 		// Edit may rename root; remove the old entry first.
 		if creds.RootDomain != cm.selectedRoot {
@@ -400,18 +380,18 @@ func (cm *certManager) confirmView() string {
 	case certActionAdd:
 		rows = append(rows,
 			summaryRow("Action", "Add DNS credentials"),
-			summaryRow("Root domain", cm.values["root_domain"]),
-			summaryRow("Provider", cm.values["provider"]),
+			summaryRow("Root domain", cm.Values["root_domain"]),
+			summaryRow("Provider", cm.Values["provider"]),
 		)
-		rows = append(rows, providerCredRows(cm.values)...)
+		rows = append(rows, providerCredRows(cm.Values)...)
 	case certActionEdit:
 		rows = append(rows,
 			summaryRow("Action", "Update DNS credentials"),
 			summaryRow("Original root", cm.selectedRoot),
-			summaryRow("New root domain", cm.values["root_domain"]),
-			summaryRow("Provider", cm.values["provider"]),
+			summaryRow("New root domain", cm.Values["root_domain"]),
+			summaryRow("Provider", cm.Values["provider"]),
 		)
-		rows = append(rows, providerCredRows(cm.values)...)
+		rows = append(rows, providerCredRows(cm.Values)...)
 	case certActionDelete:
 		rows = append(rows,
 			summaryRow("Action", "Delete DNS credentials"),
@@ -451,7 +431,7 @@ func (cm *certManager) footerHints() []operationHint {
 	case certPhaseAction:
 		return actionFooterHints("Select")
 	case certPhaseForm, certPhaseSelect:
-		return cm.parameterForm.footerHints()
+		return cm.parameterForm.FooterHints()
 	case certPhaseConfirm:
 		return applyFooterHints("Apply")
 	case certPhaseDone:
