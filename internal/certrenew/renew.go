@@ -75,7 +75,7 @@ func (r Renewer) renewLocal(ctx context.Context) error {
 	creds, err := registry.DNS().FindForDomain(domain)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("no DNS credentials configured for %s; add them via the Certificate & site menu", domain)
+			return fmt.Errorf("no DNS credentials configured for %s; add them via the Certificate menu", domain)
 		}
 		return fmt.Errorf("find dns credentials: %w", err)
 	}

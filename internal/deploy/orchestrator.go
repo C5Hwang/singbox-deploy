@@ -212,7 +212,7 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	provider, creds, err := o.DNSLookup(cfg.Domain)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("no DNS credentials configured for %s; add them in the Certificate & site menu", cfg.Domain)
+			return fmt.Errorf("no DNS credentials configured for %s; add them via the Certificate menu", cfg.Domain)
 		}
 		return fmt.Errorf("find dns credentials for %s: %w", cfg.Domain, err)
 	}

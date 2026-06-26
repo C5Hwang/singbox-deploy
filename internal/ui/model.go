@@ -95,7 +95,7 @@ func defaultGroups() []MenuGroup {
 			{Label: "Subscription settings"},
 		}},
 		{Title: "Server", Items: []MenuItem{
-			{Label: "Certificate & site"},
+			{Label: "Certificate"},
 			{Label: "Monitor & quota"},
 			{Label: "Routing rules"},
 			{Label: "sing-box core"},

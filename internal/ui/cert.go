@@ -340,13 +340,13 @@ func (cm *certManager) apply() error {
 
 func (cm *certManager) View() string {
 	if cm.loadErr != nil {
-		return flowTitle.Render("Certificate & site") + "\n\n" + flowErr.Render(cm.loadErr.Error())
+		return flowTitle.Render("Certificate") + "\n\n" + flowErr.Render(cm.loadErr.Error())
 	}
 	switch cm.phase {
 	case certPhaseAction:
 		return cm.actionView()
 	case certPhaseForm, certPhaseSelect:
-		return cm.parameterForm.View("Certificate & site · DNS credentials")
+		return cm.parameterForm.View("Certificate · DNS credentials")
 	case certPhaseConfirm:
 		return cm.confirmView()
 	case certPhaseDone:
@@ -364,7 +364,7 @@ func (cm *certManager) actionView() string {
 		rows = append(rows, summaryIndentedRow(2, c.RootDomain, c.Provider))
 	}
 	var b strings.Builder
-	b.WriteString(flowTitle.Render("Certificate & site") + "\n\n")
+	b.WriteString(flowTitle.Render("Certificate") + "\n\n")
 	b.WriteString(renderSummary(rows) + "\n")
 	if cm.fieldErr != "" {
 		b.WriteString(flowErr.Render(cm.fieldErr) + "\n")
@@ -398,7 +398,7 @@ func (cm *certManager) confirmView() string {
 			summaryRow("Root domain", cm.selectedRoot),
 		)
 	}
-	return flowTitle.Render("Certificate & site · Confirm") + "\n\n" + renderSummary(rows)
+	return flowTitle.Render("Certificate · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 // providerCredRows returns the masked credential rows for the confirm view,

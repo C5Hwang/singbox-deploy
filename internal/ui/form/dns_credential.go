@@ -19,7 +19,7 @@ type DNSCredentialSaver interface {
 
 // DNSCredentialForm is the inline sub-form shown when an install or add-node
 // flow encounters a domain that is not yet in domain management. The user
-// fills the same four fields as the standalone "Certificate & site" add path;
+// fills the same four fields as the standalone "Certificate" add path;
 // on save the parent re-runs its DNS lookup to confirm the new entry covers
 // the install domain.
 type DNSCredentialForm struct {
