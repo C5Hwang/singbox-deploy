@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
@@ -495,9 +496,12 @@ func (nm *nodeManager) startRun() tea.Cmd {
 	logs := &logWriter{ch: ch}
 	layout := paths.DefaultLayout()
 	registry := cluster.NewRegistry(layout)
+	issuer := acme.NewLegoIssuer()
+	issuer.Output = logs
 	orch := &cluster.Orchestrator{
 		Registry: registry,
 		Runner:   system.NewExecRunner(logs),
+		ACME:     acme.NewManager(issuer),
 		Progress: func(e cluster.Event) {
 			ch <- runMsg{event: &deploy.Event{Index: e.Index, Total: e.Total, Label: e.Label, Detail: e.Detail, Status: e.Status, Err: e.Err}}
 		},
