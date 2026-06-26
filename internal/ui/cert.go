@@ -214,7 +214,7 @@ func (cm *certManager) addFields(existing *cluster.DNSCredentials) []field {
 		providerDef = "cloudflare"
 	}
 	return []field{
-		{Key: "root_domain", Label: "Root domain", Def: rootDef, Note: "Root zone where the DNS-01 TXT records will be written (e.g. example.com)."},
+		{Key: "root_domain", Label: "Root domain", Def: rootDef, Note: "The domain you manage on the DNS provider — the TXT records for the cert challenge get written here.\nUsually the bare root, e.g. example.com.\nA subdomain like sub.example.com also works, as long as it shows up as its own zone in your Cloudflare / Aliyun console."},
 		{Key: "provider", Label: "DNS provider", Def: providerDef, Options: []string{"cloudflare", "aliyun"}},
 		{
 			Key:   "cf_token",

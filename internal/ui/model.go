@@ -87,7 +87,7 @@ func NewModel() *Model {
 func defaultGroups() []MenuGroup {
 	return []MenuGroup{
 		{Title: "Setup", Items: []MenuItem{
-			{Label: "Install / Reinstall"},
+			{Label: "Installation"},
 			{Label: "Node Management"},
 		}},
 		{Title: "Proxy", Items: []MenuItem{

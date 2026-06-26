@@ -748,7 +748,7 @@ func (pm *protocolManager) actionView() string {
 
 func (pm *protocolManager) selectView() string {
 	var b strings.Builder
-	b.WriteString(flowTitle.Render("Protocol Management · Install / Remove") + "\n\n")
+	b.WriteString(flowTitle.Render("Protocol Management · Manage") + "\n\n")
 	b.WriteString(dimStyle.Render("Current: ") + protocolLabels(pm.cfg.Enabled) + "\n")
 	b.WriteString(dimStyle.Render("Target:  ") + protocolLabels(pm.targetProtocols()) + "\n")
 	if pm.FieldErr != "" {
@@ -921,8 +921,8 @@ func (pm *protocolManager) footerHints() []operationHint {
 
 func (pm *protocolManager) actions() []protocolActionItem {
 	actions := []protocolActionItem{
-		{action: protocolActionChange, label: "Install / remove protocols"},
-		{action: protocolActionEdit, label: "Edit protocol credentials / ports"},
+		{action: protocolActionChange, label: "Manage protocols"},
+		{action: protocolActionEdit, label: "Edit protocol settings"},
 	}
 	if needsRealityProtocol(pm.cfg.Enabled) {
 		actions = append(actions, protocolActionItem{action: protocolActionRealitySNI, label: "Edit Reality SNI"})

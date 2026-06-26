@@ -10,14 +10,14 @@ import (
 
 func SubscriptionInstallFields() []Field {
 	return []Field{
-		{Key: "display_name", Label: "Node display name", Def: deploy.DefaultDisplayName, Note: "Shown as the node name in client subscriptions."},
+		{Key: "display_name", Label: "Subscription alias", Def: deploy.DefaultDisplayName, Note: "Label shown on subscription entries exported to clients."},
 		{Key: "subscribe_port", Label: "Subscription/Nginx HTTPS port", Def: strconv.Itoa(deploy.DefaultSubscribePort), Note: "Nginx listens on this public HTTPS port for /s subscriptions and the masquerade site."},
 		{Key: "subscribe_salt", Label: "Subscription salt", Note: "Blank generates a random salt. The URL token is md5(salt + newline)."},
 	}
 }
 
 func SubscriptionDisplayNameField(cfg deploy.Config) Field {
-	return Field{Key: "display_name", Label: "Node display name", Def: cfg.DisplayName, Note: "Shown as the node name in client subscriptions."}
+	return Field{Key: "display_name", Label: "Subscription alias", Def: cfg.DisplayName, Note: "Label shown on subscription entries exported to clients."}
 }
 
 func SubscriptionLocalFields(cfg deploy.Config) []Field {

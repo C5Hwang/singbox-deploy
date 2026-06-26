@@ -957,7 +957,7 @@ func (w *installForm) summary(host system.Host) string {
 		summaryRow("Monitor", yesNoString(deployMonitor)),
 	}
 	rows = append(rows,
-		summaryRow("Operating system / architecture", host.OS.ID+" / "+host.Arch),
+		summaryRow("Platform", host.OS.ID+" / "+host.Arch),
 		summaryRow("Firewall", firewallName(host.Firewall)),
 	)
 	if deployMonitor {
