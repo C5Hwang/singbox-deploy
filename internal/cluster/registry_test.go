@@ -51,6 +51,7 @@ func TestRegistrySaveAndLoad(t *testing.T) {
 	want := Node{
 		ID:                     "007",
 		Alias:                  "Hong Kong",
+		SubscriptionAlias:      "HK-IPLC",
 		PublicIP:               "203.0.113.7",
 		Domain:                 "hk.example.com",
 		WGIP:                   "10.10.0.7",
@@ -162,6 +163,50 @@ func TestParseProtocols(t *testing.T) {
 	want := []config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2, config.ProtocolTUIC}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseProtocols = %v want %v", got, want)
+	}
+}
+
+func TestNodeDisplayNamePrecedence(t *testing.T) {
+	tests := []struct {
+		name             string
+		node             Node
+		wantSubscription string
+		wantMonitor      string
+	}{
+		{
+			name:             "alias only — both consumers fall back to it",
+			node:             Node{Alias: "Tokyo", Domain: "jp.example.com"},
+			wantSubscription: "Tokyo",
+			wantMonitor:      "Tokyo",
+		},
+		{
+			name:             "explicit overrides win over alias",
+			node:             Node{Alias: "Tokyo", SubscriptionAlias: "JP-Premium", MonitorAlias: "dash-jp", Domain: "jp.example.com"},
+			wantSubscription: "JP-Premium",
+			wantMonitor:      "dash-jp",
+		},
+		{
+			name:             "overrides are independent",
+			node:             Node{Alias: "Tokyo", SubscriptionAlias: "JP-Premium", Domain: "jp.example.com"},
+			wantSubscription: "JP-Premium",
+			wantMonitor:      "Tokyo",
+		},
+		{
+			name:             "no alias — domain is the final fallback",
+			node:             Node{Domain: "jp.example.com"},
+			wantSubscription: "jp.example.com",
+			wantMonitor:      "jp.example.com",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.node.SubscriptionDisplayName(); got != tt.wantSubscription {
+				t.Errorf("SubscriptionDisplayName = %q want %q", got, tt.wantSubscription)
+			}
+			if got := tt.node.MonitorDisplayName(); got != tt.wantMonitor {
+				t.Errorf("MonitorDisplayName = %q want %q", got, tt.wantMonitor)
+			}
+		})
 	}
 }
 

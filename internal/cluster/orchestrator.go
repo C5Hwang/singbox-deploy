@@ -55,6 +55,11 @@ type AddNodeRequest struct {
 	// the operator's choice for this node is the only switch.
 	MonitorEnabled bool
 
+	// SubscriptionAlias is the label subscription entries should carry for
+	// this node. Empty falls back to Alias (then Domain) — operators who don't
+	// type one keep the existing single-name behaviour.
+	SubscriptionAlias string
+
 	// MonitorAlias is the master-side display name for this node on the
 	// monitor dashboard. Empty falls back to Alias (then Domain) so existing
 	// callers — including tests — that omit it keep working.
@@ -191,6 +196,7 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 	node := Node{
 		ID:                     id,
 		Alias:                  strings.TrimSpace(req.Alias),
+		SubscriptionAlias:      strings.TrimSpace(req.SubscriptionAlias),
 		PublicIP:               strings.TrimSpace(req.PublicIP),
 		Domain:                 strings.TrimSpace(req.Domain),
 		WGIP:                   wgIP,

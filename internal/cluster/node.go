@@ -15,9 +15,19 @@ import (
 // Node captures everything the master knows about a remote node. It carries
 // enough information to (a) generate subscription entries pointing at the node
 // and (b) drive the node agent via the internal HTTP API.
+//
+// Three labels coexist so each consumer can be renamed independently:
+//   - Alias              — the primary/TUI label, required at add time
+//   - SubscriptionAlias  — what subscription entries display; falls back to Alias
+//   - MonitorAlias       — what the master monitor dashboard shows; falls back to Alias
+//
+// The two override fields are optional. Empty means "follow Alias dynamically" —
+// renaming the node later automatically retags subscriptions / dashboard rows
+// unless the operator has materialised a static override.
 type Node struct {
 	ID                   string // 3-digit zero-padded dir name, e.g. "001"
-	Alias                string // human label shown in TUI and subscription
+	Alias                string // label shown in the TUI; default for subscription / monitor when no override
+	SubscriptionAlias    string // override shown on subscription entries; empty falls back to Alias
 	PublicIP             string // public IP or hostname (for WireGuard endpoint, if applicable)
 	Domain               string // public TLS domain, used as subscription server address
 	WGIP                 string // assigned internal WireGuard IP
@@ -62,10 +72,13 @@ func (n Node) MonitorDisplayName() string {
 	return n.Domain
 }
 
-// SubscriptionDisplayName returns the alias shown on subscription entries.
-// Empty alias falls back to the domain so entries always carry a readable
-// label.
+// SubscriptionDisplayName returns the label subscription entries should carry
+// for this node — the explicit SubscriptionAlias when set, otherwise the
+// management Alias (Domain as final fallback so entries always have a label).
 func (n Node) SubscriptionDisplayName() string {
+	if v := strings.TrimSpace(n.SubscriptionAlias); v != "" {
+		return v
+	}
 	if n.Alias != "" {
 		return n.Alias
 	}

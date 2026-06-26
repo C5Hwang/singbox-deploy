@@ -79,6 +79,7 @@ func (r Registry) Load(id string) (Node, error) {
 	node := Node{
 		ID:                     id,
 		Alias:                  readString(root, "alias"),
+		SubscriptionAlias:      readString(root, "subscription_alias"),
 		PublicIP:               readString(root, "public_ip"),
 		Domain:                 readString(root, "domain"),
 		WGIP:                   readString(root, "wg_ip"),
@@ -128,6 +129,7 @@ func (r Registry) Save(node Node) error {
 	dir := r.nodeDir(node.ID)
 	values := map[string]string{
 		"alias":                     node.Alias,
+		"subscription_alias":        node.SubscriptionAlias,
 		"public_ip":                 node.PublicIP,
 		"domain":                    node.Domain,
 		"wg_ip":                     node.WGIP,

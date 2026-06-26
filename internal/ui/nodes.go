@@ -263,7 +263,8 @@ func (nm *nodeManager) addNodeFields() []field {
 		return !selected[string(config.ProtocolRealityVision)] && !selected[string(config.ProtocolRealityGRPC)]
 	}
 	fields := []field{
-		{Key: "alias", Label: "Node alias", Note: "Human label shown in subscriptions and the TUI (e.g. Tokyo, Singapore)."},
+		{Key: "alias", Label: "Node alias", Note: "Primary label shown in this TUI's node lists."},
+		{Key: "subscription_alias", Label: "Subscription alias", Note: "Label shown on subscription entries exported to clients. Leave blank to reuse the node alias."},
 		{Key: "public_ip", Label: "Node public IP or host", Note: "Where the node is reachable from the public internet for the initial SSH handshake."},
 		{Key: "ssh_port", Label: "SSH port", Def: "22"},
 		{Key: "ssh_user", Label: "SSH user", Def: "root"},
@@ -404,6 +405,10 @@ func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]st
 		// Optional for nodes — empty means reuse the node alias as the
 		// dashboard display name. Skip the install-side "required" check.
 		return nil
+	case "subscription_alias":
+		// Optional — empty means reuse the TUI alias on subscription entries
+		// (and dynamically follow later renames). No format constraint beyond
+		// the shared parameter validator below.
 	}
 	if err := uiparams.ValidateSharedParameterValue(f.Key, v); err != nil {
 		return err
@@ -560,8 +565,9 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 	}
 	monitorEnabled, monitorAlias, inLimit, outLimit, totalLimit, resetDay, resetHour, monitorInterval := nm.buildMonitorRequest(v)
 	return cluster.AddNodeRequest{
-		Alias:    strings.TrimSpace(v["alias"]),
-		PublicIP: strings.TrimSpace(v["public_ip"]),
+		Alias:             strings.TrimSpace(v["alias"]),
+		SubscriptionAlias: strings.TrimSpace(v["subscription_alias"]),
+		PublicIP:          strings.TrimSpace(v["public_ip"]),
 		SSHTarget: sshexec.Target{
 			Host: strings.TrimSpace(v["public_ip"]),
 			Port: sshPort,
@@ -773,8 +779,13 @@ func (nm *nodeManager) confirmView() string {
 	switch nm.action {
 	case nodeActionAdd:
 		protocols := protocolListFromCSV(nm.Values["protocols"])
+		subAlias := strings.TrimSpace(nm.Values["subscription_alias"])
+		if subAlias == "" {
+			subAlias = strings.TrimSpace(nm.Values["alias"]) + " (follows TUI alias)"
+		}
 		rows = append(rows,
-			summaryRow("Add node", nm.Values["alias"]),
+			summaryRow("Add node (TUI alias)", nm.Values["alias"]),
+			summaryRow("Subscription alias", subAlias),
 			summaryRow("SSH target", nm.Values["public_ip"]+":"+orDefault(nm.Values["ssh_port"], "22")),
 			summaryRow("Domain", nm.Values["domain"]),
 			summaryRow("Protocols", protocolLabels(protocols)),
