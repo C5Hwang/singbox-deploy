@@ -6,6 +6,8 @@
 package cluster
 
 import (
+	"strings"
+
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 )
@@ -29,6 +31,14 @@ type Node struct {
 
 	// Per-node monitor configuration. Quotas are enforced locally by the
 	// node's monitor; the master only configures them and aggregates samples.
+	// MonitorEnabled gates whether the node's monitor agent samples and
+	// reports at all — when false the master pushes Disabled=true on every
+	// reconfigure so the node tears its monitor service down. MonitorAlias is
+	// the master-side display name shown on the dashboard; it is independent
+	// of Alias (the management label) so operators can rename the dashboard
+	// entry without renaming the node.
+	MonitorEnabled         bool
+	MonitorAlias           string
 	MonitorInterface       string
 	MonitorIntervalSeconds int
 	TrafficInLimitBytes    uint64
@@ -36,6 +46,20 @@ type Node struct {
 	TrafficTotalLimitBytes uint64
 	ResetDay               int
 	ResetHour              int
+}
+
+// MonitorDisplayName returns the label the master's monitor dashboard should
+// use for this node — the explicit MonitorAlias when set, otherwise the
+// management Alias (and Domain as a final fallback so the entry is never
+// nameless).
+func (n Node) MonitorDisplayName() string {
+	if v := strings.TrimSpace(n.MonitorAlias); v != "" {
+		return v
+	}
+	if n.Alias != "" {
+		return n.Alias
+	}
+	return n.Domain
 }
 
 // SubscriptionDisplayName returns the alias shown on subscription entries.

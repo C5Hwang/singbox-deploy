@@ -96,6 +96,12 @@ func newMonitorManager() *monitorManager {
 	tm.host, tm.hostErr = detectMonitorHost()
 	tm.refreshServiceState()
 	tm.picker = newTargetPicker(monitorUILayout())
+	// The All target's "Edit monitor settings" predates per-node monitor
+	// config: it would broadcast the master form's defaults (alias / limits /
+	// reset / interval / MonitorEnabled flag) to every registered node and
+	// silently clobber per-node values. Each node's monitor must be edited via
+	// its own target so the form is seeded from that node's persisted values.
+	tm.picker.targets = filterOutAllTarget(tm.picker.targets)
 	if tm.picker.hasNodes() {
 		tm.phase = monitorPhaseTarget
 		tm.cursor = 0
@@ -346,7 +352,7 @@ func (tm *monitorManager) requiresLocalCheck() bool { return tm.picker.selected(
 
 func (tm *monitorManager) startForm(fields []field) {
 	tm.parameterForm.setFields(fields)
-	tm.parameterForm.validate = validateMonitorField
+	tm.parameterForm.validate = tm.validateMonitorField
 	tm.phase = monitorPhaseForm
 	if tm.parameterForm.advanceField() {
 		tm.phase = monitorPhaseConfirm
@@ -355,6 +361,37 @@ func (tm *monitorManager) startForm(fields []field) {
 
 func (tm *monitorManager) localFields() []field {
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
+	t := tm.picker.selected()
+	// For a node target, seed defaults from the node's persisted monitor
+	// values — using tm.cfg (the master's deploy.Config) would show the
+	// master's limits/alias/etc as the "current value" placeholder, which is
+	// at best confusing and at worst silently overwrites the node's actual
+	// settings if the operator hits enter without re-typing every field.
+	if t.isNode() {
+		// Surface the node alias as the placeholder when MonitorAlias was
+		// never set so the form's "leave blank to reuse the node alias" note
+		// is actually honored — the validator rejects a truly blank value, but
+		// hitting enter with this Def commits node.Alias verbatim and
+		// persistNodeMonitorUpdate's `req.Alias == updated.Alias` guard then
+		// keeps MonitorAlias empty so the dynamic MonitorDisplayName fallback
+		// keeps tracking future node-alias renames.
+		aliasDefault := t.node.MonitorAlias
+		if aliasDefault == "" {
+			aliasDefault = t.node.Alias
+		}
+		defaults := uiparams.NodeMonitorDefaults{
+			Enabled:                t.node.MonitorEnabled,
+			Alias:                  aliasDefault,
+			Interface:              t.node.MonitorInterface,
+			IntervalSeconds:        t.node.MonitorIntervalSeconds,
+			TrafficInLimitBytes:    t.node.TrafficInLimitBytes,
+			TrafficOutLimitBytes:   t.node.TrafficOutLimitBytes,
+			TrafficTotalLimitBytes: t.node.TrafficTotalLimitBytes,
+			ResetDay:               t.node.ResetDay,
+			ResetHour:              t.node.ResetHour,
+		}
+		return fieldsFromParameters(uiparams.MonitorNodeFields(defaults, monitorDisabled))
+	}
 	return fieldsFromParameters(uiparams.MonitorLocalFields(tm.cfg, monitorDisabled))
 }
 
@@ -362,7 +399,19 @@ func (tm *monitorManager) usageFields() []field {
 	return fieldsFromParameters(uiparams.MonitorUsageFields(tm.totals.InBytes, tm.totals.OutBytes))
 }
 
-func validateMonitorField(f field, val string, _ map[string]string) error {
+func (tm *monitorManager) validateMonitorField(f field, val string, _ map[string]string) error {
+	if tm.picker.selected().isNode() {
+		// monitor_alias is optional on nodes — blank means the dashboard
+		// follows node.Alias dynamically. monitor_interface is also optional;
+		// blank tells the agent to auto-detect and the rendered unit template
+		// already omits --interface when empty. The install-side validator
+		// requires both, which is correct for the master form but blocks the
+		// per-node edit form (Def is empty for a freshly added node).
+		switch f.key {
+		case "monitor_alias", "monitor_interface":
+			return nil
+		}
+	}
 	return uiparams.ValidateMonitorParameterValue(f.key, val)
 }
 
@@ -422,40 +471,81 @@ func (tm *monitorManager) startRun() tea.Cmd {
 
 func (tm *monitorManager) runAgentMonitorUpdate(ch chan runMsg, t target) {
 	req := tm.agentMonitorRequest()
-	nodes := []cluster.Node{t.node}
-	if t.isAll() {
-		nodes = agentNodes(tm.picker)
-		opts := tm.updateOptions()
-		opts.Layout = monitorUILayout()
-		opts.Runner = system.NewExecRunner(&logWriter{ch: ch})
-		opts.Firewall = tm.host.Firewall
-		opts.Progress = func(e monitor.ManageEvent) {
-			de := deploy.Event{Index: e.Index, Total: e.Total, Label: "Local " + e.Label, Detail: e.Detail, Status: e.Status, Err: e.Err}
-			ch <- runMsg{event: &de}
-		}
-		if _, err := updateMonitorRun(context.Background(), opts); err != nil {
-			ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Local monitor update", Detail: err.Error(), Status: "failed", Err: err}}
-		} else {
-			ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Local monitor update", Detail: "done", Status: "done"}}
+	tm.agentOutcomes = make([]agentOutcome, 0, 1)
+	registry := cluster.NewRegistry(monitorUILayout())
+	node := t.node
+	ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Update node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "running"}}
+	client := cluster.NewAgentClient(node)
+	err := client.UpdateMonitor(context.Background(), req)
+	tm.agentOutcomes = append(tm.agentOutcomes, agentOutcome{node: node, err: err})
+	if err != nil {
+		ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Update node", Detail: err.Error(), Status: "failed", Err: err}}
+		ch <- runMsg{done: true, err: err}
+		return
+	}
+	// Mirror the just-pushed values back into the registry so the next form
+	// load shows the current state instead of stale values. The agent push
+	// has already succeeded; a Save failure here means the master's registry
+	// and the node's running unit have drifted. Surface the persist error as
+	// the run's final err so the done view renders the failure UI instead of
+	// claiming success on a partial result.
+	var doneErr error
+	if saveErr := persistNodeMonitorUpdate(registry, node, req); saveErr != nil {
+		ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Persist node state", Detail: saveErr.Error(), Status: "failed", Err: saveErr}}
+		doneErr = saveErr
+	}
+	ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Update node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "done"}}
+	ch <- runMsg{done: true, err: doneErr}
+}
+
+// persistNodeMonitorUpdate writes the values the master just pushed to the
+// agent back into the per-node registry directory so subsequent reads (and
+// edit-form pre-fills) reflect the live state. For Disabled=true we flip the
+// node's MonitorEnabled flag to false; otherwise we copy every field the
+// node's monitor now runs with.
+func persistNodeMonitorUpdate(registry cluster.Registry, node cluster.Node, req cluster.MonitorUpdate) error {
+	updated, err := registry.Load(node.ID)
+	if err != nil {
+		return err
+	}
+	if req.Disabled {
+		updated.MonitorEnabled = false
+		return registry.Save(updated)
+	}
+	updated.MonitorEnabled = true
+	// Only overwrite Interface when the request carries one. Blank means the
+	// agent auto-detects (the unit template omits --interface), and the form's
+	// blank-allowed validator on a node target lets the operator hit enter on
+	// an empty field to skip the change — we keep the existing value rather
+	// than clobbering it with "".
+	if iface := strings.TrimSpace(req.Interface); iface != "" {
+		updated.MonitorInterface = iface
+	}
+	if req.SamplingInterval != "" {
+		if d, parseErr := time.ParseDuration(req.SamplingInterval); parseErr == nil {
+			updated.MonitorIntervalSeconds = int(d.Seconds())
 		}
 	}
-	var firstErr error
-	tm.agentOutcomes = make([]agentOutcome, 0, len(nodes))
-	for i, node := range nodes {
-		ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "running"}}
-		client := cluster.NewAgentClient(node)
-		err := client.UpdateMonitor(context.Background(), req)
-		tm.agentOutcomes = append(tm.agentOutcomes, agentOutcome{node: node, err: err})
-		if err != nil {
-			ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: err.Error(), Status: "failed", Err: err}}
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		ch <- runMsg{event: &deploy.Event{Index: i + 1, Total: len(nodes), Label: "Update node", Detail: node.Alias + " (" + node.WGIP + ")", Status: "done"}}
+	updated.TrafficInLimitBytes = req.InLimitBytes
+	updated.TrafficOutLimitBytes = req.OutLimitBytes
+	updated.TrafficTotalLimitBytes = req.TotalLimitBytes
+	if req.ResetDay > 0 {
+		updated.ResetDay = req.ResetDay
 	}
-	ch <- runMsg{done: true, err: firstErr}
+	updated.ResetHour = req.ResetHour
+	// Only overwrite MonitorAlias when the request carries one AND it differs
+	// from the management Alias. Default-accept on a fresh node (where the
+	// form Def is node.Alias and operator hits enter) commits node.Alias as
+	// the request value — skipping the write here keeps MonitorAlias empty so
+	// MonitorDisplayName keeps tracking future node renames. Operators who
+	// want a static label different from node.Alias type it and the guard
+	// fires. Edge cases (operator types value equal to node.Alias, or wants to
+	// clear a previously-set MonitorAlias) currently require editing the
+	// registry directly.
+	if alias := strings.TrimSpace(req.Alias); alias != "" && alias != updated.Alias {
+		updated.MonitorAlias = alias
+	}
+	return registry.Save(updated)
 }
 
 func (tm *monitorManager) agentMonitorRequest() cluster.MonitorUpdate {
@@ -468,14 +558,22 @@ func (tm *monitorManager) agentMonitorRequest() cluster.MonitorUpdate {
 	interval, _ := strconv.Atoi(strings.TrimSpace(tm.values["monitor_interval_seconds"]))
 	resetDay, _ := strconv.Atoi(strings.TrimSpace(tm.values["reset_day"]))
 	resetHour, _ := strconv.Atoi(strings.TrimSpace(tm.values["reset_hour"]))
+	// monitor_alias is required by validation and the form substitutes a
+	// non-empty Def when input is blank, so this is always non-empty for the
+	// non-Disabled path.
+	alias := strings.TrimSpace(tm.values["monitor_alias"])
 	return cluster.MonitorUpdate{
-		Interface:        strings.TrimSpace(tm.values["monitor_interface"]),
-		SamplingInterval: strconv.Itoa(interval),
+		Interface: strings.TrimSpace(tm.values["monitor_interface"]),
+		// The node parses SamplingInterval via time.ParseDuration, which
+		// requires a unit suffix — a bare "60" would silently zero on the
+		// other side. Use a Go duration string.
+		SamplingInterval: (time.Duration(interval) * time.Second).String(),
 		InLimitBytes:     inLimit,
 		OutLimitBytes:    outLimit,
 		TotalLimitBytes:  totalLimit,
 		ResetDay:         resetDay,
 		ResetHour:        resetHour,
+		Alias:            alias,
 	}
 }
 
@@ -603,8 +701,17 @@ func (tm *monitorManager) confirmView() string {
 		rows = append(rows,
 			summaryRow("Deploy monitor", tm.values["monitor"]),
 			summaryRow("Monitor alias", tm.values["monitor_alias"]),
-			summaryRow("Monitor UI port", tm.values["monitor_public_port"]),
-			summaryRow("Monitor local port", tm.values["monitor_port"]),
+		)
+		// Monitor UI / local ports are only collected on the master form —
+		// MonitorNodeFields drops them because each node reuses the agent's
+		// well-known port and has no public dashboard backend of its own.
+		if !t.isNode() {
+			rows = append(rows,
+				summaryRow("Monitor UI port", tm.values["monitor_public_port"]),
+				summaryRow("Monitor local port", tm.values["monitor_port"]),
+			)
+		}
+		rows = append(rows,
 			summaryRow("Monitor interface", tm.values["monitor_interface"]),
 			summaryRow("Sampling interval", tm.values["monitor_interval_seconds"]+" seconds"),
 			summaryRow("Inbound limit", tm.values["traffic_in_limit"]),
@@ -624,8 +731,6 @@ func (tm *monitorManager) confirmView() string {
 		rows = append(rows, summaryText("This will update monitor state and refresh /monitor data."))
 	case t.isNode():
 		rows = append(rows, summaryText("This will send the new monitor configuration to "+t.node.Alias+" and restart its monitor service."))
-	case t.isAll():
-		rows = append(rows, summaryText("This will update the master monitor and broadcast the configuration to every registered node."))
 	}
 	return flowTitle.Render("Monitor · Confirm") + "\n\n" + renderSummary(rows)
 }

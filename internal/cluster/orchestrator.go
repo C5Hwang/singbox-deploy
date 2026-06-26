@@ -48,10 +48,28 @@ type AddNodeRequest struct {
 	// node uses as its WireGuard Endpoint.
 	MasterPublicEndpoint string
 
-	// DeployMonitor mirrors the master's monitor flag. When false the node
-	// install skips downloading singbox-monitor and the node never runs the
-	// monitor service. Toggling the master to on later requires a re-install.
-	DeployMonitor bool
+	// MonitorEnabled is the single per-node monitor toggle. When true the
+	// orchestrator ships singbox-monitor, installs the unit, and pushes the
+	// initial config; when false it does none of those and the node never
+	// runs a monitor service. There is no separate "DeployMonitor" gate —
+	// the operator's choice for this node is the only switch.
+	MonitorEnabled bool
+
+	// MonitorAlias is the master-side display name for this node on the
+	// monitor dashboard. Empty falls back to Alias (then Domain) so existing
+	// callers — including tests — that omit it keep working.
+	MonitorAlias string
+
+	// Per-node quota and sampling knobs, mirroring the install flow's monitor
+	// section so the dashboard reports a meaningful figure per node. Zero
+	// limits mean "unlimited" (same as the install convention). Defaults come
+	// from internal/deploy when fields are left at their zero value.
+	MonitorIntervalSeconds int
+	TrafficInLimitBytes    uint64
+	TrafficOutLimitBytes   uint64
+	TrafficTotalLimitBytes uint64
+	ResetDay               int
+	ResetHour              int
 
 	// CredentialOverrides lets the caller supply explicit UUID/password values
 	// for individual protocols; non-empty fields replace the auto-generated
@@ -158,6 +176,18 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 	}
 	creds.ApplyOverrides(req.CredentialOverrides)
 
+	monitorInterval := req.MonitorIntervalSeconds
+	if monitorInterval <= 0 {
+		monitorInterval = deploy.DefaultMonitorIntervalSeconds
+	}
+	resetDay := req.ResetDay
+	if resetDay < 1 || resetDay > 28 {
+		resetDay = deploy.DefaultResetDay
+	}
+	resetHour := req.ResetHour
+	if resetHour < 0 || resetHour > 23 {
+		resetHour = deploy.DefaultResetHour
+	}
 	node := Node{
 		ID:                     id,
 		Alias:                  strings.TrimSpace(req.Alias),
@@ -170,10 +200,15 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 		Ports:                  req.Ports,
 		RealityServerName:      req.RealityServerName,
 		RealityHandshakePort:   config.DefaultRealityHandshakePort,
+		MonitorEnabled:         req.MonitorEnabled,
+		MonitorAlias:           strings.TrimSpace(req.MonitorAlias),
 		MonitorInterface:       "",
-		MonitorIntervalSeconds: deploy.DefaultMonitorIntervalSeconds,
-		ResetDay:               deploy.DefaultResetDay,
-		ResetHour:              deploy.DefaultResetHour,
+		MonitorIntervalSeconds: monitorInterval,
+		TrafficInLimitBytes:    req.TrafficInLimitBytes,
+		TrafficOutLimitBytes:   req.TrafficOutLimitBytes,
+		TrafficTotalLimitBytes: req.TrafficTotalLimitBytes,
+		ResetDay:               resetDay,
+		ResetHour:              resetHour,
 		Creds:                  creds,
 	}
 
@@ -213,8 +248,8 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 		{"Preflight", "install base packages (curl, ca-certificates, tar, WireGuard) on the node", func(ctx context.Context) error {
 			return installNodeBasePackages(ctx, client)
 		}},
-		{"Binaries", binariesStepDetail(req.DeployMonitor), func(ctx context.Context) error {
-			return downloadAgentBinaries(ctx, client, req.Version, req.DeployMonitor)
+		{"Binaries", binariesStepDetail(req.MonitorEnabled), func(ctx context.Context) error {
+			return downloadAgentBinaries(ctx, client, req.Version, req.MonitorEnabled)
 		}},
 		{"sing-box core", "download sing-box core on the node", func(ctx context.Context) error {
 			return downloadSingBoxCore(ctx, client, req.CoreVersion)
@@ -222,6 +257,14 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 		{"sing-box unit", "install sing-box systemd unit (started later)", func(ctx context.Context) error {
 			return installSingBoxUnit(ctx, client)
 		}},
+	}
+	// SSH-side monitor unit installation no longer needed — the node agent
+	// renders /etc/systemd/system/singbox-deploy-monitor.service from scratch
+	// every time it receives an UpdateMonitor call, so values like
+	// limits/reset/interval/alias actually round-trip through ExecStart
+	// instead of staying baked at install time. pushInitialMonitor below
+	// triggers the first render.
+	steps = append(steps, []addStep{
 		{"Firewall", "open protocol ports on the node", func(ctx context.Context) error {
 			return openNodeFirewall(ctx, client, node.Ports, node.EnabledProtocols)
 		}},
@@ -261,7 +304,7 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 		{"Register node", "save node to state/nodes/", func(ctx context.Context) error {
 			return o.Registry.Save(node)
 		}},
-	}
+	}...)
 	if o.PostRegister != nil {
 		steps = append(steps, addStep{"Post-register", "run caller-provided post-registration hook", func(ctx context.Context) error {
 			return o.PostRegister(ctx, node)
@@ -278,6 +321,13 @@ func (o *Orchestrator) AddNode(ctx context.Context, req AddNodeRequest) (Node, e
 				return o.pushInitialConfig(ctx, node)
 			}},
 		)
+		if req.MonitorEnabled {
+			steps = append(steps, addStep{
+				"Initial monitor",
+				"push initial monitor config (renders unit on the node, then starts monitor service)",
+				func(ctx context.Context) error { return o.pushInitialMonitor(ctx, node) },
+			})
+		}
 	}
 
 	for i, s := range steps {
@@ -533,7 +583,7 @@ func binariesStepDetail(includeMonitor bool) string {
 	if includeMonitor {
 		return "download singbox-node and singbox-monitor"
 	}
-	return "download singbox-node (monitor disabled on master)"
+	return "download singbox-node (monitor disabled for this node)"
 }
 
 func detectArch(ctx context.Context, client sshClient) (string, error) {

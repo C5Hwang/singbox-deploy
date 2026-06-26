@@ -126,3 +126,17 @@ func agentNodes(tp targetPicker) []cluster.Node {
 	}
 	return out
 }
+
+// filterOutAllTarget returns targets with the All entry stripped. Managers that
+// can't safely broadcast (e.g. monitor edit, which would clobber per-node
+// settings) use this to hide All from the picker.
+func filterOutAllTarget(targets []target) []target {
+	out := make([]target, 0, len(targets))
+	for _, t := range targets {
+		if t.kind == targetKindAll {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}

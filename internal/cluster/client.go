@@ -52,7 +52,10 @@ type ConfigUpdate struct {
 // MonitorUpdate is the payload accepted by POST /api/monitor/config. When
 // Disabled is true the node tears down singbox-deploy-monitor (stops/disables
 // the unit, removes the unit file and binary) and the other fields are
-// ignored.
+// ignored. Otherwise the node renders /etc/systemd/system/singbox-deploy-monitor.service
+// from these values, daemon-reloads, enables the unit, and restarts it — so
+// limits/reset/interval/alias actually take effect on the running process
+// instead of staying baked at install time.
 type MonitorUpdate struct {
 	Disabled         bool   `json:"disabled,omitempty"`
 	Interface        string `json:"interface"`
@@ -62,6 +65,9 @@ type MonitorUpdate struct {
 	TotalLimitBytes  uint64 `json:"totalLimitBytes"`
 	ResetDay         int    `json:"resetDay"`
 	ResetHour        int    `json:"resetHour"`
+	// Alias is the source name baked into the rendered unit's `--alias`
+	// flag. Empty means the node falls back to its own hostname/default.
+	Alias string `json:"alias,omitempty"`
 }
 
 // UpgradeRequest is the payload accepted by POST /api/upgrade.

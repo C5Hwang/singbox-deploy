@@ -276,7 +276,44 @@ func (nm *nodeManager) addNodeFields() []field {
 	fields = append(fields,
 		field{key: "master_host", label: "Master public IP or domain", note: "Where the node reaches the master over WireGuard (e.g. master.example.com or 198.51.100.1)."},
 	)
+	fields = append(fields, nm.addNodeMonitorFields()...)
 	return fields
+}
+
+// addNodeMonitorFields returns the per-node monitor configuration knobs that
+// mirror the install flow (quota / reset cycle / sampling interval / display
+// name). The master-only monitor_public_port and monitor_port fields are
+// dropped — the node has no public dashboard and the agent listens on the
+// well-known cluster.APIPort. The monitor toggle is now always offered: a
+// node can run its own monitor regardless of whether the master deployed one
+// (the per-node MonitorEnabled is the sole gate).
+func (nm *nodeManager) addNodeMonitorFields() []field {
+	monitorDisabled := func(v map[string]string) bool { return v["monitor"] == "no" }
+	out := make([]field, 0, 8)
+	for _, f := range uiparams.MonitorInstallFields(monitorDisabled) {
+		switch f.Key {
+		case "monitor_public_port", "monitor_port":
+			// Per-node monitor reuses the agent's well-known port; nothing
+			// listens on a separate dashboard backend on the node side.
+			continue
+		case "monitor":
+			// Per-node monitor toggle. Choosing 'no' lets the agent skip the
+			// initial monitor unit at install time (or tear it down on a
+			// subsequent edit) — and the agent's ensureMonitorBinary handles
+			// re-shipping singbox-monitor from the agent's release tag when
+			// the operator later flips this back to 'yes' via the monitor TUI,
+			// so re-adding the node is no longer required.
+			f.Note = "Choose no to skip this node's monitor — the agent tears its monitor service down and deletes the binary. Re-enable later by setting monitor=yes in the per-node Edit form."
+		case "monitor_alias":
+			// Per-node alias has no sensible static default — leaving it
+			// blank means Node.MonitorDisplayName falls back to node.Alias
+			// at read time (live, picks up later renames).
+			f.Def = ""
+			f.Note = "Master dashboard display name for this node. Leave blank to reuse the node alias."
+		}
+		out = append(out, fieldFromParameter(f))
+	}
+	return out
 }
 
 func (nm *nodeManager) deleteSelectFields() []field {
@@ -362,8 +399,15 @@ func (nm *nodeManager) validateNodeField(f field, val string, vals map[string]st
 		if v == "" {
 			return fmt.Errorf("select a node to delete")
 		}
+	case "monitor_alias":
+		// Optional for nodes — empty means reuse the node alias as the
+		// dashboard display name. Skip the install-side "required" check.
+		return nil
 	}
-	return uiparams.ValidateSharedParameterValue(f.key, v)
+	if err := uiparams.ValidateSharedParameterValue(f.key, v); err != nil {
+		return err
+	}
+	return uiparams.ValidateMonitorParameterValue(f.key, v)
 }
 
 func (nm *nodeManager) canApply() bool {
@@ -503,10 +547,6 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 	if coreVersion == "" {
 		return cluster.AddNodeRequest{}, fmt.Errorf("could not detect master sing-box core version; install sing-box on the master before adding nodes")
 	}
-	masterCfg, err := deploy.LoadProtocolConfig(paths.DefaultLayout())
-	if err != nil {
-		return cluster.AddNodeRequest{}, fmt.Errorf("load master config: %w", err)
-	}
 	realityServerName := ""
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
 		realityServerName, err = uiparams.NormalizeRealityServerName(v["reality_sni"])
@@ -514,6 +554,7 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 			return cluster.AddNodeRequest{}, fmt.Errorf("reality SNI: %w", err)
 		}
 	}
+	monitorEnabled, monitorAlias, inLimit, outLimit, totalLimit, resetDay, resetHour, monitorInterval := nm.buildMonitorRequest(v)
 	return cluster.AddNodeRequest{
 		Alias:    strings.TrimSpace(v["alias"]),
 		PublicIP: strings.TrimSpace(v["public_ip"]),
@@ -525,14 +566,21 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 			User:     strings.TrimSpace(v["ssh_user"]),
 			Password: v["ssh_password"],
 		},
-		Domain:               strings.TrimSpace(v["domain"]),
-		EnabledProtocols:     protocols,
-		Ports:                ports,
-		RealityServerName:    realityServerName,
-		MasterPublicEndpoint: fmt.Sprintf("%s:%d", strings.TrimSpace(v["master_host"]), wireguard.DefaultListenPort),
-		DeployMonitor:        masterCfg.DeployMonitor,
-		Version:              toolVersion,
-		CoreVersion:          coreVersion,
+		Domain:                 strings.TrimSpace(v["domain"]),
+		EnabledProtocols:       protocols,
+		Ports:                  ports,
+		RealityServerName:      realityServerName,
+		MasterPublicEndpoint:   fmt.Sprintf("%s:%d", strings.TrimSpace(v["master_host"]), wireguard.DefaultListenPort),
+		MonitorEnabled:         monitorEnabled,
+		MonitorAlias:           monitorAlias,
+		MonitorIntervalSeconds: monitorInterval,
+		TrafficInLimitBytes:    inLimit,
+		TrafficOutLimitBytes:   outLimit,
+		TrafficTotalLimitBytes: totalLimit,
+		ResetDay:               resetDay,
+		ResetHour:              resetHour,
+		Version:                toolVersion,
+		CoreVersion:            coreVersion,
 		CredentialOverrides: deploy.Credentials{
 			RealityVisionUUID: strings.TrimSpace(v["reality_vision_uuid"]),
 			RealityGRPCUUID:   strings.TrimSpace(v["reality_grpc_uuid"]),
@@ -542,6 +590,40 @@ func (nm *nodeManager) buildAddRequest() (cluster.AddNodeRequest, error) {
 			AnyTLSPassword:    strings.TrimSpace(v["anytls_password"]),
 		},
 	}, nil
+}
+
+// buildMonitorRequest resolves the per-node monitor knobs to send with the
+// AddNodeRequest. Inputs come from the form values; absent or out-of-range
+// inputs collapse to deploy package defaults so the orchestrator's Node
+// initializer doesn't need to second-guess. When the user disabled monitor
+// for this node, traffic/reset/interval are zeroed — matching
+// install_flow.go's buildConfig behavior.
+func (nm *nodeManager) buildMonitorRequest(vals map[string]string) (enabled bool, alias string, inLimit, outLimit, totalLimit uint64, resetDay, resetHour, interval int) {
+	enabled = vals["monitor"] != "no"
+	// Leave alias blank when the operator did so; Node.MonitorDisplayName
+	// resolves to node.Alias dynamically (and tracks subsequent renames) —
+	// materializing here would freeze the dashboard label to whatever the
+	// management alias happened to be at add time.
+	alias = strings.TrimSpace(vals["monitor_alias"])
+	if !enabled {
+		return enabled, alias, 0, 0, 0, deploy.DefaultResetDay, deploy.DefaultResetHour, deploy.DefaultMonitorIntervalSeconds
+	}
+	inLimit, _ = uiparams.ParseTrafficSize(vals["traffic_in_limit"])
+	outLimit, _ = uiparams.ParseTrafficSize(vals["traffic_out_limit"])
+	totalLimit, _ = uiparams.ParseTrafficSize(vals["traffic_total_limit"])
+	resetDay, _ = strconv.Atoi(vals["reset_day"])
+	if resetDay < 1 || resetDay > 28 {
+		resetDay = deploy.DefaultResetDay
+	}
+	resetHour, _ = strconv.Atoi(vals["reset_hour"])
+	if resetHour < 0 || resetHour > 23 {
+		resetHour = deploy.DefaultResetHour
+	}
+	interval, _ = strconv.Atoi(vals["monitor_interval_seconds"])
+	if interval < 10 {
+		interval = deploy.DefaultMonitorIntervalSeconds
+	}
+	return enabled, alias, inLimit, outLimit, totalLimit, resetDay, resetHour, interval
 }
 
 // parseSingBoxCoreVersion extracts the bare version number (e.g. "1.12.0") from
@@ -699,6 +781,7 @@ func (nm *nodeManager) confirmView() string {
 		if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
 			rows = append(rows, summaryRow("Reality URL/SNI", nm.values["reality_sni"]))
 		}
+		rows = append(rows, nm.monitorSummaryRows()...)
 		if len(protocols) > 0 {
 			rows = append(rows, summaryText("Protocol parameters:"))
 			for _, p := range protocols {
@@ -712,6 +795,34 @@ func (nm *nodeManager) confirmView() string {
 		)
 	}
 	return flowTitle.Render("Node Management · Confirm") + "\n\n" + renderSummary(rows)
+}
+
+// monitorSummaryRows renders the per-node monitor section for the confirm
+// view. Empty when the cluster monitor is off — addNodeMonitorFields skipped
+// the form section, so the values map has no monitor entries to show. When
+// the user disabled monitor on this node, only the toggle row is shown.
+func (nm *nodeManager) monitorSummaryRows() []summaryLine {
+	toggle, ok := nm.values["monitor"]
+	if !ok || toggle == "" {
+		return nil
+	}
+	rows := []summaryLine{summaryRow("Monitor", toggle)}
+	if toggle == "no" {
+		return rows
+	}
+	alias := strings.TrimSpace(nm.values["monitor_alias"])
+	if alias == "" {
+		alias = strings.TrimSpace(nm.values["alias"])
+	}
+	rows = append(rows,
+		summaryRow("Monitor alias", alias),
+		summaryRow("Sampling interval", orDefault(nm.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
+		summaryRow("Inbound traffic limit", trafficLimitSummary(nm.values["traffic_in_limit"])),
+		summaryRow("Outbound traffic limit", trafficLimitSummary(nm.values["traffic_out_limit"])),
+		summaryRow("Total traffic limit", trafficLimitSummary(nm.values["traffic_total_limit"])),
+		summaryRow("Next reset", nextResetFromValues(nm.values["reset_day"], nm.values["reset_hour"])),
+	)
+	return rows
 }
 
 // protocolParamRows renders the indented credential/port summary lines for one

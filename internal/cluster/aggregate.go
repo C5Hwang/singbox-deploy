@@ -102,7 +102,7 @@ func fetchNodeSummary(ctx context.Context, node Node) (monitor.SourceSummary, er
 		sampledAt = payload.Sources[0].SampledAt
 	}
 	return monitor.SourceSummary{
-		Name:                subscription.AddNodePrefixFlag(node.SubscriptionDisplayName()),
+		Name:                subscription.AddNodePrefixFlag(node.MonitorDisplayName()),
 		FetchedAt:           time.Now().UTC().Format(time.RFC3339),
 		SampledAt:           sampledAt,
 		MonitorURL:          node.MonitorAPIURL(),

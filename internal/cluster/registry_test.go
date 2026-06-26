@@ -60,6 +60,8 @@ func TestRegistrySaveAndLoad(t *testing.T) {
 		Ports:                  config.Ports{RealityVision: 443, Hysteria2: 34567},
 		RealityServerName:      "www.microsoft.com",
 		RealityHandshakePort:   443,
+		MonitorEnabled:         true,
+		MonitorAlias:           "HK dashboard",
 		MonitorInterface:       "eth0",
 		MonitorIntervalSeconds: 60,
 		TrafficInLimitBytes:    100 << 30,

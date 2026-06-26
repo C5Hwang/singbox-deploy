@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
@@ -171,6 +172,32 @@ func (o *Orchestrator) pushInitialConfig(ctx context.Context, node Node) error {
 		Credentials:          credentialsMap(node.Creds),
 		RealityServerName:    node.RealityServerName,
 		RealityHandshakePort: node.RealityHandshakePort,
+	})
+}
+
+// pushInitialMonitor seeds the per-node monitor with quotas + reset cycle +
+// sampling interval entered during add-node. The interval is reformatted as a
+// Go duration string so the agent decodes it the same way the manage TUI
+// does. When MonitorEnabled is false the agent tears the monitor down via
+// the Disabled flag — limits don't ship because they would just be ignored.
+func (o *Orchestrator) pushInitialMonitor(ctx context.Context, node Node) error {
+	agent := NewAgentClient(node)
+	if !node.MonitorEnabled {
+		return agent.UpdateMonitor(ctx, MonitorUpdate{Disabled: true})
+	}
+	interval := node.MonitorIntervalSeconds
+	if interval <= 0 {
+		interval = 60
+	}
+	return agent.UpdateMonitor(ctx, MonitorUpdate{
+		Interface:        node.MonitorInterface,
+		SamplingInterval: (time.Duration(interval) * time.Second).String(),
+		InLimitBytes:     node.TrafficInLimitBytes,
+		OutLimitBytes:    node.TrafficOutLimitBytes,
+		TotalLimitBytes:  node.TrafficTotalLimitBytes,
+		ResetDay:         node.ResetDay,
+		ResetHour:        node.ResetHour,
+		Alias:            node.MonitorDisplayName(),
 	})
 }
 

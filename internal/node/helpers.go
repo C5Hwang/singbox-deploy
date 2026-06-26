@@ -59,24 +59,53 @@ func defaultUpgrader(ctx context.Context, s *Server, req cluster.UpgradeRequest)
 }
 
 func upgradeNodeBinaries(ctx context.Context, version string) error {
-	const repo = "C5Hwang/singbox-deploy"
-	arch := goArch()
 	for _, name := range []string{"singbox-node", "singbox-monitor"} {
-		asset := fmt.Sprintf("%s-linux-%s", name, arch)
-		url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, version, asset)
-		dest := filepath.Join("/usr/bin", name)
-		tmp := dest + ".new"
-		if err := release.DownloadTo(ctx, nil, url, tmp); err != nil {
-			return fmt.Errorf("download %s: %w", name, err)
-		}
-		if err := os.Chmod(tmp, 0o755); err != nil {
-			return fmt.Errorf("chmod %s: %w", tmp, err)
-		}
-		if err := os.Rename(tmp, dest); err != nil {
-			return fmt.Errorf("replace %s: %w", dest, err)
+		if err := downloadAgentBinary(ctx, version, name); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// downloadAgentBinary fetches the given release asset (singbox-node or
+// singbox-monitor) for the agent's architecture and atomically replaces the
+// binary under /usr/bin.
+func downloadAgentBinary(ctx context.Context, version, name string) error {
+	const repo = "C5Hwang/singbox-deploy"
+	asset := fmt.Sprintf("%s-linux-%s", name, goArch())
+	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, version, asset)
+	dest := filepath.Join("/usr/bin", name)
+	tmp := dest + ".new"
+	if err := release.DownloadTo(ctx, nil, url, tmp); err != nil {
+		return fmt.Errorf("download %s: %w", name, err)
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		return fmt.Errorf("chmod %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		return fmt.Errorf("replace %s: %w", dest, err)
+	}
+	return nil
+}
+
+// ensureMonitorBinary makes sure /usr/bin/singbox-monitor exists before the
+// monitor unit is (re-)rendered. When add-node sets MonitorEnabled=false (or a
+// later TUI edit tears down monitor with Disabled=true), the SSH install path
+// skips shipping the binary / the teardown deletes it. A subsequent
+// UpdateMonitor that flips the unit back on would otherwise daemon-reload an
+// ExecStart pointing at a missing binary and silently fail to restart. Fetches
+// from the same GitHub release tag the agent itself was installed with so the
+// re-shipped binary matches the rest of the install.
+func ensureMonitorBinary(ctx context.Context, version string) error {
+	if _, err := os.Stat("/usr/bin/singbox-monitor"); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat singbox-monitor: %w", err)
+	}
+	if v := strings.TrimSpace(version); v == "" || v == "dev" {
+		return fmt.Errorf("singbox-monitor missing and agent has no release version (%q) to fetch it from", version)
+	}
+	return downloadAgentBinary(ctx, version, "singbox-monitor")
 }
 
 func upgradeSingBoxCore(ctx context.Context, layout paths.Layout, coreVersion string) error {
@@ -251,5 +280,39 @@ func writeMonitorState(layout paths.Layout, req cluster.MonitorUpdate) error {
 		cfg.ResetDay = req.ResetDay
 	}
 	cfg.ResetHour = req.ResetHour
+	if strings.TrimSpace(req.Alias) != "" {
+		cfg.MonitorAlias = req.Alias
+	}
 	return deploy.WriteInstallState(layout.StateDir, cfg)
+}
+
+// writeNodeMonitorUnit renders /etc/systemd/system/singbox-deploy-monitor.service
+// from the master-supplied MonitorUpdate values, binding the listen address
+// to the agent's own WireGuard IP on the well-known monitor port so the
+// master can pull aggregated samples over the internal subnet. Called by
+// handleMonitorConfig on every non-disable update so the unit's ExecStart
+// always reflects the latest limits/reset/interval/alias.
+func writeNodeMonitorUnit(layout paths.Layout, wgIP string, req cluster.MonitorUpdate) error {
+	intervalSeconds := 0
+	if req.SamplingInterval != "" {
+		if d, err := time.ParseDuration(req.SamplingInterval); err == nil {
+			intervalSeconds = int(d.Seconds())
+		}
+	}
+	cfg := deploy.Config{
+		TrafficInLimitBytes:    req.InLimitBytes,
+		TrafficOutLimitBytes:   req.OutLimitBytes,
+		TrafficTotalLimitBytes: req.TotalLimitBytes,
+		ResetDay:               req.ResetDay,
+		ResetHour:              req.ResetHour,
+		MonitorAlias:           req.Alias,
+		MonitorInterface:       req.Interface,
+		MonitorIntervalSeconds: intervalSeconds,
+	}
+	listen := fmt.Sprintf("%s:%d", wgIP, deploy.DefaultMonitorPort)
+	unit, err := deploy.RenderMonitorUnitWithListen(layout, "/usr/bin/singbox-monitor", cfg, listen)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join("/etc/systemd/system", system.MonitorService), []byte(unit), 0o644)
 }

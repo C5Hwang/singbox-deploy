@@ -86,6 +86,8 @@ func (r Registry) Load(id string) (Node, error) {
 		APIToken:               readString(root, "api_token"),
 		RealityServerName:      readString(root, "reality_server_name"),
 		RealityHandshakePort:   readInt(root, "reality_handshake_port", config.DefaultRealityHandshakePort),
+		MonitorEnabled:         readBool(root, "monitor_enabled", true),
+		MonitorAlias:           readString(root, "monitor_alias"),
 		MonitorInterface:       readString(root, "monitor_interface"),
 		MonitorIntervalSeconds: readInt(root, "monitor_interval_seconds", deploy.DefaultMonitorIntervalSeconds),
 		TrafficInLimitBytes:    readUint(root, "traffic_in_limit_bytes"),
@@ -148,6 +150,8 @@ func (r Registry) Save(node Node) error {
 		"hysteria2_port":            strconv.Itoa(node.Ports.Hysteria2),
 		"tuic_port":                 strconv.Itoa(node.Ports.TUIC),
 		"anytls_port":               strconv.Itoa(node.Ports.AnyTLS),
+		"monitor_enabled":           strconv.FormatBool(node.MonitorEnabled),
+		"monitor_alias":             node.MonitorAlias,
 		"monitor_interface":         node.MonitorInterface,
 		"monitor_interval_seconds":  strconv.Itoa(node.MonitorIntervalSeconds),
 		"traffic_in_limit_bytes":    strconv.FormatUint(node.TrafficInLimitBytes, 10),
@@ -238,6 +242,18 @@ func readInt(root, name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func readBool(root, name string, fallback bool) bool {
+	value := readString(root, name)
+	if value == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return b
 }
 
 func readUint(root, name string) uint64 {

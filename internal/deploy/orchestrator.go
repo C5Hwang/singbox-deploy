@@ -348,13 +348,21 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 // RenderMonitorUnit renders the systemd unit file for the monitor service.
 // monitorBin is the path to the singbox-monitor binary that the unit invokes.
 func RenderMonitorUnit(layout paths.Layout, monitorBin string, cfg Config) (string, error) {
+	return RenderMonitorUnitWithListen(layout, monitorBin, cfg, fmt.Sprintf("127.0.0.1:%d", cfg.MonitorPort))
+}
+
+// RenderMonitorUnitWithListen mirrors RenderMonitorUnit but takes an explicit
+// listen address. Nodes need this so the unit binds to the WireGuard IP on
+// the well-known monitor port (the master polls them via that endpoint to
+// aggregate samples); the master itself stays on 127.0.0.1 behind Nginx.
+func RenderMonitorUnitWithListen(layout paths.Layout, monitorBin string, cfg Config, listen string) (string, error) {
 	interval := cfg.MonitorIntervalSeconds
 	if interval <= 0 {
 		interval = DefaultMonitorIntervalSeconds
 	}
 	return templatefs.Render("service/singbox-deploy-monitor.service.tmpl", map[string]any{
 		"MonitorBin":      monitorBin,
-		"Listen":          fmt.Sprintf("127.0.0.1:%d", cfg.MonitorPort),
+		"Listen":          listen,
 		"Interface":       cfg.MonitorInterface,
 		"DB":              layout.MonitorDB,
 		"InLimitBytes":    cfg.TrafficInLimitBytes,

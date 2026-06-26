@@ -93,9 +93,12 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleMonitorConfig accepts a new quota/sampling configuration and restarts
-// the monitor service to pick it up. When req.Disabled is true the monitor
-// unit and binary are torn down instead.
+// handleMonitorConfig accepts a new quota/sampling configuration, re-renders
+// the systemd unit from scratch so the new values land in ExecStart, then
+// daemon-reloads/enables/restarts the monitor service. Without the re-render,
+// limits/reset/interval/alias would stay frozen at install time and any
+// subsequent UpdateMonitor would only restart the same stale ExecStart. When
+// req.Disabled is true the monitor unit and binary are torn down instead.
 func (s *Server) handleMonitorConfig(w http.ResponseWriter, r *http.Request) {
 	var req cluster.MonitorUpdate
 	if err := decodeJSON(r, &req); err != nil {
@@ -110,8 +113,24 @@ func (s *Server) handleMonitorConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
+	if err := ensureMonitorBinary(r.Context(), s.Version); err != nil {
+		http.Error(w, "fetch singbox-monitor: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := writeMonitorState(s.Layout, req); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := writeNodeMonitorUnit(s.Layout, s.State.WGIP, req); err != nil {
+		http.Error(w, "render monitor unit: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.Runner.Run(system.Command{Name: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
+		http.Error(w, "daemon-reload: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.Runner.Run(system.Command{Name: "systemctl", Args: []string{"enable", system.MonitorService}}); err != nil {
+		http.Error(w, "enable monitor: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if err := s.Runner.Run(system.Systemctl("restart", system.MonitorService)); err != nil {

@@ -23,6 +23,64 @@ func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field 
 	}
 }
 
+// NodeMonitorDefaults captures the current per-node monitor values needed to
+// seed the edit form when targeting a node. Mirrors the subset of deploy.Config
+// fields the form cares about — keeping the parameters package free of a
+// cluster dependency (avoiding an import cycle).
+type NodeMonitorDefaults struct {
+	Enabled                bool
+	Alias                  string
+	Interface              string
+	IntervalSeconds        int
+	TrafficInLimitBytes    uint64
+	TrafficOutLimitBytes   uint64
+	TrafficTotalLimitBytes uint64
+	ResetDay               int
+	ResetHour              int
+}
+
+// MonitorNodeFields returns the parameter set for editing one node's monitor
+// configuration via the cluster TUI. It is MonitorLocalFields with the
+// master-only fields (monitor_public_port, monitor_port) removed — the node
+// has no public dashboard and uses the well-known agent port for its own
+// monitor backend — and all defaults sourced from the node values rather
+// than the master's deploy.Config (which would otherwise be a confusing
+// "edit node A using master B's limits as the placeholder").
+func MonitorNodeFields(node NodeMonitorDefaults, monitorDisabled func(map[string]string) bool) []Field {
+	return []Field{
+		{Key: "monitor", Label: "Deploy monitor", Def: YesNoString(node.Enabled), Options: []string{"yes", "no"}, Note: "Choose no to tear down this node's monitor service and delete the singbox-monitor binary."},
+		{Key: "monitor_alias", Label: "Monitor alias", Def: node.Alias, Note: "Master dashboard display name for this node. Leave blank to reuse the node alias.", Skip: monitorDisabled},
+		{Key: "monitor_interface", Label: "Monitored network interface", Def: node.Interface, Note: "Leave blank to auto-detect on the node.", Skip: monitorDisabled},
+		{Key: "monitor_interval_seconds", Label: "Sampling interval (seconds)", Def: strconv.Itoa(nodeMonitorIntervalDefault(node)), Skip: monitorDisabled},
+		{Key: "traffic_in_limit", Label: "Inbound traffic limit", Def: FormatTrafficSizeInput(node.TrafficInLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
+		{Key: "traffic_out_limit", Label: "Outbound traffic limit", Def: FormatTrafficSizeInput(node.TrafficOutLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
+		{Key: "traffic_total_limit", Label: "Total traffic limit", Def: FormatTrafficSizeInput(node.TrafficTotalLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
+		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(nodeResetDayDefault(node)), Note: "Day of month when the traffic quota cycle resets.", Skip: monitorDisabled},
+		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(nodeResetHourDefault(node)), Note: "Hour of day in GMT when the traffic quota cycle resets.", Skip: monitorDisabled},
+	}
+}
+
+func nodeMonitorIntervalDefault(node NodeMonitorDefaults) int {
+	if node.IntervalSeconds > 0 {
+		return node.IntervalSeconds
+	}
+	return deploy.DefaultMonitorIntervalSeconds
+}
+
+func nodeResetDayDefault(node NodeMonitorDefaults) int {
+	if node.ResetDay > 0 {
+		return node.ResetDay
+	}
+	return deploy.DefaultResetDay
+}
+
+func nodeResetHourDefault(node NodeMonitorDefaults) int {
+	if node.ResetHour >= 0 && node.ResetHour <= 23 {
+		return node.ResetHour
+	}
+	return deploy.DefaultResetHour
+}
+
 func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
 		{Key: "monitor", Label: "Deploy monitor", Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: "Choose no to stop the monitor service and tear it down on every registered node. To re-enable later you must re-install."},
