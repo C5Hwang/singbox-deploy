@@ -32,9 +32,24 @@ type Server struct {
 	Upgrader Upgrader
 	// Teardown handles POST /api/teardown. nil falls back to defaultTeardown.
 	Teardown Teardowner
+	// UnitActive overrides the systemd "is-active" probe. Tests inject this
+	// to drive both the "service running → restart" and "service not yet
+	// running → skip" branches without depending on a real ExecRunner.
+	// Production leaves this nil and falls back to isUnitActive(Runner, ...).
+	UnitActive func(unit string) bool
 
 	// NowFunc is the time source for uptime. Defaults to time.Now.
 	NowFunc func() time.Time
+}
+
+// unitActive reports whether the named systemd unit is currently active.
+// Honors the test-injectable hook and otherwise defers to the package-level
+// helper that shells out via the runner.
+func (s *Server) unitActive(unit string) bool {
+	if s.UnitActive != nil {
+		return s.UnitActive(unit)
+	}
+	return isUnitActive(s.Runner, unit)
 }
 
 // NewServer returns a configured Server ready to be wrapped in http.Server.

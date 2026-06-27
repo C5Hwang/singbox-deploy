@@ -154,8 +154,9 @@ func (r Renewer) renewOneNode(ctx context.Context, registry cluster.Registry, no
 	}
 	r.logf("issuing renewed cert for node %s (%s)\n", node.Alias, node.Domain)
 	if err := agent.DeployCert(ctx, cluster.CertDeploy{
-		Cert: string(cert.CertificatePEM),
-		Key:  string(cert.PrivateKeyPEM),
+		Domain: node.Domain,
+		Cert:   string(cert.CertificatePEM),
+		Key:    string(cert.PrivateKeyPEM),
 	}); err != nil {
 		return fmt.Errorf("push cert to node: %w", err)
 	}

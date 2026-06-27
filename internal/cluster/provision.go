@@ -144,8 +144,9 @@ func (o *Orchestrator) issueAndDeployNodeCert(ctx context.Context, node Node) er
 	}
 	agent := NewAgentClient(node)
 	if err := agent.DeployCert(ctx, CertDeploy{
-		Cert: string(cert.CertificatePEM),
-		Key:  string(cert.PrivateKeyPEM),
+		Domain: node.Domain,
+		Cert:   string(cert.CertificatePEM),
+		Key:    string(cert.PrivateKeyPEM),
 	}); err != nil {
 		return fmt.Errorf("push cert to node: %w", err)
 	}

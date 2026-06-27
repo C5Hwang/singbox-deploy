@@ -59,7 +59,7 @@ func DNSCredentialFields(presetRoot string) []Field {
 			Key:   "root_domain",
 			Label: "Root domain",
 			Def:   presetRoot,
-			Note:  "Root zone where the DNS-01 TXT records will be written (e.g. example.com). Adjust for multi-label TLDs such as co.uk; use the punycode form for IDN.",
+			Note:  "The domain you manage on the DNS provider — the TXT records for the cert challenge get written here. Usually the bare root, e.g. example.com.\nA subdomain like sub.example.com also works, as long as it shows up as its own zone in your Cloudflare / Aliyun console.",
 		},
 		{Key: "provider", Label: "DNS provider", Def: "cloudflare", Options: []string{"cloudflare", "aliyun"}},
 		{

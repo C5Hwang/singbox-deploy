@@ -77,9 +77,15 @@ type UpgradeRequest struct {
 }
 
 // CertDeploy is the payload accepted by POST /api/cert/deploy.
+//
+// Domain tells the node where to write the PEM files without it having to
+// consult its own install state. Required for the initial add-node cert push
+// (state has not been written yet); omittable for renewals where the node
+// already has install state and the agent falls back to it.
 type CertDeploy struct {
-	Cert string `json:"cert"`
-	Key  string `json:"key"`
+	Domain string `json:"domain,omitempty"`
+	Cert   string `json:"cert"`
+	Key    string `json:"key"`
 }
 
 // SiteDeploy is the payload accepted by POST /api/site/deploy. Triggers the

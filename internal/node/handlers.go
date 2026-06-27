@@ -177,8 +177,23 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleCertDeploy writes a renewed certificate and key from the master and
-// restarts sing-box (and Nginx if installed) so the new material is picked up.
+// handleCertDeploy writes a fresh or renewed certificate and key from the
+// master, then nudges any consumer that is already running. It deliberately
+// avoids depending on the node's install state so the initial add-node cert
+// push (which happens before "Initial config" has written that state) works
+// the same way as a later renewal.
+//
+// Domain resolution order:
+//  1. req.Domain — the master sends it explicitly during add-node and renewal.
+//  2. install state's domain — fallback for callers that don't set req.Domain
+//     (older masters; renewal jobs that haven't been redeployed).
+//  3. 400 — neither is available, we have no idea where the PEM should land.
+//
+// sing-box restart is conditional on the service already being active so a
+// first-time deploy doesn't try to start a sing-box that has no config.json
+// yet (the "Initial config" step does the first start). Renewals still
+// trigger the restart because sing-box is already running at that point.
+// Nginx reload is similarly conditional.
 func (s *Server) handleCertDeploy(w http.ResponseWriter, r *http.Request) {
 	var req cluster.CertDeploy
 	if err := decodeJSON(r, &req); err != nil {
@@ -189,12 +204,17 @@ func (s *Server) handleCertDeploy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cert and key are required", http.StatusBadRequest)
 		return
 	}
-	cfg, err := deploy.LoadProtocolConfig(s.Layout)
-	if err != nil {
-		http.Error(w, "no managed install on this node", http.StatusBadRequest)
+	domain := strings.TrimSpace(req.Domain)
+	if domain == "" {
+		if cfg, err := deploy.LoadProtocolConfig(s.Layout); err == nil {
+			domain = strings.TrimSpace(cfg.Domain)
+		}
+	}
+	if domain == "" {
+		http.Error(w, "domain is required (none in payload and no install state)", http.StatusBadRequest)
 		return
 	}
-	certPath, keyPath := tlsPaths(s.Layout, cfg.Domain)
+	certPath, keyPath := tlsPaths(s.Layout, domain)
 	if err := os.MkdirAll(filepath.Dir(certPath), 0o755); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -207,12 +227,13 @@ func (s *Server) handleCertDeploy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.Runner.Run(system.Systemctl("restart", system.SingBoxService)); err != nil {
-		http.Error(w, "restart sing-box: "+err.Error(), http.StatusInternalServerError)
-		return
+	if s.unitActive(system.SingBoxService) {
+		if err := s.Runner.Run(system.Systemctl("restart", system.SingBoxService)); err != nil {
+			http.Error(w, "restart sing-box: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
-	// Nginx is only present when the node has TLS-needing protocols.
-	if isUnitActive(s.Runner, "nginx.service") {
+	if s.unitActive("nginx.service") {
 		_ = s.Runner.Run(system.Systemctl("reload", "nginx.service"))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
