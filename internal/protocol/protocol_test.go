@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -29,7 +30,9 @@ func testConfig(t *testing.T) deploy.Config {
 	}
 	return deploy.Config{
 		Domain:                 "example.com",
-		Ports:                  config.Ports{RealityVision: 27443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
+		Email:                  "admin@example.com",
+		Challenge:              acme.ChallengeHTTP01,
+		Ports:                  config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
 		DisplayName:            "US-vps1",
 		Salt:                   "testsalt",
 		SiteTemplate:           "massively",
@@ -166,12 +169,12 @@ func TestUpdateAppliesCredentialAndPortOverrides(t *testing.T) {
 	runner := &recordingRunner{}
 	var checked []config.Protocol
 	updated, err := Update(context.Background(), UpdateOptions{
-		Layout:   layout,
-		Runner:   runner,
-		Firewall: system.FirewallUFW,
-		Selected: []config.Protocol{config.ProtocolHysteria2},
-		Ports:    config.Ports{Hysteria2: 18443},
-		Creds:    deploy.Credentials{HysteriaPassword: "newpass"},
+		Layout:            layout,
+		Runner:            runner,
+		Firewall:          system.FirewallUFW,
+		Selected:          []config.Protocol{config.ProtocolHysteria2},
+		Ports:             config.Ports{Hysteria2: 18443},
+		Creds:             deploy.Credentials{HysteriaPassword: "newpass"},
 		CheckPorts: func(_ context.Context, _ deploy.Config, changed []config.Protocol) error {
 			checked = append([]config.Protocol(nil), changed...)
 			return nil

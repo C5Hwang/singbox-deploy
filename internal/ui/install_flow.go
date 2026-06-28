@@ -2,9 +2,9 @@ package ui
 
 import (
 	"context"
-	"errors"
+	"crypto/rand"
 	"fmt"
-	"os"
+	"math/big"
 	"strconv"
 	"strings"
 
@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
-	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
@@ -20,7 +19,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
-	"github.com/C5Hwang/singbox-deploy/internal/ui/common"
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
@@ -30,7 +28,6 @@ type installPhase int
 const (
 	phasePreflight installPhase = iota
 	phaseForm
-	phaseMissingDNSCreds
 	phaseConfirm
 	phaseRunning
 	phaseDone
@@ -38,6 +35,7 @@ const (
 
 // installFields defines the install form's input sequence.
 func installFields() []field {
+	isDNS := func(v map[string]string) bool { return v["challenge"] != "dns-01" }
 	missingProtocol := func(p config.Protocol) func(map[string]string) bool {
 		return func(v map[string]string) bool { return !protocolSelected(v, p) }
 	}
@@ -46,9 +44,13 @@ func installFields() []field {
 	}
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
-		{Key: "domain", Label: "Domain (must resolve to this server)", Note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
-		{Key: "protocols", Label: "Protocols to install", Def: defaultProtocolValue(), Options: protocolOptions(), Multi: true, Note: "Select one or more protocols. At least one protocol must remain selected."},
-		{Key: "site_template", Label: "Masquerade site template", Def: deploy.DefaultSiteTemplate, Options: deploy.SiteTemplateOptions(), Note: "HML5 UP template deployed to /etc/singbox-deploy/www."},
+		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
+		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
+		{key: "challenge", label: "ACME challenge", def: "http-01", options: []string{"http-01", "dns-01"}, note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
+		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
+		{key: "dns_credential", label: "DNS API credential", skip: isDNS, noteFunc: dnsCredentialNote},
+		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
+		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)
@@ -58,12 +60,12 @@ func installFields() []field {
 
 func installProtocolParameterFields(missingProtocol func(config.Protocol) func(map[string]string) bool, noReality func(map[string]string) bool) []field {
 	fields := []field{fieldFromParameter(uiparams.RealitySNIField())}
-	fields[0].Skip = noReality
-	fields[0].BadgeFunc = protocolParameterBadge(config.ProtocolRealityVision, config.ProtocolRealityGRPC)
+	fields[0].skip = noReality
+	fields[0].badgeFunc = protocolParameterBadge(config.ProtocolRealityVision, config.ProtocolRealityGRPC)
 	for _, proto := range config.AllProtocols {
 		for _, field := range fieldsFromParameters(uiparams.ProtocolInstallFieldsForProtocol(proto)) {
-			field.Skip = missingProtocol(proto)
-			field.BadgeFunc = protocolParameterBadge(proto)
+			field.skip = missingProtocol(proto)
+			field.badgeFunc = protocolParameterBadge(proto)
 			fields = append(fields, field)
 		}
 	}
@@ -83,6 +85,13 @@ func protocolParameterBadge(protocols ...config.Protocol) func(map[string]string
 		}
 		return "Setting parameters for: " + protocolLabels(selected)
 	}
+}
+
+func dnsCredentialNote(vals map[string]string) string {
+	if vals["dns_provider"] == "aliyun" {
+		return "Aliyun uses accessKey:secretKey (AccessKey ID:AccessKey Secret).\nYou can apply at https://ram.console.aliyun.com/manage/ak"
+	}
+	return "Cloudflare uses an API token.\nYou can apply at https://dash.cloudflare.com/profile/api-tokens"
 }
 
 // runMsg carries an orchestrator progress event, a streamed log line, or
@@ -111,12 +120,9 @@ type installFlow struct {
 	host  system.Host
 	hosts string // preflight summary / error text
 
-	form      installForm
-	run       commandRun
-	cfg       deploy.Config
-	dnsStore  cluster.DNSStore
-	subForm   *dnsCredentialForm
-	statusErr string // optional banner shown above the form after a cancelled sub-form
+	form installForm
+	run  commandRun
+	cfg  deploy.Config
 }
 
 func newInstallForm() installForm {
@@ -129,10 +135,9 @@ func newInstallForm() installForm {
 // newInstallFlow builds the install flow, running host preflight immediately.
 func newInstallFlow() *installFlow {
 	flow := &installFlow{
-		phase:    phasePreflight,
-		form:     newInstallForm(),
-		run:      newCommandRun(),
-		dnsStore: cluster.NewRegistry(paths.DefaultLayout()).DNS(),
+		phase: phasePreflight,
+		form:  newInstallForm(),
+		run:   newCommandRun(),
 	}
 	host, err := system.DetectHost()
 	flow.host = host
@@ -169,8 +174,8 @@ func (f *installFlow) setSize(width, height int) {
 }
 
 func (f *installForm) setSize(width, height int) {
-	f.Width = width
-	f.Height = height
+	f.width = width
+	f.height = height
 }
 
 func protocolOptions() []string {
@@ -225,6 +230,14 @@ func monitorEnabled(vals map[string]string) bool {
 	return value == "yes"
 }
 
+func monitorFrontendEnabled(vals map[string]string) bool {
+	value := vals["monitor_frontend"]
+	if value == "" {
+		value = "yes"
+	}
+	return value == "yes"
+}
+
 func hasProtocol(protocols []config.Protocol, want config.Protocol) bool {
 	for _, p := range protocols {
 		if p == want {
@@ -242,14 +255,14 @@ func protocolLabels(protocols []config.Protocol) string {
 }
 
 func (f *installForm) startForm() {
-	f.parameterForm.Validate = f.validateField
-	f.parameterForm.StartForm()
+	f.parameterForm.validate = f.validateField
+	f.parameterForm.startForm()
 }
 
 // commitField stores the current field value (or its default) and advances.
 func (f *installForm) commitField() bool {
-	f.parameterForm.Validate = f.validateField
-	done := f.parameterForm.CommitField()
+	f.parameterForm.validate = f.validateField
+	done := f.parameterForm.commitField()
 	if done {
 		f.confirmScroll = 0
 	}
@@ -257,7 +270,7 @@ func (f *installForm) commitField() bool {
 }
 
 func (f *installForm) validateField(field field, val string, _ map[string]string) error {
-	switch field.Key {
+	switch field.key {
 	case "domain":
 		if val == "" {
 			return fmt.Errorf("domain is required")
@@ -274,10 +287,10 @@ func (f *installForm) validateField(field field, val string, _ map[string]string
 		_, err := deploy.NormalizeSiteTemplate(val)
 		return err
 	}
-	if err := uiparams.ValidateSharedParameterValue(field.Key, val); err != nil {
+	if err := uiparams.ValidateSharedParameterValue(field.key, val); err != nil {
 		return err
 	}
-	if err := uiparams.ValidateMonitorParameterValue(field.Key, val); err != nil {
+	if err := uiparams.ValidateMonitorParameterValue(field.key, val); err != nil {
 		return err
 	}
 	return nil
@@ -296,77 +309,10 @@ func (f *installFlow) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.MouseMsg:
 		return f.handleMouse(msg), false
 	}
-	if f.phase == phaseMissingDNSCreds && f.subForm != nil {
-		cmd := f.subForm.Update(msg)
-		f.advanceSubFormState()
-		return cmd, false
-	}
-	if f.phase == phaseForm && !f.form.CurrentFieldHasOptions() {
-		return f.form.UpdateInput(msg), false
+	if f.phase == phaseForm && !f.form.currentFieldHasOptions() {
+		return f.form.updateInput(msg), false
 	}
 	return nil, false
-}
-
-// enterMissingDNSCreds switches to the inline DNS credential sub-form for
-// domain. headerErr, when non-empty, is shown above the form to explain why
-// the previous attempt (if any) did not succeed.
-func (f *installFlow) enterMissingDNSCreds(domain, headerErr string) {
-	f.phase = phaseMissingDNSCreds
-	f.subForm = newDNSCredentialForm(domain, f.dnsStore)
-	if headerErr != "" {
-		f.subForm.SetHeaderError(headerErr)
-	}
-	f.subForm.SetSize(f.form.Width, f.form.Height)
-}
-
-func (f *installFlow) handleMissingDNSKey(msg tea.KeyMsg) (tea.Cmd, bool) {
-	if f.subForm == nil {
-		f.phase = phaseForm
-		return nil, false
-	}
-	cmd := f.subForm.Update(msg)
-	f.advanceSubFormState()
-	return cmd, false
-}
-
-// advanceSubFormState consumes a saved/cancelled signal from the sub-form and
-// either resumes the install (when the saved root now covers the install
-// domain) or returns the user to the form with a banner.
-func (f *installFlow) advanceSubFormState() {
-	if f.subForm == nil {
-		return
-	}
-	saved, cancelled, _ := f.subForm.State()
-	switch {
-	case saved:
-		domain := f.form.Values["domain"]
-		if _, err := f.dnsStore.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
-			f.enterMissingDNSCreds(domain, fmt.Sprintf("Saved credentials do not cover %s — adjust the root domain.", domain))
-			return
-		}
-		f.subForm = nil
-		f.phase = phaseForm
-	case cancelled:
-		f.subForm = nil
-		f.phase = phaseForm
-		f.statusErr = "DNS credentials are still required. Configure them before continuing."
-		f.form.BackToFieldKey("domain")
-	}
-}
-
-// ensureDNSCredentials runs the lookup one last time at Complete. Returns true
-// when the lookup succeeds and the flow can advance to confirm; false when it
-// transitioned to the missing-creds sub-form.
-func (f *installFlow) ensureDNSCredentials() bool {
-	domain := f.form.Values["domain"]
-	if domain == "" {
-		return true
-	}
-	if _, err := f.dnsStore.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
-		f.enterMissingDNSCreds(domain, "")
-		return false
-	}
-	return true
 }
 
 func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
@@ -382,31 +328,18 @@ func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	case phaseForm:
-		prevKey := f.form.CurrentFieldKey()
-		cmd, done, handled := f.form.HandleKey(msg, parameterFormKeyHandlers{
+		cmd, done, handled := f.form.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
-				if !f.ensureDNSCredentials() {
-					return
-				}
 				f.phase = phaseConfirm
 			},
-			Back: func() { f.form.PreviousField() },
+			Back: func() { f.form.previousField() },
 			Cancel: func() (tea.Cmd, bool) {
 				return nil, true
 			},
 		})
 		if handled {
-			if prevKey == "domain" && f.form.CurrentFieldKey() != "domain" && f.form.FieldErr == "" {
-				if domain := f.form.Values["domain"]; domain != "" {
-					if _, err := f.dnsStore.FindForDomain(domain); errors.Is(err, os.ErrNotExist) {
-						f.enterMissingDNSCreds(domain, "")
-					}
-				}
-			}
 			return cmd, done
 		}
-	case phaseMissingDNSCreds:
-		return f.handleMissingDNSKey(msg)
 	case phaseConfirm:
 		switch msg.String() {
 		case "up", "k":
@@ -431,7 +364,7 @@ func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return f.startRun(), false
 		case "shift+tab", "ctrl+b":
 			f.phase = phaseForm
-			f.form.BackToLastField()
+			f.form.backToLastField()
 		case "esc", "n":
 			return nil, true
 		}
@@ -549,15 +482,13 @@ func (w *installFlow) startRun() tea.Cmd {
 	acmeManager := acme.NewManager(issuer)
 	releases := release.NewClient("", nil)
 
-	dnsStore := cluster.NewRegistry(layout).DNS()
 	orch := &deploy.Orchestrator{
-		Runner:    runner,
-		Layout:    layout,
-		ACME:      acmeManager,
-		Releases:  releases,
-		GOOS:      "linux",
-		GOARCH:    w.host.Arch,
-		DNSLookup: dnsLookupAdapter(dnsStore),
+		Runner:   runner,
+		Layout:   layout,
+		ACME:     acmeManager,
+		Releases: releases,
+		GOOS:     "linux",
+		GOARCH:   w.host.Arch,
 	}
 	orch.Progress = func(e deploy.Event) {
 		ev := e
@@ -576,13 +507,14 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 	if err != nil {
 		return deploy.Config{}, err
 	}
-	vals := w.form.Values
+	vals := w.form.values
 	w.form.applyCredentialOverrides(&creds)
 	enabled := protocolsFromValue(vals["protocols"])
 	if len(enabled) == 0 {
 		enabled = config.AllProtocols
 	}
 	deployMonitor := monitorEnabled(vals)
+	deployMonitorFrontend := monitorFrontendEnabled(vals)
 	siteTemplate, err := deploy.NormalizeSiteTemplate(vals["site_template"])
 	if err != nil {
 		return deploy.Config{}, err
@@ -635,6 +567,20 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		monitorAlias = deploy.DefaultMonitorAlias
 	}
 
+	challenge := acme.Challenge(vals["challenge"])
+	dnsCreds := map[string]string{}
+	if challenge == acme.ChallengeDNS01 {
+		switch vals["dns_provider"] {
+		case "cloudflare":
+			dnsCreds["CF_API_TOKEN"] = vals["dns_credential"]
+		case "aliyun":
+			if key, secret, ok := strings.Cut(vals["dns_credential"], ":"); ok {
+				dnsCreds["ALICLOUD_ACCESS_KEY"] = key
+				dnsCreds["ALICLOUD_SECRET_KEY"] = secret
+			}
+		}
+	}
+
 	iface := ""
 	if deployMonitor {
 		iface, _ = monitor.DefaultInterface()
@@ -649,6 +595,10 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 
 	return deploy.Config{
 		Domain:                 vals["domain"],
+		Email:                  vals["email"],
+		Challenge:              challenge,
+		DNSProvider:            vals["dns_provider"],
+		DNSCredentials:         dnsCreds,
 		Ports:                  ports,
 		Enabled:                enabled,
 		DisplayName:            vals["display_name"],
@@ -660,6 +610,7 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		MonitorPublicPort:      monitorPublicPort,
 		MonitorPort:            monitorPort,
 		DeployMonitor:          deployMonitor,
+		DeployMonitorFrontend:  deployMonitorFrontend,
 		MonitorAlias:           monitorAlias,
 		TrafficInLimitBytes:    inLimitBytes,
 		TrafficOutLimitBytes:   outLimitBytes,
@@ -672,18 +623,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		Firewall:               w.host.Firewall,
 		Creds:                  creds,
 	}, nil
-}
-
-// dnsLookupAdapter wraps a cluster.DNSStore so the deploy orchestrator can
-// look up credentials without importing cluster (which would be a cycle).
-func dnsLookupAdapter(store cluster.DNSStore) deploy.DNSCredentialLookup {
-	return func(host string) (string, map[string]string, error) {
-		creds, err := store.FindForDomain(host)
-		if err != nil {
-			return "", nil, err
-		}
-		return creds.Provider, creds.EnvMap(), nil
-	}
 }
 
 func parseInstallPort(value string, fallback int, label string) (int, error) {
@@ -699,14 +638,24 @@ func parseInstallPort(value string, fallback int, label string) (int, error) {
 }
 
 func (w *installForm) applyCredentialOverrides(creds *deploy.Credentials) {
-	creds.ApplyOverrides(deploy.Credentials{
-		RealityVisionUUID: strings.TrimSpace(w.Values["reality_vision_uuid"]),
-		RealityGRPCUUID:   strings.TrimSpace(w.Values["reality_grpc_uuid"]),
-		HysteriaPassword:  strings.TrimSpace(w.Values["hysteria2_password"]),
-		TUICUUID:          strings.TrimSpace(w.Values["tuic_uuid"]),
-		TUICPassword:      strings.TrimSpace(w.Values["tuic_password"]),
-		AnyTLSPassword:    strings.TrimSpace(w.Values["anytls_password"]),
-	})
+	if v := strings.TrimSpace(w.values["reality_vision_uuid"]); v != "" {
+		creds.RealityVisionUUID = v
+	}
+	if v := strings.TrimSpace(w.values["reality_grpc_uuid"]); v != "" {
+		creds.RealityGRPCUUID = v
+	}
+	if v := strings.TrimSpace(w.values["hysteria2_password"]); v != "" {
+		creds.HysteriaPassword = v
+	}
+	if v := strings.TrimSpace(w.values["tuic_uuid"]); v != "" {
+		creds.TUICUUID = v
+	}
+	if v := strings.TrimSpace(w.values["tuic_password"]); v != "" {
+		creds.TUICPassword = v
+	}
+	if v := strings.TrimSpace(w.values["anytls_password"]); v != "" {
+		creds.AnyTLSPassword = v
+	}
 }
 
 func (w *installForm) protocolPorts(enabled []config.Protocol, subscribePort, monitorPublicPort, monitorPort int, deployMonitor bool) (config.Ports, error) {
@@ -745,16 +694,16 @@ func (w *installForm) protocolPorts(enabled []config.Protocol, subscribePort, mo
 
 func (w *installForm) portForProtocol(proto config.Protocol, used map[int]bool) (int, error) {
 	key := portFieldKey(proto)
-	raw := strings.TrimSpace(w.Values[key])
+	raw := strings.TrimSpace(w.values[key])
 	if raw == "" {
-		return config.RandomProtocolPort(used)
+		return randomListenPort(used)
 	}
 	port, err := strconv.Atoi(raw)
-	if err != nil {
+	if err != nil || port < 1 || port > 65535 {
 		return 0, fmt.Errorf("%s port must be between 1 and 65535", proto)
 	}
-	if err := config.ValidateProtocolPort(port, used); err != nil {
-		return 0, fmt.Errorf("%s %w", proto, err)
+	if used[port] {
+		return 0, fmt.Errorf("%s port %d conflicts with another selected port", proto, port)
 	}
 	used[port] = true
 	return port, nil
@@ -802,11 +751,29 @@ func installedPort(proto config.Protocol, ports config.Ports) int {
 	}
 }
 
+func randomListenPort(used map[int]bool) (int, error) {
+	const minPort = 20000
+	const maxPort = 59999
+	span := big.NewInt(maxPort - minPort + 1)
+	for range 1000 {
+		n, err := rand.Int(rand.Reader, span)
+		if err != nil {
+			return 0, err
+		}
+		port := int(n.Int64()) + minPort
+		if !used[port] {
+			used[port] = true
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("could not choose an unused random port")
+}
+
 var (
-	flowTitle  = common.FlowTitle
-	flowOK     = common.FlowOK
-	flowErr    = common.FlowErr
-	flowRandom = common.FlowRandom
+	flowTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	flowOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	flowErr    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	flowRandom = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 )
 
 // View renders the install flow.
@@ -819,15 +786,6 @@ func (w *installFlow) View() string {
 		}
 		return flowTitle.Render("Install · Preflight") + "\n\n" + body
 	case phaseForm:
-		view := w.form.View()
-		if w.statusErr != "" {
-			view = flowErr.Render(w.statusErr) + "\n\n" + view
-		}
-		return view
-	case phaseMissingDNSCreds:
-		if w.subForm != nil {
-			return w.subForm.View()
-		}
 		return w.form.View()
 	case phaseConfirm:
 		return w.form.confirmView(w.host)
@@ -854,12 +812,7 @@ func (w *installFlow) footerHints() []operationHint {
 		}
 		return []operationHint{hint(keyCancel, "Cancel")}
 	case phaseForm:
-		return w.form.FooterHints()
-	case phaseMissingDNSCreds:
-		if w.subForm != nil {
-			return w.subForm.FooterHints()
-		}
-		return w.form.FooterHints()
+		return w.form.footerHints()
 	case phaseConfirm:
 		return []operationHint{
 			hint(keyMoveMouse, "Scroll"),
@@ -919,17 +872,17 @@ func (w *installForm) confirmRows(host system.Host) []string {
 }
 
 func (w *installForm) confirmViewportHeight() int {
-	if w.Height <= 0 {
+	if w.height <= 0 {
 		return 12
 	}
-	return max(1, w.Height-4)
+	return max(1, w.height-4)
 }
 
 func (w *installForm) confirmWrapWidth() int {
-	if w.Width <= 0 {
+	if w.width <= 0 {
 		return 80
 	}
-	return max(1, w.Width)
+	return max(1, w.width)
 }
 
 func (w *installFlow) runningView() string {
@@ -941,43 +894,47 @@ func (w *installFlow) failedView() string {
 }
 
 func (w *installForm) summary(host system.Host) string {
-	protocols := protocolsFromValue(w.Values["protocols"])
+	protocols := protocolsFromValue(w.values["protocols"])
 	if len(protocols) == 0 {
 		protocols = config.AllProtocols
 	}
-	deployMonitor := monitorEnabled(w.Values)
+	deployMonitor := monitorEnabled(w.values)
 	rows := []summaryLine{
-		summaryRow("Domain", w.Values["domain"]),
-		summaryRow("DNS credentials", dnsCredentialSummary(w.Values["domain"])),
+		summaryRow("Domain", w.values["domain"]),
+		summaryRow("Email", or(w.values["email"], "not set")),
+		summaryRow("ACME challenge", w.values["challenge"]),
 		summaryRow("Protocols", protocolLabels(protocols)),
-		summaryRow("Display name", w.Values["display_name"]),
-		summaryRow("Masquerade site", or(w.Values["site_template"], deploy.DefaultSiteTemplate)),
-		summaryRow("Subscription port", or(w.Values["subscribe_port"], strconv.Itoa(deploy.DefaultSubscribePort))),
-		summaryRow("Subscription salt", summaryValueOrRandom(w.Values["subscribe_salt"])),
+		summaryRow("Display name", w.values["display_name"]),
+		summaryRow("Masquerade site", or(w.values["site_template"], deploy.DefaultSiteTemplate)),
+		summaryRow("Subscription port", or(w.values["subscribe_port"], strconv.Itoa(deploy.DefaultSubscribePort))),
+		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
 		summaryRow("Monitor", yesNoString(deployMonitor)),
 	}
+	if deployMonitor {
+		rows = append(rows, summaryRow("Monitor frontend", yesNoString(monitorFrontendEnabled(w.values))))
+	}
 	rows = append(rows,
-		summaryRow("Platform", host.OS.ID+" / "+host.Arch),
+		summaryRow("Operating system / architecture", host.OS.ID+" / "+host.Arch),
 		summaryRow("Firewall", firewallName(host.Firewall)),
 	)
 	if deployMonitor {
 		rows = append(rows,
-			summaryRow("Monitor alias", or(w.Values["monitor_alias"], deploy.DefaultMonitorAlias)),
-			summaryRow("Monitor public port", or(w.Values["monitor_public_port"], strconv.Itoa(deploy.DefaultMonitorPublicPort))),
-			summaryRow("Monitor local port", or(w.Values["monitor_port"], strconv.Itoa(deploy.DefaultMonitorPort))),
-			summaryRow("Sampling interval", or(w.Values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
-			summaryRow("Inbound traffic limit", trafficLimitSummary(w.Values["traffic_in_limit"])),
-			summaryRow("Outbound traffic limit", trafficLimitSummary(w.Values["traffic_out_limit"])),
-			summaryRow("Total traffic limit", trafficLimitSummary(w.Values["traffic_total_limit"])),
-			summaryRow("Next reset", nextResetFromValues(w.Values["reset_day"], w.Values["reset_hour"])),
+			summaryRow("Monitor alias", or(w.values["monitor_alias"], deploy.DefaultMonitorAlias)),
+			summaryRow("Monitor public port", or(w.values["monitor_public_port"], strconv.Itoa(deploy.DefaultMonitorPublicPort))),
+			summaryRow("Monitor local port", or(w.values["monitor_port"], strconv.Itoa(deploy.DefaultMonitorPort))),
+			summaryRow("Sampling interval", or(w.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
+			summaryRow("Inbound traffic limit", trafficLimitSummary(w.values["traffic_in_limit"])),
+			summaryRow("Outbound traffic limit", trafficLimitSummary(w.values["traffic_out_limit"])),
+			summaryRow("Total traffic limit", trafficLimitSummary(w.values["traffic_total_limit"])),
+			summaryRow("Next reset", nextResetFromValues(w.values["reset_day"], w.values["reset_hour"])),
 		)
 	}
 	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
-		rows = append(rows, summaryRow("Reality URL/SNI", w.Values["reality_sni"]))
+		rows = append(rows, summaryRow("Reality URL/SNI", w.values["reality_sni"]))
 	}
 	rows = append(rows, summaryText("Protocol parameters:"))
 	for _, proto := range protocols {
-		rows = append(rows, summaryIndentedRow(2, fmt.Sprintf("%s port", proto), summaryValueOrRandom(w.Values[portFieldKey(proto)])))
+		rows = append(rows, summaryIndentedRow(2, fmt.Sprintf("%s port", proto), summaryValueOrRandom(w.values[portFieldKey(proto)])))
 	}
 	return renderSummary(rows) + "\n"
 }
@@ -992,22 +949,6 @@ func nextResetFromValues(dayStr, hourStr string) string {
 		hour = deploy.DefaultResetHour
 	}
 	return nextResetLabel(day, hour)
-}
-
-// dnsCredentialSummary resolves the DNS credentials for the given install
-// domain at confirm-render time, returning a short "<root> (<provider>)"
-// label or "(none configured)" when nothing matches.
-func dnsCredentialSummary(domain string) string {
-	domain = strings.TrimSpace(domain)
-	if domain == "" {
-		return "(none configured)"
-	}
-	store := cluster.NewRegistry(paths.DefaultLayout()).DNS()
-	creds, err := store.FindForDomain(domain)
-	if err != nil {
-		return "(none configured)"
-	}
-	return fmt.Sprintf("%s (%s)", creds.RootDomain, creds.Provider)
 }
 
 func trafficLimitSummary(value string) string {
@@ -1041,10 +982,10 @@ func (w *installFlow) doneSummary() string {
 	}
 	if w.cfg.DeployMonitor {
 		monitorBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.MonitorPublicPort)
-		rows = append(rows,
-			summaryRow("Monitor UI", monitorBase+"/monitor/"),
-			summaryRow("Monitor API", monitorBase+"/monitor/api/summary"),
-		)
+		if w.cfg.DeployMonitorFrontend {
+			rows = append(rows, summaryRow("Monitor UI", monitorBase+"/monitor/"))
+		}
+		rows = append(rows, summaryRow("Monitor API", monitorBase+"/monitor/api/summary"))
 	}
 	return renderSummary(rows)
 }

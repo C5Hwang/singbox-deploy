@@ -343,11 +343,11 @@ func TestEnforceQuotaStopsServiceWhenExceeded(t *testing.T) {
 
 	ctrl := &fakeController{active: true}
 	m := New(store, Config{
-		InLimitBytes:    400,
-		OutLimitBytes:   0,
+		InLimitBytes:  400,
+		OutLimitBytes: 0,
 		TotalLimitBytes: 0,
-		ResetDay:        1,
-		Now:             func() time.Time { return now },
+		ResetDay:      1,
+		Now:           func() time.Time { return now },
 	}, ctrl)
 
 	m.enforceQuota(now)

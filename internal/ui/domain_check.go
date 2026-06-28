@@ -43,50 +43,6 @@ func validateDomainResolvesToCurrentIP(ctx context.Context, domain string) error
 	return fmt.Errorf("domain resolves to %s, current public IP is %s", formatIPs(domainIPs), formatIPs(currentIPs))
 }
 
-// validateDomainResolvesToIP confirms domain resolves to expected, which may be
-// an IPv4/IPv6 literal or a hostname (resolved first). Used by add-node where
-// the operator entered the node's public IP/host explicitly, so we don't need
-// to query the public IP service.
-func validateDomainResolvesToIP(ctx context.Context, domain, expected string) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	domain = strings.TrimSpace(domain)
-	if domain == "" {
-		return fmt.Errorf("domain is required")
-	}
-	expected = strings.TrimSpace(expected)
-	if expected == "" {
-		return fmt.Errorf("node public IP must be entered before validating the domain")
-	}
-
-	domainIPs, err := net.DefaultResolver.LookupIP(ctx, "ip", domain)
-	if err != nil {
-		return fmt.Errorf("resolve domain: %w", err)
-	}
-	if len(domainIPs) == 0 {
-		return fmt.Errorf("domain does not resolve to any IP")
-	}
-
-	var expectedIPs []net.IP
-	if ip := net.ParseIP(expected); ip != nil {
-		expectedIPs = []net.IP{ip}
-	} else {
-		expectedIPs, err = net.DefaultResolver.LookupIP(ctx, "ip", expected)
-		if err != nil {
-			return fmt.Errorf("resolve node host %q: %w", expected, err)
-		}
-		if len(expectedIPs) == 0 {
-			return fmt.Errorf("node host %q does not resolve to any IP", expected)
-		}
-	}
-
-	if anyIPMatches(domainIPs, expectedIPs) {
-		return nil
-	}
-	return fmt.Errorf("domain resolves to %s, node IP is %s", formatIPs(domainIPs), formatIPs(expectedIPs))
-}
-
 func currentPublicIPs(ctx context.Context) ([]net.IP, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	var ips []net.IP

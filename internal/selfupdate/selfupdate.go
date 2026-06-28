@@ -14,15 +14,11 @@ import (
 )
 
 const (
-	repo     = "C5Hwang/singbox-deploy"
-	owner    = "C5Hwang"
-	repoName = "singbox-deploy"
+	repo       = "C5Hwang/singbox-deploy"
+	owner      = "C5Hwang"
+	repoName   = "singbox-deploy"
+	installBin = "/usr/bin/singbox-deploy"
 )
-
-// localBinaries lists every master-side binary that gets replaced on
-// self-update. Each entry is downloaded under its own name from the same
-// release tag so the master's tool surface stays at one version.
-var localBinaries = []string{"singbox-deploy", "singbox-monitor"}
 
 // Result is returned after a successful update check or apply.
 type Result struct {
@@ -66,10 +62,7 @@ func (m *Manager) CheckLatest(ctx context.Context) (string, error) {
 	return m.LatestStable(ctx)
 }
 
-// Run downloads and replaces every master-side binary (singbox-deploy and
-// singbox-monitor) with the target tag in one pass. Pushing matching
-// versions to cluster nodes is handled separately by cluster.BroadcastUpgrade
-// so the caller can decide whether to fan out to the fleet.
+// Run downloads and replaces the singbox-deploy binary with the target tag.
 func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 	m.Defaults()
 	tag = strings.TrimSpace(tag)
@@ -77,7 +70,10 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 		return Result{}, fmt.Errorf("target release is required")
 	}
 
-	updateDir := filepath.Join("/usr/bin", ".singbox-deploy-update")
+	asset := fmt.Sprintf("singbox-deploy-linux-%s", m.GOARCH)
+	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, asset)
+	updateDir := filepath.Join(filepath.Dir(installBin), ".singbox-deploy-update")
+	candidatePath := filepath.Join(updateDir, "singbox-deploy-"+safeTag(tag))
 
 	type step struct {
 		label  string
@@ -85,46 +81,33 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 		run    func(context.Context) error
 	}
 
-	var steps []step
-	steps = append(steps, step{label: "Prepare", detail: "create staging directory", run: func(context.Context) error {
-		return os.MkdirAll(updateDir, 0o755)
-	}})
-	candidates := make(map[string]string, len(localBinaries))
-	for _, name := range localBinaries {
-		name := name
-		asset := fmt.Sprintf("%s-linux-%s", name, m.GOARCH)
-		url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, asset)
-		candidatePath := filepath.Join(updateDir, name+"-"+safeTag(tag))
-		candidates[name] = candidatePath
-		steps = append(steps,
-			step{label: "Download " + name, detail: "download " + tag, run: func(ctx context.Context) error {
-				return m.Download(ctx, url, candidatePath)
-			}},
-			step{label: "Verify " + name, detail: "verify downloaded binary", run: func(context.Context) error {
-				info, err := os.Stat(candidatePath)
-				if err != nil {
-					return fmt.Errorf("verify downloaded binary: %w", err)
-				}
-				if info.IsDir() {
-					return fmt.Errorf("downloaded path is a directory")
-				}
-				if info.Size() == 0 {
-					return fmt.Errorf("downloaded binary is empty")
-				}
-				return os.Chmod(candidatePath, 0o755)
-			}},
-		)
+	steps := []step{
+		{label: "Download", detail: "download " + tag, run: func(ctx context.Context) error {
+			if err := os.MkdirAll(updateDir, 0o755); err != nil {
+				return err
+			}
+			return m.Download(ctx, url, candidatePath)
+		}},
+		{label: "Verify", detail: "verify downloaded binary", run: func(context.Context) error {
+			info, err := os.Stat(candidatePath)
+			if err != nil {
+				return fmt.Errorf("verify downloaded binary: %w", err)
+			}
+			if info.IsDir() {
+				return fmt.Errorf("downloaded path is a directory")
+			}
+			if info.Size() == 0 {
+				return fmt.Errorf("downloaded binary is empty")
+			}
+			return os.Chmod(candidatePath, 0o755)
+		}},
+		{label: "Replace", detail: "replace " + installBin, run: func(context.Context) error {
+			return os.Rename(candidatePath, installBin)
+		}},
+		{label: "Cleanup", detail: "remove temporary files", run: func(context.Context) error {
+			return os.RemoveAll(updateDir)
+		}},
 	}
-	for _, name := range localBinaries {
-		name := name
-		dest := filepath.Join("/usr/bin", name)
-		steps = append(steps, step{label: "Replace " + name, detail: "replace " + dest, run: func(context.Context) error {
-			return os.Rename(candidates[name], dest)
-		}})
-	}
-	steps = append(steps, step{label: "Cleanup", detail: "remove temporary files", run: func(context.Context) error {
-		return os.RemoveAll(updateDir)
-	}})
 
 	for i, s := range steps {
 		m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})

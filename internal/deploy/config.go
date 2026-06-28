@@ -7,8 +7,7 @@
 package deploy
 
 import (
-	"strings"
-
+	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -67,33 +66,14 @@ func GenerateCredentials() (Credentials, error) {
 	return c, nil
 }
 
-// ApplyOverrides overwrites this Credentials' per-protocol fields with any
-// non-empty values from override. Reality key material is always derived from
-// the generated keypair and is intentionally not overrideable here.
-func (c *Credentials) ApplyOverrides(override Credentials) {
-	if v := strings.TrimSpace(override.RealityVisionUUID); v != "" {
-		c.RealityVisionUUID = v
-	}
-	if v := strings.TrimSpace(override.RealityGRPCUUID); v != "" {
-		c.RealityGRPCUUID = v
-	}
-	if v := strings.TrimSpace(override.HysteriaPassword); v != "" {
-		c.HysteriaPassword = v
-	}
-	if v := strings.TrimSpace(override.TUICUUID); v != "" {
-		c.TUICUUID = v
-	}
-	if v := strings.TrimSpace(override.TUICPassword); v != "" {
-		c.TUICPassword = v
-	}
-	if v := strings.TrimSpace(override.AnyTLSPassword); v != "" {
-		c.AnyTLSPassword = v
-	}
-}
-
 // Config is the complete input to an installation.
 type Config struct {
 	Domain string
+	Email  string
+
+	Challenge      acme.Challenge
+	DNSProvider    string
+	DNSCredentials map[string]string
 
 	Ports   config.Ports
 	Enabled []config.Protocol
@@ -110,6 +90,7 @@ type Config struct {
 	MonitorPort       int
 
 	DeployMonitor          bool
+	DeployMonitorFrontend  bool
 	MonitorAlias           string
 	TrafficInLimitBytes    uint64
 	TrafficOutLimitBytes   uint64
@@ -188,8 +169,7 @@ func (c Config) firewallPorts() []system.Port {
 			ports = append(ports, system.Port{Number: spec.port, Proto: spec.proto})
 		}
 	}
-	// Subscriptions and the monitor UI need the public web ports; Nginx also
-	// serves the masquerade site on 80/443.
+	// Subscriptions, the monitor UI, and ACME HTTP-01 need the public web ports.
 	ports = append(ports, system.Port{Number: c.SubscribePort, Proto: "tcp"})
 	if c.DeployMonitor {
 		ports = append(ports, system.Port{Number: c.MonitorPublicPort, Proto: "tcp"})
@@ -224,6 +204,9 @@ func (c Config) portChecks() []system.Port {
 	checks = append(checks, system.Port{Number: c.SubscribePort, Proto: "tcp", Label: "subscription/Nginx", Public: true})
 	if c.DeployMonitor {
 		checks = append(checks, system.Port{Number: c.MonitorPublicPort, Proto: "tcp", Label: "monitor/Nginx", Public: true})
+	}
+	if c.Challenge == acme.ChallengeHTTP01 {
+		checks = append(checks, system.Port{Number: 80, Proto: "tcp", Label: "ACME HTTP-01", Public: true})
 	}
 	if c.DeployMonitor {
 		checks = append(checks, system.Port{Number: c.MonitorPort, Proto: "tcp", Label: "monitor service", Public: false})

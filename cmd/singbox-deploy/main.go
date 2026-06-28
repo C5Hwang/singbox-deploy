@@ -13,9 +13,15 @@ var version = "dev"
 
 func main() {
 	ui.SetVersion(version)
-	// The cert subcommand is the timer-triggered renewal entry point and is
-	// dispatched before the interactive UI. The monitor service lives in
-	// its own binary (singbox-monitor) so master and nodes share one image.
+	// The monitor subcommand runs the long-lived monitor service and is
+	// dispatched before the interactive UI. It is wired in the monitor task.
+	if len(os.Args) > 1 && os.Args[1] == "monitor" {
+		if err := runMonitor(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "monitor:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "cert" {
 		if err := runCert(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "cert:", err)

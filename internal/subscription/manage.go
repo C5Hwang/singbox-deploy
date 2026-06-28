@@ -28,32 +28,51 @@ type Config struct {
 	SubscribePort int
 }
 
-// UpdateOptions describes a subscription settings update. Remote/fleet
-// aggregation now lives in the cluster package — every regenerate triggers
-// a fleet-wide refresh implicitly via WriteSubscriptions.
+// Remote describes a same-version remote subscription server to aggregate.
+type Remote struct {
+	Domain string
+	Port   int
+	Alias  string
+	Salt   string
+}
+
+// Fetcher fetches remote subscription or monitor JSON endpoints.
+type Fetcher func(context.Context, string) ([]byte, error)
+
+// UpdateOptions describes a subscription settings update.
+//
+// All heavy deploy operations are injected as function fields so
+// that the subscription package does not import the deploy package
+// (which already imports subscription for format helpers).
 type UpdateOptions struct {
 	Layout paths.Layout
 	Runner system.Runner
 
 	Salt          string
 	SubscribePort int
+	Remotes       []Remote
+	SetRemotes    bool
 
 	Firewall      system.Firewall
 	CheckPorts    func(ctx context.Context, domain string, port int) error
+	Fetch         Fetcher
 	Progress      func(Event)
 	NginxConfPath string
 
 	// Deploy callbacks — wired by the caller to concrete deploy functions.
-	LoadConfig         func(paths.Layout) (Config, error)
-	WriteState         func(stateDir string, cfg Config) error
-	WriteNginxConfig   func(layout paths.Layout, cfg Config, confPath string) error
-	WriteSubscriptions func(ctx context.Context, layout paths.Layout, cfg Config) error
-	RunCommands        func(runner system.Runner, cmds ...system.Command) error
+	LoadConfig       func(paths.Layout) (Config, error)
+	LoadRemotes      func(paths.Layout) ([]Remote, error)
+	ValidateRemotes  func([]Remote) error
+	WriteState       func(stateDir string, cfg Config) error
+	SaveRemotes      func(paths.Layout, []Remote) error
+	WriteNginxConfig func(layout paths.Layout, cfg Config, confPath string) error
+	WriteWithRemotes func(ctx context.Context, layout paths.Layout, cfg Config, remotes []Remote, fetch Fetcher) error
+	RunCommands      func(runner system.Runner, cmds ...system.Command) error
 }
 
-// Update updates local subscription settings, rewrites generated subscription
-// files (including aggregated entries for every cluster node), and reloads
-// Nginx when the public subscription port changes.
+// Update updates local subscription settings, rewrites generated
+// subscription files, persists remote subscription entries, and reloads Nginx
+// when the public subscription port changes.
 func Update(ctx context.Context, opts UpdateOptions) (Config, error) {
 	opts = defaultOptions(opts)
 	cfg, err := opts.LoadConfig(opts.Layout)
@@ -71,7 +90,18 @@ func Update(ctx context.Context, opts UpdateOptions) (Config, error) {
 		return Config{}, fmt.Errorf("subscription port must be between 1 and 65535")
 	}
 
-	steps := updateSteps(opts, oldPort, cfg.SubscribePort)
+	remotes := opts.Remotes
+	if !opts.SetRemotes {
+		remotes, err = opts.LoadRemotes(opts.Layout)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if err := opts.ValidateRemotes(remotes); err != nil {
+		return Config{}, err
+	}
+
+	steps := updateSteps(opts, oldPort, cfg.SubscribePort, remotes)
 	for i, s := range steps {
 		emitProgress(opts.Progress, Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx, cfg); err != nil {
@@ -95,7 +125,7 @@ type updateStep struct {
 	run    func(context.Context, Config) error
 }
 
-func updateSteps(opts UpdateOptions, oldPort, newPort int) []updateStep {
+func updateSteps(opts UpdateOptions, oldPort, newPort int, remotes []Remote) []updateStep {
 	portChanged := oldPort != newPort
 	var steps []updateStep
 	if portChanged {
@@ -113,11 +143,14 @@ func updateSteps(opts UpdateOptions, oldPort, newPort int) []updateStep {
 		}
 	}
 	steps = append(steps,
-		updateStep{label: "Subscriptions", detail: "regenerate subscription outputs for fleet", run: func(ctx context.Context, cfg Config) error {
-			return opts.WriteSubscriptions(ctx, opts.Layout, cfg)
+		updateStep{label: "Subscriptions", detail: "regenerate local and remote subscription outputs", run: func(ctx context.Context, cfg Config) error {
+			return opts.WriteWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch)
 		}},
 		updateStep{label: "State", detail: "persist subscription settings", run: func(_ context.Context, cfg Config) error {
-			return opts.WriteState(opts.Layout.StateDir, cfg)
+			if err := opts.WriteState(opts.Layout.StateDir, cfg); err != nil {
+				return err
+			}
+			return opts.SaveRemotes(opts.Layout, remotes)
 		}},
 	)
 	if portChanged {

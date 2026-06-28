@@ -37,22 +37,14 @@ func (fakeIssuer) Issue(_ context.Context, _ acme.Request) (acme.Certificate, er
 	return acme.Certificate{CertificatePEM: []byte("CERTPEM"), PrivateKeyPEM: []byte("KEYPEM")}, nil
 }
 
-// fakeDNSLookup always returns Cloudflare credentials; used so stepCertificates
-// can issue without requiring a real DNSStore.
-func fakeDNSLookup(_ string) (string, map[string]string, error) {
-	return "cloudflare", map[string]string{"CF_API_TOKEN": "test"}, nil
-}
-
 type countingIssuer struct {
 	calls int
-	got   acme.Request
 	cert  acme.Certificate
 	err   error
 }
 
-func (i *countingIssuer) Issue(_ context.Context, r acme.Request) (acme.Certificate, error) {
+func (i *countingIssuer) Issue(_ context.Context, _ acme.Request) (acme.Certificate, error) {
 	i.calls++
-	i.got = r
 	return i.cert, i.err
 }
 
@@ -90,6 +82,8 @@ func testConfig(t *testing.T) Config {
 	}
 	return Config{
 		Domain:                 "example.com",
+		Email:                  "admin@example.com",
+		Challenge:              acme.ChallengeHTTP01,
 		Ports:                  config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
 		DisplayName:            "US-vps1",
 		Salt:                   "testsalt",
@@ -128,7 +122,6 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
 		CheckConflicts: func(context.Context, Config) error { return nil },
 		CheckPorts:     func(context.Context, Config) error { return nil },
-		DNSLookup:      fakeDNSLookup,
 		Progress:       func(e Event) { events = append(events, e) },
 		GOOS:           "linux",
 		GOARCH:         "amd64",
@@ -327,7 +320,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	}
 	mustExist(t, layout.SingBoxBin)
 	mustExist(t, filepath.Join(layout.StateDir, "domain"))
-	mustNotExist(t, filepath.Join(layout.StateDir, "acme_challenge"))
+	mustExist(t, filepath.Join(layout.StateDir, "acme_challenge"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_in_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_out_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_total_limit_bytes"))
@@ -357,7 +350,6 @@ func TestOrchestratorSkipsMonitorWhenDisabled(t *testing.T) {
 		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
 		CheckConflicts: func(context.Context, Config) error { return nil },
 		CheckPorts:     func(context.Context, Config) error { return nil },
-		DNSLookup:      fakeDNSLookup,
 		GOOS:           "linux",
 		GOARCH:         "amd64",
 		DeployBin:      "/usr/bin/singbox-deploy",
@@ -466,7 +458,7 @@ func TestStepCertificatesObtainsWhenExistingCertificateInvalid(t *testing.T) {
 	cfg := testConfig(t)
 	runner := &recordingRunner{}
 	issuer := &countingIssuer{cert: acme.Certificate{CertificatePEM: []byte("NEWCERT"), PrivateKeyPEM: []byte("NEWKEY")}}
-	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer), DNSLookup: fakeDNSLookup}
+	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer)}
 	certPath, keyPath := o.certPaths(cfg)
 	if err := WriteFile(certPath, []byte("invalid cert"), 0o644); err != nil {
 		t.Fatalf("write invalid cert: %v", err)
@@ -481,8 +473,8 @@ func TestStepCertificatesObtainsWhenExistingCertificateInvalid(t *testing.T) {
 	if issuer.calls != 1 {
 		t.Fatalf("expected ACME call, got %d", issuer.calls)
 	}
-	if len(runner.commands) != 0 {
-		t.Fatalf("dns-01 issuance must not run shell commands, got %#v", runner.commands)
+	if len(runner.commands) != 1 || runner.commands[0] != "systemctl stop nginx" {
+		t.Fatalf("expected nginx stop before ACME, got %#v", runner.commands)
 	}
 	gotCert, err := os.ReadFile(certPath)
 	if err != nil {
@@ -494,51 +486,6 @@ func TestStepCertificatesObtainsWhenExistingCertificateInvalid(t *testing.T) {
 	}
 	if string(gotCert) != "NEWCERT" || string(gotKey) != "NEWKEY" {
 		t.Fatalf("new certificate pair not written")
-	}
-}
-
-func TestStepCertificatesRejectsMissingDNSCredentials(t *testing.T) {
-	root := t.TempDir()
-	layout := paths.LayoutForRoot(root)
-	cfg := testConfig(t)
-	issuer := &countingIssuer{}
-	missLookup := func(_ string) (string, map[string]string, error) {
-		return "", nil, os.ErrNotExist
-	}
-	o := &Orchestrator{Runner: &recordingRunner{}, Layout: layout, ACME: acme.NewManager(issuer), DNSLookup: missLookup}
-	err := o.stepCertificates(context.Background(), cfg)
-	if err == nil {
-		t.Fatalf("expected error when DNS credentials are missing")
-	}
-	if !strings.Contains(err.Error(), "no DNS credentials configured for example.com") {
-		t.Fatalf("error should mention missing DNS credentials, got %v", err)
-	}
-	if issuer.calls != 0 {
-		t.Fatalf("ACME must not be called when lookup misses, got %d calls", issuer.calls)
-	}
-}
-
-func TestStepCertificatesPassesLookupCredentialsToACME(t *testing.T) {
-	root := t.TempDir()
-	layout := paths.LayoutForRoot(root)
-	cfg := testConfig(t)
-	issuer := &countingIssuer{cert: acme.Certificate{CertificatePEM: []byte("PEM"), PrivateKeyPEM: []byte("KEY")}}
-	wantCreds := map[string]string{"CF_API_TOKEN": "tok"}
-	lookup := func(host string) (string, map[string]string, error) {
-		if host != cfg.Domain {
-			t.Fatalf("lookup got host %q, want %q", host, cfg.Domain)
-		}
-		return "cloudflare", wantCreds, nil
-	}
-	o := &Orchestrator{Runner: &recordingRunner{}, Layout: layout, ACME: acme.NewManager(issuer), DNSLookup: lookup}
-	if err := o.stepCertificates(context.Background(), cfg); err != nil {
-		t.Fatalf("stepCertificates: %v", err)
-	}
-	if issuer.calls != 1 {
-		t.Fatalf("expected 1 ACME call, got %d", issuer.calls)
-	}
-	if issuer.got.DNSProvider != "cloudflare" || issuer.got.Credentials["CF_API_TOKEN"] != "tok" {
-		t.Fatalf("ACME request did not carry lookup credentials: %#v", issuer.got)
 	}
 }
 
@@ -627,7 +574,6 @@ func TestOrchestratorStopsOnStepFailure(t *testing.T) {
 		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
 		CheckConflicts: func(context.Context, Config) error { return nil },
 		CheckPorts:     func(context.Context, Config) error { return nil },
-		DNSLookup:      fakeDNSLookup,
 		SystemdDir:     filepath.Join(root, "systemd"),
 		NginxConfPath:  filepath.Join(root, "nginx.conf"),
 	}

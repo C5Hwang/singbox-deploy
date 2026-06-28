@@ -11,12 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
@@ -66,8 +64,8 @@ func TestWideInstallContentUsesAvailableHeightAndMenuAdapts(t *testing.T) {
 	if got := lipgloss.Height(view); got != 60 {
 		t.Fatalf("view height = %d, want 60:\n%s", got, view)
 	}
-	if want := 60 - 1 - panelStyle.GetVerticalFrameSize(); w.form.Height != want {
-		t.Fatalf("install flow height = %d, want available content height %d", w.form.Height, want)
+	if want := 60 - 1 - panelStyle.GetVerticalFrameSize(); w.form.height != want {
+		t.Fatalf("install flow height = %d, want available content height %d", w.form.height, want)
 	}
 
 	body := m.bodyView(160, 59)
@@ -106,11 +104,12 @@ func confirmInstallFlowForTest() *installFlow {
 	return &installFlow{
 		phase: phaseConfirm,
 		form: installFormWithValuesForTest(map[string]string{
-			"domain":              "example.com",
-			"protocols":           defaultProtocolValue(),
-			"reality_sni":         "www.microsoft.com",
-			"display_name":        "Node",
-			"monitor":             "yes",
+			"domain":                 "example.com",
+			"challenge":              "http-01",
+			"protocols":              defaultProtocolValue(),
+			"reality_sni":            "www.microsoft.com",
+			"display_name":           "Node",
+			"monitor":                "yes",
 			"traffic_in_limit":    "0",
 			"traffic_out_limit":   "0",
 			"traffic_total_limit": "0",
@@ -127,13 +126,13 @@ func installFormForTest() installForm {
 
 func installFormWithValuesForTest(values map[string]string) installForm {
 	w := installFormForTest()
-	w.Values = values
+	w.values = values
 	return w
 }
 
 func TestInstallFieldShowsUsageNote(t *testing.T) {
 	w := installFormForTest()
-	w.Width = 80
+	w.width = 80
 	w.startForm()
 	view := w.View()
 	if !strings.Contains(view, "Used for certificate issuance") {
@@ -145,7 +144,7 @@ func TestProtocolManagementMenuOpens(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withProtocolManagerDeps(t, layout)
 	m := NewModel()
-	m.cursor = 2
+	m.cursor = 1
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.protocols == nil {
 		t.Fatalf("protocol manager was not opened")
@@ -161,14 +160,17 @@ func TestSubscriptionMenuEntryOpens(t *testing.T) {
 	withSubscriptionDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 3
+	m.cursor = 2
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.subscribe == nil {
 		t.Fatalf("subscription manager was not opened")
 	}
 	view := m.View()
-	if !strings.Contains(view, "Manage Subscriptions") || !strings.Contains(view, "Edit display name") {
+	if !strings.Contains(view, "Manage Subscriptions") || !strings.Contains(view, "Remote subscriptions") || !strings.Contains(view, "Edit display name") {
 		t.Fatalf("subscription manager view missing expected content:\n%s", view)
+	}
+	if !strings.Contains(view, "Delete remote subscription") || strings.Contains(strings.ToLower(view), "aggregation") {
+		t.Fatalf("subscription manager should use remote subscription wording:\n%s", view)
 	}
 }
 
@@ -186,13 +188,13 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 	withMonitorDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 5
+	m.cursor = 4
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.monitor == nil {
 		t.Fatalf("monitor manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust traffic counters", "Edit monitor settings", "Start monitor service"} {
+	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust traffic counters", "Add monitor source", "Delete monitor sources"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("monitor manager view missing %q:\n%s", want, view)
 		}
@@ -204,7 +206,7 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 	withCoreDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 7
+	m.cursor = 6
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.core == nil {
 		t.Fatalf("core manager was not opened")
@@ -217,112 +219,13 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 	}
 }
 
-func TestCoreManagementTargetPickerOpensWhenNodesRegistered(t *testing.T) {
-	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
-	registerTestNode(t, layout)
-	withCoreDeps(t, layout)
-
-	cm := newCoreManager()
-	if cm.phase != corePhaseTarget {
-		t.Fatalf("phase = %v, want corePhaseTarget", cm.phase)
-	}
-	view := cm.View()
-	for _, want := range []string{"sing-box Core · Target", "Local (master)", "Tokyo", "All (master + every node)"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("target picker missing %q:\n%s", want, view)
-		}
-	}
-	_, done := cm.handleKey(tea.KeyMsg{Type: tea.KeyDown})
-	if done {
-		t.Fatalf("down should not close core manager")
-	}
-	_, done = cm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || cm.phase != corePhaseAction {
-		t.Fatalf("enter should move to action phase, phase=%v done=%v", cm.phase, done)
-	}
-	actionView := cm.View()
-	if !strings.Contains(actionView, "Target: Tokyo (10.10.0.2)") {
-		t.Fatalf("action view should show selected target badge:\n%s", actionView)
-	}
-	for _, hidden := range []string{"Start sing-box.service", "View sing-box.service logs"} {
-		if strings.Contains(actionView, hidden) {
-			t.Fatalf("non-local target should hide %q:\n%s", hidden, actionView)
-		}
-	}
-}
-
-func TestMonitorTargetPickerHidesLocalOnlyActionsForNode(t *testing.T) {
-	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
-	writeStatusState(t, layout.StateDir, "monitor", "yes")
-	registerTestNode(t, layout)
-	withMonitorDeps(t, layout)
-
-	tm := newMonitorManager()
-	if tm.phase != monitorPhaseTarget {
-		t.Fatalf("phase = %v, want monitorPhaseTarget", tm.phase)
-	}
-	_, _ = tm.handleKey(tea.KeyMsg{Type: tea.KeyDown})
-	_, _ = tm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if tm.phase != monitorPhaseAction {
-		t.Fatalf("enter should advance to action, phase=%v", tm.phase)
-	}
-	view := tm.View()
-	if !strings.Contains(view, "Edit monitor settings") {
-		t.Fatalf("monitor settings action should remain available:\n%s", view)
-	}
-	for _, hidden := range []string{"Adjust traffic counters", "Start monitor service", "View monitor service logs"} {
-		if strings.Contains(view, hidden) {
-			t.Fatalf("non-local target should hide %q:\n%s", hidden, view)
-		}
-	}
-}
-
-func TestProtocolTargetPickerShowsBadgeAndForAllAddsOption(t *testing.T) {
-	layout := protocolManagerState(t, "hysteria2", "")
-	registerTestNode(t, layout)
-	withProtocolManagerDeps(t, layout)
-
-	pm := newProtocolManager()
-	if pm.phase != protocolPhaseTarget {
-		t.Fatalf("phase = %v, want protocolPhaseTarget", pm.phase)
-	}
-	view := pm.View()
-	for _, want := range []string{"Protocol Management · Target", "Local (master)", "Tokyo", "All (master + every node)"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("target picker missing %q:\n%s", want, view)
-		}
-	}
-	_, _ = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if pm.phase != protocolPhaseAction {
-		t.Fatalf("enter should advance to action, phase=%v", pm.phase)
-	}
-	if !strings.Contains(pm.View(), "Target: Local") {
-		t.Fatalf("action view should show Local target badge:\n%s", pm.View())
-	}
-}
-
-func registerTestNode(t *testing.T, layout paths.Layout) {
-	t.Helper()
-	registry := cluster.NewRegistry(layout)
-	node := cluster.Node{
-		ID:       "001",
-		Alias:    "Tokyo",
-		Domain:   "jp.example.com",
-		WGIP:     "10.10.0.2",
-		APIToken: "tok",
-	}
-	if err := registry.Save(node); err != nil {
-		t.Fatalf("register test node: %v", err)
-	}
-}
-
 func TestUninstallMenuEntryOpens(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withUninstallDeps(t, layout)
 
 	m := NewModel()
 	m.SetSize(180, 40)
-	m.cursor = 9
+	m.cursor = 8
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.uninstall == nil {
 		t.Fatalf("uninstall manager was not opened")
@@ -349,7 +252,7 @@ func TestUninstallConfirmTogglesOptionalData(t *testing.T) {
 	if um.selected(uninstallCertificatesKey) {
 		t.Fatalf("certificates should be kept by default")
 	}
-	um.cursor = 2
+	um.cursor = 1
 	_, done := um.handleKey(tea.KeyMsg{Type: tea.KeySpace})
 	if done || !um.selected(uninstallCertificatesKey) {
 		t.Fatalf("space should toggle certificates, done=%v selected=%v", done, um.selected(uninstallCertificatesKey))
@@ -431,6 +334,72 @@ func TestCoreChangeStableListsEightReleases(t *testing.T) {
 	}
 }
 
+func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	remotes := []deploy.RemoteSubscription{
+		{Domain: "one.example.com", Port: 9443, Salt: "salt-one"},
+		{Domain: "two.example.com", Port: 9444, Salt: "salt-two"},
+	}
+	if err := deploy.SaveRemoteSubscriptions(layout, remotes); err != nil {
+		t.Fatalf("save remotes: %v", err)
+	}
+	withSubscriptionDeps(t, layout)
+
+	sm := newSubscriptionManager()
+	sm.setSize(100, 30)
+	if sm.loadErr != nil {
+		t.Fatalf("load subscription manager: %v", sm.loadErr)
+	}
+	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDeleteRemotes)
+	_, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || sm.phase != subscriptionPhaseForm {
+		t.Fatalf("enter should open delete multi-select, phase=%v done=%v", sm.phase, done)
+	}
+	view := sm.View()
+	for _, want := range []string{"Remote subscriptions to delete", "[ ] one.example.com (one.example.com:9443)", "[ ] two.example.com (two.example.com:9444)"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("delete multi-select missing %q:\n%s", want, view)
+		}
+	}
+	if got := hintText(sm.footerHints()...); !strings.Contains(got, "Space: Toggle") {
+		t.Fatalf("delete multi-select footer missing toggle hint: %s", got)
+	}
+
+	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	if done || !strings.Contains(sm.View(), "[x] one.example.com (one.example.com:9443)") {
+		t.Fatalf("space should select first remote, done=%v:\n%s", done, sm.View())
+	}
+	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || sm.phase != subscriptionPhaseConfirm {
+		t.Fatalf("enter should confirm selected delete, phase=%v done=%v", sm.phase, done)
+	}
+	view = sm.View()
+	for _, want := range []string{"Delete remote subscriptions", "Remaining remote subscriptions", "Delete", "one.example.com (one.example.com:9443)", "Keep", "two.example.com (two.example.com:9444)"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("delete confirm missing %q:\n%s", want, view)
+		}
+	}
+	target := sm.targetRemotes()
+	if len(target) != 1 || target[0].Domain != "two.example.com" {
+		t.Fatalf("target remotes = %#v, want only two.example.com", target)
+	}
+}
+
+func TestSubscriptionDeleteRemoteRequiresConfiguredRemote(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	withSubscriptionDeps(t, layout)
+
+	sm := newSubscriptionManager()
+	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDeleteRemotes)
+	_, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if done || sm.phase != subscriptionPhaseAction {
+		t.Fatalf("empty delete should stay on action phase, phase=%v done=%v", sm.phase, done)
+	}
+	if !strings.Contains(sm.View(), "no remote subscriptions to delete") {
+		t.Fatalf("missing empty delete warning:\n%s", sm.View())
+	}
+}
+
 func TestMenuUsesSubscriptionGroup(t *testing.T) {
 	m := NewModel()
 	view := m.menuView(40)
@@ -497,16 +466,16 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 }
 
 func TestParameterInputShowsTwoCharacterDefaultWhenUnsized(t *testing.T) {
-	pf := newParameterForm([]field{{Key: "hysteria2_port", Label: "Hysteria2 port", Def: "50"}})
-	pf.StartForm()
-	pf.Input.Cursor.Blink = true
-	if got := pf.Input.View(); !strings.Contains(got, "50") {
+	form := newParameterForm([]field{{key: "hysteria2_port", label: "Hysteria2 port", def: "50"}})
+	form.startForm()
+	form.input.Cursor.Blink = true
+	if got := form.input.View(); !strings.Contains(got, "50") {
 		t.Fatalf("unsized placeholder = %q, want full default 50", got)
 	}
 
-	pf.SetSize(0, 0)
-	pf.Input.Cursor.Blink = true
-	if got := pf.Input.View(); !strings.Contains(got, "50") {
+	form.setSize(0, 0)
+	form.input.Cursor.Blink = true
+	if got := form.input.View(); !strings.Contains(got, "50") {
 		t.Fatalf("zero-width placeholder = %q, want full default 50", got)
 	}
 }
@@ -778,6 +747,17 @@ func withUninstallDeps(t *testing.T, layout paths.Layout) {
 	uninstallRun = func(context.Context, uninstall.Options) error { return nil }
 }
 
+func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subscriptionAction) int {
+	t.Helper()
+	for i, item := range sm.actions() {
+		if item.action == action {
+			return i
+		}
+	}
+	t.Fatalf("subscription action %v not found", action)
+	return 0
+}
+
 func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
 	w := &installFlow{phase: phaseRunning, run: commandRun{ch: make(chan runMsg, 1), bar: progressBarForTest()}}
 	cmd := w.handleRun(runMsg{done: true})
@@ -870,8 +850,8 @@ func TestRunningViewFitsAssignedHeightWithWrappedLog(t *testing.T) {
 	w := &installFlow{phase: phaseRunning, run: commandRun{bar: progressBarForTest()}}
 	w.setSize(32, 10)
 	w.run.appendLog(strings.Repeat("long-command ", 20))
-	if got := lipgloss.Height(w.View()); got > w.form.Height {
-		t.Fatalf("running view height = %d, want <= %d:\n%s", got, w.form.Height, w.View())
+	if got := lipgloss.Height(w.View()); got > w.form.height {
+		t.Fatalf("running view height = %d, want <= %d:\n%s", got, w.form.height, w.View())
 	}
 }
 
@@ -913,14 +893,14 @@ func progressBarForTest() progress.Model {
 func TestInstallFormCanGoBackToPreviousField(t *testing.T) {
 	w := installFormForTest()
 	w.startForm()
-	w.Input.SetValue("example.com")
+	w.input.SetValue("example.com")
 	w.commitField()
-	w.Input.SetValue("admin@example.com")
-	w.PreviousField()
-	if w.FieldIx != 0 {
-		t.Fatalf("fieldIx = %d, want 0", w.FieldIx)
+	w.input.SetValue("admin@example.com")
+	w.previousField()
+	if w.fieldIx != 0 {
+		t.Fatalf("fieldIx = %d, want 0", w.fieldIx)
 	}
-	if got := w.Input.Value(); got != "example.com" {
+	if got := w.input.Value(); got != "example.com" {
 		t.Fatalf("restored input = %q, want domain", got)
 	}
 }
@@ -934,13 +914,13 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 		return fmt.Errorf("domain resolves elsewhere")
 	}
 	w.startForm()
-	w.Input.SetValue("bad.example")
+	w.input.SetValue("bad.example")
 	w.commitField()
 
-	if w.FieldIx != 0 {
-		t.Fatalf("fieldIx = %d, want domain field", w.FieldIx)
+	if w.fieldIx != 0 {
+		t.Fatalf("fieldIx = %d, want domain field", w.fieldIx)
 	}
-	if w.Values["domain"] != "" {
+	if w.values["domain"] != "" {
 		t.Fatalf("domain should not be committed on validation failure")
 	}
 	if !strings.Contains(w.View(), "domain resolves elsewhere") {
@@ -948,42 +928,67 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 	}
 }
 
-// Validation errors must persist across cursor-blink ticks: the textinput
-// model emits cursor.BlinkMsg every few hundred ms, and the form's Update path
-// forwards non-key messages to updateInput. Clearing fieldErr there would make
-// validation errors flash and vanish before the user can read them.
-func TestFieldErrSurvivesCursorBlink(t *testing.T) {
+func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
 	w := installFormForTest()
-	w.validateDomain = func(_ context.Context, _ string) error {
-		return fmt.Errorf("domain resolves elsewhere")
-	}
 	w.startForm()
-	w.Input.SetValue("bad.example")
+	w.input.SetValue("example.com")
+	w.commitField()
 	w.commitField()
 
-	if w.FieldErr == "" {
-		t.Fatalf("fieldErr should be set after validation failure")
+	if got := w.fields[w.fieldIx].key; got != "challenge" {
+		t.Fatalf("current field = %q, want challenge", got)
 	}
-	w.UpdateInput(cursor.BlinkMsg{})
-	if w.FieldErr == "" {
-		t.Fatalf("fieldErr should survive a cursor blink tick")
+	if !strings.Contains(w.View(), "> http-01") {
+		t.Fatalf("challenge should render as a selection:\n%s", w.View())
 	}
-	w.UpdateInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	if w.FieldErr != "" {
-		t.Fatalf("fieldErr should clear on user key press, got %q", w.FieldErr)
+	w.moveOption(1)
+	w.commitField()
+	if got := w.values["challenge"]; got != "dns-01" {
+		t.Fatalf("challenge = %q, want dns-01", got)
+	}
+	if got := w.fields[w.fieldIx].key; got != "dns_provider" {
+		t.Fatalf("current field = %q, want dns_provider", got)
+	}
+}
+
+func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
+	fields := installFields()
+	for _, tc := range []struct {
+		provider string
+		want     string
+		link     string
+		avoid    string
+	}{
+		{provider: "cloudflare", want: "Cloudflare uses an API token.", link: "https://dash.cloudflare.com/profile/api-tokens", avoid: "Aliyun uses"},
+		{provider: "aliyun", want: "Aliyun uses accessKey:secretKey", link: "https://ram.console.aliyun.com/manage/ak", avoid: "Cloudflare uses"},
+	} {
+		w := installFormWithValuesForTest(map[string]string{"dns_provider": tc.provider})
+		w.fields = fields
+		w.width = 100
+		w.setField(fieldIndex(t, fields, "dns_credential"))
+		view := w.View()
+		if !strings.Contains(view, tc.want) || !strings.Contains(view, tc.link) {
+			t.Fatalf("%s note missing provider text or link:\n%s", tc.provider, view)
+		}
+		if !strings.Contains(view, "You can apply at "+tc.link) {
+			t.Fatalf("%s note should use application hint format:\n%s", tc.provider, view)
+		}
+		if strings.Contains(view, tc.avoid) {
+			t.Fatalf("%s note should not include other provider text:\n%s", tc.provider, view)
+		}
 	}
 }
 
 func TestProtocolMultiSelectRequiresAtLeastOne(t *testing.T) {
 	w := installFormForTest()
-	w.SetField(fieldIndex(t, w.Fields, "protocols"))
-	for _, opt := range w.Fields[w.FieldIx].Options {
-		w.OptionIx = optionIndex(w.Fields[w.FieldIx].Options, opt)
-		w.ToggleOption()
+	w.setField(fieldIndex(t, w.fields, "protocols"))
+	for _, opt := range w.fields[w.fieldIx].options {
+		w.optionIx = optionIndex(w.fields[w.fieldIx].options, opt)
+		w.toggleOption()
 	}
 	w.commitField()
 
-	if w.Values["protocols"] != "" {
+	if w.values["protocols"] != "" {
 		t.Fatalf("protocols should not commit when none selected")
 	}
 	if !strings.Contains(w.View(), "select at least one protocol") {
@@ -995,15 +1000,15 @@ func TestRealityFieldsHiddenWhenRealityNotSelected(t *testing.T) {
 	vals := map[string]string{"protocols": string(config.ProtocolTUIC)}
 	fields := installFields()
 	reality := fields[fieldIndex(t, fields, "reality_sni")]
-	if reality.Skip == nil || !reality.Skip(vals) {
+	if reality.skip == nil || !reality.skip(vals) {
 		t.Fatalf("reality field should be hidden when no reality protocol is selected")
 	}
 	tuic := fields[fieldIndex(t, fields, "tuic_uuid")]
-	if tuic.Skip != nil && tuic.Skip(vals) {
+	if tuic.skip != nil && tuic.skip(vals) {
 		t.Fatalf("tuic field should be visible when tuic is selected")
 	}
 	tuicPassword := fields[fieldIndex(t, fields, "tuic_password")]
-	if tuicPassword.Skip != nil && tuicPassword.Skip(vals) {
+	if tuicPassword.skip != nil && tuicPassword.skip(vals) {
 		t.Fatalf("tuic password field should be visible when tuic is selected")
 	}
 }
@@ -1013,7 +1018,7 @@ func TestMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 	fields := installFields()
 	for _, key := range []string{"monitor_alias", "monitor_public_port", "monitor_port", "monitor_interval_seconds", "traffic_in_limit", "traffic_out_limit", "traffic_total_limit", "reset_day", "reset_hour"} {
 		f := fields[fieldIndex(t, fields, key)]
-		if f.Skip == nil || !f.Skip(vals) {
+		if f.skip == nil || !f.skip(vals) {
 			t.Fatalf("%s should be hidden when monitor is disabled", key)
 		}
 	}
@@ -1021,8 +1026,8 @@ func TestMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 
 func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 	w := installFormWithValuesForTest(map[string]string{"protocols": string(config.ProtocolRealityVision)})
-	w.Width = 80
-	w.SetField(fieldIndex(t, w.Fields, "reality_vision_uuid"))
+	w.width = 80
+	w.setField(fieldIndex(t, w.fields, "reality_vision_uuid"))
 	view := w.View()
 	if !strings.Contains(view, "Setting parameters for: vless-reality-vision") {
 		t.Fatalf("current protocol marker missing:\n%s", view)
@@ -1032,11 +1037,11 @@ func TestProtocolParameterViewShowsCurrentProtocol(t *testing.T) {
 func TestInstallFieldsIncludeSiteTemplates(t *testing.T) {
 	fields := installFields()
 	field := fields[fieldIndex(t, fields, "site_template")]
-	if field.Def != deploy.DefaultSiteTemplate {
-		t.Fatalf("site template default = %q", field.Def)
+	if field.def != deploy.DefaultSiteTemplate {
+		t.Fatalf("site template default = %q", field.def)
 	}
-	if strings.Join(field.Options, ",") != strings.Join(deploy.SiteTemplateOptions(), ",") {
-		t.Fatalf("site template options = %#v", field.Options)
+	if strings.Join(field.options, ",") != strings.Join(deploy.SiteTemplateOptions(), ",") {
+		t.Fatalf("site template options = %#v", field.options)
 	}
 }
 
@@ -1044,6 +1049,7 @@ func TestBuildConfigRejectsInvalidSiteTemplate(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":        "example.com",
+			"challenge":     "http-01",
 			"protocols":     "tuic",
 			"display_name":  "Node",
 			"site_template": "unknown",
@@ -1105,6 +1111,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":                   "example.com",
+			"challenge":                "http-01",
 			"protocols":                "vless-reality-vision,tuic",
 			"reality_sni":              "https://www.cloudflare.com/cdn-cgi/trace",
 			"reality_vision_uuid":      "11111111-1111-4111-8111-111111111111",
@@ -1121,9 +1128,9 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 			"monitor_public_port":      "24447",
 			"monitor_port":             "24446",
 			"monitor_interval_seconds": "60",
-			"traffic_in_limit":         "40GB",
-			"traffic_out_limit":        "50GB",
-			"traffic_total_limit":      "100GB",
+			"traffic_in_limit":      "40GB",
+			"traffic_out_limit":     "50GB",
+			"traffic_total_limit":   "100GB",
 			"reset_day":                "1",
 			"reset_hour":               "5",
 		}),
@@ -1176,6 +1183,7 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":         "example.com",
+			"challenge":      "http-01",
 			"protocols":      "tuic",
 			"tuic_port":      "24444",
 			"display_name":   "Node",
@@ -1189,17 +1197,17 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 		t.Fatalf("expected subscribe/protocol port conflict, got %v", err)
 	}
 
-	w.form.Values["tuic_port"] = "24445"
-	w.form.Values["monitor"] = "yes"
-	w.form.Values["monitor_public_port"] = "24444"
-	w.form.Values["monitor_port"] = "24446"
+	w.form.values["tuic_port"] = "24445"
+	w.form.values["monitor"] = "yes"
+	w.form.values["monitor_public_port"] = "24444"
+	w.form.values["monitor_port"] = "24446"
 	_, err = w.buildConfig()
 	if err == nil || !strings.Contains(err.Error(), "monitor public port 24444 conflicts") {
 		t.Fatalf("expected subscribe/monitor port conflict, got %v", err)
 	}
 
-	w.form.Values["monitor_public_port"] = "24446"
-	w.form.Values["monitor_port"] = "24444"
+	w.form.values["monitor_public_port"] = "24446"
+	w.form.values["monitor_port"] = "24444"
 	_, err = w.buildConfig()
 	if err == nil || !strings.Contains(err.Error(), "monitor service port 24444 conflicts") {
 		t.Fatalf("expected subscribe/monitor local port conflict, got %v", err)
@@ -1209,14 +1217,15 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
-			"domain":              "example.com",
-			"protocols":           "hysteria2,anytls",
-			"display_name":        "Node",
-			"monitor":             "yes",
+			"domain":                 "example.com",
+			"challenge":              "http-01",
+			"protocols":              "hysteria2,anytls",
+			"display_name":           "Node",
+			"monitor":                "yes",
 			"traffic_in_limit":    "0",
 			"traffic_out_limit":   "0",
 			"traffic_total_limit": "0",
-			"reset_day":           "1",
+			"reset_day":              "1",
 		}),
 		host: supportedTestHost(),
 	}
@@ -1251,14 +1260,15 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 func TestBuildConfigDisablesMonitor(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
-			"domain":              "example.com",
-			"protocols":           "tuic",
-			"tuic_uuid":           "22222222-2222-4222-8222-222222222222",
-			"display_name":        "Node",
-			"monitor":             "no",
-			"traffic_in_limit":    "40GB",
-			"traffic_out_limit":   "50GB",
-			"traffic_total_limit": "100GB",
+			"domain":                 "example.com",
+			"challenge":              "http-01",
+			"protocols":              "tuic",
+			"tuic_uuid":              "22222222-2222-4222-8222-222222222222",
+			"display_name":           "Node",
+			"monitor":              "no",
+			"traffic_in_limit":     "40GB",
+			"traffic_out_limit":    "50GB",
+			"traffic_total_limit":  "100GB",
 		}),
 		host: supportedTestHost(),
 	}
@@ -1277,173 +1287,10 @@ func TestBuildConfigDisablesMonitor(t *testing.T) {
 func fieldIndex(t *testing.T, fields []field, key string) int {
 	t.Helper()
 	for i, f := range fields {
-		if f.Key == key {
+		if f.key == key {
 			return i
 		}
 	}
 	t.Fatalf("field %q not found", key)
 	return -1
-}
-
-// TestAddNodeFieldsIncludePerProtocolPort confirms the add-node form exposes
-// a port field for every protocol, and that the field is skipped when the
-// protocol isn't selected.
-func TestAddNodeFieldsIncludePerProtocolPort(t *testing.T) {
-	nm := &nodeManager{parameterForm: newParameterForm(nil)}
-	fields := nm.addNodeFields()
-	for _, p := range config.AllProtocols {
-		key := portFieldKey(p)
-		idx := fieldIndex(t, fields, key)
-		// Without the protocol selected, the skip predicate must return true.
-		if fields[idx].Skip == nil {
-			t.Fatalf("field %s has no skip predicate", key)
-		}
-		if !fields[idx].Skip(map[string]string{"protocols": ""}) {
-			t.Errorf("field %s should be skipped when protocols is empty", key)
-		}
-		// With the protocol selected, it must NOT be skipped.
-		if fields[idx].Skip(map[string]string{"protocols": string(p)}) {
-			t.Errorf("field %s should not be skipped when its protocol is selected", key)
-		}
-	}
-}
-
-// TestAllocateNodeProtocolPortsFillsBlanks confirms that selected protocols
-// without an explicit port get a random allocation, and explicit values are
-// preserved.
-func TestAllocateNodeProtocolPortsFillsBlanks(t *testing.T) {
-	vals := map[string]string{"hysteria2_port": "29443"}
-	ports, err := allocateNodeProtocolPorts([]config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2}, vals)
-	if err != nil {
-		t.Fatalf("allocateNodeProtocolPorts: %v", err)
-	}
-	if ports.Hysteria2 != 29443 {
-		t.Errorf("explicit value not preserved: got %d", ports.Hysteria2)
-	}
-	if ports.RealityVision == 0 || ports.RealityVision == 443 {
-		t.Errorf("RealityVision must be randomly assigned and != 443, got %d", ports.RealityVision)
-	}
-}
-
-// TestAllocateNodeProtocolPortsRejects443 confirms an explicit 443 input is
-// rejected at allocation time even if validation slipped past the form.
-func TestAllocateNodeProtocolPortsRejects443(t *testing.T) {
-	vals := map[string]string{"hysteria2_port": "443"}
-	if _, err := allocateNodeProtocolPorts([]config.Protocol{config.ProtocolHysteria2}, vals); err == nil {
-		t.Fatalf("expected error for 443 input")
-	}
-}
-
-// TestAddNodeFieldsMirrorInstallProtocolSection confirms the add-node form
-// exposes the same Reality SNI + per-protocol UUID/password fields the install
-// flow collects, with the same skip-when-not-selected behaviour.
-func TestAddNodeFieldsMirrorInstallProtocolSection(t *testing.T) {
-	nm := &nodeManager{parameterForm: newParameterForm(nil)}
-	fields := nm.addNodeFields()
-	credentialKeys := []struct {
-		key   string
-		proto config.Protocol
-	}{
-		{"reality_vision_uuid", config.ProtocolRealityVision},
-		{"reality_grpc_uuid", config.ProtocolRealityGRPC},
-		{"hysteria2_password", config.ProtocolHysteria2},
-		{"tuic_uuid", config.ProtocolTUIC},
-		{"tuic_password", config.ProtocolTUIC},
-		{"anytls_password", config.ProtocolAnyTLS},
-	}
-	for _, tc := range credentialKeys {
-		f := fields[fieldIndex(t, fields, tc.key)]
-		if f.Skip == nil {
-			t.Fatalf("%s missing skip predicate", tc.key)
-		}
-		if !f.Skip(map[string]string{"protocols": ""}) {
-			t.Errorf("%s should be hidden when its protocol is not selected", tc.key)
-		}
-		if f.Skip(map[string]string{"protocols": string(tc.proto)}) {
-			t.Errorf("%s should be visible when %s is selected", tc.key, tc.proto)
-		}
-	}
-
-	sni := fields[fieldIndex(t, fields, "reality_sni")]
-	if sni.Skip == nil {
-		t.Fatalf("reality_sni missing skip predicate")
-	}
-	if !sni.Skip(map[string]string{"protocols": string(config.ProtocolHysteria2)}) {
-		t.Errorf("reality_sni should be hidden when no Reality protocol is selected")
-	}
-	if sni.Skip(map[string]string{"protocols": string(config.ProtocolRealityGRPC)}) {
-		t.Errorf("reality_sni should be visible when a Reality protocol is selected")
-	}
-}
-
-// TestAddNodeFieldsDomainPositionedBeforeProtocols pins the node form layout
-// to match the master install flow: domain follows the SSH basics block and
-// precedes the protocols selector (and all per-protocol parameter fields).
-func TestAddNodeFieldsDomainPositionedBeforeProtocols(t *testing.T) {
-	nm := &nodeManager{parameterForm: newParameterForm(nil)}
-	fields := nm.addNodeFields()
-	if fieldIndex(t, fields, "domain") >= fieldIndex(t, fields, "protocols") {
-		t.Fatalf("domain field must come before protocols selector")
-	}
-	if fieldIndex(t, fields, "ssh_password") >= fieldIndex(t, fields, "domain") {
-		// sanity: domain should still follow the SSH basics block
-		t.Fatalf("domain field must follow the SSH basics block")
-	}
-}
-
-// TestAddNodeBlockedWhenSingBoxNotInstalled confirms that selecting "Add node"
-// before sing-box has a parseable version surfaces an inline error and keeps
-// the user on the action menu, instead of letting them fill the entire form
-// only to fail at buildAddRequest.
-func TestAddNodeBlockedWhenSingBoxNotInstalled(t *testing.T) {
-	oldVersion := coreCurrentVersion
-	t.Cleanup(func() { coreCurrentVersion = oldVersion })
-	coreCurrentVersion = func(paths.Layout) string { return "" }
-
-	nm := &nodeManager{
-		phase:         nodePhaseAction,
-		parameterForm: newParameterForm(nil),
-		commandRun:    newCommandRun(),
-	}
-	nm.action = nodeActionAdd
-	for i, a := range nm.actions() {
-		if a.action == nodeActionAdd {
-			nm.cursor = i
-		}
-	}
-	nm.activateAction()
-	if nm.phase != nodePhaseAction {
-		t.Fatalf("phase = %v, want nodePhaseAction so the form does not open", nm.phase)
-	}
-	if !strings.Contains(nm.FieldErr, "install sing-box") {
-		t.Fatalf("fieldErr = %q, want install-required hint", nm.FieldErr)
-	}
-
-	coreCurrentVersion = func(paths.Layout) string { return "sing-box version 1.12.0" }
-	nm.FieldErr = ""
-	nm.activateAction()
-	if nm.phase != nodePhaseForm {
-		t.Fatalf("phase = %v, want nodePhaseForm once sing-box reports a version", nm.phase)
-	}
-	if nm.FieldErr != "" {
-		t.Fatalf("fieldErr = %q, want empty after the gate passes", nm.FieldErr)
-	}
-}
-
-// TestParseSingBoxCoreVersionExtractsBareVersion confirms the helper used by
-// buildAddRequest pulls "1.12.0" out of "sing-box version 1.12.0" so the node
-// downloads a core matching the master.
-func TestParseSingBoxCoreVersionExtractsBareVersion(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"sing-box version 1.12.0", "1.12.0"},
-		{"sing-box version v1.12.0", "1.12.0"},
-		{"  sing-box version 1.13.0-beta.2 \n", "1.13.0-beta.2"},
-		{"", ""},
-		{"installed", ""},
-	}
-	for _, tc := range cases {
-		if got := parseSingBoxCoreVersion(tc.in); got != tc.want {
-			t.Errorf("parseSingBoxCoreVersion(%q) = %q want %q", tc.in, got, tc.want)
-		}
-	}
 }

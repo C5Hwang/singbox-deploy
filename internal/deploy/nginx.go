@@ -51,30 +51,6 @@ func NginxInstallCommands(osr system.OSRelease) []system.Command {
 	}
 }
 
-// WriteNodeNginxConfig writes the minimal Nginx config used on cluster
-// nodes. Unlike the master config, it serves only the masquerade site (no
-// /s/ subscription endpoints and no /monitor/ reverse proxy), because nodes
-// only expose TLS termination for the protocols that need it.
-func WriteNodeNginxConfig(layout paths.Layout, domain, nginxConfPath string) error {
-	certPath := filepath.Join(layout.TLSDir, domain+".crt")
-	keyPath := filepath.Join(layout.TLSDir, domain+".key")
-	conf, err := templatefs.Render("nginx/singbox-deploy-node.conf.tmpl", map[string]any{
-		"CertificatePath": certPath,
-		"KeyPath":         keyPath,
-		"WebRoot":         layout.WebRoot,
-	})
-	if err != nil {
-		return err
-	}
-	return WriteFile(nginxConfPath, []byte(conf), 0o644)
-}
-
-// DeploySiteTemplate is the exported wrapper around deploySiteTemplate so the
-// node agent (and tests) can call it without reaching into unexported helpers.
-func DeploySiteTemplate(layout paths.Layout, name string) error {
-	return deploySiteTemplate(layout, name)
-}
-
 // WriteManagedNginxConfig renders and writes the managed Nginx configuration.
 func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath string) error {
 	certPath := filepath.Join(layout.TLSDir, cfg.Domain+".crt")
@@ -87,8 +63,9 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 		"KeyPath":           keyPath,
 		"WebRoot":           layout.WebRoot,
 		"SubscribeDir":      layout.SubscribeDir,
-		"EnableMonitor":     cfg.DeployMonitor,
-		"MonitorPort":       cfg.MonitorPort,
+		"EnableMonitor":         cfg.DeployMonitor,
+		"EnableMonitorFrontend": cfg.DeployMonitorFrontend,
+		"MonitorPort":           cfg.MonitorPort,
 	})
 	if err != nil {
 		return err

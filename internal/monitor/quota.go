@@ -94,13 +94,13 @@ func clampDay(year int, month time.Month, day int) int {
 
 // ResourceSnapshot is the latest resource reading shown on the monitor card.
 type ResourceSnapshot struct {
-	CPUPct          float64 `json:"cpuPct"`
-	MemPct          float64 `json:"memPct"`
-	MemUsedBytes    uint64  `json:"memUsedBytes"`
-	MemTotalBytes   uint64  `json:"memTotalBytes"`
-	DiskUsagePct    float64 `json:"diskUsagePct"`
-	DiskUsedBytes   uint64  `json:"diskUsedBytes"`
-	DiskTotalBytes  uint64  `json:"diskTotalBytes"`
+	CPUPct         float64 `json:"cpuPct"`
+	MemPct         float64 `json:"memPct"`
+	MemUsedBytes   uint64  `json:"memUsedBytes"`
+	MemTotalBytes  uint64  `json:"memTotalBytes"`
+	DiskUsagePct   float64 `json:"diskUsagePct"`
+	DiskUsedBytes  uint64  `json:"diskUsedBytes"`
+	DiskTotalBytes uint64  `json:"diskTotalBytes"`
 	DiskIOReadRate  float64 `json:"diskIOReadRate"`
 	DiskIOWriteRate float64 `json:"diskIOWriteRate"`
 }
@@ -125,15 +125,15 @@ type TrafficRawPoint struct {
 
 // ResourceHourlyPoint is one aggregated hourly resource bucket with avg and max.
 type ResourceHourlyPoint struct {
-	HourTS      int64   `json:"hourTs"`
-	CPUAvg      float64 `json:"cpuAvg"`
-	CPUMax      float64 `json:"cpuMax"`
-	MemAvg      float64 `json:"memAvg"`
-	MemMax      float64 `json:"memMax"`
-	DiskAvg     float64 `json:"diskAvg"`
-	DiskMax     float64 `json:"diskMax"`
-	DIOReadAvg  int64   `json:"dioReadAvg"`
-	DIOReadMax  int64   `json:"dioReadMax"`
-	DIOWriteAvg int64   `json:"dioWriteAvg"`
-	DIOWriteMax int64   `json:"dioWriteMax"`
+	HourTS       int64   `json:"hourTs"`
+	CPUAvg       float64 `json:"cpuAvg"`
+	CPUMax       float64 `json:"cpuMax"`
+	MemAvg       float64 `json:"memAvg"`
+	MemMax       float64 `json:"memMax"`
+	DiskAvg      float64 `json:"diskAvg"`
+	DiskMax      float64 `json:"diskMax"`
+	DIOReadAvg   int64   `json:"dioReadAvg"`
+	DIOReadMax   int64   `json:"dioReadMax"`
+	DIOWriteAvg  int64   `json:"dioWriteAvg"`
+	DIOWriteMax  int64   `json:"dioWriteMax"`
 }

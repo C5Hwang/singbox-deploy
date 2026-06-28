@@ -2,6 +2,8 @@ package monitor_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -29,6 +32,7 @@ func testConfig(t *testing.T) deploy.Config {
 	}
 	return deploy.Config{
 		Domain:                 "example.com",
+		Email:                  "admin@example.com",
 		DisplayName:            "US-vps1",
 		Salt:                   "testsalt",
 		SubscribePort:          deploy.DefaultSubscribePort,
@@ -64,12 +68,23 @@ func toManageConfig(cfg deploy.Config) monitor.ManageConfig {
 	}
 }
 
-// TestUpdateSettingsLocalAndUsage exercises the monitor settings flow after
-// the move to cluster-based aggregation: changing the local quota/sampling
-// config and adjusting current cycle usage in one call should rewrite Nginx,
-// the monitor unit, restart services, open the new firewall port, and persist
-// the new totals to the monitor database.
-func TestUpdateSettingsLocalAndUsage(t *testing.T) {
+func toManageMonitorSources(sources []deploy.MonitorSource) []monitor.ManageMonitorSource {
+	out := make([]monitor.ManageMonitorSource, len(sources))
+	for i, s := range sources {
+		out[i] = monitor.ManageMonitorSource{Domain: s.Domain, Alias: s.Alias, MonitorPublicPort: s.MonitorPublicPort}
+	}
+	return out
+}
+
+func fromManageMonitorSources(sources []monitor.ManageMonitorSource) []deploy.MonitorSource {
+	out := make([]deploy.MonitorSource, len(sources))
+	for i, s := range sources {
+		out[i] = deploy.MonitorSource{Domain: s.Domain, Alias: s.Alias, MonitorPublicPort: s.MonitorPublicPort}
+	}
+	return out
+}
+
+func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
@@ -92,6 +107,11 @@ func TestUpdateSettingsLocalAndUsage(t *testing.T) {
 	}
 	store.Close()
 
+	monitorSrc := deploy.MonitorSource{Domain: "remote.example.com", Alias: "JP-remote", MonitorPublicPort: 9444}
+	monitorURL := fmt.Sprintf("https://remote.example.com:9444/monitor/api/summary")
+	fetches := map[string][]byte{
+		monitorURL: []byte(`{"inUsedBytes":10,"outUsedBytes":20,"totalUsedBytes":30,"inRemainingBytes":90,"outRemainingBytes":80,"totalRemainingBytes":70,"inLimitBytes":100,"outLimitBytes":100,"totalLimitBytes":100,"resetTime":"2026-06-15T05:00:00Z","trend":[]}`),
+	}
 	runner := &recordingRunner{}
 	now := time.Date(2026, 6, 15, 6, 0, 0, 0, time.UTC)
 	var checked []system.Port
@@ -114,14 +134,23 @@ func TestUpdateSettingsLocalAndUsage(t *testing.T) {
 		SetCurrentTotals:  true,
 		CurrentInBytes:    2 << 30,
 		CurrentOutBytes:   3 << 30,
+		SetMonitorSources: true,
+		MonitorSources:    toManageMonitorSources([]deploy.MonitorSource{monitorSrc}),
 		Firewall:          system.FirewallUFW,
 		NginxConfPath:     filepath.Join(root, "nginx", "singbox-deploy.conf"),
 		SystemdDir:        filepath.Join(root, "systemd"),
-		MonitorBin:        "/usr/bin/singbox-monitor",
+		DeployBin:         "/usr/bin/singbox-deploy",
 		Now:               func(context.Context) (time.Time, error) { return now, nil },
 		CheckPorts: func(_ context.Context, _ monitor.ManageConfig, ports []system.Port) error {
 			checked = append(checked, ports...)
 			return nil
+		},
+		Fetch: func(_ context.Context, url string) ([]byte, error) {
+			body, ok := fetches[url]
+			if !ok {
+				return nil, fmt.Errorf("unexpected fetch %s", url)
+			}
+			return body, nil
 		},
 		LoadConfig: func(l paths.Layout) (monitor.ManageConfig, error) {
 			dcfg, err := deploy.LoadProtocolConfig(l)
@@ -129,6 +158,19 @@ func TestUpdateSettingsLocalAndUsage(t *testing.T) {
 				return monitor.ManageConfig{}, err
 			}
 			return toManageConfig(dcfg), nil
+		},
+		LoadMonitorSources: func(l paths.Layout) ([]monitor.ManageMonitorSource, error) {
+			srcs, err := deploy.LoadMonitorSources(l)
+			if err != nil {
+				return nil, err
+			}
+			return toManageMonitorSources(srcs), nil
+		},
+		ValidateMonitorSources: func(sources []monitor.ManageMonitorSource) error {
+			return deploy.ValidateMonitorSources(fromManageMonitorSources(sources))
+		},
+		SaveMonitorSources: func(l paths.Layout, sources []monitor.ManageMonitorSource) error {
+			return deploy.SaveMonitorSources(l, fromManageMonitorSources(sources))
 		},
 		WriteState: func(stateDir string, mcfg monitor.ManageConfig) error {
 			dcfg, err := deploy.LoadProtocolConfig(layout)
@@ -156,7 +198,7 @@ func TestUpdateSettingsLocalAndUsage(t *testing.T) {
 			dcfg.SubscribePort = mcfg.SubscribePort
 			return deploy.WriteManagedNginxConfig(l, dcfg, confPath)
 		},
-		RenderMonitorUnit: func(l paths.Layout, monitorBin string, mcfg monitor.ManageConfig) (string, error) {
+		RenderMonitorUnit: func(l paths.Layout, deployBin string, mcfg monitor.ManageConfig) (string, error) {
 			dcfg, _ := deploy.LoadProtocolConfig(l)
 			dcfg.DeployMonitor = mcfg.DeployMonitor
 			dcfg.MonitorAlias = mcfg.MonitorAlias
@@ -169,7 +211,10 @@ func TestUpdateSettingsLocalAndUsage(t *testing.T) {
 			dcfg.TrafficTotalLimitBytes = mcfg.TrafficTotalLimitBytes
 			dcfg.ResetDay = mcfg.ResetDay
 			dcfg.ResetHour = mcfg.ResetHour
-			return deploy.RenderMonitorUnit(l, monitorBin, dcfg)
+			return deploy.RenderMonitorUnit(l, deployBin, dcfg)
+		},
+		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, sources []monitor.ManageMonitorSource, fetch func(context.Context, string) ([]byte, error)) error {
+			return deploy.RefreshRemoteMonitor(ctx, l, fromManageMonitorSources(sources), deploy.SubscriptionFetcher(fetch))
 		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error {
 			return deploy.RunCommands(r, cmds...)
@@ -209,6 +254,17 @@ func TestUpdateSettingsLocalAndUsage(t *testing.T) {
 	}
 	if totals.InBytes != 2<<30 || totals.OutBytes != 3<<30 {
 		t.Fatalf("totals = %#v", totals)
+	}
+	remoteBody, err := os.ReadFile(deploy.RemoteMonitorPath(layout))
+	if err != nil {
+		t.Fatalf("read remote monitor: %v", err)
+	}
+	var sources []monitor.SourceSummary
+	if err := json.Unmarshal(remoteBody, &sources); err != nil {
+		t.Fatalf("decode remote monitor: %v", err)
+	}
+	if len(sources) != 1 || sources[0].Name != subscription.AddNodePrefixFlag(monitorSrc.Alias) || sources[0].TotalUsedBytes != 30 {
+		t.Fatalf("remote sources = %#v", sources)
 	}
 	joined := strings.Join(runner.commands, "\n")
 	for _, want := range []string{"ufw allow 24447/tcp", "nginx -t", "systemctl restart nginx", "systemctl restart singbox-deploy-monitor.service"} {

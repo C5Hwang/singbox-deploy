@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/C5Hwang/singbox-deploy/internal/account"
+	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -30,6 +31,8 @@ func testConfig(t *testing.T) deploy.Config {
 	}
 	return deploy.Config{
 		Domain:                 "example.com",
+		Email:                  "admin@example.com",
+		Challenge:              acme.ChallengeHTTP01,
 		Ports:                  config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
 		DisplayName:            "US-vps1",
 		Salt:                   "testsalt",

@@ -5,8 +5,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/C5Hwang/singbox-deploy/internal/ui/common"
 )
 
 // LayoutMode selects between the side-by-side and single-column layouts.
@@ -74,8 +72,6 @@ type Model struct {
 	core        *coreManager
 	selfupdate  *selfUpdateManager
 	uninstall   *uninstallManager
-	nodes       *nodeManager
-	cert        *certManager
 	placeholder *placeholderManager
 }
 
@@ -86,16 +82,13 @@ func NewModel() *Model {
 
 func defaultGroups() []MenuGroup {
 	return []MenuGroup{
-		{Title: "Setup", Items: []MenuItem{
-			{Label: "Installation"},
-			{Label: "Node Management"},
-		}},
+		{Title: "Setup", Items: []MenuItem{{Label: "Install / Reinstall"}}},
 		{Title: "Proxy", Items: []MenuItem{
 			{Label: "Protocol settings"},
 			{Label: "Subscription settings"},
 		}},
 		{Title: "Server", Items: []MenuItem{
-			{Label: "Certificate"},
+			{Label: "Certificate & site"},
 			{Label: "Monitor & quota"},
 			{Label: "Routing rules"},
 			{Label: "sing-box core"},
@@ -222,24 +215,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
-	if m.nodes != nil {
-		n := m.nodes
-		cmd, done := m.nodes.Update(msg)
-		if done {
-			if n.phase == nodePhaseDone && n.runErr == nil {
-				m.RefreshStatus()
-			}
-			m.nodes = nil
-		}
-		return m, cmd
-	}
-	if m.cert != nil {
-		cmd, done := m.cert.Update(msg)
-		if done {
-			m.cert = nil
-		}
-		return m, cmd
-	}
 	if m.placeholder != nil {
 		cmd, done := m.placeholder.Update(msg)
 		if done {
@@ -271,36 +246,30 @@ func (m *Model) activate() tea.Cmd {
 		flow.setSize(m.width, m.height)
 		m.install = flow
 	case 1:
-		n := newNodeManager()
-		n.setSize(m.width, m.height)
-		m.nodes = n
-	case 2:
 		p := newProtocolManager()
 		p.setSize(m.width, m.height)
 		m.protocols = p
-	case 3:
+	case 2:
 		s := newSubscriptionManager()
 		s.setSize(m.width, m.height)
 		m.subscribe = s
+	case 3:
+		m.placeholder = newPlaceholderManager("Certificate & site")
 	case 4:
-		c := newCertManager()
-		c.setSize(m.width, m.height)
-		m.cert = c
-	case 5:
 		t := newMonitorManager()
 		t.setSize(m.width, m.height)
 		m.monitor = t
-	case 6:
+	case 5:
 		m.placeholder = newPlaceholderManager("Routing rules")
-	case 7:
+	case 6:
 		c := newCoreManager()
 		c.setSize(m.width, m.height)
 		m.core = c
-	case 8:
+	case 7:
 		s := newSelfUpdateManager()
 		s.setSize(m.width, m.height)
 		m.selfupdate = s
-	case 9:
+	case 8:
 		u := newUninstallManager()
 		u.setSize(m.width, m.height)
 		m.uninstall = u
@@ -311,8 +280,8 @@ func (m *Model) activate() tea.Cmd {
 var (
 	panelStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	titleStyle  = lipgloss.NewStyle().Bold(true)
-	selStyle    = common.SelStyle
-	dimStyle    = common.DimStyle
+	selStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	dimStyle    = lipgloss.NewStyle().Faint(true)
 	statusOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	statusBad   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	statusWarn  = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
@@ -397,14 +366,6 @@ func (m *Model) contentView(width, height int) string {
 		m.uninstall.setSize(width, height)
 		return m.uninstall.View()
 	}
-	if m.nodes != nil {
-		m.nodes.setSize(width, height)
-		return m.nodes.View()
-	}
-	if m.cert != nil {
-		m.cert.setSize(width, height)
-		return m.cert.View()
-	}
 	if m.placeholder != nil {
 		return m.placeholder.View()
 	}
@@ -414,7 +375,7 @@ func (m *Model) contentView(width, height int) string {
 func (m *Model) footerView() string {
 	var parts []operationHint
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.selfupdate == nil && m.uninstall == nil && m.nodes == nil && m.cert == nil && m.placeholder == nil {
+		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.selfupdate == nil && m.uninstall == nil && m.placeholder == nil {
 			parts = append(parts, menuFooterHints()...)
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
@@ -428,10 +389,6 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.selfupdate.footerHints()...)
 		} else if m.uninstall != nil {
 			parts = append(parts, m.uninstall.footerHints()...)
-		} else if m.nodes != nil {
-			parts = append(parts, m.nodes.footerHints()...)
-		} else if m.cert != nil {
-			parts = append(parts, m.cert.footerHints()...)
 		} else if m.placeholder != nil {
 			parts = append(parts, m.placeholder.footerHints()...)
 		}

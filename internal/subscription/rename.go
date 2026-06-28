@@ -3,6 +3,8 @@ package subscription
 import "strings"
 
 // prefixFlags maps a recognized two-letter node-name prefix to its flag emoji.
+// This mirrors the reference install.sh mapping verbatim, including its
+// TW->Samoa-flag quirk, so aggregated node names match across versions.
 var prefixFlags = map[string]string{
 	"US": "🇺🇸", "CA": "🇨🇦", "SG": "🇸🇬", "JP": "🇯🇵", "HK": "🇭🇰", "TW": "🇼🇸",
 	"KR": "🇰🇷", "UK": "🇬🇧", "DE": "🇩🇪", "FR": "🇫🇷", "NL": "🇳🇱", "AU": "🇦🇺",

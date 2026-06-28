@@ -7,7 +7,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 )
@@ -35,10 +34,6 @@ func Build(o ServerOptions) ([]byte, error) {
 
 	inbounds := make([]any, 0, len(o.enabledSet()))
 	for _, proto := range o.enabledSet() {
-		if port := protocolListenPort(o.Ports, proto); port == MasqueradeSitePort {
-			slog.Warn("protocol listen_port conflicts with masquerade site; existing install kept as-is, change via 'Manage protocols'",
-				"protocol", string(proto), "port", port)
-		}
 		tmpl, data := o.fragmentFor(proto, shortID)
 		frag, err := templatefs.Render(tmpl, data)
 		if err != nil {
@@ -81,12 +76,13 @@ func (o ServerOptions) fragmentFor(proto Protocol, shortID string) (string, map[
 		}
 	case ProtocolHysteria2:
 		return "sing-box/hysteria2.json.tmpl", map[string]any{
-			"Port":     o.Ports.Hysteria2,
-			"Password": o.User.HysteriaPassword,
-			"Name":     name("-Hysteria2"),
-			"Domain":   o.Domain,
-			"CertPath": o.TLSCert,
-			"KeyPath":  o.TLSKey,
+			"Port":          o.Ports.Hysteria2,
+			"Password":      o.User.HysteriaPassword,
+			"Name":          name("-Hysteria2"),
+			"Domain":        o.Domain,
+			"SubscribePort": o.SubscribePort,
+			"CertPath":      o.TLSCert,
+			"KeyPath":       o.TLSKey,
 		}
 	case ProtocolTUIC:
 		return "sing-box/tuic.json.tmpl", map[string]any{
@@ -117,20 +113,4 @@ func positiveOrDefault(value, fallback int) int {
 		return value
 	}
 	return fallback
-}
-
-func protocolListenPort(ports Ports, proto Protocol) int {
-	switch proto {
-	case ProtocolRealityVision:
-		return ports.RealityVision
-	case ProtocolRealityGRPC:
-		return ports.RealityGRPC
-	case ProtocolHysteria2:
-		return ports.Hysteria2
-	case ProtocolTUIC:
-		return ports.TUIC
-	case ProtocolAnyTLS:
-		return ports.AnyTLS
-	}
-	return 0
 }

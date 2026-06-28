@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,12 +14,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 )
-
-// DNSCredentialLookup resolves DNS-01 API credentials for the longest matching
-// stored root domain. Returns (provider, env-form credentials, error); error
-// wraps os.ErrNotExist when no stored root domain covers host. The adapter is
-// a plain function to avoid a cycle between deploy and cluster.
-type DNSCredentialLookup func(host string) (provider string, credentials map[string]string, err error)
 
 // Event reports the progress of one install step to the UI.
 type Event struct {
@@ -46,12 +39,10 @@ type Orchestrator struct {
 	LatestSingBox  func(ctx context.Context) (string, error)
 	CheckConflicts func(ctx context.Context, cfg Config) error
 	CheckPorts     func(ctx context.Context, cfg Config) error
-	DNSLookup      DNSCredentialLookup
 	Progress       func(Event)
 
 	GOOS, GOARCH  string
-	DeployBin     string // path to the singbox-deploy binary (used by cert renew unit)
-	MonitorBin    string // path to the singbox-monitor binary (used by the monitor unit)
+	DeployBin     string // path to the singbox-deploy binary (for the monitor unit)
 	SystemdDir    string // default /etc/systemd/system
 	NginxConfPath string // default /etc/nginx/conf.d/singbox-deploy.conf
 }
@@ -86,9 +77,6 @@ func (o *Orchestrator) defaults() {
 	}
 	if o.DeployBin == "" {
 		o.DeployBin = "/usr/bin/singbox-deploy"
-	}
-	if o.MonitorBin == "" {
-		o.MonitorBin = "/usr/bin/singbox-monitor"
 	}
 	if o.Download == nil {
 		o.Download = func(ctx context.Context, url, dest string) error {
@@ -206,20 +194,16 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	if o.DNSLookup == nil {
-		return fmt.Errorf("no DNS credential lookup configured")
-	}
-	provider, creds, err := o.DNSLookup(cfg.Domain)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("no DNS credentials configured for %s; add them via the Certificate menu", cfg.Domain)
-		}
-		return fmt.Errorf("find dns credentials for %s: %w", cfg.Domain, err)
+	// HTTP-01 binds port 80; free it by stopping Nginx (ignore if not running).
+	if cfg.Challenge == acme.ChallengeHTTP01 {
+		_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
 	}
 	cert, err := o.ACME.Obtain(ctx, acme.Request{
 		Domain:      cfg.Domain,
-		DNSProvider: provider,
-		Credentials: creds,
+		Email:       cfg.Email,
+		Challenge:   cfg.Challenge,
+		DNSProvider: cfg.DNSProvider,
+		Credentials: cfg.DNSCredentials,
 	})
 	if err != nil {
 		return err
@@ -329,7 +313,7 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 	if !cfg.DeployMonitor {
 		return nil
 	}
-	unit, err := RenderMonitorUnit(o.Layout, o.MonitorBin, cfg)
+	unit, err := RenderMonitorUnit(o.Layout, o.DeployBin, cfg)
 	if err != nil {
 		return err
 	}
@@ -346,23 +330,14 @@ func (o *Orchestrator) stepMonitor(_ context.Context, cfg Config) error {
 }
 
 // RenderMonitorUnit renders the systemd unit file for the monitor service.
-// monitorBin is the path to the singbox-monitor binary that the unit invokes.
-func RenderMonitorUnit(layout paths.Layout, monitorBin string, cfg Config) (string, error) {
-	return RenderMonitorUnitWithListen(layout, monitorBin, cfg, fmt.Sprintf("127.0.0.1:%d", cfg.MonitorPort))
-}
-
-// RenderMonitorUnitWithListen mirrors RenderMonitorUnit but takes an explicit
-// listen address. Nodes need this so the unit binds to the WireGuard IP on
-// the well-known monitor port (the master polls them via that endpoint to
-// aggregate samples); the master itself stays on 127.0.0.1 behind Nginx.
-func RenderMonitorUnitWithListen(layout paths.Layout, monitorBin string, cfg Config, listen string) (string, error) {
+func RenderMonitorUnit(layout paths.Layout, deployBin string, cfg Config) (string, error) {
 	interval := cfg.MonitorIntervalSeconds
 	if interval <= 0 {
 		interval = DefaultMonitorIntervalSeconds
 	}
 	return templatefs.Render("service/singbox-deploy-monitor.service.tmpl", map[string]any{
-		"MonitorBin":      monitorBin,
-		"Listen":          listen,
+		"DeployBin":       deployBin,
+		"MonitorPort":     cfg.MonitorPort,
 		"Interface":       cfg.MonitorInterface,
 		"DB":              layout.MonitorDB,
 		"InLimitBytes":    cfg.TrafficInLimitBytes,
@@ -383,7 +358,11 @@ func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 // WriteInstallState persists the full install config as individual state files.
 func WriteInstallState(stateDir string, cfg Config) error {
 	state := map[string]string{
+		"acme_challenge":         string(cfg.Challenge),
 		"domain":                 cfg.Domain,
+		"dns_credential":         dnsCredentialForState(cfg),
+		"dns_provider":           cfg.DNSProvider,
+		"email":                  cfg.Email,
 		"enabled_protocols":      protocolStateValue(cfg.EnabledProtocols()),
 		"display_name":           cfg.DisplayName,
 		"subscribe_salt":         cfg.Salt,
@@ -410,6 +389,7 @@ func WriteInstallState(stateDir string, cfg Config) error {
 		"monitor_port":           itoa(cfg.MonitorPort),
 		"monitor_interface":      cfg.MonitorInterface,
 		"monitor":                yesNoString(cfg.DeployMonitor),
+		"monitor_frontend":       yesNoString(cfg.DeployMonitorFrontend),
 	}
 	if cfg.DeployMonitor {
 		state["monitor_alias"] = cfg.MonitorAlias

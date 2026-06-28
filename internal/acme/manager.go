@@ -1,12 +1,23 @@
 // Package acme issues and renews Let's Encrypt certificates using a built-in
-// ACME client. Only Let's Encrypt is supported, with the DNS-01 challenge
-// against Cloudflare or Aliyun.
+// ACME client. Only Let's Encrypt is supported, with HTTP-01 and DNS-01
+// (Cloudflare and Aliyun) challenges. acme.sh is not used.
 package acme
 
 import (
 	"context"
 	"fmt"
 )
+
+// Challenge is an ACME challenge type.
+type Challenge string
+
+const (
+	ChallengeHTTP01 Challenge = "http-01"
+	ChallengeDNS01  Challenge = "dns-01"
+)
+
+// String renders the challenge identifier.
+func (c Challenge) String() string { return string(c) }
 
 // SupportedDNSProvider reports whether a DNS-01 provider is supported in the
 // MVP. Only Cloudflare and Aliyun are.
@@ -22,6 +33,8 @@ func SupportedDNSProvider(name string) bool {
 // Request describes a certificate request.
 type Request struct {
 	Domain      string
+	Email       string
+	Challenge   Challenge
 	DNSProvider string
 	// Credentials carries provider-specific secrets (e.g. CF_API_TOKEN,
 	// ALICLOUD_ACCESS_KEY/ALICLOUD_SECRET_KEY) for DNS-01.
@@ -33,11 +46,18 @@ func (r Request) Validate() error {
 	if r.Domain == "" {
 		return fmt.Errorf("domain is required")
 	}
-	if r.DNSProvider == "" {
-		return fmt.Errorf("dns-01 requires a DNS provider")
-	}
-	if !SupportedDNSProvider(r.DNSProvider) {
-		return fmt.Errorf("unsupported DNS provider %q", r.DNSProvider)
+	switch r.Challenge {
+	case ChallengeHTTP01:
+		// no extra requirements
+	case ChallengeDNS01:
+		if r.DNSProvider == "" {
+			return fmt.Errorf("dns-01 requires a DNS provider")
+		}
+		if !SupportedDNSProvider(r.DNSProvider) {
+			return fmt.Errorf("unsupported DNS provider %q", r.DNSProvider)
+		}
+	default:
+		return fmt.Errorf("unsupported challenge %q", r.Challenge)
 	}
 	return nil
 }

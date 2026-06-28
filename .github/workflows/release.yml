@@ -6,8 +6,10 @@ on:
       - "v*"
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,87 +35,19 @@ jobs:
           pnpm --dir web/monitor install --frozen-lockfile
           pnpm --dir web/monitor build
 
-      - name: gofmt
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "::error::gofmt: the following files are not formatted:" >&2
-            echo "$unformatted" >&2
-            exit 1
-          fi
-
-      - name: go vet
-        run: go vet ./...
-
       - name: Run tests
         run: go test ./...
-
-      - name: Upload monitor UI assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: monitor-ui
-          path: assets/monitor-ui
-          retention-days: 1
-
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25.x"
-
-      - name: Download monitor UI assets
-        uses: actions/download-artifact@v4
-        with:
-          name: monitor-ui
-          path: assets/monitor-ui
 
       - name: Build binaries
         run: |
           mkdir -p dist
-          for bin in singbox-deploy singbox-monitor singbox-node; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=${arch} \
               go build -trimpath \
               -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
-              -o dist/${bin}-linux-${{ matrix.arch }} ./cmd/${bin}
+              -o dist/singbox-deploy-linux-${arch} ./cmd/singbox-deploy
           done
-
-      - name: Upload binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-${{ matrix.arch }}
-          path: dist/*
-          retention-days: 1
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Download all binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: binaries-*
-          path: dist
-          merge-multiple: true
-
-      - name: Stage install.sh
-        run: cp scripts/install.sh dist/install.sh
+          cp scripts/install.sh dist/install.sh
 
       - name: Check if first release
         id: check

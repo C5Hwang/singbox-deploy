@@ -1,7 +1,5 @@
 // Package certrenew checks managed TLS certificates and renews them via ACME
-// when they are near expiry. It covers both the master's local certificate
-// and every cluster node's certificate, pushing renewed material to nodes
-// over the WireGuard agent API.
+// when they are near expiry.
 package certrenew
 
 import (
@@ -9,7 +7,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,18 +15,12 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
-	"github.com/C5Hwang/singbox-deploy/internal/cluster"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
 const DefaultRenewBefore = 30 * 24 * time.Hour
-
-// legacyCertState lists state files written by older releases that stored
-// challenge selection and plaintext DNS credentials. They are unused after the
-// DNS-01-only refactor; we remove them best-effort on the next renewal pass.
-var legacyCertState = []string{"acme_challenge", "dns_provider", "dns_credential"}
 
 // Renewer performs one certificate renewal check.
 type Renewer struct {
@@ -41,50 +32,38 @@ type Renewer struct {
 	Output      io.Writer
 }
 
-// Run renews the master's certificate if it is missing, invalid, or expiring
-// within RenewBefore, then walks every registered cluster node and renews
-// each node's certificate the same way (pushing the renewed material via the
-// agent API).
+// Run renews the managed certificate if it is missing, invalid, or expiring
+// within RenewBefore. Otherwise it exits successfully without changes.
 func (r Renewer) Run(ctx context.Context) error {
 	r.defaults()
-	r.cleanupLegacyState()
-	if err := r.renewLocal(ctx); err != nil {
-		return err
-	}
-	return r.renewNodes(ctx)
-}
-
-func (r Renewer) renewLocal(ctx context.Context) error {
-	domain, err := r.localState()
+	req, err := r.requestFromState()
 	if err != nil {
 		return err
 	}
 
-	certPath, keyPath := certPaths(r.Layout, domain)
-	due, reason, err := renewalDue(certPath, keyPath, domain, r.now(), r.RenewBefore)
+	certPath, keyPath := certPaths(r.Layout, req.Domain)
+	due, reason, err := renewalDue(certPath, keyPath, req.Domain, r.now(), r.RenewBefore)
 	if err != nil {
 		return err
 	}
 	if !due {
-		r.logf("certificate for %s is not due for renewal\n", domain)
+		r.logf("certificate for %s is not due for renewal\n", req.Domain)
 		return nil
 	}
-	r.logf("renewing certificate for %s: %s\n", domain, reason)
+	r.logf("renewing certificate for %s: %s\n", req.Domain, reason)
 
-	registry := cluster.NewRegistry(r.Layout)
-	creds, err := registry.DNS().FindForDomain(domain)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("no DNS credentials configured for %s; add them via the Certificate menu", domain)
-		}
-		return fmt.Errorf("find dns credentials: %w", err)
+	stoppedNginx := false
+	if req.Challenge == acme.ChallengeHTTP01 {
+		_ = r.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
+		stoppedNginx = true
+		defer func() {
+			if stoppedNginx {
+				_ = r.Runner.Run(system.Command{Name: "systemctl", Args: []string{"start", "nginx"}})
+			}
+		}()
 	}
 
-	cert, err := r.ACME.Obtain(ctx, acme.Request{
-		Domain:      domain,
-		DNSProvider: creds.Provider,
-		Credentials: creds.EnvMap(),
-	})
+	cert, err := r.ACME.Obtain(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -95,71 +74,13 @@ func (r Renewer) renewLocal(ctx context.Context) error {
 		return err
 	}
 
-	return runAll(r.Runner,
+	if err := runAll(r.Runner,
 		system.Command{Name: "systemctl", Args: []string{"restart", system.SingBoxService}},
 		system.Command{Name: "systemctl", Args: []string{"restart", "nginx"}},
-	)
-}
-
-// renewNodes walks every registered cluster node and renews each node's
-// certificate if it is missing or expiring within RenewBefore. The renewed
-// certificate is pushed to the node via the agent API. Per-node failures are
-// logged but do not abort the loop; one unreachable node should not block the
-// rest of the fleet.
-func (r Renewer) renewNodes(ctx context.Context) error {
-	registry := cluster.NewRegistry(r.Layout)
-	nodes, err := registry.List()
-	if err != nil {
-		r.logf("list cluster nodes: %v\n", err)
-		return nil
+	); err != nil {
+		return err
 	}
-	for _, node := range nodes {
-		if !node.HasTLSProtocol() {
-			continue
-		}
-		if err := r.renewOneNode(ctx, registry, node); err != nil {
-			r.logf("renew node %s (%s): %v\n", node.Alias, node.Domain, err)
-		}
-	}
-	return nil
-}
-
-func (r Renewer) renewOneNode(ctx context.Context, registry cluster.Registry, node cluster.Node) error {
-	agent := cluster.NewAgentClient(node)
-	status, err := agent.Status(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch status: %w", err)
-	}
-	if status.CertExpiry != "" {
-		expiry, perr := time.Parse(time.RFC3339, status.CertExpiry)
-		if perr == nil && r.now().Add(r.RenewBefore).Before(expiry) {
-			r.logf("node %s cert not due (expires %s)\n", node.Alias, expiry.Format(time.RFC3339))
-			return nil
-		}
-	}
-	creds, err := registry.DNS().FindForDomain(node.Domain)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("no DNS credentials configured for root domain matching %s", node.Domain)
-		}
-		return fmt.Errorf("find dns credentials: %w", err)
-	}
-	cert, err := r.ACME.Obtain(ctx, acme.Request{
-		Domain:      node.Domain,
-		DNSProvider: creds.Provider,
-		Credentials: creds.EnvMap(),
-	})
-	if err != nil {
-		return fmt.Errorf("acme: %w", err)
-	}
-	r.logf("issuing renewed cert for node %s (%s)\n", node.Alias, node.Domain)
-	if err := agent.DeployCert(ctx, cluster.CertDeploy{
-		Domain: node.Domain,
-		Cert:   string(cert.CertificatePEM),
-		Key:    string(cert.PrivateKeyPEM),
-	}); err != nil {
-		return fmt.Errorf("push cert to node: %w", err)
-	}
+	stoppedNginx = false
 	return nil
 }
 
@@ -183,15 +104,6 @@ func (r *Renewer) defaults() {
 	}
 }
 
-// cleanupLegacyState removes state files that older releases wrote (challenge
-// selection and plaintext DNS credentials). Best-effort; ignores all errors so
-// the first renewal after upgrade never fails on stale state.
-func (r Renewer) cleanupLegacyState() {
-	for _, name := range legacyCertState {
-		_ = os.Remove(filepath.Join(r.Layout.StateDir, name))
-	}
-}
-
 func (r Renewer) now() time.Time { return r.Now() }
 
 func (r Renewer) logf(format string, args ...any) {
@@ -200,9 +112,36 @@ func (r Renewer) logf(format string, args ...any) {
 	}
 }
 
-func (r Renewer) localState() (domain string, err error) {
+func (r Renewer) requestFromState() (acme.Request, error) {
 	store := state.NewStore(r.Layout.StateDir)
-	return readState(store, "domain", true)
+	domain, err := readState(store, "domain", true)
+	if err != nil {
+		return acme.Request{}, err
+	}
+	email, err := readState(store, "email", false)
+	if err != nil {
+		return acme.Request{}, err
+	}
+	challenge, err := readState(store, "acme_challenge", true)
+	if err != nil {
+		return acme.Request{}, err
+	}
+	dnsProvider, err := readState(store, "dns_provider", false)
+	if err != nil {
+		return acme.Request{}, err
+	}
+	dnsCredential, err := readState(store, "dns_credential", false)
+	if err != nil {
+		return acme.Request{}, err
+	}
+
+	return acme.Request{
+		Domain:      domain,
+		Email:       email,
+		Challenge:   acme.Challenge(challenge),
+		DNSProvider: dnsProvider,
+		Credentials: dnsCredentials(dnsProvider, dnsCredential),
+	}, nil
 }
 
 func readState(store state.Store, name string, required bool) (string, error) {
@@ -218,6 +157,20 @@ func readState(store state.Store, name string, required bool) (string, error) {
 		return "", fmt.Errorf("state %s is empty", name)
 	}
 	return value, nil
+}
+
+func dnsCredentials(provider, credential string) map[string]string {
+	creds := map[string]string{}
+	switch provider {
+	case "cloudflare":
+		creds["CF_API_TOKEN"] = credential
+	case "aliyun":
+		if key, secret, ok := strings.Cut(credential, ":"); ok {
+			creds["ALICLOUD_ACCESS_KEY"] = key
+			creds["ALICLOUD_SECRET_KEY"] = secret
+		}
+	}
+	return creds
 }
 
 func certPaths(layout paths.Layout, domain string) (cert, key string) {

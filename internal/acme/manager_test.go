@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestChallengeSelection(t *testing.T) {
+	if ChallengeHTTP01.String() != "http-01" {
+		t.Fatalf("bad http challenge")
+	}
+	if ChallengeDNS01.String() != "dns-01" {
+		t.Fatalf("bad dns challenge")
+	}
+}
+
 func TestSupportedDNSProviders(t *testing.T) {
 	if !SupportedDNSProvider("cloudflare") {
 		t.Fatalf("cloudflare must be supported")
@@ -18,21 +27,21 @@ func TestSupportedDNSProviders(t *testing.T) {
 }
 
 func TestRequestValidate(t *testing.T) {
-	valid := Request{Domain: "example.com", DNSProvider: "cloudflare"}
+	valid := Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeHTTP01}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
 	}
-	noProvider := Request{Domain: "example.com"}
-	if err := noProvider.Validate(); err == nil {
-		t.Fatalf("request without dns provider should be invalid")
+	withoutEmail := Request{Domain: "example.com", Challenge: ChallengeHTTP01}
+	if err := withoutEmail.Validate(); err != nil {
+		t.Fatalf("request without email rejected: %v", err)
 	}
-	badProvider := Request{Domain: "example.com", DNSProvider: "route53"}
-	if err := badProvider.Validate(); err == nil {
+	dnsNoProvider := Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeDNS01}
+	if err := dnsNoProvider.Validate(); err == nil {
+		t.Fatalf("dns-01 without provider should be invalid")
+	}
+	dnsBadProvider := Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeDNS01, DNSProvider: "route53"}
+	if err := dnsBadProvider.Validate(); err == nil {
 		t.Fatalf("unsupported dns provider should be invalid")
-	}
-	missingDomain := Request{DNSProvider: "cloudflare"}
-	if err := missingDomain.Validate(); err == nil {
-		t.Fatalf("missing domain should be invalid")
 	}
 }
 
@@ -49,7 +58,7 @@ func (f *fakeIssuer) Issue(_ context.Context, r Request) (Certificate, error) {
 func TestManagerObtainDelegatesToIssuer(t *testing.T) {
 	fake := &fakeIssuer{ret: Certificate{CertificatePEM: []byte("CERT"), PrivateKeyPEM: []byte("KEY")}}
 	m := NewManager(fake)
-	cert, err := m.Obtain(context.Background(), Request{Domain: "example.com", DNSProvider: "cloudflare"})
+	cert, err := m.Obtain(context.Background(), Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeHTTP01})
 	if err != nil {
 		t.Fatalf("Obtain error: %v", err)
 	}
@@ -63,7 +72,7 @@ func TestManagerObtainDelegatesToIssuer(t *testing.T) {
 
 func TestManagerObtainRejectsInvalid(t *testing.T) {
 	m := NewManager(&fakeIssuer{})
-	if _, err := m.Obtain(context.Background(), Request{}); err == nil {
+	if _, err := m.Obtain(context.Background(), Request{Challenge: ChallengeDNS01}); err == nil {
 		t.Fatalf("expected validation error")
 	}
 }

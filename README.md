@@ -9,7 +9,7 @@ files on Linux servers, and includes a built-in resource monitor.
 
 - Interactive terminal UI for deployment and management.
 - Automated deployment of sing-box, Nginx, certificates, and subscriptions.
-- Let's Encrypt certificate issuance and renewal via DNS-01 (Cloudflare, Aliyun).
+- Let's Encrypt certificate issuance and renewal via HTTP-01 and DNS-01 challenges.
 - Subscription output in share-link, Clash Meta, and sing-box formats.
 - Selectable HTML5 UP masquerade site templates served by Nginx.
 - Resource monitor with a web dashboard and quota enforcement.
@@ -59,22 +59,14 @@ build embeds automatically.
 ```bash
 # Build for the current Linux architecture.
 mkdir -p dist
-for bin in singbox-deploy singbox-monitor singbox-node; do
-  CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o dist/${bin} ./cmd/${bin}
-done
+CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy ./cmd/singbox-deploy
 
-# Cross-build for Linux amd64 / arm64.
-for arch in amd64 arm64; do
-  for bin in singbox-deploy singbox-monitor singbox-node; do
-    CGO_ENABLED=0 GOOS=linux GOARCH=${arch} go build -trimpath -ldflags="-s -w" -o dist/${bin}-linux-${arch} ./cmd/${bin}
-  done
-done
+# Build for Linux amd64.
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy-linux-amd64 ./cmd/singbox-deploy
+
+# Build for Linux arm64.
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy-linux-arm64 ./cmd/singbox-deploy
 ```
-
-The three binaries serve distinct roles:
-- `singbox-deploy` — interactive TUI on the master, manages cluster membership.
-- `singbox-monitor` — long-lived monitor service on both master and nodes.
-- `singbox-node` — persistent agent on each node, listens on the WireGuard interface.
 
 ## Acknowledgments
 

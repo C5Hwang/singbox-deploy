@@ -48,29 +48,29 @@ func ProtocolInstallFieldsForProtocol(proto config.Protocol) []Field {
 	switch proto {
 	case config.ProtocolRealityVision:
 		return []Field{
-			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID", Note: "Blank generates a random UUID."},
-			{Key: "reality_vision_port", Label: "VLESS Reality Vision port", Note: "Blank chooses a random listen port."},
+			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID (optional)", Note: "Blank generates a random UUID."},
+			{Key: "reality_vision_port", Label: "VLESS Reality Vision port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolRealityGRPC:
 		return []Field{
-			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID", Note: "Blank generates a random UUID."},
-			{Key: "reality_grpc_port", Label: "VLESS Reality gRPC port", Note: "Blank chooses a random listen port."},
+			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID (optional)", Note: "Blank generates a random UUID."},
+			{Key: "reality_grpc_port", Label: "VLESS Reality gRPC port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolHysteria2:
 		return []Field{
-			{Key: "hysteria2_password", Label: "Hysteria2 password", Note: "Blank generates a random password."},
-			{Key: "hysteria2_port", Label: "Hysteria2 port", Note: "Blank chooses a random listen port."},
+			{Key: "hysteria2_password", Label: "Hysteria2 password (optional)", Note: "Blank generates a random password."},
+			{Key: "hysteria2_port", Label: "Hysteria2 port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolTUIC:
 		return []Field{
-			{Key: "tuic_uuid", Label: "TUIC UUID", Note: "Blank generates a random UUID."},
-			{Key: "tuic_password", Label: "TUIC password", Note: "Blank generates a random password."},
-			{Key: "tuic_port", Label: "TUIC port", Note: "Blank chooses a random listen port."},
+			{Key: "tuic_uuid", Label: "TUIC UUID (optional)", Note: "Blank generates a random UUID."},
+			{Key: "tuic_password", Label: "TUIC password (optional)", Note: "Blank generates a random password."},
+			{Key: "tuic_port", Label: "TUIC port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolAnyTLS:
 		return []Field{
-			{Key: "anytls_password", Label: "AnyTLS password", Note: "Blank generates a random password."},
-			{Key: "anytls_port", Label: "AnyTLS port", Note: "Blank chooses a random listen port."},
+			{Key: "anytls_password", Label: "AnyTLS password (optional)", Note: "Blank generates a random password."},
+			{Key: "anytls_port", Label: "AnyTLS port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	default:
 		return nil
@@ -131,10 +131,9 @@ func ValidateSharedParameterValue(key, val string) error {
 			return nil
 		}
 		port, err := strconv.Atoi(val)
-		if err != nil {
+		if err != nil || port < 1 || port > 65535 {
 			return fmt.Errorf("port must be between 1 and 65535")
 		}
-		return config.ValidateProtocolPort(port, nil)
 	case strings.HasSuffix(key, "_uuid"):
 		if val != "" && !ValidUUID(val) {
 			return fmt.Errorf("uuid must be an RFC 4122 value")
