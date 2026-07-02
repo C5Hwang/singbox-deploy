@@ -26,9 +26,16 @@ const (
 	monitorPhaseRunning
 	monitorPhaseDone
 	monitorPhaseServiceConfirm
+	monitorPhaseLogsLoading
 	monitorPhaseLogs
 	monitorPhaseReorder
 )
+
+// monitorLogsMsg carries the result of the async journalctl read.
+type monitorLogsMsg struct {
+	logs string
+	err  error
+}
 
 type monitorAction int
 
@@ -131,6 +138,11 @@ func (tm *monitorManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		tm.setSize(msg.Width, msg.Height)
+	case monitorLogsMsg:
+		tm.logs, tm.logErr = msg.logs, msg.err
+		tm.svcLogScroll = 0
+		tm.phase = monitorPhaseLogs
+		return nil, false
 	case runMsg:
 		return tm.handleRun(msg), false
 	case tea.KeyMsg:
@@ -157,8 +169,7 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
 			Move: tm.moveAction,
 			Confirm: func() (tea.Cmd, bool) {
-				tm.activateAction()
-				return nil, false
+				return tm.activateAction(), false
 			},
 			Cancel: func() (tea.Cmd, bool) { return nil, true },
 		})
@@ -262,6 +273,11 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		case msg.String() == "esc", isSelectionNoKey(msg):
 			return nil, true
 		}
+	case monitorPhaseLogsLoading:
+		if isSelectionCancelKey(msg) || msg.String() == "esc" {
+			tm.phase = monitorPhaseAction
+			return nil, false
+		}
 	case monitorPhaseLogs:
 		switch msg.String() {
 		case "up", "k":
@@ -277,7 +293,7 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		case "end":
 			tm.svcLogScroll = 0
 		case "r":
-			tm.loadServiceLogs()
+			return tm.loadServiceLogsCmd(), false
 		case "esc", "q", "enter":
 			tm.phase = monitorPhaseAction
 		}
@@ -328,13 +344,13 @@ func (tm *monitorManager) moveAction(delta int) {
 	tm.fieldErr = ""
 }
 
-func (tm *monitorManager) activateAction() {
+func (tm *monitorManager) activateAction() tea.Cmd {
 	tm.fieldErr = ""
 	tm.editSourceIndex = -1
 	actions := tm.actions()
 	idx, ok := selectedIndex(tm.cursor, len(actions))
 	if !ok {
-		return
+		return nil
 	}
 	tm.action = actions[idx].action
 	switch tm.action {
@@ -347,28 +363,28 @@ func (tm *monitorManager) activateAction() {
 	case monitorActionEditSource:
 		if len(tm.monitorSources) == 0 {
 			tm.fieldErr = "no monitor sources to edit"
-			return
+			return nil
 		}
 		tm.startForm(tm.editSourceSelectField())
 	case monitorActionDeleteSources:
 		if len(tm.monitorSources) == 0 {
 			tm.fieldErr = "no monitor sources configured"
-			return
+			return nil
 		}
 		tm.startForm(tm.deleteMonitorSourceFields())
 	case monitorActionReorder:
 		tm.reorder = newReorderForm(tm.buildReorderItems())
 		tm.phase = monitorPhaseReorder
 	case monitorActionLogs:
-		tm.loadServiceLogs()
-		return
+		return tm.loadServiceLogsCmd()
 	case monitorActionStart, monitorActionStop, monitorActionRestart:
 		if !tm.canApply() {
 			tm.fieldErr = tm.applyBlocker()
-			return
+			return nil
 		}
 		tm.phase = monitorPhaseServiceConfirm
 	}
+	return nil
 }
 
 func (tm *monitorManager) startForm(fields []field) {
@@ -691,6 +707,8 @@ func (tm *monitorManager) View() string {
 		return flowOK.Render("Monitor settings updated") + "\n\n" + tm.doneSummary()
 	case monitorPhaseServiceConfirm:
 		return tm.serviceConfirmView()
+	case monitorPhaseLogsLoading:
+		return flowTitle.Render("Monitor · Logs") + "\n\n" + dimStyle.Render("Loading service logs…")
 	case monitorPhaseLogs:
 		return tm.serviceLogsView()
 	default:
@@ -832,6 +850,8 @@ func (tm *monitorManager) footerHints() []operationHint {
 		return doneFooterHints(tm.runErr != nil)
 	case monitorPhaseServiceConfirm:
 		return applyFooterHints("Apply")
+	case monitorPhaseLogsLoading:
+		return nil
 	case monitorPhaseLogs:
 		return []operationHint{hint(keyMoveMouse, "Scroll"), hint(keyRefresh, "Refresh"), hint(keyReturn, "Return")}
 	default:
@@ -913,12 +933,16 @@ func (tm *monitorManager) startServiceRun() tea.Cmd {
 	return tm.waitForRun()
 }
 
-func (tm *monitorManager) loadServiceLogs() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	tm.logs, tm.logErr = monitorLogOutput(ctx, 200)
-	tm.svcLogScroll = 0
-	tm.phase = monitorPhaseLogs
+// loadServiceLogsCmd reads journalctl off the UI thread so opening the logs
+// view (or refreshing it) does not freeze the TUI.
+func (tm *monitorManager) loadServiceLogsCmd() tea.Cmd {
+	tm.phase = monitorPhaseLogsLoading
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		logs, err := monitorLogOutput(ctx, 200)
+		return monitorLogsMsg{logs: logs, err: err}
+	}
 }
 
 func (tm *monitorManager) serviceLogsView() string {

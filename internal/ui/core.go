@@ -21,12 +21,26 @@ type corePhase int
 
 const (
 	corePhaseAction corePhase = iota
+	corePhaseStableLoading
 	corePhaseStableSelect
 	corePhaseConfirm
 	corePhaseRunning
 	corePhaseDone
+	corePhaseLogsLoading
 	corePhaseLogs
 )
+
+// coreStableTagsMsg and coreLogsMsg carry the results of the async network /
+// journalctl lookups that would otherwise block the UI thread.
+type coreStableTagsMsg struct {
+	tags []string
+	err  error
+}
+
+type coreLogsMsg struct {
+	logs string
+	err  error
+}
 
 type coreAction int
 
@@ -99,6 +113,12 @@ func (cm *coreManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		cm.setSize(msg.Width, msg.Height)
+	case coreStableTagsMsg:
+		cm.applyStableTags(msg)
+	case coreLogsMsg:
+		cm.logs, cm.logErr = msg.logs, msg.err
+		cm.logScroll = 0
+		cm.phase = corePhaseLogs
 	case runMsg:
 		return cm.handleRun(msg), false
 	case tea.KeyMsg:
@@ -109,14 +129,29 @@ func (cm *coreManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	return nil, false
 }
 
+func (cm *coreManager) applyStableTags(msg coreStableTagsMsg) {
+	if msg.err != nil {
+		cm.fieldErr = "fetch stable releases: " + msg.err.Error()
+		cm.phase = corePhaseAction
+		return
+	}
+	if len(msg.tags) == 0 {
+		cm.fieldErr = "no stable releases found"
+		cm.phase = corePhaseAction
+		return
+	}
+	cm.stableTags = msg.tags
+	cm.cursor = 0
+	cm.phase = corePhaseStableSelect
+}
+
 func (cm *coreManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch cm.phase {
 	case corePhaseAction:
 		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
 			Move: cm.moveAction,
 			Confirm: func() (tea.Cmd, bool) {
-				cm.activateAction()
-				return nil, false
+				return cm.activateAction(), false
 			},
 			Cancel: func() (tea.Cmd, bool) {
 				return nil, true
@@ -192,6 +227,11 @@ func (cm *coreManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			}
 		}
 		return nil, true
+	case corePhaseStableLoading, corePhaseLogsLoading:
+		if isSelectionCancelKey(msg) || msg.String() == "esc" {
+			cm.phase = corePhaseAction
+			return nil, false
+		}
 	case corePhaseLogs:
 		switch msg.String() {
 		case "up", "k":
@@ -207,7 +247,7 @@ func (cm *coreManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		case "end":
 			cm.logScroll = 0
 		case "r":
-			cm.loadLogs()
+			return cm.loadLogsCmd(), false
 		case "esc", "q", "enter":
 			cm.phase = corePhaseAction
 		}
@@ -246,55 +286,50 @@ func (cm *coreManager) moveStable(delta int) {
 	cm.fieldErr = ""
 }
 
-func (cm *coreManager) activateAction() {
+func (cm *coreManager) activateAction() tea.Cmd {
 	cm.fieldErr = ""
 	actions := cm.actions()
 	idx, ok := selectedIndex(cm.cursor, len(actions))
 	if !ok {
-		return
+		return nil
 	}
 	cm.action = actions[idx].action
 	if cm.action == coreActionLogs {
-		cm.loadLogs()
-		return
+		return cm.loadLogsCmd()
 	}
 	if !cm.canApply() {
 		cm.fieldErr = cm.applyBlocker()
-		return
+		return nil
 	}
 	if cm.action == coreActionChangeStable {
-		cm.loadStableTags()
-		return
+		return cm.loadStableTagsCmd()
 	}
 	cm.phase = corePhaseConfirm
+	return nil
 }
 
-func (cm *coreManager) loadStableTags() {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+// loadStableTagsCmd fetches the recent stable releases off the UI thread; the
+// screen shows a loading state until coreStableTagsMsg arrives.
+func (cm *coreManager) loadStableTagsCmd() tea.Cmd {
+	cm.phase = corePhaseStableLoading
 	mgr := cm.backendManager(nil)
-	tags, err := mgr.RecentStable(ctx, coreStableReleaseLimit)
-	if err != nil {
-		cm.fieldErr = "fetch stable releases: " + err.Error()
-		cm.phase = corePhaseAction
-		return
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		tags, err := mgr.RecentStable(ctx, coreStableReleaseLimit)
+		return coreStableTagsMsg{tags: tags, err: err}
 	}
-	if len(tags) == 0 {
-		cm.fieldErr = "no stable releases found"
-		cm.phase = corePhaseAction
-		return
-	}
-	cm.stableTags = tags
-	cm.cursor = 0
-	cm.phase = corePhaseStableSelect
 }
 
-func (cm *coreManager) loadLogs() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cm.logs, cm.logErr = coreLogOutput(ctx, 200)
-	cm.logScroll = 0
-	cm.phase = corePhaseLogs
+// loadLogsCmd reads journalctl off the UI thread.
+func (cm *coreManager) loadLogsCmd() tea.Cmd {
+	cm.phase = corePhaseLogsLoading
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		logs, err := coreLogOutput(ctx, 200)
+		return coreLogsMsg{logs: logs, err: err}
+	}
 }
 
 func (cm *coreManager) canApply() bool {
@@ -378,6 +413,8 @@ func (cm *coreManager) View() string {
 	switch cm.phase {
 	case corePhaseAction:
 		return cm.actionView()
+	case corePhaseStableLoading:
+		return flowTitle.Render("sing-box Core · Change Version") + "\n\n" + dimStyle.Render("Fetching the latest stable releases…")
 	case corePhaseStableSelect:
 		return cm.stableView()
 	case corePhaseConfirm:
@@ -389,6 +426,8 @@ func (cm *coreManager) View() string {
 			return commandFailedView(cm, "sing-box core action failed")
 		}
 		return flowOK.Render("sing-box core action complete") + "\n\n" + cm.doneSummary()
+	case corePhaseLogsLoading:
+		return flowTitle.Render("sing-box Core · Logs") + "\n\n" + dimStyle.Render("Loading service logs…")
 	case corePhaseLogs:
 		return cm.logsView()
 	default:
@@ -475,6 +514,8 @@ func (cm *coreManager) footerHints() []operationHint {
 	switch cm.phase {
 	case corePhaseAction:
 		return actionFooterHints("Select")
+	case corePhaseStableLoading, corePhaseLogsLoading:
+		return nil
 	case corePhaseStableSelect:
 		return actionBackFooterHints("Continue")
 	case corePhaseConfirm:

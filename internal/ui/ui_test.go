@@ -351,7 +351,15 @@ func TestCoreChangeStableListsEightReleases(t *testing.T) {
 	coreReleaseClient = func() *release.Client { return release.NewClient(srv.URL, srv.Client()) }
 
 	cm := newCoreManager()
-	cm.activateAction()
+	cmd := cm.activateAction()
+	if cm.phase != corePhaseStableLoading {
+		t.Fatalf("phase = %v, want stable loading; err=%q", cm.phase, cm.fieldErr)
+	}
+	if cmd == nil {
+		t.Fatal("activateAction should return an async fetch command")
+	}
+	// Drive the async fetch to completion.
+	cm.Update(cmd())
 	if cm.phase != corePhaseStableSelect {
 		t.Fatalf("phase = %v, want stable select; err=%q", cm.phase, cm.fieldErr)
 	}
