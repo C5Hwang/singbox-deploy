@@ -52,7 +52,9 @@ jobs:
       - name: Check if first release
         id: check
         run: |
-          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1)
+          # grep exits 1 when only the current tag exists (first release); the
+          # default pipefail shell would otherwise fail this step.
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)
           echo "is_first=$([ -z "$PREV_TAG" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
