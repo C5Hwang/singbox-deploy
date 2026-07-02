@@ -959,27 +959,12 @@ func (tm *monitorManager) serviceLogsView() string {
 }
 
 func (tm *monitorManager) visibleServiceLogOutput() []string {
-	rows := tm.serviceLogRows()
-	if len(rows) == 0 {
-		return nil
-	}
-	visible := min(tm.serviceLogsHeight(), len(rows))
 	tm.clampServiceLogsScroll()
-	start := len(rows) - visible - tm.svcLogScroll
-	return rows[start : start+visible]
+	return visibleLogRows(tm.serviceLogRows(), tm.serviceLogsHeight(), tm.svcLogScroll)
 }
 
 func (tm *monitorManager) serviceLogRows() []string {
-	width := tm.width
-	if width <= 0 {
-		width = 80
-	}
-	style := dimStyle.Width(max(1, width))
-	var rows []string
-	for _, line := range strings.Split(strings.TrimRight(tm.logs, "\n"), "\n") {
-		rows = append(rows, strings.Split(style.Render(line), "\n")...)
-	}
-	return rows
+	return logRows(tm.logs, tm.width)
 }
 
 func (tm *monitorManager) scrollServiceLogs(delta int) {
@@ -988,7 +973,7 @@ func (tm *monitorManager) scrollServiceLogs(delta int) {
 }
 
 func (tm *monitorManager) clampServiceLogsScroll() {
-	tm.svcLogScroll = min(max(0, tm.svcLogScroll), tm.maxServiceLogsScroll())
+	tm.svcLogScroll = clampLogScroll(tm.svcLogScroll, len(tm.serviceLogRows()), tm.serviceLogsHeight())
 }
 
 func (tm *monitorManager) maxServiceLogsScroll() int {
@@ -996,10 +981,7 @@ func (tm *monitorManager) maxServiceLogsScroll() int {
 }
 
 func (tm *monitorManager) serviceLogsHeight() int {
-	if tm.height <= 0 {
-		return 12
-	}
-	return max(1, tm.height-5)
+	return logBudget(tm.height)
 }
 
 func defaultMonitorLogOutput(ctx context.Context, lines int) (string, error) {

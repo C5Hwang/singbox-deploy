@@ -574,27 +574,12 @@ func (cm *coreManager) systemctlAction() string {
 }
 
 func (cm *coreManager) visibleLogOutput() []string {
-	rows := cm.logRowsForOutput()
-	if len(rows) == 0 {
-		return nil
-	}
-	visible := min(cm.logsHeight(), len(rows))
 	cm.clampLogsScroll()
-	start := len(rows) - visible - cm.logScroll
-	return rows[start : start+visible]
+	return visibleLogRows(cm.logRowsForOutput(), cm.logsHeight(), cm.logScroll)
 }
 
 func (cm *coreManager) logRowsForOutput() []string {
-	width := cm.width
-	if width <= 0 {
-		width = 80
-	}
-	style := dimStyle.Width(max(1, width))
-	var rows []string
-	for _, line := range strings.Split(strings.TrimRight(cm.logs, "\n"), "\n") {
-		rows = append(rows, strings.Split(style.Render(line), "\n")...)
-	}
-	return rows
+	return logRows(cm.logs, cm.width)
 }
 
 func (cm *coreManager) scrollLogs(delta int) {
@@ -603,7 +588,7 @@ func (cm *coreManager) scrollLogs(delta int) {
 }
 
 func (cm *coreManager) clampLogsScroll() {
-	cm.logScroll = min(max(0, cm.logScroll), cm.maxLogsScroll())
+	cm.logScroll = clampLogScroll(cm.logScroll, len(cm.logRowsForOutput()), cm.logsHeight())
 }
 
 func (cm *coreManager) maxLogsScroll() int {
@@ -611,10 +596,7 @@ func (cm *coreManager) maxLogsScroll() int {
 }
 
 func (cm *coreManager) logsHeight() int {
-	if cm.height <= 0 {
-		return 12
-	}
-	return max(1, cm.height-5)
+	return logBudget(cm.height)
 }
 
 func defaultCoreLogOutput(ctx context.Context, lines int) (string, error) {
