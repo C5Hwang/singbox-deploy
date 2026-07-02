@@ -70,7 +70,7 @@ func Update(ctx context.Context, opts UpdateOptions) (deploy.Config, error) {
 	}
 	old := cfg.EnabledProtocols()
 	oldCfg := cfg
-	cfg.Enabled = canonicalProtocols(opts.Selected)
+	cfg.Enabled = deploy.CanonicalProtocols(opts.Selected)
 	if len(cfg.Enabled) == 0 {
 		return deploy.Config{}, fmt.Errorf("select at least one supported protocol")
 	}
@@ -141,17 +141,6 @@ func protocolUpdateSteps(opts UpdateOptions, changedPorts []config.Protocol, sta
 		}},
 	)
 	return steps
-}
-
-func canonicalProtocols(protocols []config.Protocol) []config.Protocol {
-	selected := deploy.SelectedProtocolSet(protocols)
-	out := make([]config.Protocol, 0, len(selected))
-	for _, p := range config.AllProtocols {
-		if selected[p] {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 func applyProtocolOverrides(cfg *deploy.Config, opts UpdateOptions) {

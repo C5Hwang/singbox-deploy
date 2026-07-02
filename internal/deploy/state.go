@@ -162,13 +162,7 @@ func readProtocolStateUintDefault(store state.Store, name string, fallback uint6
 func acmeChallenge(value string) acme.Challenge { return acme.Challenge(value) }
 
 func parseProtocolState(value string) ([]config.Protocol, error) {
-	selected := SelectedProtocolSet(canonicalProtocolsFromString(value))
-	var out []config.Protocol
-	for _, p := range config.AllProtocols {
-		if selected[p] {
-			out = append(out, p)
-		}
-	}
+	out := CanonicalProtocols(canonicalProtocolsFromString(value))
 	if len(out) == 0 {
 		return nil, fmt.Errorf("state enabled_protocols has no supported protocols")
 	}
@@ -190,6 +184,20 @@ func canonicalProtocolsFromString(value string) []config.Protocol {
 		part = strings.TrimSpace(part)
 		if part != "" {
 			out = append(out, config.Protocol(part))
+		}
+	}
+	return out
+}
+
+// CanonicalProtocols returns the known protocols from the given slice, ordered
+// and deduplicated according to config.AllProtocols. It is the single source of
+// the "normalize a selection into canonical order" logic.
+func CanonicalProtocols(protocols []config.Protocol) []config.Protocol {
+	selected := SelectedProtocolSet(protocols)
+	out := make([]config.Protocol, 0, len(selected))
+	for _, p := range config.AllProtocols {
+		if selected[p] {
+			out = append(out, p)
 		}
 	}
 	return out
