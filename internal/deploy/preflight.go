@@ -20,5 +20,8 @@ func (o *Orchestrator) checkConflicts(_ context.Context, _ Config) error {
 }
 
 func (o *Orchestrator) checkPorts(ctx context.Context, cfg Config) error {
+	if err := cfg.ValidatePorts(); err != nil {
+		return err
+	}
 	return system.CheckPorts(ctx, cfg.Domain, cfg.portChecks())
 }

@@ -7,6 +7,8 @@
 package deploy
 
 import (
+	"fmt"
+
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
@@ -205,11 +207,75 @@ func (c Config) portChecks() []system.Port {
 	if c.DeployMonitor {
 		checks = append(checks, system.Port{Number: c.MonitorPublicPort, Proto: "tcp", Label: "monitor/Nginx", Public: true})
 	}
-	if c.Challenge == acme.ChallengeHTTP01 {
-		checks = append(checks, system.Port{Number: 80, Proto: "tcp", Label: "ACME HTTP-01", Public: true})
+	// Nginx always listens on 80 (HTTP redirect) and 443 (camouflage site), so
+	// both must be free regardless of the ACME challenge. Skip the duplicates
+	// already added above when the subscription/monitor ports are 80/443.
+	seen := map[int]bool{}
+	for _, p := range checks {
+		seen[p.Number] = true
+	}
+	if !seen[80] {
+		checks = append(checks, system.Port{Number: 80, Proto: "tcp", Label: "Nginx HTTP / ACME HTTP-01", Public: true})
+	}
+	if !seen[443] {
+		checks = append(checks, system.Port{Number: 443, Proto: "tcp", Label: "Nginx HTTPS camouflage", Public: true})
 	}
 	if c.DeployMonitor {
 		checks = append(checks, system.Port{Number: c.MonitorPort, Proto: "tcp", Label: "monitor service", Public: false})
 	}
 	return checks
+}
+
+// ValidatePorts rejects configurations whose listen ports collide. Nginx always
+// owns 80 (HTTP redirect) and 443 (camouflage site); the subscription and
+// monitor endpoints may fold onto 443 (Nginx merges them into that server
+// block), but protocol ports must never take 80/443 and no non-443 port may be
+// claimed twice. This is the configuration-level backstop for CheckPorts, which
+// only sees whatever is free on the host at install time.
+func (c Config) ValidatePorts() error {
+	owner := map[int]string{80: "Nginx HTTP redirect", 443: "Nginx HTTPS camouflage"}
+	claim := func(port int, label string, mayFold443 bool) error {
+		if port <= 0 {
+			return nil
+		}
+		if port == 443 && mayFold443 {
+			return nil // folded into the Nginx camouflage server block
+		}
+		if prev, ok := owner[port]; ok {
+			return fmt.Errorf("port %d is used by both %s and %s", port, prev, label)
+		}
+		owner[port] = label
+		return nil
+	}
+	if err := claim(c.SubscribePort, "subscription", true); err != nil {
+		return err
+	}
+	if c.DeployMonitor {
+		if err := claim(c.MonitorPublicPort, "monitor public", true); err != nil {
+			return err
+		}
+		if err := claim(c.MonitorPort, "monitor service", false); err != nil {
+			return err
+		}
+	}
+	protoLabels := map[config.Protocol]string{
+		config.ProtocolRealityVision: "VLESS Reality Vision",
+		config.ProtocolRealityGRPC:   "VLESS Reality gRPC",
+		config.ProtocolHysteria2:     "Hysteria2",
+		config.ProtocolTUIC:          "TUIC",
+		config.ProtocolAnyTLS:        "AnyTLS",
+	}
+	protoPorts := map[config.Protocol]int{
+		config.ProtocolRealityVision: c.Ports.RealityVision,
+		config.ProtocolRealityGRPC:   c.Ports.RealityGRPC,
+		config.ProtocolHysteria2:     c.Ports.Hysteria2,
+		config.ProtocolTUIC:          c.Ports.TUIC,
+		config.ProtocolAnyTLS:        c.Ports.AnyTLS,
+	}
+	for _, p := range c.EnabledProtocols() {
+		if err := claim(protoPorts[p], protoLabels[p], false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
