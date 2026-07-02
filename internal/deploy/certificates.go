@@ -80,7 +80,7 @@ func certificatePairUsable(certPath, keyPath, domain string, t time.Time) (bool,
 	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
 		return false, nil
 	}
-	cert, err := firstCertificate(certPEM)
+	cert, err := FirstCertificate(certPEM)
 	if err != nil {
 		return false, nil
 	}
@@ -93,7 +93,8 @@ func certificatePairUsable(certPath, keyPath, domain string, t time.Time) (bool,
 	return true, nil
 }
 
-func firstCertificate(certPEM []byte) (*x509.Certificate, error) {
+// FirstCertificate parses the leaf certificate from a PEM bundle.
+func FirstCertificate(certPEM []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(certPEM)
 	if block == nil || block.Type != "CERTIFICATE" {
 		return nil, fmt.Errorf("missing certificate PEM block")

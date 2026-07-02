@@ -5,8 +5,6 @@ package certrenew
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"os"
@@ -73,7 +71,7 @@ func (r Renewer) Run(ctx context.Context) error {
 		return err
 	}
 
-	if err := runAll(r.Runner,
+	if err := deploy.RunCommands(r.Runner,
 		system.Command{Name: "systemctl", Args: []string{"restart", system.SingBoxService}},
 		system.Command{Name: "systemctl", Args: []string{"restart", "nginx"}},
 	); err != nil {
@@ -159,7 +157,6 @@ func readState(store state.Store, name string, required bool) (string, error) {
 	return value, nil
 }
 
-
 func renewalDue(certPath, keyPath, domain string, t time.Time, renewBefore time.Duration) (bool, string, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
@@ -178,7 +175,7 @@ func renewalDue(certPath, keyPath, domain string, t time.Time, renewBefore time.
 	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
 		return true, "certificate and private key do not match", nil
 	}
-	cert, err := firstCertificate(certPEM)
+	cert, err := deploy.FirstCertificate(certPEM)
 	if err != nil {
 		return true, "certificate is invalid", nil
 	}
@@ -195,21 +192,4 @@ func renewalDue(certPath, keyPath, domain string, t time.Time, renewBefore time.
 		return true, fmt.Sprintf("certificate expires at %s", cert.NotAfter.Format(time.RFC3339)), nil
 	}
 	return false, "", nil
-}
-
-func firstCertificate(certPEM []byte) (*x509.Certificate, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("missing certificate PEM block")
-	}
-	return x509.ParseCertificate(block.Bytes)
-}
-
-func runAll(runner system.Runner, cmds ...system.Command) error {
-	for _, cmd := range cmds {
-		if err := runner.Run(cmd); err != nil {
-			return fmt.Errorf("command %q: %w", cmd.String(), err)
-		}
-	}
-	return nil
 }
