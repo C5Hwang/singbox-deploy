@@ -268,28 +268,30 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-// countryDef maps a country code to its display info and filter regex.
+// countryDef maps a country code to its display info and filter regex. Its flag
+// is read from subscription.FlagForCode so flags live in exactly one place.
 type countryDef struct {
 	Code   string
-	Flag   string
 	Name   string
 	Filter string
 }
 
+func (c countryDef) flag() string { return subscription.FlagForCode(c.Code) }
+
 // knownCountries lists recognized countries in display order (Asia first, then West).
 var knownCountries = []countryDef{
-	{Code: "HK", Flag: "🇭🇰", Name: "香港节点", Filter: `(🇭🇰)|(港)|(Hong)|(HK)`},
-	{Code: "TW", Flag: "🇼🇸", Name: "台湾节点", Filter: `(🇹🇼)|(🇼🇸)|(台)|(Tai)|(TW)`},
-	{Code: "JP", Flag: "🇯🇵", Name: "日本节点", Filter: `(🇯🇵)|(日)|(Japan)|(JP)`},
-	{Code: "KR", Flag: "🇰🇷", Name: "韩国节点", Filter: `(🇰🇷)|(韩)|(Korea)|(KR)`},
-	{Code: "SG", Flag: "🇸🇬", Name: "新加坡节点", Filter: `(🇸🇬)|(新)|(Singapore)|(SG)`},
-	{Code: "US", Flag: "🇺🇸", Name: "美国节点", Filter: `(🇺🇸)|(🇺🇲)|(美)|(States)|(US)`},
-	{Code: "CA", Flag: "🇨🇦", Name: "加拿大节点", Filter: `(🇨🇦)|(加)|(Canada)|(CA)`},
-	{Code: "UK", Flag: "🇬🇧", Name: "英国节点", Filter: `(🇬🇧)|(英)|(United Kingdom)|(UK)`},
-	{Code: "DE", Flag: "🇩🇪", Name: "德国节点", Filter: `(🇩🇪)|(德)|(Germany)|(DE)`},
-	{Code: "FR", Flag: "🇫🇷", Name: "法国节点", Filter: `(🇫🇷)|(法)|(France)|(FR)`},
-	{Code: "NL", Flag: "🇳🇱", Name: "荷兰节点", Filter: `(🇳🇱)|(荷)|(Netherlands)|(NL)`},
-	{Code: "AU", Flag: "🇦🇺", Name: "澳大利亚节点", Filter: `(🇦🇺)|(澳)|(Australia)|(AU)`},
+	{Code: "HK", Name: "香港节点", Filter: `(🇭🇰)|(港)|(Hong)|(HK)`},
+	{Code: "TW", Name: "台湾节点", Filter: `(🇹🇼)|(🇼🇸)|(台)|(Tai)|(TW)`},
+	{Code: "JP", Name: "日本节点", Filter: `(🇯🇵)|(日)|(Japan)|(JP)`},
+	{Code: "KR", Name: "韩国节点", Filter: `(🇰🇷)|(韩)|(Korea)|(KR)`},
+	{Code: "SG", Name: "新加坡节点", Filter: `(🇸🇬)|(新)|(Singapore)|(SG)`},
+	{Code: "US", Name: "美国节点", Filter: `(🇺🇸)|(🇺🇲)|(美)|(States)|(US)`},
+	{Code: "CA", Name: "加拿大节点", Filter: `(🇨🇦)|(加)|(Canada)|(CA)`},
+	{Code: "UK", Name: "英国节点", Filter: `(🇬🇧)|(英)|(United Kingdom)|(UK)`},
+	{Code: "DE", Name: "德国节点", Filter: `(🇩🇪)|(德)|(Germany)|(DE)`},
+	{Code: "FR", Name: "法国节点", Filter: `(🇫🇷)|(法)|(France)|(FR)`},
+	{Code: "NL", Name: "荷兰节点", Filter: `(🇳🇱)|(荷)|(Netherlands)|(NL)`},
+	{Code: "AU", Name: "澳大利亚节点", Filter: `(🇦🇺)|(澳)|(Australia)|(AU)`},
 }
 
 // detectedCountry is a country group detected from node tags.
@@ -311,7 +313,7 @@ func detectCountries(tags []string) []detectedCountry {
 		}
 		if len(matched) > 0 {
 			result = append(result, detectedCountry{
-				Tag:      def.Flag + " " + def.Name,
+				Tag:      def.flag() + " " + def.Name,
 				Filter:   def.Filter,
 				TagsJSON: marshalTags(matched),
 			})
