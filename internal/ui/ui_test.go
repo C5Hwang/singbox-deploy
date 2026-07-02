@@ -70,6 +70,31 @@ func TestSelfUpdateChecksLatestAsynchronously(t *testing.T) {
 	}
 }
 
+func TestEveryMenuItemHasActivation(t *testing.T) {
+	m := NewModel()
+	items := m.flatItems()
+	if len(items) == 0 {
+		t.Fatal("expected a non-empty menu")
+	}
+	for i, item := range items {
+		if item.Activate == nil {
+			t.Fatalf("menu item %d (%q) has no activation callback", i, item.Label)
+		}
+	}
+}
+
+func TestActivateOpensSubFlowByCursor(t *testing.T) {
+	m := NewModel()
+	m.SetSize(120, 40)
+	// Cursor 1 is "Protocol settings"; activation must open the protocol manager
+	// without any hardcoded index knowledge in activate().
+	m.cursor = 1
+	m.activate()
+	if m.protocols == nil {
+		t.Fatal("activating the protocol menu item should open the protocol manager")
+	}
+}
+
 func TestCtrlCQuitsFromActiveSubFlow(t *testing.T) {
 	m := NewModel()
 	m.SetSize(120, 40)

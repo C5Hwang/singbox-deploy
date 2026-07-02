@@ -47,9 +47,12 @@ type Status struct {
 	Salt         string
 }
 
-// MenuItem is a single selectable action within a group.
+// MenuItem is a single selectable action within a group. Each item carries its
+// own activation callback so the dispatch is driven by the item rather than by
+// a hardcoded cursor index that must track defaultGroups' ordering.
 type MenuItem struct {
-	Label string
+	Label    string
+	Activate func(*Model) tea.Cmd
 }
 
 // MenuGroup is a titled section of the grouped menu.
@@ -82,21 +85,77 @@ func NewModel() *Model {
 
 func defaultGroups() []MenuGroup {
 	return []MenuGroup{
-		{Title: "Setup", Items: []MenuItem{{Label: "Install / Reinstall"}}},
+		{Title: "Setup", Items: []MenuItem{{Label: "Install / Reinstall", Activate: activateInstall}}},
 		{Title: "Proxy", Items: []MenuItem{
-			{Label: "Protocol settings"},
-			{Label: "Subscription settings"},
+			{Label: "Protocol settings", Activate: activateProtocols},
+			{Label: "Subscription settings", Activate: activateSubscriptions},
 		}},
 		{Title: "Server", Items: []MenuItem{
-			{Label: "Certificate & site"},
-			{Label: "Monitor & quota"},
-			{Label: "Routing rules"},
-			{Label: "sing-box core"},
+			{Label: "Certificate & site", Activate: activatePlaceholder("Certificate & site")},
+			{Label: "Monitor & quota", Activate: activateMonitor},
+			{Label: "Routing rules", Activate: activatePlaceholder("Routing rules")},
+			{Label: "sing-box core", Activate: activateCore},
 		}},
 		{Title: "System", Items: []MenuItem{
-			{Label: "Self-update"},
-			{Label: "Uninstall"},
+			{Label: "Self-update", Activate: activateSelfUpdate},
+			{Label: "Uninstall", Activate: activateUninstall},
 		}},
+	}
+}
+
+func activateInstall(m *Model) tea.Cmd {
+	flow := newInstallFlow()
+	flow.setSize(m.width, m.height)
+	m.install = flow
+	return nil
+}
+
+func activateProtocols(m *Model) tea.Cmd {
+	p := newProtocolManager()
+	p.setSize(m.width, m.height)
+	m.protocols = p
+	return nil
+}
+
+func activateSubscriptions(m *Model) tea.Cmd {
+	s := newSubscriptionManager()
+	s.setSize(m.width, m.height)
+	m.subscribe = s
+	return nil
+}
+
+func activateMonitor(m *Model) tea.Cmd {
+	t := newMonitorManager()
+	t.setSize(m.width, m.height)
+	m.monitor = t
+	return nil
+}
+
+func activateCore(m *Model) tea.Cmd {
+	c := newCoreManager()
+	c.setSize(m.width, m.height)
+	m.core = c
+	return nil
+}
+
+func activateSelfUpdate(m *Model) tea.Cmd {
+	s := newSelfUpdateManager()
+	s.setSize(m.width, m.height)
+	m.selfupdate = s
+	return s.checkCmd()
+}
+
+func activateUninstall(m *Model) tea.Cmd {
+	u := newUninstallManager()
+	u.setSize(m.width, m.height)
+	m.uninstall = u
+	return nil
+}
+
+func activatePlaceholder(title string) func(*Model) tea.Cmd {
+	return func(m *Model) tea.Cmd {
+		m.placeholder = newPlaceholderManager(title)
+		return nil
 	}
 }
 
@@ -246,42 +305,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// activate runs the action for the highlighted menu item.
+// activate runs the highlighted menu item's own activation callback.
 func (m *Model) activate() tea.Cmd {
-	switch m.cursor {
-	case 0:
-		flow := newInstallFlow()
-		flow.setSize(m.width, m.height)
-		m.install = flow
-	case 1:
-		p := newProtocolManager()
-		p.setSize(m.width, m.height)
-		m.protocols = p
-	case 2:
-		s := newSubscriptionManager()
-		s.setSize(m.width, m.height)
-		m.subscribe = s
-	case 3:
-		m.placeholder = newPlaceholderManager("Certificate & site")
-	case 4:
-		t := newMonitorManager()
-		t.setSize(m.width, m.height)
-		m.monitor = t
-	case 5:
-		m.placeholder = newPlaceholderManager("Routing rules")
-	case 6:
-		c := newCoreManager()
-		c.setSize(m.width, m.height)
-		m.core = c
-	case 7:
-		s := newSelfUpdateManager()
-		s.setSize(m.width, m.height)
-		m.selfupdate = s
-		return s.checkCmd()
-	case 8:
-		u := newUninstallManager()
-		u.setSize(m.width, m.height)
-		m.uninstall = u
+	items := m.flatItems()
+	if m.cursor < 0 || m.cursor >= len(items) {
+		return nil
+	}
+	if fn := items[m.cursor].Activate; fn != nil {
+		return fn(m)
 	}
 	return nil
 }
