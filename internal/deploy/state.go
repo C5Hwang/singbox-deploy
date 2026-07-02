@@ -53,12 +53,13 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		monitorAlias = readProtocolStateDefault(store, "traffic_alias", DefaultMonitorAlias)
 	}
 
+	dnsProvider := readProtocolStateDefault(store, "dns_provider", "")
 	cfg := Config{
 		Domain:                 domain,
 		Email:                  readProtocolStateDefault(store, "email", ""),
 		Challenge:              "http-01",
-		DNSProvider:            readProtocolStateDefault(store, "dns_provider", ""),
-		DNSCredentials:         map[string]string{},
+		DNSProvider:            dnsProvider,
+		DNSCredentials:         dnsCredentialsFromState(dnsProvider, readProtocolStateDefault(store, "dns_credential", "")),
 		Enabled:                enabled,
 		DisplayName:            readProtocolStateDefault(store, "display_name", DefaultDisplayName),
 		Salt:                   salt,
