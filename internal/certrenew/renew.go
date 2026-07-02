@@ -140,7 +140,7 @@ func (r Renewer) requestFromState() (acme.Request, error) {
 		Email:       email,
 		Challenge:   acme.Challenge(challenge),
 		DNSProvider: dnsProvider,
-		Credentials: dnsCredentials(dnsProvider, dnsCredential),
+		Credentials: deploy.DNSCredentialsForProvider(dnsProvider, dnsCredential),
 	}, nil
 }
 
@@ -159,19 +159,6 @@ func readState(store state.Store, name string, required bool) (string, error) {
 	return value, nil
 }
 
-func dnsCredentials(provider, credential string) map[string]string {
-	creds := map[string]string{}
-	switch provider {
-	case "cloudflare":
-		creds["CF_API_TOKEN"] = credential
-	case "aliyun":
-		if key, secret, ok := strings.Cut(credential, ":"); ok {
-			creds["ALICLOUD_ACCESS_KEY"] = key
-			creds["ALICLOUD_SECRET_KEY"] = secret
-		}
-	}
-	return creds
-}
 
 func renewalDue(certPath, keyPath, domain string, t time.Time, renewBefore time.Duration) (bool, string, error) {
 	certPEM, err := os.ReadFile(certPath)

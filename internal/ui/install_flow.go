@@ -628,15 +628,7 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 	challenge := acme.Challenge(vals["challenge"])
 	dnsCreds := map[string]string{}
 	if challenge == acme.ChallengeDNS01 {
-		switch vals["dns_provider"] {
-		case "cloudflare":
-			dnsCreds["CF_API_TOKEN"] = vals["dns_credential"]
-		case "aliyun":
-			if key, secret, ok := strings.Cut(vals["dns_credential"], ":"); ok {
-				dnsCreds["ALICLOUD_ACCESS_KEY"] = key
-				dnsCreds["ALICLOUD_SECRET_KEY"] = secret
-			}
-		}
+		dnsCreds = deploy.DNSCredentialsForProvider(vals["dns_provider"], vals["dns_credential"])
 	}
 
 	iface := ""

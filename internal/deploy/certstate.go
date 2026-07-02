@@ -23,9 +23,11 @@ func (o *Orchestrator) writeCertificateRenewalState(cfg Config) error {
 	return nil
 }
 
-// dnsCredentialsFromState is the inverse of dnsCredentialForState: it restores
-// the per-provider credential map from the single stored state value.
-func dnsCredentialsFromState(provider, credential string) map[string]string {
+// DNSCredentialsForProvider decodes the single stored/entered credential string
+// into the lego provider environment map. It is the inverse of
+// dnsCredentialForState and the one place this "single string ↔ map" convention
+// lives (used by install, renewal, and the install UI).
+func DNSCredentialsForProvider(provider, credential string) map[string]string {
 	creds := map[string]string{}
 	if credential == "" {
 		return creds

@@ -58,7 +58,7 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		Email:                  readProtocolStateDefault(store, "email", ""),
 		Challenge:              "http-01",
 		DNSProvider:            dnsProvider,
-		DNSCredentials:         dnsCredentialsFromState(dnsProvider, readProtocolStateDefault(store, "dns_credential", "")),
+		DNSCredentials:         DNSCredentialsForProvider(dnsProvider, readProtocolStateDefault(store, "dns_credential", "")),
 		Enabled:                enabled,
 		DisplayName:            readProtocolStateDefault(store, "display_name", DefaultDisplayName),
 		Salt:                   salt,
