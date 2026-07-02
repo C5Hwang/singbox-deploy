@@ -22,6 +22,7 @@ import (
 const (
 	DefaultSamplingInterval = 1 * time.Minute
 	DefaultResourceInterval = 10 * time.Second
+	remoteRefreshInterval   = 30 * time.Second
 	rawRetention            = 2 * time.Hour
 	resourceRawRetention    = 2 * time.Hour
 	historyRetention        = 90 * 24 * time.Hour
@@ -146,7 +147,6 @@ type SourceSummary struct {
 }
 
 func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
-	m.refreshRemoteSources(r.Context())
 	now := m.now()
 	used, err := m.usedThisCycle(now)
 	if err != nil {
@@ -442,6 +442,25 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}
 	m.sampleOnce(m.now())
 	m.resourceSampleOnce(m.now())
+
+	// Remote sources are refreshed in the background: request handlers only
+	// read the snapshot file, so a slow or dead peer (or two nodes monitoring
+	// each other) cannot stall or recurse through the API.
+	if m.cfg.RefreshRemoteSources != nil {
+		go func() {
+			m.refreshRemoteSources(ctx)
+			refreshTicker := time.NewTicker(remoteRefreshInterval)
+			defer refreshTicker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-refreshTicker.C:
+					m.refreshRemoteSources(ctx)
+				}
+			}
+		}()
+	}
 
 	go func() {
 		for {

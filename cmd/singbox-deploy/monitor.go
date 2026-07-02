@@ -82,11 +82,7 @@ func runMonitor(args []string) error {
 			if err != nil {
 				return err
 			}
-			fetched, err := deploy.FetchRemoteMonitorSources(ctx, sources, deploy.DefaultSubscriptionFetch)
-			if err != nil {
-				return err
-			}
-			return monitor.WriteRemoteSources(*remoteMonitorPath, fetched)
+			return deploy.RefreshRemoteMonitorTo(ctx, *remoteMonitorPath, sources, deploy.DefaultSubscriptionFetch)
 		},
 		Now: clock.Now,
 	}

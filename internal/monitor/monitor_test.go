@@ -20,7 +20,7 @@ func TestTrafficLimitsExceeded(t *testing.T) {
 	}
 }
 
-func TestSummaryRefreshesRemoteSourcesBeforeRead(t *testing.T) {
+func TestSummaryServesSnapshotWithoutRefreshing(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(filepath.Join(dir, "monitor.db"))
 	if err != nil {
@@ -29,17 +29,20 @@ func TestSummaryRefreshesRemoteSourcesBeforeRead(t *testing.T) {
 	defer store.Close()
 
 	remotePath := filepath.Join(dir, "state", "remote_monitor.json")
+	if err := WriteRemoteSources(remotePath, []SourceSummary{{
+		Name:           "JP-remote",
+		TotalUsedBytes: 900,
+		ResetTime:      "2026-06-01T00:00:00Z",
+	}}); err != nil {
+		t.Fatalf("WriteRemoteSources error: %v", err)
+	}
 	calls := 0
 	m := New(store, Config{
 		Alias:             "local",
 		RemoteMonitorPath: remotePath,
 		RefreshRemoteSources: func(_ context.Context) error {
 			calls++
-			return WriteRemoteSources(remotePath, []SourceSummary{{
-				Name:           "JP-remote",
-				TotalUsedBytes: 900,
-				ResetTime:      "2026-06-01T00:00:00Z",
-			}})
+			return nil
 		},
 		Now: func() time.Time {
 			return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -52,8 +55,10 @@ func TestSummaryRefreshesRemoteSourcesBeforeRead(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if calls != 1 {
-		t.Fatalf("refresh calls = %d", calls)
+	// Refreshing happens on the background ticker, never on the request path,
+	// so a slow or looping peer cannot stall the summary API.
+	if calls != 0 {
+		t.Fatalf("refresh calls on request path = %d, want 0", calls)
 	}
 	var got summary
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
