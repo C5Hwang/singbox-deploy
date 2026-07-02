@@ -246,7 +246,9 @@ func (o *Orchestrator) stepConfig(_ context.Context, cfg Config) error {
 	if err := os.MkdirAll(o.Layout.FragmentsDir, 0o755); err != nil {
 		return err
 	}
-	if err := WriteFile(o.Layout.ConfigJSON, cfgBytes, 0o644); err != nil {
+	// The rendered config embeds the Reality private key and all user
+	// passwords; keep it root-only (sing-box runs as root).
+	if err := WriteFile(o.Layout.ConfigJSON, cfgBytes, 0o600); err != nil {
 		return err
 	}
 	return o.run(system.Command{Name: o.Layout.SingBoxBin, Args: []string{"check", "-c", o.Layout.ConfigJSON}})

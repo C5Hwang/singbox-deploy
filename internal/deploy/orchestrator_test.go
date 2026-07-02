@@ -170,6 +170,9 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
+	if info, err := os.Stat(layout.ConfigJSON); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("config.json must be 0600 (holds Reality key and passwords), got %v, err %v", info.Mode().Perm(), err)
+	}
 	var decoded struct {
 		Inbounds []struct {
 			Type string `json:"type"`

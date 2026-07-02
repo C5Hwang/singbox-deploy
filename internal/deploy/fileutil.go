@@ -11,11 +11,16 @@ import (
 )
 
 // WriteFile creates parent directories and writes data with the given mode.
+// The mode is enforced even when the file already exists (os.WriteFile alone
+// keeps the old mode), so permission tightening reaches existing installs.
 func WriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, perm)
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return err
+	}
+	return os.Chmod(path, perm)
 }
 
 func writeStateFile(stateDir, name, value string) error {

@@ -226,7 +226,7 @@ func WriteProtocolConfigCandidate(layout paths.Layout, cfg Config) error {
 	if err := os.MkdirAll(layout.FragmentsDir, 0o755); err != nil {
 		return err
 	}
-	return WriteFile(ProtocolConfigCandidate(layout), cfgBytes, 0o644)
+	return WriteFile(ProtocolConfigCandidate(layout), cfgBytes, 0o600)
 }
 
 // ProtocolConfigCandidate returns the path to the candidate config.json.
