@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -426,6 +427,27 @@ func TestStepCertificatesReusesExistingManagedCertificate(t *testing.T) {
 	}
 	if len(runner.commands) != 0 {
 		t.Fatalf("expected no commands when reusing certificate, got %#v", runner.commands)
+	}
+}
+
+func TestStepCertificatesRestartsNginxWhenHTTP01IssuanceFails(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.Challenge = acme.ChallengeHTTP01
+	runner := &recordingRunner{}
+	issuer := &countingIssuer{err: errors.New("acme unavailable")}
+	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer)}
+
+	if err := o.stepCertificates(context.Background(), cfg); err == nil {
+		t.Fatal("expected issuance failure")
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "systemctl stop nginx") {
+		t.Fatalf("nginx should be stopped for HTTP-01:\n%s", joined)
+	}
+	if !strings.Contains(joined, "systemctl start nginx") {
+		t.Fatalf("nginx must be restored after a failed issuance:\n%s", joined)
 	}
 }
 

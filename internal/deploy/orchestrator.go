@@ -195,8 +195,17 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	}
 
 	// HTTP-01 binds port 80; free it by stopping Nginx (ignore if not running).
+	// If issuance fails, bring Nginx back so an aborted install/reinstall does
+	// not leave an existing camouflage site down (mirrors certrenew).
+	stoppedNginx := false
 	if cfg.Challenge == acme.ChallengeHTTP01 {
 		_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
+		stoppedNginx = true
+		defer func() {
+			if stoppedNginx {
+				_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"start", "nginx"}})
+			}
+		}()
 	}
 	cert, err := o.ACME.Obtain(ctx, acme.Request{
 		Domain:      cfg.Domain,
@@ -211,7 +220,13 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	if err := WriteFile(certPath, cert.CertificatePEM, 0o644); err != nil {
 		return err
 	}
-	return WriteFile(keyPath, cert.PrivateKeyPEM, 0o600)
+	if err := WriteFile(keyPath, cert.PrivateKeyPEM, 0o600); err != nil {
+		return err
+	}
+	// Success: keep Nginx stopped; stepNginxConfig restarts it with the new
+	// certificate later in the flow.
+	stoppedNginx = false
+	return nil
 }
 
 func (o *Orchestrator) stepSingBox(ctx context.Context, cfg Config) error {
