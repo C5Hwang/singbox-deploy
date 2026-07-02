@@ -877,6 +877,10 @@ func TestResourceTrendAPI(t *testing.T) {
 	if len(result.Trend) == 0 {
 		t.Fatal("expected at least one resource trend point")
 	}
+	// Stored values are 10-second byte deltas; the API serves bytes/sec.
+	if result.Trend[0].DIOReadAvg != 102 || result.Trend[0].DIOWriteAvg != 51 {
+		t.Fatalf("disk IO should be served as bytes/sec, got read=%d write=%d", result.Trend[0].DIOReadAvg, result.Trend[0].DIOWriteAvg)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +919,10 @@ func TestResourceRecentAPI(t *testing.T) {
 	}
 	if len(result.Points) != 1 {
 		t.Fatalf("points = %d, want 1", len(result.Points))
+	}
+	// Stored values are 10-second byte deltas; the API serves bytes/sec.
+	if result.Points[0].DIORead != 102 || result.Points[0].DIOWrite != 51 {
+		t.Fatalf("disk IO should be served as bytes/sec, got read=%d write=%d", result.Points[0].DIORead, result.Points[0].DIOWrite)
 	}
 }
 

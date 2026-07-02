@@ -253,7 +253,7 @@ func (m *Monitor) handleResourceTrend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"trend": trend})
+		_ = json.NewEncoder(w).Encode(map[string]any{"trend": resourceTrendToRates(trend)})
 		return
 	}
 
@@ -308,7 +308,7 @@ func (m *Monitor) handleResourceRecent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"points": points})
+		_ = json.NewEncoder(w).Encode(map[string]any{"points": resourceRecentToRates(points)})
 		return
 	}
 
@@ -320,6 +320,28 @@ func (m *Monitor) handleResourceRecent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Error(w, "source not found", http.StatusNotFound)
+}
+
+// The store keeps disk IO as raw per-interval byte deltas; the UI displays
+// bytes/sec. Convert at the API boundary so stored history stays compatible.
+func resourceTrendToRates(points []ResourceHourlyPoint) []ResourceHourlyPoint {
+	sec := int64(DefaultResourceInterval / time.Second)
+	for i := range points {
+		points[i].DIOReadAvg /= sec
+		points[i].DIOReadMax /= sec
+		points[i].DIOWriteAvg /= sec
+		points[i].DIOWriteMax /= sec
+	}
+	return points
+}
+
+func resourceRecentToRates(points []ResourceRawPoint) []ResourceRawPoint {
+	sec := int64(DefaultResourceInterval / time.Second)
+	for i := range points {
+		points[i].DIORead /= sec
+		points[i].DIOWrite /= sec
+	}
+	return points
 }
 
 func (m *Monitor) proxyRemote(w http.ResponseWriter, url string) {
