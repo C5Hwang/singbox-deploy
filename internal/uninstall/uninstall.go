@@ -159,8 +159,17 @@ func (o Options) stepCronRenewal(context.Context) error {
 }
 
 func (o Options) stepNginxConfig(context.Context) error {
-	_, err := removeFileIfExists(o.NginxConfPath)
-	return err
+	removed, err := removeFileIfExists(o.NginxConfPath)
+	if err != nil {
+		return err
+	}
+	if removed {
+		// Reload so the running Nginx drops the just-removed managed vhost
+		// (and its now-deleted certificate); ignore errors when Nginx is not
+		// running.
+		_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"reload", "nginx"}})
+	}
+	return nil
 }
 
 func (o Options) stepSelectedData(context.Context) error {

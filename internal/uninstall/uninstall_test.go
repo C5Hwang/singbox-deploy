@@ -66,6 +66,7 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 		"systemctl disable --now sing-box.service",
 		"systemctl stop singbox-deploy-cert-renew.service",
 		"systemctl daemon-reload",
+		"systemctl reload nginx",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing command %q in:\n%s", want, joined)
