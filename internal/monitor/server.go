@@ -78,12 +78,20 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 	if cfg.ResetHour < 0 || cfg.ResetHour > 23 {
 		cfg.ResetHour = 0
 	}
-	return &Monitor{
+	m := &Monitor{
 		store:        store,
 		cfg:          cfg,
 		control:      control,
 		resCollector: NewResourceCollector("/"),
 	}
+	// Restore the quota-stop flag so a monitor restart (settings change, host
+	// reboot) cannot strand sing-box in the stopped state forever.
+	if stopped, err := store.QuotaStopped(); err != nil {
+		log.Printf("monitor: read quota stop flag: %v", err)
+	} else {
+		m.stoppedByQuota = stopped
+	}
+	return m
 }
 
 // Handler returns the HTTP handler exposing the API and the embedded UI.
@@ -506,8 +514,19 @@ func (m *Monitor) resourceSampleOnce(now time.Time) {
 }
 
 func (m *Monitor) enforceQuota(now time.Time) {
+	if m.control == nil {
+		return
+	}
 	limits := TrafficLimits{InBytes: m.cfg.InLimitBytes, OutBytes: m.cfg.OutLimitBytes, TotalBytes: m.cfg.TotalLimitBytes}
-	if m.control == nil || limits == (TrafficLimits{}) {
+	if limits == (TrafficLimits{}) {
+		if m.stoppedByQuota {
+			if err := m.control.Start(); err != nil {
+				log.Printf("monitor: start sing-box: %v", err)
+				return
+			}
+			m.setStoppedByQuota(false)
+			log.Printf("monitor: traffic limits removed, restarted sing-box")
+		}
 		return
 	}
 	used, err := m.usedThisCycle(now)
@@ -522,7 +541,7 @@ func (m *Monitor) enforceQuota(now time.Time) {
 				log.Printf("monitor: stop sing-box: %v", err)
 				return
 			}
-			m.stoppedByQuota = true
+			m.setStoppedByQuota(true)
 			log.Printf("monitor: quota exceeded (in=%d/%d out=%d/%d total=%d/%d bytes), stopped sing-box", used.InBytes, m.cfg.InLimitBytes, used.OutBytes, m.cfg.OutLimitBytes, used.Total(), m.cfg.TotalLimitBytes)
 		}
 	case m.stoppedByQuota:
@@ -530,8 +549,17 @@ func (m *Monitor) enforceQuota(now time.Time) {
 			log.Printf("monitor: start sing-box: %v", err)
 			return
 		}
-		m.stoppedByQuota = false
+		m.setStoppedByQuota(false)
 		log.Printf("monitor: new cycle, restarted sing-box")
+	}
+}
+
+// setStoppedByQuota updates the in-memory flag and persists it; a write failure
+// is logged but does not block quota enforcement.
+func (m *Monitor) setStoppedByQuota(stopped bool) {
+	m.stoppedByQuota = stopped
+	if err := m.store.SetQuotaStopped(stopped); err != nil {
+		log.Printf("monitor: persist quota stop flag: %v", err)
 	}
 }
 

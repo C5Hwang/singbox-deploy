@@ -91,9 +91,40 @@ CREATE TABLE IF NOT EXISTS resource_hourly (
     disk_avg      REAL    NOT NULL, disk_max      REAL    NOT NULL,
     dio_read_avg  INTEGER NOT NULL, dio_read_max  INTEGER NOT NULL,
     dio_write_avg INTEGER NOT NULL, dio_write_max INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );`
 	_, err := s.db.Exec(schema)
 	return err
+}
+
+// quotaStopKey marks that this monitor stopped sing-box to enforce the quota.
+const quotaStopKey = "stopped_by_quota"
+
+// SetQuotaStopped persists whether sing-box is currently stopped by quota
+// enforcement, so the state survives monitor restarts.
+func (s *Store) SetQuotaStopped(stopped bool) error {
+	if !stopped {
+		_, err := s.db.Exec(`DELETE FROM meta WHERE key = ?`, quotaStopKey)
+		return err
+	}
+	_, err := s.db.Exec(`INSERT INTO meta(key, value) VALUES(?, '1') ON CONFLICT(key) DO UPDATE SET value = '1'`, quotaStopKey)
+	return err
+}
+
+// QuotaStopped reports whether a previous run stopped sing-box for the quota.
+func (s *Store) QuotaStopped() (bool, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, quotaStopKey).Scan(&value)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return value == "1", nil
 }
 
 // InsertSample records one interface sample.

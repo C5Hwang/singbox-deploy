@@ -427,6 +427,57 @@ func TestEnforceQuotaDoesNotStopTwice(t *testing.T) {
 	}
 }
 
+func TestQuotaStopSurvivesMonitorRestart(t *testing.T) {
+	store, cleanup := tempStore(t)
+	defer cleanup()
+
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	cycleStart := CycleStart(now, 1)
+	if err := store.InsertSample(cycleStart.Unix()+100, "eth0", 500, 600, 500, 600); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := &fakeController{active: true}
+	m := New(store, Config{InLimitBytes: 400, ResetDay: 1, Now: func() time.Time { return now }}, ctrl)
+	m.enforceQuota(now)
+	if !m.stoppedByQuota {
+		t.Fatal("precondition: quota stop should trigger")
+	}
+
+	// A fresh Monitor over the same store (monitor restart) must see the
+	// persisted flag and restart sing-box once the new cycle begins.
+	later := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	ctrl2 := &fakeController{active: false}
+	m2 := New(store, Config{InLimitBytes: 400, ResetDay: 1, Now: func() time.Time { return later }}, ctrl2)
+	if !m2.stoppedByQuota {
+		t.Fatal("stoppedByQuota should be restored from the store")
+	}
+	m2.enforceQuota(later)
+	if ctrl2.starts != 1 {
+		t.Fatalf("expected 1 start after new cycle, got %d", ctrl2.starts)
+	}
+	if m2.stoppedByQuota {
+		t.Fatal("stoppedByQuota should clear after restart")
+	}
+}
+
+func TestEnforceQuotaRestartsWhenLimitsRemoved(t *testing.T) {
+	store, cleanup := tempStore(t)
+	defer cleanup()
+
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	ctrl := &fakeController{active: false}
+	m := New(store, Config{ResetDay: 1, Now: func() time.Time { return now }}, ctrl)
+	m.stoppedByQuota = true
+
+	m.enforceQuota(now)
+	if ctrl.starts != 1 {
+		t.Fatalf("expected 1 start when limits removed, got %d", ctrl.starts)
+	}
+	if m.stoppedByQuota {
+		t.Fatal("stoppedByQuota should clear when limits removed")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Store: TrendHourly
 // ---------------------------------------------------------------------------
