@@ -1,10 +1,4 @@
 {
-  "http_clients": [
-    {
-      "tag": "proxy-http",
-      "detour": "DIRECT"
-    }
-  ],
   "log": {
     "level": "debug",
     "timestamp": true
@@ -93,17 +87,13 @@
       ],
       "auto_route": true,
       "strict_route": true,
-      "stack": "mixed",
-      "sniff": true,
-      "sniff_override_destination": false
+      "stack": "mixed"
     },
     {
       "type": "mixed",
       "tag": "mixed-in",
       "listen": "0.0.0.0",
-      "listen_port": 7890,
-      "sniff": true,
-      "sniff_override_destination": false
+      "listen_port": 7890
     }
   ],
   "outbounds": [
@@ -225,31 +215,33 @@
   ],
   "route": {
     "rule_set": [
-      {"type": "remote", "tag": "Private", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/private.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "AI", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/ai.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "PayPal", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/paypal.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Spotify", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/spotify.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Games", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/games.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "HBO", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/hbo.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Hulu", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/hulu.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Disney", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/disney.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "TikTok", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/tiktok.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "YouTube", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/youtube.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Netflix", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/netflix.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "SocialMedia", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/socialmedia.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Proxy", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/proxy.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Scholar", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/Scholar/Scholar.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Gits", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/gits.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Google", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/google.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Microsoft", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/microsoft.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "OneDrive", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/onedrive.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Apple", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/apple.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "SocialMediaCN", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/socialmedia-cn.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "Direct", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/Direct/Direct.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "CN", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/cn.srs", "update_interval": "24h"},
-      {"type": "remote", "tag": "CNCIDR", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/cncidr.srs", "update_interval": "24h"}
+      {"type": "remote", "tag": "Private", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/private.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "AI", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/ai.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "PayPal", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/paypal.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Spotify", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/spotify.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Games", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/games.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "HBO", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/hbo.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Hulu", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/hulu.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Disney", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/disney.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "TikTok", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/tiktok.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "YouTube", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/youtube.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Netflix", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/netflix.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "SocialMedia", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/socialmedia.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Proxy", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/proxy.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Scholar", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/Scholar/Scholar.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Gits", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/gits.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Google", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/google.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Microsoft", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/microsoft.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "OneDrive", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/onedrive.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Apple", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/apple.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "SocialMediaCN", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/socialmedia-cn.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Direct", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/Direct/Direct.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "CN", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/cn.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "CNCIDR", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/cncidr.srs", "update_interval": "24h", "download_detour": "DIRECT"}
     ],
     "rules": [
+      {"action": "sniff"},
+      {"protocol": "dns", "action": "hijack-dns"},
       {"rule_set": "Private", "outbound": "本地直连"},
       {"rule_set": ["AI"], "outbound": "AI服务"},
       {"domain_suffix": "openrouter.ai", "outbound": "AI服务"},
@@ -271,7 +263,6 @@
       "server": "local",
       "strategy": "prefer_ipv4"
     },
-    "default_http_client": "proxy-http",
     "final": "漏网之鱼",
     "auto_detect_interface": true
   }

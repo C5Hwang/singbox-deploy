@@ -223,6 +223,13 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 			t.Fatalf("sing-box profile missing %q:\n%s", want, profileText)
 		}
 	}
+	// Stable sing-box rejects unknown/removed fields, so the profile must not
+	// carry 1.14-alpha options or inbound fields removed in 1.13.
+	for _, forbidden := range []string{`"http_clients":`, `"default_http_client":`, `"sniff":`, `"sniff_override_destination":`} {
+		if strings.Contains(profileText, forbidden) {
+			t.Fatalf("sing-box profile contains %s, unsupported by stable sing-box:\n%s", forbidden, profileText)
+		}
+	}
 
 	clashFragment, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "clashMeta", token))
 	if err != nil {
