@@ -49,6 +49,11 @@ jobs:
           done
           cp scripts/install.sh dist/install.sh
 
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum singbox-deploy-linux-amd64 singbox-deploy-linux-arm64 install.sh > SHA256SUMS
+
       - name: Check if first release
         id: check
         run: |

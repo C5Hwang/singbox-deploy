@@ -3,8 +3,12 @@
 package selfupdate
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +38,9 @@ type Manager struct {
 	Progress     func(deploy.Event)
 	Version      string
 	GOARCH       string
+	// InstallBin is the path of the binary to replace; defaults to
+	// /usr/bin/singbox-deploy. Overridable for tests.
+	InstallBin string
 }
 
 // Defaults fills unset production dependencies.
@@ -54,6 +61,9 @@ func (m *Manager) Defaults() {
 	if m.GOARCH == "" {
 		m.GOARCH = "amd64"
 	}
+	if m.InstallBin == "" {
+		m.InstallBin = installBin
+	}
 }
 
 // CheckLatest returns the latest stable tag without applying anything.
@@ -72,8 +82,10 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 
 	asset := fmt.Sprintf("singbox-deploy-linux-%s", m.GOARCH)
 	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, asset)
-	updateDir := filepath.Join(filepath.Dir(installBin), ".singbox-deploy-update")
+	sumsURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/SHA256SUMS", repo, tag)
+	updateDir := filepath.Join(filepath.Dir(m.InstallBin), ".singbox-deploy-update")
 	candidatePath := filepath.Join(updateDir, "singbox-deploy-"+safeTag(tag))
+	sumsPath := filepath.Join(updateDir, "SHA256SUMS")
 
 	type step struct {
 		label  string
@@ -88,7 +100,7 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 			}
 			return m.Download(ctx, url, candidatePath)
 		}},
-		{label: "Verify", detail: "verify downloaded binary", run: func(context.Context) error {
+		{label: "Verify", detail: "verify checksum of downloaded binary", run: func(ctx context.Context) error {
 			info, err := os.Stat(candidatePath)
 			if err != nil {
 				return fmt.Errorf("verify downloaded binary: %w", err)
@@ -99,10 +111,16 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 			if info.Size() == 0 {
 				return fmt.Errorf("downloaded binary is empty")
 			}
+			if err := m.Download(ctx, sumsURL, sumsPath); err != nil {
+				return fmt.Errorf("download checksums: %w", err)
+			}
+			if err := verifyChecksum(candidatePath, sumsPath, asset); err != nil {
+				return err
+			}
 			return os.Chmod(candidatePath, 0o755)
 		}},
-		{label: "Replace", detail: "replace " + installBin, run: func(context.Context) error {
-			return os.Rename(candidatePath, installBin)
+		{label: "Replace", detail: "replace " + m.InstallBin, run: func(context.Context) error {
+			return os.Rename(candidatePath, m.InstallBin)
 		}},
 		{label: "Cleanup", detail: "remove temporary files", run: func(context.Context) error {
 			return os.RemoveAll(updateDir)
@@ -124,6 +142,48 @@ func (m *Manager) emit(e deploy.Event) {
 	if m.Progress != nil {
 		m.Progress(e)
 	}
+}
+
+// verifyChecksum confirms the SHA-256 of binPath matches the entry for asset in
+// a `sha256sum`-format sums file ("<hex>  <name>" per line).
+func verifyChecksum(binPath, sumsPath, asset string) error {
+	expected, err := expectedChecksum(sumsPath, asset)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(binPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", asset, expected, actual)
+	}
+	return nil
+}
+
+func expectedChecksum(sumsPath, asset string) (string, error) {
+	f, err := os.Open(sumsPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 2 && fields[1] == asset {
+			return fields[0], nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("no checksum found for %s", asset)
 }
 
 func safeTag(tag string) string {

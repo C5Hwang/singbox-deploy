@@ -34,17 +34,43 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 asset="${BIN}-${os}-${arch}"
-url="https://github.com/${REPO}/releases/latest/download/${asset}"
+base="https://github.com/${REPO}/releases/latest/download"
 tmp="$(mktemp)"
-trap 'rm -f "${tmp}"' EXIT
+sums="$(mktemp)"
+trap 'rm -f "${tmp}" "${sums}"' EXIT
+
+fetch() {
+  # fetch <url> <dest>
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1"
+  else
+    echo "curl or wget is required" >&2
+    exit 1
+  fi
+}
 
 echo "Downloading ${asset} ..."
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "${url}" -o "${tmp}"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "${tmp}" "${url}"
+fetch "${base}/${asset}" "${tmp}"
+
+echo "Verifying checksum ..."
+fetch "${base}/SHA256SUMS" "${sums}"
+expected="$(awk -v f="${asset}" '$2 == f {print $1}' "${sums}")"
+if [ -z "${expected}" ]; then
+  echo "No checksum found for ${asset} in SHA256SUMS" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "${tmp}" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "${tmp}" | awk '{print $1}')"
 else
-  echo "curl or wget is required" >&2
+  echo "sha256sum or shasum is required to verify the download" >&2
+  exit 1
+fi
+if [ "${expected}" != "${actual}" ]; then
+  echo "Checksum mismatch for ${asset}: expected ${expected}, got ${actual}" >&2
   exit 1
 fi
 
