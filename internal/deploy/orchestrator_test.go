@@ -342,6 +342,31 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	mustExist(t, filepath.Join(layout.WebRoot, "assets", "css", "main.css"))
 }
 
+func TestRenderMonitorUnitOmitsEmptyInterface(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	cfg := testConfig(t)
+
+	cfg.MonitorInterface = ""
+	unit, err := RenderMonitorUnit(layout, "/usr/bin/singbox-deploy", cfg)
+	if err != nil {
+		t.Fatalf("RenderMonitorUnit: %v", err)
+	}
+	// An empty --interface value would swallow the following flag during
+	// parsing and silently disable every limit after it.
+	if strings.Contains(unit, "--interface") {
+		t.Fatalf("unit must omit --interface when unset (serve auto-detects):\n%s", unit)
+	}
+
+	cfg.MonitorInterface = "eth0"
+	unit, err = RenderMonitorUnit(layout, "/usr/bin/singbox-deploy", cfg)
+	if err != nil {
+		t.Fatalf("RenderMonitorUnit: %v", err)
+	}
+	if !strings.Contains(unit, `--interface "eth0"`) {
+		t.Fatalf("unit should pass the quoted interface:\n%s", unit)
+	}
+}
+
 func TestOrchestratorSkipsMonitorWhenDisabled(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)

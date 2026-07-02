@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -235,7 +236,7 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 		t.Fatalf("read monitor unit: %v", err)
 	}
 	unitText := string(unit)
-	for _, want := range []string{"--reset-hour 5", "--alias \"JP-local\"", "--interval-seconds 60", "--remote-monitor " + deploy.RemoteMonitorPath(layout)} {
+	for _, want := range []string{"--reset-hour 5", "--alias \"JP-local\"", "--interval-seconds 60", "--remote-monitor " + strconv.Quote(deploy.RemoteMonitorPath(layout))} {
 		if !strings.Contains(unitText, want) {
 			t.Fatalf("monitor unit missing %q:\n%s", want, unitText)
 		}
