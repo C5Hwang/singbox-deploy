@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/assets"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 )
 
@@ -350,7 +351,9 @@ func ReadRemoteSources(path string) ([]SourceSummary, error) {
 	return sources, nil
 }
 
-// WriteRemoteSources writes remote monitor snapshots for the monitor API.
+// WriteRemoteSources writes remote monitor snapshots for the monitor API. The
+// write is atomic: the TUI process and monitor service read this file while
+// the background refresher rewrites it.
 func WriteRemoteSources(path string, sources []SourceSummary) error {
 	if path == "" {
 		return nil
@@ -362,7 +365,7 @@ func WriteRemoteSources(path string, sources []SourceSummary) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o600)
+	return state.WriteFileAtomic(path, b, 0o600)
 }
 
 func readLocalPositionFile(path string) int {
