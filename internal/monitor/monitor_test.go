@@ -715,6 +715,38 @@ func TestAggregateResourceHourly(t *testing.T) {
 	}
 }
 
+func TestAggregateResourceHourlyMergesWeightedBySampleCount(t *testing.T) {
+	store, cleanup := tempStore(t)
+	defer cleanup()
+
+	hour := int64(1717200000)
+	// Fold 1: a single sample at cpu 100%.
+	store.InsertResourceSample(hour+10, 100.0, 0, 0, 0, 0)
+	if err := store.AggregateResourceHourly(hour + 60); err != nil {
+		t.Fatal(err)
+	}
+	// Fold 2: three samples at cpu 0% in the same hour bucket.
+	store.InsertResourceSample(hour+100, 0, 0, 0, 0, 0)
+	store.InsertResourceSample(hour+110, 0, 0, 0, 0, 0)
+	store.InsertResourceSample(hour+120, 0, 0, 0, 0, 0)
+	if err := store.AggregateResourceHourly(hour + 3600); err != nil {
+		t.Fatal(err)
+	}
+
+	trend, err := store.ResourceTrendHourly(hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trend) != 1 {
+		t.Fatalf("resource trend points = %d, want 1", len(trend))
+	}
+	// Weighted mean of 1×100% and 3×0% is 25%; the old unweighted merge
+	// produced 50%.
+	if trend[0].CPUAvg != 25.0 {
+		t.Fatalf("cpu avg = %v, want weighted mean 25.0", trend[0].CPUAvg)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Store: LatestSampleTime
 // ---------------------------------------------------------------------------

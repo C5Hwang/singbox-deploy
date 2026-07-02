@@ -90,13 +90,32 @@ CREATE TABLE IF NOT EXISTS resource_hourly (
     mem_avg       REAL    NOT NULL, mem_max       REAL    NOT NULL,
     disk_avg      REAL    NOT NULL, disk_max      REAL    NOT NULL,
     dio_read_avg  INTEGER NOT NULL, dio_read_max  INTEGER NOT NULL,
-    dio_write_avg INTEGER NOT NULL, dio_write_max INTEGER NOT NULL
+    dio_write_avg INTEGER NOT NULL, dio_write_max INTEGER NOT NULL,
+    sample_count  INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );`
-	_, err := s.db.Exec(schema)
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	return s.ensureResourceHourlySampleCount()
+}
+
+// ensureResourceHourlySampleCount migrates databases created before the
+// sample_count column existed. Legacy rows get weight 1.
+func (s *Store) ensureResourceHourlySampleCount() error {
+	var count int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('resource_hourly') WHERE name = 'sample_count'`,
+	).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`ALTER TABLE resource_hourly ADD COLUMN sample_count INTEGER NOT NULL DEFAULT 1`)
 	return err
 }
 
@@ -287,22 +306,26 @@ func (s *Store) InsertResourceSample(ts int64, cpu, mem, disk float64, dioRead, 
 // oldest first. It unions pre-aggregated hourly rows with on-the-fly
 // aggregation from raw resource samples.
 func (s *Store) ResourceTrendHourly(since int64) ([]ResourceHourlyPoint, error) {
+	// A recent hour can exist both as a partially folded hourly row and as raw
+	// samples; merge the two weighted by sample count, mirroring the fold.
 	rows, err := s.db.Query(`
 SELECT ts_hour,
-    AVG(cpu_avg), MAX(cpu_max), AVG(mem_avg), MAX(mem_max),
-    AVG(disk_avg), MAX(disk_max),
-    CAST(AVG(dio_read_avg) AS INTEGER), MAX(dio_read_max),
-    CAST(AVG(dio_write_avg) AS INTEGER), MAX(dio_write_max)
+    SUM(cpu_avg * n) / SUM(n), MAX(cpu_max), SUM(mem_avg * n) / SUM(n), MAX(mem_max),
+    SUM(disk_avg * n) / SUM(n), MAX(disk_max),
+    CAST(SUM(dio_read_avg * n) / SUM(n) AS INTEGER), MAX(dio_read_max),
+    CAST(SUM(dio_write_avg * n) / SUM(n) AS INTEGER), MAX(dio_write_max)
 FROM (
     SELECT ts_hour, cpu_avg, cpu_max, mem_avg, mem_max, disk_avg, disk_max,
-           dio_read_avg, dio_read_max, dio_write_avg, dio_write_max
+           dio_read_avg, dio_read_max, dio_write_avg, dio_write_max,
+           sample_count AS n
     FROM resource_hourly WHERE ts_hour >= ?1
     UNION ALL
     SELECT (ts/3600)*3600 AS ts_hour,
            AVG(cpu_pct), MAX(cpu_pct), AVG(mem_pct), MAX(mem_pct),
            AVG(disk_pct), MAX(disk_pct),
            CAST(AVG(dio_read) AS INTEGER), MAX(dio_read),
-           CAST(AVG(dio_write) AS INTEGER), MAX(dio_write)
+           CAST(AVG(dio_write) AS INTEGER), MAX(dio_write),
+           COUNT(*) AS n
     FROM resource_samples WHERE ts >= ?1 GROUP BY (ts/3600)
 )
 GROUP BY ts_hour
@@ -377,26 +400,35 @@ func (s *Store) AggregateResourceHourly(before int64) error {
 		return err
 	}
 	defer tx.Rollback()
+	// Successive folds of the same hour cover unequal spans (the maintenance
+	// tick is rarely hour-aligned), so averages merge weighted by sample count.
 	if _, err := tx.Exec(`
 INSERT INTO resource_hourly(ts_hour, cpu_avg, cpu_max, mem_avg, mem_max, disk_avg, disk_max,
-    dio_read_avg, dio_read_max, dio_write_avg, dio_write_max)
+    dio_read_avg, dio_read_max, dio_write_avg, dio_write_max, sample_count)
 SELECT (ts/3600)*3600 AS h,
     AVG(cpu_pct), MAX(cpu_pct), AVG(mem_pct), MAX(mem_pct),
     AVG(disk_pct), MAX(disk_pct),
     CAST(AVG(dio_read) AS INTEGER), MAX(dio_read),
-    CAST(AVG(dio_write) AS INTEGER), MAX(dio_write)
+    CAST(AVG(dio_write) AS INTEGER), MAX(dio_write),
+    COUNT(*)
 FROM resource_samples WHERE ts < ? GROUP BY h
 ON CONFLICT(ts_hour) DO UPDATE SET
-    cpu_avg  = (resource_hourly.cpu_avg + excluded.cpu_avg) / 2,
+    cpu_avg  = (resource_hourly.cpu_avg * resource_hourly.sample_count + excluded.cpu_avg * excluded.sample_count)
+               / (resource_hourly.sample_count + excluded.sample_count),
     cpu_max  = MAX(resource_hourly.cpu_max, excluded.cpu_max),
-    mem_avg  = (resource_hourly.mem_avg + excluded.mem_avg) / 2,
+    mem_avg  = (resource_hourly.mem_avg * resource_hourly.sample_count + excluded.mem_avg * excluded.sample_count)
+               / (resource_hourly.sample_count + excluded.sample_count),
     mem_max  = MAX(resource_hourly.mem_max, excluded.mem_max),
-    disk_avg = (resource_hourly.disk_avg + excluded.disk_avg) / 2,
+    disk_avg = (resource_hourly.disk_avg * resource_hourly.sample_count + excluded.disk_avg * excluded.sample_count)
+               / (resource_hourly.sample_count + excluded.sample_count),
     disk_max = MAX(resource_hourly.disk_max, excluded.disk_max),
-    dio_read_avg  = (resource_hourly.dio_read_avg + excluded.dio_read_avg) / 2,
+    dio_read_avg  = (resource_hourly.dio_read_avg * resource_hourly.sample_count + excluded.dio_read_avg * excluded.sample_count)
+                    / (resource_hourly.sample_count + excluded.sample_count),
     dio_read_max  = MAX(resource_hourly.dio_read_max, excluded.dio_read_max),
-    dio_write_avg = (resource_hourly.dio_write_avg + excluded.dio_write_avg) / 2,
-    dio_write_max = MAX(resource_hourly.dio_write_max, excluded.dio_write_max)`, before); err != nil {
+    dio_write_avg = (resource_hourly.dio_write_avg * resource_hourly.sample_count + excluded.dio_write_avg * excluded.sample_count)
+                    / (resource_hourly.sample_count + excluded.sample_count),
+    dio_write_max = MAX(resource_hourly.dio_write_max, excluded.dio_write_max),
+    sample_count  = resource_hourly.sample_count + excluded.sample_count`, before); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM resource_samples WHERE ts < ?`, before); err != nil {
