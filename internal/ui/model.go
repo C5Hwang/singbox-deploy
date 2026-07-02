@@ -136,6 +136,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SetSize(sz.Width, sz.Height)
 	}
 
+	// Ctrl+C always quits, even while a sub-flow is active. Sub-flows swallow
+	// every message they receive, so without this a user in any screen (or a
+	// long-running install) would have no way to exit short of killing the
+	// process externally.
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+
 	// While a sub-flow is active, delegate everything to it so its state machine
 	// and async run messages are handled in one place.
 	if m.install != nil {

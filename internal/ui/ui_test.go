@@ -46,6 +46,22 @@ func TestViewUsesInternalPanels(t *testing.T) {
 	}
 }
 
+func TestCtrlCQuitsFromActiveSubFlow(t *testing.T) {
+	m := NewModel()
+	m.SetSize(120, 40)
+	m.install = &installFlow{phase: phaseRunning, run: commandRun{bar: progressBarForTest()}}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c during an active sub-flow must return a quit command")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("expected a tea.Quit message")
+	} else if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg, got %T", msg)
+	}
+}
+
 func TestInstallViewKeepsMenuVisible(t *testing.T) {
 	m := NewModel()
 	m.SetSize(120, 40)
