@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/assets"
@@ -63,8 +64,10 @@ type Monitor struct {
 	havePrev       bool
 	stoppedByQuota bool
 
-	resCollector    *ResourceCollector
-	latestResource  *ResourceSnapshot
+	resCollector *ResourceCollector
+	// latestResource is written by the sampling goroutine and read by HTTP
+	// handlers, hence the atomic pointer.
+	latestResource  atomic.Pointer[ResourceSnapshot]
 	remoteRefreshMu sync.Mutex
 }
 
@@ -171,7 +174,7 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 		OutLimitBytes:       m.cfg.OutLimitBytes,
 		TotalLimitBytes:     m.cfg.TotalLimitBytes,
 		ResetTime:           NextCycleReset(now, m.cfg.ResetDay, m.cfg.ResetHour).Format(time.RFC3339),
-		Resources:           m.latestResource,
+		Resources:           m.latestResource.Load(),
 	}
 	remote, err := ReadRemoteSources(m.cfg.RemoteMonitorPath)
 	if err != nil {
@@ -522,7 +525,7 @@ func (m *Monitor) resourceSampleOnce(now time.Time) {
 		return
 	}
 	intervalSec := DefaultResourceInterval.Seconds()
-	m.latestResource = &ResourceSnapshot{
+	m.latestResource.Store(&ResourceSnapshot{
 		CPUPct:          reading.CPUPct,
 		MemPct:          reading.MemPct,
 		MemUsedBytes:    reading.MemUsedBytes,
@@ -532,7 +535,7 @@ func (m *Monitor) resourceSampleOnce(now time.Time) {
 		DiskTotalBytes:  reading.DiskTotalBytes,
 		DiskIOReadRate:  float64(reading.DIOReadDelta) / intervalSec,
 		DiskIOWriteRate: float64(reading.DIOWriteDelta) / intervalSec,
-	}
+	})
 }
 
 func (m *Monitor) enforceQuota(now time.Time) {
