@@ -16,7 +16,6 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
-	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 )
 
@@ -143,7 +142,7 @@ func SaveRemoteSubscriptions(layout paths.Layout, remotes []RemoteSubscription) 
 			"salt":           strings.TrimSpace(remote.Salt),
 		}
 		for name, value := range values {
-			if err := writePrivateStateFile(entryDir, name, value+"\n"); err != nil {
+			if err := writeStateFile(entryDir, name, value+"\n"); err != nil {
 				return err
 			}
 		}
@@ -173,16 +172,6 @@ func readRemoteStateIntDefault(root, name string, fallback int) int {
 		return fallback
 	}
 	return n
-}
-
-func writePrivateStateFile(dir, name, value string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return err
-	}
-	return state.WriteFileAtomic(filepath.Join(dir, filepath.Clean(name)), []byte(value), 0o600)
 }
 
 // WriteSubscriptionsWithRemotes generates subscription outputs aggregating
@@ -613,7 +602,7 @@ func SaveMonitorSources(layout paths.Layout, sources []MonitorSource) error {
 			"monitor_public_port": itoa(src.MonitorPublicPort),
 		}
 		for name, value := range values {
-			if err := writePrivateStateFile(entryDir, name, value+"\n"); err != nil {
+			if err := writeStateFile(entryDir, name, value+"\n"); err != nil {
 				return err
 			}
 		}
@@ -641,7 +630,7 @@ func SaveLocalSubscriptionPosition(layout paths.Layout, pos int) error {
 	if layout.Root == "" {
 		layout = paths.DefaultLayout()
 	}
-	return writePrivateStateFile(layout.StateDir, localSubscriptionPositionFile, itoa(pos)+"\n")
+	return writeStateFile(layout.StateDir, localSubscriptionPositionFile, itoa(pos)+"\n")
 }
 
 // LoadLocalMonitorPosition returns the saved position of the local monitor
@@ -658,7 +647,7 @@ func SaveLocalMonitorPosition(layout paths.Layout, pos int) error {
 	if layout.Root == "" {
 		layout = paths.DefaultLayout()
 	}
-	return writePrivateStateFile(layout.StateDir, localMonitorPositionFile, itoa(pos)+"\n")
+	return writeStateFile(layout.StateDir, localMonitorPositionFile, itoa(pos)+"\n")
 }
 
 func readStateInt(dir, name string, fallback int) int {
