@@ -57,9 +57,7 @@ type step struct {
 
 // certPaths returns the certificate and key paths for the domain.
 func (o *Orchestrator) certPaths(cfg Config) (cert, key string) {
-	cert = filepath.Join(o.Layout.TLSDir, cfg.Domain+".crt")
-	key = filepath.Join(o.Layout.TLSDir, cfg.Domain+".key")
-	return
+	return CertificatePaths(o.Layout, cfg.Domain)
 }
 
 // defaults fills unset fields with production values.

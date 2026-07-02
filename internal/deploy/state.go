@@ -3,7 +3,6 @@ package deploy
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -218,7 +217,7 @@ func protocolKnown(proto config.Protocol) bool {
 
 // WriteProtocolConfigCandidate renders a candidate config.json for validation.
 func WriteProtocolConfigCandidate(layout paths.Layout, cfg Config) error {
-	certPath, keyPath := filepath.Join(layout.TLSDir, cfg.Domain+".crt"), filepath.Join(layout.TLSDir, cfg.Domain+".key")
+	certPath, keyPath := CertificatePaths(layout, cfg.Domain)
 	cfgBytes, err := config.Build(cfg.serverOptions(certPath, keyPath))
 	if err != nil {
 		return err

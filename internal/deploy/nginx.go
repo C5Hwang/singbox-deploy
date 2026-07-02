@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -53,8 +52,7 @@ func NginxInstallCommands(osr system.OSRelease) []system.Command {
 
 // WriteManagedNginxConfig renders and writes the managed Nginx configuration.
 func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath string) error {
-	certPath := filepath.Join(layout.TLSDir, cfg.Domain+".crt")
-	keyPath := filepath.Join(layout.TLSDir, cfg.Domain+".key")
+	certPath, keyPath := CertificatePaths(layout, cfg.Domain)
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
 		"SubscribePort":     cfg.SubscribePort,
 		"MonitorPublicPort": cfg.MonitorPublicPort,

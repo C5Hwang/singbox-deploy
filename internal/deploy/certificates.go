@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 )
 
@@ -51,6 +52,13 @@ func (o *Orchestrator) importExistingCertificate(cfg Config, certPath, keyPath s
 		return true, nil
 	}
 	return false, nil
+}
+
+// CertificatePaths returns the managed certificate and key paths for a domain.
+// It is the single source of truth for the TLSDir/<domain>.crt/.key naming used
+// across install, renewal, and nginx config.
+func CertificatePaths(layout paths.Layout, domain string) (cert, key string) {
+	return filepath.Join(layout.TLSDir, domain+".crt"), filepath.Join(layout.TLSDir, domain+".key")
 }
 
 func existingCertificateCandidates(domain string) []certificatePair {

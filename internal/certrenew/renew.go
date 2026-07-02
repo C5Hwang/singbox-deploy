@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -41,7 +41,7 @@ func (r Renewer) Run(ctx context.Context) error {
 		return err
 	}
 
-	certPath, keyPath := certPaths(r.Layout, req.Domain)
+	certPath, keyPath := deploy.CertificatePaths(r.Layout, req.Domain)
 	due, reason, err := renewalDue(certPath, keyPath, req.Domain, r.now(), r.RenewBefore)
 	if err != nil {
 		return err
@@ -171,10 +171,6 @@ func dnsCredentials(provider, credential string) map[string]string {
 		}
 	}
 	return creds
-}
-
-func certPaths(layout paths.Layout, domain string) (cert, key string) {
-	return filepath.Join(layout.TLSDir, domain+".crt"), filepath.Join(layout.TLSDir, domain+".key")
 }
 
 func renewalDue(certPath, keyPath, domain string, t time.Time, renewBefore time.Duration) (bool, string, error) {
