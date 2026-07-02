@@ -67,10 +67,9 @@ func (r Renewer) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFile(certPath, cert.CertificatePEM, 0o644); err != nil {
-		return err
-	}
-	if err := writeFile(keyPath, cert.PrivateKeyPEM, 0o600); err != nil {
+	// Replace the pair together so a failure cannot leave a new certificate
+	// alongside the old private key (nginx/sing-box would fail to load TLS).
+	if err := state.WriteFilePair(keyPath, cert.PrivateKeyPEM, 0o600, certPath, cert.CertificatePEM, 0o644); err != nil {
 		return err
 	}
 
@@ -220,13 +219,6 @@ func firstCertificate(certPEM []byte) (*x509.Certificate, error) {
 		return nil, fmt.Errorf("missing certificate PEM block")
 	}
 	return x509.ParseCertificate(block.Bytes)
-}
-
-func writeFile(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, perm)
 }
 
 func runAll(runner system.Runner, cmds ...system.Command) error {

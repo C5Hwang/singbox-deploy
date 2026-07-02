@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 )
 
 var (
@@ -43,10 +45,7 @@ func (o *Orchestrator) importExistingCertificate(cfg Config, certPath, keyPath s
 		if err != nil {
 			return false, err
 		}
-		if err := WriteFile(certPath, certPEM, 0o644); err != nil {
-			return false, err
-		}
-		if err := WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		if err := state.WriteFilePair(keyPath, keyPEM, 0o600, certPath, certPEM, 0o644); err != nil {
 			return false, err
 		}
 		return true, nil

@@ -33,27 +33,69 @@ func (s Store) WriteString(name string, value string, perm os.FileMode) error {
 // crashes mid-write) never observe a truncated file. State files hold the only
 // copy of keys and passwords, so a torn write is unrecoverable.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	tmp, err := stageFile(path, data, perm)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
 		return err
+	}
+	return nil
+}
+
+// WriteFilePair stages both files as temp siblings before renaming them
+// back-to-back: a failure before the first rename leaves the existing pair
+// untouched, and the mismatch window between the renames is minimal. Used for
+// TLS certificate/key pairs whose halves must match on disk.
+func WriteFilePair(aPath string, aData []byte, aPerm os.FileMode, bPath string, bData []byte, bPerm os.FileMode) error {
+	aTmp, err := stageFile(aPath, aData, aPerm)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(aTmp)
+	bTmp, err := stageFile(bPath, bData, bPerm)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(bTmp)
+	if err := os.Rename(aTmp, aPath); err != nil {
+		return err
+	}
+	return os.Rename(bTmp, bPath)
+}
+
+// stageFile writes data to a temp sibling of path, fully synced, ready to be
+// renamed into place. The parent directory is created if missing.
+func stageFile(path string, data []byte, perm os.FileMode) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return "", err
+	}
+	cleanup := func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return "", err
 	}
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
+		cleanup()
+		return "", err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
+		cleanup()
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		os.Remove(tmp.Name())
+		return "", err
 	}
-	return os.Rename(tmp.Name(), path)
+	return tmp.Name(), nil
 }
 
 // ReadString returns the contents of the named state file.

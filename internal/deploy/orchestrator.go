@@ -11,6 +11,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 )
@@ -217,10 +218,7 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := WriteFile(certPath, cert.CertificatePEM, 0o644); err != nil {
-		return err
-	}
-	if err := WriteFile(keyPath, cert.PrivateKeyPEM, 0o600); err != nil {
+	if err := state.WriteFilePair(keyPath, cert.PrivateKeyPEM, 0o600, certPath, cert.CertificatePEM, 0o644); err != nil {
 		return err
 	}
 	// Success: keep Nginx stopped; stepNginxConfig restarts it with the new

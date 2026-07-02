@@ -16,6 +16,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -153,11 +154,8 @@ func writeTestCertificatePair(t *testing.T, certPath, keyPath, domain string, no
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	if err := writeFile(certPath, certPEM, 0o644); err != nil {
-		t.Fatalf("write cert: %v", err)
-	}
-	if err := writeFile(keyPath, keyPEM, 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
+	if err := state.WriteFilePair(keyPath, keyPEM, 0o600, certPath, certPEM, 0o644); err != nil {
+		t.Fatalf("write certificate pair: %v", err)
 	}
 }
 
