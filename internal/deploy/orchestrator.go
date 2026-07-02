@@ -101,6 +101,7 @@ func (o *Orchestrator) defaults() {
 func (o *Orchestrator) steps(cfg Config) []step {
 	steps := []step{
 		{"Conflict check", "detect existing sing-box service or binary", o.stepConflictCheck},
+		{"Stop services", "stop managed services so a reinstall can rebind ports", o.stepStopManaged},
 		{"Port check", "check required ports are free and publicly reachable", o.stepPortCheck},
 		{"Dependencies", "install base packages", o.stepDependencies},
 		{"Nginx", "install nginx.org mainline", o.stepNginxInstall},
@@ -159,6 +160,16 @@ func (o *Orchestrator) stepConflictCheck(ctx context.Context, cfg Config) error 
 
 func (o *Orchestrator) stepPortCheck(ctx context.Context, cfg Config) error {
 	return o.CheckPorts(ctx, cfg)
+}
+
+// stepStopManaged stops the managed sing-box and nginx services before the port
+// check so reinstalling a running deployment does not fail on ports the old
+// services still hold. Errors are ignored: on a fresh install nothing is
+// running, and stepServices/stepNginxConfig restart them with the new config.
+func (o *Orchestrator) stepStopManaged(_ context.Context, _ Config) error {
+	_ = o.Runner.Run(system.Systemctl("stop", system.SingBoxService))
+	_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
+	return nil
 }
 
 func (o *Orchestrator) stepDependencies(_ context.Context, cfg Config) error {
@@ -298,9 +309,13 @@ func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
 	if err := WriteFile(filepath.Join(o.SystemdDir, system.CertRenewTimer), []byte(renewTimer), 0o644); err != nil {
 		return err
 	}
+	// enable + restart (not enable --now): on a reinstall the service is often
+	// already active, where --now is a no-op that would leave the old config
+	// loaded. restart guarantees the freshly written config.json takes effect.
 	return o.run(
 		system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
-		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.SingBoxService}},
+		system.Command{Name: "systemctl", Args: []string{"enable", system.SingBoxService}},
+		system.Command{Name: "systemctl", Args: []string{"restart", system.SingBoxService}},
 		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.CertRenewTimer}},
 	)
 }

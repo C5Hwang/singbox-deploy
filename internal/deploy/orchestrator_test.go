@@ -145,15 +145,16 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 			t.Fatalf("step %q failed: %v", e.Label, e.Err)
 		}
 	}
-	if okCount != 13 {
-		t.Fatalf("expected 13 ok steps, got %d", okCount)
+	if okCount != 14 {
+		t.Fatalf("expected 14 ok steps, got %d", okCount)
 	}
 
 	// Key commands were issued.
 	joined := strings.Join(runner.commands, "\n")
 	for _, want := range []string{
 		"apt-get update",
-		"systemctl enable --now sing-box.service",
+		"systemctl enable sing-box.service",
+		"systemctl restart sing-box.service",
 		"systemctl enable --now singbox-deploy-cert-renew.timer",
 		"check -c " + layout.ConfigJSON,
 		"nginx -t",
@@ -164,6 +165,11 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing command %q in:\n%s", want, joined)
 		}
+	}
+	// A reinstall must stop the running services before the port check so it
+	// can rebind, and the config must load via restart (not enable --now).
+	if strings.Index(joined, "systemctl stop sing-box.service") > strings.Index(joined, "check -c ") {
+		t.Fatalf("managed services must be stopped before the port check:\n%s", joined)
 	}
 
 	// config.json is valid and protocol-complete.
