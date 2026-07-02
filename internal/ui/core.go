@@ -171,7 +171,11 @@ func (cm *coreManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				return nil, false
 			},
 			Back: func() (tea.Cmd, bool) {
-				cm.cursor = 0
+				// Reset to the first selectable action (index 0 is a separator);
+				// the cursor was moved within the release list and would land on
+				// the separator, showing no highlight while Enter re-triggers the
+				// change-version fetch.
+				cm.cursor = 1
 				cm.phase = corePhaseAction
 				return nil, false
 			},

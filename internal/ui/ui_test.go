@@ -825,6 +825,34 @@ func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subs
 	return 0
 }
 
+func TestProtocolSelectBackResetsCursorToActionList(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	withProtocolManagerDeps(t, layout)
+
+	pm := newProtocolManager()
+	pm.setSize(100, 30)
+	if pm.loadErr != nil {
+		t.Fatalf("load protocol manager: %v", pm.loadErr)
+	}
+	// Enter the protocol select list and move the shared cursor past the end
+	// of the (shorter) action list.
+	pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if pm.phase != protocolPhaseSelect {
+		t.Fatalf("expected protocol select, phase=%v", pm.phase)
+	}
+	for i := 0; i < 4; i++ {
+		pm.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	// Back to the action list must land on a valid, highlighted action.
+	pm.handleKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if pm.phase != protocolPhaseAction {
+		t.Fatalf("expected action list, phase=%v", pm.phase)
+	}
+	if _, ok := selectedIndex(pm.cursor, len(pm.actions())); !ok {
+		t.Fatalf("cursor %d is out of range for %d actions after Back", pm.cursor, len(pm.actions()))
+	}
+}
+
 func TestSubscriptionRefreshBackReturnsToActionList(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withSubscriptionDeps(t, layout)

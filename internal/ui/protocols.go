@@ -140,6 +140,10 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				return nil, false
 			},
 			Back: func() (tea.Cmd, bool) {
+				// Reset the shared cursor: it was moved within the longer
+				// protocol list and would otherwise land out of range on the
+				// action list (no highlight, Enter hits a clamped item).
+				pm.cursor = 0
 				pm.phase = protocolPhaseAction
 				return nil, false
 			},
@@ -158,6 +162,7 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				return nil, false
 			},
 			Back: func() (tea.Cmd, bool) {
+				pm.cursor = 0
 				pm.phase = protocolPhaseAction
 				return nil, false
 			},
