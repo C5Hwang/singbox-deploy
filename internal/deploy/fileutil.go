@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
@@ -30,7 +31,7 @@ func writeStateFile(stateDir, name, value string) error {
 	if err := os.Chmod(stateDir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(stateDir, filepath.Clean(name)), []byte(value), 0o600)
+	return state.WriteFileAtomic(filepath.Join(stateDir, filepath.Clean(name)), []byte(value), 0o600)
 }
 
 // SubscriptionToken derives the subscription URL token from the salt.

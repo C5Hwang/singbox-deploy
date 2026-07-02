@@ -16,6 +16,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 )
 
@@ -181,7 +182,7 @@ func writePrivateStateFile(dir, name, value string) error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, filepath.Clean(name)), []byte(value), 0o600)
+	return state.WriteFileAtomic(filepath.Join(dir, filepath.Clean(name)), []byte(value), 0o600)
 }
 
 // WriteSubscriptionsWithRemotes generates subscription outputs aggregating

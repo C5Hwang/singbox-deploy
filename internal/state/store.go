@@ -26,7 +26,34 @@ func (s Store) WriteString(name string, value string, perm os.FileMode) error {
 		return err
 	}
 	path := filepath.Join(s.dir, filepath.Clean(name))
-	return os.WriteFile(path, []byte(value), perm)
+	return WriteFileAtomic(path, []byte(value), perm)
+}
+
+// WriteFileAtomic writes data to path via a temp file + rename so readers (and
+// crashes mid-write) never observe a truncated file. State files hold the only
+// copy of keys and passwords, so a torn write is unrecoverable.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // ReadString returns the contents of the named state file.
