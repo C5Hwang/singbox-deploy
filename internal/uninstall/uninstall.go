@@ -75,11 +75,38 @@ func (o *Options) defaults() {
 func (o Options) steps() []uninstallStep {
 	return []uninstallStep{
 		{"Stop services", "stop and disable managed systemd units", o.stepStopServices},
+		{"Firewall", "close managed protocol and subscription ports", o.stepFirewall},
 		{"Systemd units", "remove managed systemd unit and timer files", o.stepSystemdUnits},
 		{"ACME renewal", "remove managed cron renewal entry if present", o.stepCronRenewal},
 		{"Nginx config", "remove only the managed singbox-deploy Nginx config", o.stepNginxConfig},
 		{"Selected data", "remove selected /etc/singbox-deploy data categories", o.stepSelectedData},
 	}
+}
+
+// stepFirewall closes the ports the deployment opened, except 80/443 which are
+// shared with any other Nginx site on the host. It is best-effort: a missing
+// state file or an undetectable firewall must not block uninstall.
+func (o Options) stepFirewall(context.Context) error {
+	fw := system.DetectFirewall()
+	if fw == system.FirewallNone {
+		return nil
+	}
+	cfg, err := deploy.LoadProtocolConfig(o.Layout)
+	if err != nil {
+		return nil // no recoverable state; nothing to close
+	}
+	ports := deploy.ManagedFirewallPorts(cfg)
+	kept := ports[:0]
+	for _, p := range ports {
+		if p.Number == 80 || p.Number == 443 {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	for _, cmd := range system.FirewallRemoveCommands(fw, kept) {
+		_ = o.Runner.Run(cmd)
+	}
+	return nil
 }
 
 func (o Options) emit(e deploy.Event) {

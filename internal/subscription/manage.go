@@ -135,9 +135,6 @@ func updateSteps(opts UpdateOptions, oldPort, newPort int, remotes []Remote) []u
 		if opts.Firewall != system.FirewallNone {
 			steps = append(steps, updateStep{label: "Firewall", detail: "open new subscription HTTPS port", run: func(_ context.Context, _ Config) error {
 				cmds := system.FirewallCommands(opts.Firewall, []system.Port{{Number: newPort, Proto: "tcp", Label: "subscription/Nginx"}})
-				if opts.Firewall == system.FirewallFirewalld && len(cmds) > 0 {
-					cmds = append(cmds, system.Command{Name: "firewall-cmd", Args: []string{"--reload"}})
-				}
 				return opts.RunCommands(opts.Runner, cmds...)
 			}})
 		}

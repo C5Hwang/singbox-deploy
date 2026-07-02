@@ -153,6 +153,10 @@ func (c Config) realityHandshakePort() int {
 	return config.DefaultRealityHandshakePort
 }
 
+// ManagedFirewallPorts returns every port the deployment opens in the firewall,
+// used by uninstall to close them again.
+func ManagedFirewallPorts(c Config) []system.Port { return c.firewallPorts() }
+
 // firewallPorts returns the TCP/UDP ports to open for the enabled protocols.
 func (c Config) firewallPorts() []system.Port {
 	want := map[config.Protocol]struct {

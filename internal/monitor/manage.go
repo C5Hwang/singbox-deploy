@@ -255,9 +255,6 @@ func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, sources []Mana
 		if opts.Firewall != system.FirewallNone && cfg.DeployMonitor && managePublicPortChanged(old, cfg) {
 			steps = append(steps, manageUpdateStep{label: "Firewall", detail: "open monitor HTTPS port", run: func(_ context.Context, cfg ManageConfig) error {
 				cmds := system.FirewallCommands(opts.Firewall, []system.Port{{Number: cfg.MonitorPublicPort, Proto: "tcp", Label: "monitor/Nginx"}})
-				if opts.Firewall == system.FirewallFirewalld && len(cmds) > 0 {
-					cmds = append(cmds, system.Command{Name: "firewall-cmd", Args: []string{"--reload"}})
-				}
 				return opts.RunCommands(opts.Runner, cmds...)
 			}})
 		}

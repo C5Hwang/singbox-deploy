@@ -184,11 +184,7 @@ func (o *Orchestrator) stepFirewall(_ context.Context, cfg Config) error {
 	if cfg.Firewall == system.FirewallNone {
 		return nil
 	}
-	cmds := system.FirewallCommands(cfg.Firewall, cfg.firewallPorts())
-	if cfg.Firewall == system.FirewallFirewalld {
-		cmds = append(cmds, system.Command{Name: "firewall-cmd", Args: []string{"--reload"}})
-	}
-	return o.run(cmds...)
+	return o.run(system.FirewallCommands(cfg.Firewall, cfg.firewallPorts())...)
 }
 
 func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {

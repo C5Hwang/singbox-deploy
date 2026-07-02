@@ -58,8 +58,34 @@ func TestFirewallCommands(t *testing.T) {
 
 func TestFirewallCommandsFirewalld(t *testing.T) {
 	cmds := FirewallCommands(FirewallFirewalld, []Port{{Number: 8443, Proto: "tcp"}})
-	if cmds[0].String() != "firewall-cmd --add-port=8443/tcp --permanent" {
-		t.Fatalf("cmd = %q", cmds[0].String())
+	want := []string{"firewall-cmd --add-port=8443/tcp --permanent", "firewall-cmd --reload"}
+	if len(cmds) != len(want) {
+		t.Fatalf("cmds = %#v", cmds)
+	}
+	for i := range want {
+		if cmds[i].String() != want[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, cmds[i].String(), want[i])
+		}
+	}
+}
+
+func TestFirewallRemoveCommands(t *testing.T) {
+	ufw := FirewallRemoveCommands(FirewallUFW, []Port{{Number: 9443, Proto: "udp"}})
+	if len(ufw) != 1 || ufw[0].String() != "ufw delete allow 9443/udp" {
+		t.Fatalf("ufw remove cmds = %#v", ufw)
+	}
+	fd := FirewallRemoveCommands(FirewallFirewalld, []Port{{Number: 9443, Proto: "udp"}})
+	want := []string{"firewall-cmd --remove-port=9443/udp --permanent", "firewall-cmd --reload"}
+	if len(fd) != len(want) {
+		t.Fatalf("firewalld remove cmds = %#v", fd)
+	}
+	for i := range want {
+		if fd[i].String() != want[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, fd[i].String(), want[i])
+		}
+	}
+	if len(FirewallRemoveCommands(FirewallNone, []Port{{Number: 9443, Proto: "udp"}})) != 0 {
+		t.Fatal("no firewall should yield no commands")
 	}
 }
 

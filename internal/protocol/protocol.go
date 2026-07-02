@@ -83,8 +83,9 @@ func Update(ctx context.Context, opts UpdateOptions) (deploy.Config, error) {
 		return deploy.Config{}, err
 	}
 	changedPorts := protocolsNeedingPortChanges(oldCfg, cfg)
+	stalePorts := stalePortsToClose(oldCfg, cfg)
 
-	steps := protocolUpdateSteps(opts, changedPorts, remotes)
+	steps := protocolUpdateSteps(opts, changedPorts, stalePorts, remotes)
 	for i, s := range steps {
 		deploy.EmitProgress(opts.Progress, deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx, cfg); err != nil {
@@ -102,19 +103,21 @@ type protocolUpdateStep struct {
 	run    func(context.Context, deploy.Config) error
 }
 
-func protocolUpdateSteps(opts UpdateOptions, changedPorts []config.Protocol, remotes []deploy.RemoteSubscription) []protocolUpdateStep {
+func protocolUpdateSteps(opts UpdateOptions, changedPorts []config.Protocol, stalePorts []system.Port, remotes []deploy.RemoteSubscription) []protocolUpdateStep {
 	steps := []protocolUpdateStep{
 		{label: "Port check", detail: "check new or changed protocol ports", run: func(ctx context.Context, cfg deploy.Config) error {
 			return opts.CheckPorts(ctx, cfg, changedPorts)
 		}},
 	}
-	if opts.Firewall != system.FirewallNone && len(changedPorts) > 0 {
-		steps = append(steps, protocolUpdateStep{label: "Firewall", detail: "open new or changed protocol ports", run: func(_ context.Context, cfg deploy.Config) error {
-			cmds := system.FirewallCommands(opts.Firewall, firewallPortsForProtocols(cfg, changedPorts))
-			if opts.Firewall == system.FirewallFirewalld && len(cmds) > 0 {
-				cmds = append(cmds, system.Command{Name: "firewall-cmd", Args: []string{"--reload"}})
+	if opts.Firewall != system.FirewallNone && (len(changedPorts) > 0 || len(stalePorts) > 0) {
+		steps = append(steps, protocolUpdateStep{label: "Firewall", detail: "open new ports and close removed ones", run: func(_ context.Context, cfg deploy.Config) error {
+			// Open added/changed ports first, then close ports no longer used so
+			// disabling a protocol or moving its port does not leave the old
+			// port open forever.
+			if err := deploy.RunCommands(opts.Runner, system.FirewallCommands(opts.Firewall, firewallPortsForProtocols(cfg, changedPorts))...); err != nil {
+				return err
 			}
-			return deploy.RunCommands(opts.Runner, cmds...)
+			return deploy.RunCommands(opts.Runner, system.FirewallRemoveCommands(opts.Firewall, stalePorts)...)
 		}})
 	}
 	steps = append(steps,
@@ -194,6 +197,29 @@ func applyProtocolOverrides(cfg *deploy.Config, opts UpdateOptions) {
 			}
 		}
 	}
+}
+
+// stalePortsToClose returns firewall ports the old config opened that the new
+// config no longer uses (protocol disabled or moved to a different port). Ports
+// still in use by the new config — including a coincidental match with another
+// protocol — are kept open.
+func stalePortsToClose(oldCfg, newCfg deploy.Config) []system.Port {
+	inUse := map[int]bool{}
+	for _, p := range newCfg.EnabledProtocols() {
+		if port := protocolPort(newCfg, p); port > 0 {
+			inUse[port] = true
+		}
+	}
+	var stale []system.Port
+	seen := map[int]bool{}
+	for _, p := range firewallPortsForProtocols(oldCfg, oldCfg.EnabledProtocols()) {
+		if p.Number <= 0 || inUse[p.Number] || seen[p.Number] {
+			continue
+		}
+		seen[p.Number] = true
+		stale = append(stale, p)
+	}
+	return stale
 }
 
 func protocolsNeedingPortChanges(oldCfg, newCfg deploy.Config) []config.Protocol {

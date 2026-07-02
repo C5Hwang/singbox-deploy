@@ -124,6 +124,36 @@ func TestUpdateRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 	}
 }
 
+func TestUpdateClosesFirewallPortOfDisabledProtocol(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.Enabled = []config.Protocol{config.ProtocolRealityVision, config.ProtocolHysteria2}
+	cfg.Ports.RealityVision = 7443
+	cfg.Ports.Hysteria2 = 9443
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("writeInstallState: %v", err)
+	}
+
+	runner := &recordingRunner{}
+	if _, err := Update(context.Background(), UpdateOptions{
+		Layout:     layout,
+		Runner:     runner,
+		Firewall:   system.FirewallUFW,
+		Selected:   []config.Protocol{config.ProtocolRealityVision},
+		CheckPorts: func(context.Context, deploy.Config, []config.Protocol) error { return nil },
+	}); err != nil {
+		t.Fatalf("Update error: %v", err)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "ufw delete allow 9443/udp") {
+		t.Fatalf("disabling Hysteria2 must close its UDP port:\n%s", joined)
+	}
+	if strings.Contains(joined, "ufw delete allow 7443/tcp") {
+		t.Fatalf("the still-enabled Reality port must not be closed:\n%s", joined)
+	}
+}
+
 func TestUpdateAggregatesRemoteSubscriptions(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
