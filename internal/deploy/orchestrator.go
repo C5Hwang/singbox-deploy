@@ -137,19 +137,10 @@ func (o *Orchestrator) Run(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-func (o *Orchestrator) emit(e Event) {
-	if o.Progress != nil {
-		o.Progress(e)
-	}
-}
+func (o *Orchestrator) emit(e Event) { EmitProgress(o.Progress, e) }
 
 func (o *Orchestrator) run(cmds ...system.Command) error {
-	for _, c := range cmds {
-		if err := o.Runner.Run(c); err != nil {
-			return fmt.Errorf("command %q: %w", c.String(), err)
-		}
-	}
-	return nil
+	return RunCommands(o.Runner, cmds...)
 }
 
 // --- steps ---
