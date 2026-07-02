@@ -269,7 +269,7 @@ func (f *installForm) commitField() bool {
 	return done
 }
 
-func (f *installForm) validateField(field field, val string, _ map[string]string) error {
+func (f *installForm) validateField(field field, val string, vals map[string]string) error {
 	switch field.key {
 	case "domain":
 		if val == "" {
@@ -292,6 +292,63 @@ func (f *installForm) validateField(field field, val string, _ map[string]string
 	}
 	if err := uiparams.ValidateMonitorParameterValue(field.key, val); err != nil {
 		return err
+	}
+	return validateInstallPortConflict(field.key, val, vals)
+}
+
+var (
+	installProtocolPortFieldKeys = map[string]bool{
+		"reality_vision_port": true, "reality_grpc_port": true,
+		"hysteria2_port": true, "tuic_port": true, "anytls_port": true,
+	}
+	installWebPortFieldKeys = map[string]bool{
+		"subscribe_port": true, "monitor_public_port": true,
+	}
+	installPortFieldLabels = map[string]string{
+		"reality_vision_port": "VLESS Reality Vision", "reality_grpc_port": "VLESS Reality gRPC",
+		"hysteria2_port": "Hysteria2", "tuic_port": "TUIC", "anytls_port": "AnyTLS",
+		"subscribe_port": "subscription", "monitor_public_port": "monitor public",
+		"monitor_port": "monitor service",
+	}
+)
+
+func isInstallPortField(key string) bool {
+	_, ok := installPortFieldLabels[key]
+	return ok
+}
+
+// validateInstallPortConflict surfaces port collisions while the user is still
+// in the form, instead of only at buildConfig time (which would discard every
+// entered value). Protocol ports may not take Nginx's 80/443, and no non-443
+// port may be claimed twice; the subscription and monitor-public endpoints may
+// both fold onto 443 (Nginx merges them).
+func validateInstallPortConflict(key, val string, vals map[string]string) error {
+	if !isInstallPortField(key) {
+		return nil
+	}
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return nil // empty means default/random; the backstop check covers it
+	}
+	port, err := strconv.Atoi(val)
+	if err != nil {
+		return nil // range/format errors are reported by the shared validators
+	}
+	if installProtocolPortFieldKeys[key] && (port == 80 || port == 443) {
+		return fmt.Errorf("port %d is reserved by Nginx; choose another", port)
+	}
+	for otherKey, otherVal := range vals {
+		if otherKey == key || !isInstallPortField(otherKey) {
+			continue
+		}
+		other, err := strconv.Atoi(strings.TrimSpace(otherVal))
+		if err != nil || other != port {
+			continue
+		}
+		if port == 443 && installWebPortFieldKeys[key] && installWebPortFieldKeys[otherKey] {
+			continue // both fold into the Nginx 443 server block
+		}
+		return fmt.Errorf("port %d already used by the %s port", port, installPortFieldLabels[otherKey])
 	}
 	return nil
 }

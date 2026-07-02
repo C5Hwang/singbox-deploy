@@ -825,6 +825,33 @@ func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subs
 	return 0
 }
 
+func TestValidateInstallPortConflict(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		val     string
+		vals    map[string]string
+		wantErr bool
+	}{
+		{"protocol on 443", "tuic_port", "443", nil, true},
+		{"protocol on 80", "hysteria2_port", "80", nil, true},
+		{"duplicate protocol ports", "tuic_port", "9443", map[string]string{"hysteria2_port": "9443"}, true},
+		{"protocol clashes with subscription", "tuic_port", "2096", map[string]string{"subscribe_port": "2096"}, true},
+		{"distinct ports ok", "tuic_port", "10443", map[string]string{"hysteria2_port": "9443"}, false},
+		{"subscription and monitor fold on 443", "subscribe_port", "443", map[string]string{"monitor_public_port": "443"}, false},
+		{"empty is deferred", "tuic_port", "", map[string]string{"hysteria2_port": "443"}, false},
+		{"non-port field ignored", "domain", "443", map[string]string{"subscribe_port": "443"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateInstallPortConflict(tt.key, tt.val, tt.vals)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateInstallPortConflict() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestProtocolSelectBackResetsCursorToActionList(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withProtocolManagerDeps(t, layout)
