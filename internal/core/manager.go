@@ -108,23 +108,27 @@ func (m *Manager) Run(ctx context.Context, action Action, tag string) (Result, e
 func (m *Manager) replaceWithTag(ctx context.Context, tag, label string) (Result, error) {
 	steps := append([]step{{label: "Target", detail: label + " to " + tag, run: func(context.Context) error { return nil }}}, m.replaceSteps(&tag)...)
 	if err := m.runSteps(ctx, steps); err != nil {
+		os.RemoveAll(m.updateDir())
 		return Result{}, err
 	}
 	return Result{Tag: tag}, nil
 }
 
+func (m *Manager) updateDir() string {
+	return filepath.Join(filepath.Dir(m.Layout.SingBoxBin), ".updates")
+}
+
+// replaceSteps downloads and fully validates the candidate binary before the
+// running service is stopped or the old binary touched, so any failure up to
+// Replace leaves the existing install running untouched.
 func (m *Manager) replaceSteps(tag *string) []step {
 	var archivePath, candidatePath string
 	return []step{
-		{label: "Stop", detail: "stop sing-box.service", run: func(context.Context) error {
-			return m.run(system.Systemctl("stop", system.SingBoxService))
-		}},
 		{label: "Download", detail: "download selected sing-box release", run: func(ctx context.Context) error {
 			if strings.TrimSpace(*tag) == "" {
 				return fmt.Errorf("release tag is empty")
 			}
-			binDir := filepath.Dir(m.Layout.SingBoxBin)
-			updateDir := filepath.Join(binDir, ".updates")
+			updateDir := m.updateDir()
 			if err := os.MkdirAll(updateDir, 0o755); err != nil {
 				return err
 			}
@@ -155,23 +159,23 @@ func (m *Manager) replaceSteps(tag *string) []step {
 			}
 			return verifyCandidate(candidatePath)
 		}},
+		{label: "Validate", detail: "validate config with new binary", run: func(context.Context) error {
+			return m.run(system.Command{Name: candidatePath, Args: []string{"check", "-c", m.Layout.ConfigJSON}})
+		}},
+		{label: "Stop", detail: "stop sing-box.service", run: func(context.Context) error {
+			return m.run(system.Systemctl("stop", system.SingBoxService))
+		}},
 		{label: "Replace", detail: "replace managed sing-box binary", run: func(context.Context) error {
 			if err := os.MkdirAll(filepath.Dir(m.Layout.SingBoxBin), 0o755); err != nil {
 				return err
 			}
 			return os.Rename(candidatePath, m.Layout.SingBoxBin)
 		}},
-		{label: "Validate", detail: "validate config with new binary", run: func(context.Context) error {
-			return m.run(system.Command{Name: m.Layout.SingBoxBin, Args: []string{"check", "-c", m.Layout.ConfigJSON}})
-		}},
 		{label: "Restart", detail: "restart sing-box.service", run: func(context.Context) error {
 			return m.run(system.Systemctl("restart", system.SingBoxService))
 		}},
 		{label: "Cleanup", detail: "remove temporary download files", run: func(context.Context) error {
-			if archivePath == "" {
-				return nil
-			}
-			return os.RemoveAll(filepath.Dir(archivePath))
+			return os.RemoveAll(m.updateDir())
 		}},
 	}
 }

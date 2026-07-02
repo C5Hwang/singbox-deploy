@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,17 +63,72 @@ func TestChangeStableDownloadsReplacesValidatesAndRestarts(t *testing.T) {
 		t.Fatalf("binary body = %q", body)
 	}
 	joined := strings.Join(runner.commands, "\n")
+	candidate := filepath.Join(filepath.Dir(layout.SingBoxBin), ".updates", "sing-box-v1.12.4")
 	for _, want := range []string{
+		candidate + " check -c " + layout.ConfigJSON,
 		"systemctl stop sing-box.service",
-		layout.SingBoxBin + " check -c " + layout.ConfigJSON,
 		"systemctl restart sing-box.service",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing command %q in:\n%s", want, joined)
 		}
 	}
+	if strings.Index(joined, candidate+" check") > strings.Index(joined, "systemctl stop") {
+		t.Fatalf("candidate must be validated before the service is stopped:\n%s", joined)
+	}
 	if len(events) == 0 || events[len(events)-1].Label != "Cleanup" || events[len(events)-1].Status != "ok" {
 		t.Fatalf("unexpected final event: %#v", events)
+	}
+}
+
+type failingRunner struct {
+	recordingRunner
+	failOn string
+}
+
+func (r *failingRunner) Run(c system.Command) error {
+	_ = r.recordingRunner.Run(c)
+	if strings.Contains(c.String(), r.failOn) {
+		return errors.New("runner failure")
+	}
+	return nil
+}
+
+func TestChangeStableKeepsOldBinaryWhenValidationFails(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(layout.SingBoxBin), 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	if err := os.WriteFile(layout.SingBoxBin, []byte("old-sing-box"), 0o755); err != nil {
+		t.Fatalf("write old binary: %v", err)
+	}
+	runner := &failingRunner{failOn: " check -c "}
+	m := &Manager{
+		Runner: runner,
+		Layout: layout,
+		GOOS:   "linux",
+		GOARCH: "amd64",
+		Download: func(_ context.Context, _, dest string) error {
+			return writeTestSingBoxArchive(dest, "bad-sing-box")
+		},
+	}
+
+	if _, err := m.Run(context.Background(), ActionChangeStable, "v1.12.4"); err == nil {
+		t.Fatal("expected validation failure")
+	}
+	body, err := os.ReadFile(layout.SingBoxBin)
+	if err != nil {
+		t.Fatalf("read sing-box binary: %v", err)
+	}
+	if string(body) != "old-sing-box" {
+		t.Fatalf("old binary must stay in place, got %q", body)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if strings.Contains(joined, "systemctl stop") {
+		t.Fatalf("service must not be stopped when validation fails:\n%s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(layout.SingBoxBin), ".updates")); !os.IsNotExist(err) {
+		t.Fatalf("update dir should be cleaned up on failure, stat err = %v", err)
 	}
 }
 
