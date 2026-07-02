@@ -825,6 +825,37 @@ func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subs
 	return 0
 }
 
+func TestSubscriptionRefreshBackReturnsToActionList(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	withSubscriptionDeps(t, layout)
+
+	sm := newSubscriptionManager()
+	sm.setSize(100, 30)
+	if sm.loadErr != nil {
+		t.Fatalf("load subscription manager: %v", sm.loadErr)
+	}
+
+	// Open a form action first, then abandon it back to the action list; its
+	// fields linger on the embedded parameterForm.
+	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDisplayName)
+	sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if sm.phase != subscriptionPhaseForm {
+		t.Fatalf("expected display-name form, phase=%v", sm.phase)
+	}
+	sm.handleKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+
+	// Now enter Refresh (which has no form) and press Back on its confirm page.
+	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionRefresh)
+	sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if sm.phase != subscriptionPhaseConfirm {
+		t.Fatalf("expected refresh confirm, phase=%v", sm.phase)
+	}
+	sm.handleKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if sm.phase != subscriptionPhaseAction {
+		t.Fatalf("Back from refresh confirm must return to the action list, got phase=%v", sm.phase)
+	}
+}
+
 func TestRunningCompletionRequiresEnterBeforeSummary(t *testing.T) {
 	w := &installFlow{phase: phaseRunning, run: commandRun{ch: make(chan runMsg, 1), bar: progressBarForTest()}}
 	cmd := w.handleRun(runMsg{done: true})

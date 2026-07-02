@@ -298,6 +298,10 @@ func (sm *subscriptionManager) activateAction() {
 		sm.reorder = newReorderForm(sm.buildReorderItems())
 		sm.phase = subscriptionPhaseReorder
 	case subscriptionActionRefresh:
+		// Refresh has no form; clear any fields left over from a previous
+		// form action so Back from the confirm page returns to the action
+		// list instead of resurrecting that stale form.
+		sm.parameterForm.setFields(nil)
 		sm.phase = subscriptionPhaseConfirm
 	}
 }
