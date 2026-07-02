@@ -382,11 +382,6 @@ func (o *Orchestrator) stepFinalize(_ context.Context, cfg Config) error {
 // WriteInstallState persists the full install config as individual state files.
 func WriteInstallState(stateDir string, cfg Config) error {
 	state := map[string]string{
-		"acme_challenge":         string(cfg.Challenge),
-		"domain":                 cfg.Domain,
-		"dns_credential":         dnsCredentialForState(cfg),
-		"dns_provider":           cfg.DNSProvider,
-		"email":                  cfg.Email,
 		"enabled_protocols":      protocolStateValue(cfg.EnabledProtocols()),
 		"display_name":           cfg.DisplayName,
 		"subscribe_salt":         cfg.Salt,
@@ -423,6 +418,10 @@ func WriteInstallState(stateDir string, cfg Config) error {
 		state["reset_day"] = itoa(cfg.ResetDay)
 		state["reset_hour"] = itoa(cfg.ResetHour)
 		state["monitor_interval_seconds"] = itoa(cfg.MonitorIntervalSeconds)
+	}
+	// Renewal keys come from the single definition in certificateRenewalState.
+	for name, value := range certificateRenewalState(cfg) {
+		state[name] = value
 	}
 	for name, value := range state {
 		if err := writeStateFile(stateDir, name, value+"\n"); err != nil {

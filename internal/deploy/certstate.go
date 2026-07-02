@@ -7,15 +7,22 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 )
 
-func (o *Orchestrator) writeCertificateRenewalState(cfg Config) error {
-	state := map[string]string{
+// certificateRenewalState returns the state keys the cert-renew timer reads. It
+// is the single definition of those keys; both the early renewal-state write
+// (stepServices) and the final full-state write (WriteInstallState) derive the
+// renewal portion from here so the two can never drift.
+func certificateRenewalState(cfg Config) map[string]string {
+	return map[string]string{
 		"acme_challenge": string(cfg.Challenge),
 		"domain":         cfg.Domain,
 		"dns_credential": dnsCredentialForState(cfg),
 		"dns_provider":   cfg.DNSProvider,
 		"email":          cfg.Email,
 	}
-	for name, value := range state {
+}
+
+func (o *Orchestrator) writeCertificateRenewalState(cfg Config) error {
+	for name, value := range certificateRenewalState(cfg) {
 		if err := WriteFile(filepath.Join(o.Layout.StateDir, name), []byte(value+"\n"), 0o600); err != nil {
 			return err
 		}
