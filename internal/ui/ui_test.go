@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -462,6 +463,24 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || !strings.Contains(pm.View(), "Hysteria2 port") || !strings.Contains(pm.View(), "default: 9443") {
 		t.Fatalf("missing port edit field:\n%s", pm.View())
+	}
+}
+
+func TestParameterFormFieldErrorSurvivesCursorBlink(t *testing.T) {
+	form := newParameterForm([]field{{key: "hysteria2_port", label: "Hysteria2 port", def: "9443"}})
+	form.startForm()
+	form.fieldErr = "port must be between 1 and 65535"
+
+	// Non-key messages (cursor blink ticks) are forwarded to the input and
+	// must not dismiss a validation error the user has not yet seen.
+	form.updateInput(cursor.BlinkMsg{})
+	if form.fieldErr == "" {
+		t.Fatal("field error was cleared by a cursor blink message")
+	}
+
+	form.updateInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'8'}})
+	if form.fieldErr != "" {
+		t.Fatal("field error should clear on a real keystroke")
 	}
 }
 

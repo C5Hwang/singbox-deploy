@@ -229,7 +229,11 @@ func (f *parameterForm) fieldValue(field field) string {
 }
 
 func (f *parameterForm) updateInput(msg tea.Msg) tea.Cmd {
-	f.fieldErr = ""
+	// Only a real keystroke dismisses a validation error; async messages such
+	// as cursor blinks are also forwarded here and must not wipe it.
+	if _, isKey := msg.(tea.KeyMsg); isKey {
+		f.fieldErr = ""
+	}
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(msg)
 	return cmd
