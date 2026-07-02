@@ -213,113 +213,99 @@ func (m *Monitor) refreshRemoteSources(ctx context.Context) {
 }
 
 func (m *Monitor) handleTrafficTrend(w http.ResponseWriter, r *http.Request) {
-	source := r.URL.Query().Get("source")
 	now := m.now()
-
-	if source == "" || source == "local" || source == m.localAlias() {
-		trend, err := m.store.TrendHourly(now.Add(-historyRetention).Unix())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"trend": trend})
-		return
-	}
-
-	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
-	for _, rs := range remotes {
-		if rs.Name == source {
-			if rs.MonitorURL != "" {
-				m.proxyRemote(w, rs.MonitorURL+"/api/traffic-trend")
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"trend": rs.Trend})
-			return
-		}
-	}
-	http.Error(w, "source not found", http.StatusNotFound)
+	m.serveSourceData(w, sourceQuery(r), sourceEndpoint{
+		key:       "trend",
+		proxyPath: "/api/traffic-trend",
+		local:     func() (any, error) { return m.store.TrendHourly(now.Add(-historyRetention).Unix()) },
+		embedded:  func(rs SourceSummary) (any, bool) { return rs.Trend, true },
+	})
 }
 
 func (m *Monitor) handleResourceTrend(w http.ResponseWriter, r *http.Request) {
-	source := r.URL.Query().Get("source")
 	now := m.now()
-
-	if source == "" || source == "local" || source == m.localAlias() {
-		trend, err := m.store.ResourceTrendHourly(now.Add(-historyRetention).Unix())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"trend": resourceTrendToRates(trend)})
-		return
-	}
-
-	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
-	for _, rs := range remotes {
-		if rs.Name == source {
-			if rs.MonitorURL != "" {
-				m.proxyRemote(w, rs.MonitorURL+"/api/resource-trend")
-				return
+	m.serveSourceData(w, sourceQuery(r), sourceEndpoint{
+		key:       "trend",
+		proxyPath: "/api/resource-trend",
+		local: func() (any, error) {
+			trend, err := m.store.ResourceTrendHourly(now.Add(-historyRetention).Unix())
+			if err != nil {
+				return nil, err
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"trend": rs.ResourceTrend})
-			return
-		}
-	}
-	http.Error(w, "source not found", http.StatusNotFound)
+			return resourceTrendToRates(trend), nil
+		},
+		embedded: func(rs SourceSummary) (any, bool) { return rs.ResourceTrend, true },
+	})
 }
 
 func (m *Monitor) handleTrafficRecent(w http.ResponseWriter, r *http.Request) {
-	source := r.URL.Query().Get("source")
 	now := m.now()
+	m.serveSourceData(w, sourceQuery(r), sourceEndpoint{
+		key:       "points",
+		proxyPath: "/api/traffic-recent",
+		local:     func() (any, error) { return m.store.TrafficRawSamples(now.Add(-rawRetention).Unix()) },
+	})
+}
 
+func (m *Monitor) handleResourceRecent(w http.ResponseWriter, r *http.Request) {
+	now := m.now()
+	m.serveSourceData(w, sourceQuery(r), sourceEndpoint{
+		key:       "points",
+		proxyPath: "/api/resource-recent",
+		local: func() (any, error) {
+			points, err := m.store.ResourceRawSamples(now.Add(-resourceRawRetention).Unix())
+			if err != nil {
+				return nil, err
+			}
+			return resourceRecentToRates(points), nil
+		},
+	})
+}
+
+func sourceQuery(r *http.Request) string { return r.URL.Query().Get("source") }
+
+// sourceEndpoint parameterizes the trend/recent handlers, which otherwise
+// duplicated the same local-vs-remote dispatch.
+type sourceEndpoint struct {
+	key       string                          // JSON response field ("trend" or "points")
+	proxyPath string                          // remote API path to proxy to
+	local     func() (any, error)             // local data provider
+	embedded  func(SourceSummary) (any, bool) // optional embedded-snapshot fallback
+}
+
+func (m *Monitor) serveSourceData(w http.ResponseWriter, source string, ep sourceEndpoint) {
 	if source == "" || source == "local" || source == m.localAlias() {
-		points, err := m.store.TrafficRawSamples(now.Add(-rawRetention).Unix())
+		data, err := ep.local()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"points": points})
+		writeJSON(w, map[string]any{ep.key: data})
 		return
 	}
-
 	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
 	for _, rs := range remotes {
-		if rs.Name == source && rs.MonitorURL != "" {
-			m.proxyRemote(w, rs.MonitorURL+"/api/traffic-recent")
+		if rs.Name != source {
+			continue
+		}
+		if rs.MonitorURL != "" {
+			m.proxyRemote(w, rs.MonitorURL+ep.proxyPath)
 			return
 		}
+		if ep.embedded != nil {
+			if data, ok := ep.embedded(rs); ok {
+				writeJSON(w, map[string]any{ep.key: data})
+				return
+			}
+		}
+		break
 	}
 	http.Error(w, "source not found", http.StatusNotFound)
 }
 
-func (m *Monitor) handleResourceRecent(w http.ResponseWriter, r *http.Request) {
-	source := r.URL.Query().Get("source")
-	now := m.now()
-
-	if source == "" || source == "local" || source == m.localAlias() {
-		points, err := m.store.ResourceRawSamples(now.Add(-resourceRawRetention).Unix())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"points": resourceRecentToRates(points)})
-		return
-	}
-
-	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
-	for _, rs := range remotes {
-		if rs.Name == source && rs.MonitorURL != "" {
-			m.proxyRemote(w, rs.MonitorURL+"/api/resource-recent")
-			return
-		}
-	}
-	http.Error(w, "source not found", http.StatusNotFound)
+func writeJSON(w http.ResponseWriter, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 // The store keeps disk IO as raw per-interval byte deltas; the UI displays
