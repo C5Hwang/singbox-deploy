@@ -1,6 +1,9 @@
 package acme
 
 import (
+	"crypto/ecdsa"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,5 +28,45 @@ func TestLegoIssuerRedirectsLegoLogs(t *testing.T) {
 	}
 	if legolog.Logger != previous {
 		t.Fatalf("lego logger was not restored")
+	}
+}
+
+func TestAccountKeyPersistsAcrossIssuances(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "acme_account_key")
+	issuer := &LegoIssuer{AccountKeyPath: path}
+
+	first, err := issuer.accountKey()
+	if err != nil {
+		t.Fatalf("accountKey (create): %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("account key not persisted: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("account key mode = %v, want 0600", info.Mode().Perm())
+	}
+
+	second, err := issuer.accountKey()
+	if err != nil {
+		t.Fatalf("accountKey (reload): %v", err)
+	}
+	if !first.(*ecdsa.PrivateKey).Equal(second.(*ecdsa.PrivateKey)) {
+		t.Fatal("reloaded account key differs from the persisted one")
+	}
+}
+
+func TestAccountKeyEphemeralWithoutPath(t *testing.T) {
+	issuer := &LegoIssuer{}
+	first, err := issuer.accountKey()
+	if err != nil {
+		t.Fatalf("accountKey: %v", err)
+	}
+	second, err := issuer.accountKey()
+	if err != nil {
+		t.Fatalf("accountKey: %v", err)
+	}
+	if first.(*ecdsa.PrivateKey).Equal(second.(*ecdsa.PrivateKey)) {
+		t.Fatal("ephemeral keys should differ per call")
 	}
 }

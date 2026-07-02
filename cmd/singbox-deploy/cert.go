@@ -29,10 +29,12 @@ func runCert(args []string) error {
 		return fmt.Errorf("threshold-days must be > 0")
 	}
 
+	layout := paths.DefaultLayout()
 	issuer := acme.NewLegoIssuer()
 	issuer.Output = os.Stdout
+	issuer.AccountKeyPath = acme.AccountKeyPathFor(layout.StateDir)
 	r := certrenew.Renewer{
-		Layout:      paths.DefaultLayout(),
+		Layout:      layout,
 		ACME:        acme.NewManager(issuer),
 		Runner:      system.NewExecRunner(os.Stdout),
 		RenewBefore: time.Duration(*thresholdDays) * 24 * time.Hour,

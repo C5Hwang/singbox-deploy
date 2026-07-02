@@ -479,6 +479,7 @@ func (w *installFlow) startRun() tea.Cmd {
 	layout := paths.DefaultLayout()
 	issuer := acme.NewLegoIssuer()
 	issuer.Output = logs
+	issuer.AccountKeyPath = acme.AccountKeyPathFor(layout.StateDir)
 	acmeManager := acme.NewManager(issuer)
 	releases := release.NewClient("", nil)
 

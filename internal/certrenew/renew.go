@@ -99,6 +99,7 @@ func (r *Renewer) defaults() {
 	if r.ACME == nil {
 		issuer := acme.NewLegoIssuer()
 		issuer.Output = r.Output
+		issuer.AccountKeyPath = acme.AccountKeyPathFor(r.Layout.StateDir)
 		r.ACME = acme.NewManager(issuer)
 	}
 }
