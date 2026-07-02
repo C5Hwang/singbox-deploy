@@ -82,28 +82,28 @@ func ProtocolEditFieldsForProtocol(cfg deploy.Config, proto config.Protocol) []F
 	case config.ProtocolRealityVision:
 		return []Field{
 			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID", Def: cfg.Creds.RealityVisionUUID},
-			{Key: "reality_vision_port", Label: "VLESS Reality Vision port", Def: PortDefault(installedPort(proto, cfg.Ports))},
+			{Key: "reality_vision_port", Label: "VLESS Reality Vision port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	case config.ProtocolRealityGRPC:
 		return []Field{
 			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID", Def: cfg.Creds.RealityGRPCUUID},
-			{Key: "reality_grpc_port", Label: "VLESS Reality gRPC port", Def: PortDefault(installedPort(proto, cfg.Ports))},
+			{Key: "reality_grpc_port", Label: "VLESS Reality gRPC port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	case config.ProtocolHysteria2:
 		return []Field{
 			{Key: "hysteria2_password", Label: "Hysteria2 password", Def: cfg.Creds.HysteriaPassword},
-			{Key: "hysteria2_port", Label: "Hysteria2 port", Def: PortDefault(installedPort(proto, cfg.Ports))},
+			{Key: "hysteria2_port", Label: "Hysteria2 port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	case config.ProtocolTUIC:
 		return []Field{
 			{Key: "tuic_uuid", Label: "TUIC UUID", Def: cfg.Creds.TUICUUID},
 			{Key: "tuic_password", Label: "TUIC password", Def: cfg.Creds.TUICPassword},
-			{Key: "tuic_port", Label: "TUIC port", Def: PortDefault(installedPort(proto, cfg.Ports))},
+			{Key: "tuic_port", Label: "TUIC port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	case config.ProtocolAnyTLS:
 		return []Field{
 			{Key: "anytls_password", Label: "AnyTLS password", Def: cfg.Creds.AnyTLSPassword},
-			{Key: "anytls_port", Label: "AnyTLS port", Def: PortDefault(installedPort(proto, cfg.Ports))},
+			{Key: "anytls_port", Label: "AnyTLS port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	default:
 		return nil
@@ -190,7 +190,8 @@ func isHex(b byte) bool {
 	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
 }
 
-func installedPort(proto config.Protocol, ports config.Ports) int {
+// PortForProtocol returns the listen port configured for proto, or 0 if unset.
+func PortForProtocol(proto config.Protocol, ports config.Ports) int {
 	switch proto {
 	case config.ProtocolRealityVision:
 		return ports.RealityVision

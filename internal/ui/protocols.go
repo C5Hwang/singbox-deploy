@@ -567,7 +567,7 @@ func (pm *protocolManager) editPickView() string {
 	}
 	b.WriteString("\n")
 	for i, proto := range pm.cfg.Enabled {
-		label := string(proto) + "  " + dimStyle.Render("port "+uiparams.PortDefault(installedPort(proto, pm.cfg.Ports)))
+		label := string(proto) + "  " + dimStyle.Render("port "+uiparams.PortDefault(uiparams.PortForProtocol(proto, pm.cfg.Ports)))
 		row := "  " + label
 		if i == pm.cursor {
 			row = selStyle.Render("> " + label)

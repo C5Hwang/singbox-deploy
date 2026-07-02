@@ -779,27 +779,11 @@ func portFieldKey(proto config.Protocol) string {
 func installedPortsSummary(enabled []config.Protocol, ports config.Ports) string {
 	parts := make([]string, 0, len(enabled))
 	for _, proto := range enabled {
-		parts = append(parts, fmt.Sprintf("%s:%d", proto, installedPort(proto, ports)))
+		parts = append(parts, fmt.Sprintf("%s:%d", proto, uiparams.PortForProtocol(proto, ports)))
 	}
 	return strings.Join(parts, ", ")
 }
 
-func installedPort(proto config.Protocol, ports config.Ports) int {
-	switch proto {
-	case config.ProtocolRealityVision:
-		return ports.RealityVision
-	case config.ProtocolRealityGRPC:
-		return ports.RealityGRPC
-	case config.ProtocolHysteria2:
-		return ports.Hysteria2
-	case config.ProtocolTUIC:
-		return ports.TUIC
-	case config.ProtocolAnyTLS:
-		return ports.AnyTLS
-	default:
-		return 0
-	}
-}
 
 func randomListenPort(used map[int]bool) (int, error) {
 	const minPort = 20000
