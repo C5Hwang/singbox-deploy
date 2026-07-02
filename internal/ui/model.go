@@ -277,6 +277,7 @@ func (m *Model) activate() tea.Cmd {
 		s := newSelfUpdateManager()
 		s.setSize(m.width, m.height)
 		m.selfupdate = s
+		return s.checkCmd()
 	case 8:
 		u := newUninstallManager()
 		u.setSize(m.width, m.height)

@@ -46,6 +46,30 @@ func TestViewUsesInternalPanels(t *testing.T) {
 	}
 }
 
+func TestSelfUpdateChecksLatestAsynchronously(t *testing.T) {
+	origHost := detectSelfUpdateHost
+	detectSelfUpdateHost = func() (system.Host, error) { return supportedTestHost(), nil }
+	defer func() { detectSelfUpdateHost = origHost }()
+
+	sm := newSelfUpdateManager()
+	// The constructor must not block on the network; it starts in the checking
+	// phase and only leaves it once the async result arrives.
+	if sm.phase != selfUpdatePhaseChecking {
+		t.Fatalf("expected checking phase after construction, got %d", sm.phase)
+	}
+	if !strings.Contains(sm.View(), "Checking for the latest release") {
+		t.Fatalf("checking view missing progress text:\n%s", sm.View())
+	}
+
+	sm.Update(selfUpdateCheckedMsg{tag: "v2.0.0"})
+	if sm.phase != selfUpdatePhaseCheck {
+		t.Fatalf("expected check phase after result, got %d", sm.phase)
+	}
+	if sm.latestTag != "v2.0.0" {
+		t.Fatalf("latestTag = %q, want v2.0.0", sm.latestTag)
+	}
+}
+
 func TestCtrlCQuitsFromActiveSubFlow(t *testing.T) {
 	m := NewModel()
 	m.SetSize(120, 40)

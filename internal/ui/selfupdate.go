@@ -17,11 +17,18 @@ import (
 type selfUpdatePhase int
 
 const (
-	selfUpdatePhaseCheck   selfUpdatePhase = iota
+	selfUpdatePhaseChecking selfUpdatePhase = iota
+	selfUpdatePhaseCheck
 	selfUpdatePhaseConfirm
 	selfUpdatePhaseRunning
 	selfUpdatePhaseDone
 )
+
+// selfUpdateCheckedMsg carries the result of the async latest-release lookup.
+type selfUpdateCheckedMsg struct {
+	tag string
+	err error
+}
 
 var (
 	detectSelfUpdateHost = system.DetectHost
@@ -48,13 +55,24 @@ type selfUpdateManager struct {
 
 func newSelfUpdateManager() *selfUpdateManager {
 	sm := &selfUpdateManager{
-		phase:          selfUpdatePhaseCheck,
+		phase:          selfUpdatePhaseChecking,
 		currentVersion: toolVersion,
 		commandRun:     newCommandRun(),
 	}
 	sm.host, sm.hostErr = detectSelfUpdateHost()
-	sm.checkLatest()
 	return sm
+}
+
+// checkCmd looks up the latest release off the UI thread so opening the
+// self-update screen does not freeze the whole TUI on a slow network.
+func (sm *selfUpdateManager) checkCmd() tea.Cmd {
+	mgr := sm.backendManager(nil)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		tag, err := mgr.CheckLatest(ctx)
+		return selfUpdateCheckedMsg{tag: tag, err: err}
+	}
 }
 
 func (sm *selfUpdateManager) setSize(width, height int) {
@@ -63,23 +81,22 @@ func (sm *selfUpdateManager) setSize(width, height int) {
 	sm.commandRun.setSize(width, height)
 }
 
-func (sm *selfUpdateManager) checkLatest() {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	mgr := sm.backendManager(nil)
-	tag, err := mgr.CheckLatest(ctx)
-	if err != nil {
-		sm.checkErr = "fetch latest release: " + err.Error()
-		return
+func (sm *selfUpdateManager) applyCheckResult(msg selfUpdateCheckedMsg) {
+	if msg.err != nil {
+		sm.checkErr = "fetch latest release: " + msg.err.Error()
+	} else {
+		sm.latestTag = msg.tag
+		sm.upToDate = sm.latestTag == sm.currentVersion || sm.latestTag == "v"+sm.currentVersion
 	}
-	sm.latestTag = tag
-	sm.upToDate = sm.latestTag == sm.currentVersion || sm.latestTag == "v"+sm.currentVersion
+	sm.phase = selfUpdatePhaseCheck
 }
 
 func (sm *selfUpdateManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		sm.setSize(msg.Width, msg.Height)
+	case selfUpdateCheckedMsg:
+		sm.applyCheckResult(msg)
 	case runMsg:
 		return sm.handleRun(msg), false
 	case tea.KeyMsg:
@@ -92,6 +109,10 @@ func (sm *selfUpdateManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 
 func (sm *selfUpdateManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch sm.phase {
+	case selfUpdatePhaseChecking:
+		if isSelectionCancelKey(msg) || msg.String() == "esc" {
+			return nil, true
+		}
 	case selfUpdatePhaseCheck:
 		if sm.checkErr != "" || sm.upToDate {
 			return nil, true
@@ -221,6 +242,8 @@ func (sm *selfUpdateManager) markRunFailed() { sm.phase = selfUpdatePhaseDone }
 
 func (sm *selfUpdateManager) View() string {
 	switch sm.phase {
+	case selfUpdatePhaseChecking:
+		return flowTitle.Render("Self-update") + "\n\n" + dimStyle.Render("Checking for the latest release…")
 	case selfUpdatePhaseCheck:
 		return sm.checkView()
 	case selfUpdatePhaseConfirm:
@@ -280,6 +303,8 @@ func (sm *selfUpdateManager) doneView() string {
 
 func (sm *selfUpdateManager) footerHints() []operationHint {
 	switch sm.phase {
+	case selfUpdatePhaseChecking:
+		return nil
 	case selfUpdatePhaseCheck:
 		if sm.checkErr != "" || sm.upToDate {
 			return doneFooterHints(sm.checkErr != "")
