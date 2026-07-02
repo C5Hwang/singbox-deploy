@@ -48,15 +48,32 @@ func normalizeArch(goarch string) string {
 	}
 }
 
-// DetectFirewall returns the first available firewall front-end.
+// DetectFirewall returns the active firewall front-end. firewalld is only
+// selected when its daemon is actually running, because firewall-cmd is a D-Bus
+// client whose --permanent operations fail outright when firewalld is stopped
+// (common on cloud images that ship it disabled). A stopped firewalld therefore
+// falls through to ufw if present, otherwise to no firewall.
 func DetectFirewall() Firewall {
+	if firewalldRunning() {
+		return FirewallFirewalld
+	}
 	if _, err := exec.LookPath("ufw"); err == nil {
 		return FirewallUFW
 	}
-	if _, err := exec.LookPath("firewall-cmd"); err == nil {
-		return FirewallFirewalld
-	}
 	return FirewallNone
+}
+
+// firewalldRunning reports whether the firewalld daemon is active. `firewall-cmd
+// --state` prints "running" and exits 0 only when the daemon is up.
+func firewalldRunning() bool {
+	if _, err := exec.LookPath("firewall-cmd"); err != nil {
+		return false
+	}
+	out, err := exec.Command("firewall-cmd", "--state").Output()
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(string(out)), "running")
 }
 
 // selinuxEnforcing reports whether SELinux is in enforcing mode.
