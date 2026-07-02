@@ -124,6 +124,44 @@ func TestUpdateRegeneratesConfigSubscriptionsAndState(t *testing.T) {
 	}
 }
 
+func TestUpdateAggregatesRemoteSubscriptions(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.Enabled = []config.Protocol{config.ProtocolRealityVision}
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("writeInstallState: %v", err)
+	}
+	if err := deploy.SaveRemoteSubscriptions(layout, []deploy.RemoteSubscription{
+		{Domain: "jp.example.com", Port: 2096, Alias: "JP-node", Salt: "remotesalt"},
+	}); err != nil {
+		t.Fatalf("SaveRemoteSubscriptions: %v", err)
+	}
+
+	// The remote is unreachable in tests; the point is that Update now threads
+	// remotes into subscription generation at all. The pre-fix code called
+	// WriteSubscriptions (local-only) and never touched the fetcher, so the run
+	// would succeed and silently drop the remote node.
+	fetched := false
+	_, err := Update(context.Background(), UpdateOptions{
+		Layout:     layout,
+		Runner:     &recordingRunner{},
+		Firewall:   system.FirewallNone,
+		Selected:   []config.Protocol{config.ProtocolRealityVision},
+		CheckPorts: func(context.Context, deploy.Config, []config.Protocol) error { return nil },
+		Fetch: func(context.Context, string) ([]byte, error) {
+			fetched = true
+			return nil, fmt.Errorf("remote unreachable")
+		},
+	})
+	if !fetched {
+		t.Fatal("Update must aggregate remote subscriptions (fetcher was never called)")
+	}
+	if err == nil {
+		t.Fatal("expected the unreachable remote to surface as an error")
+	}
+}
+
 func TestUpdateKeepsPreviousConfigOnValidationFailure(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)

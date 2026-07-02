@@ -320,8 +320,17 @@ func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
 	)
 }
 
-func (o *Orchestrator) stepSubscriptions(_ context.Context, cfg Config) error {
-	return WriteSubscriptions(o.Layout, cfg)
+func (o *Orchestrator) stepSubscriptions(ctx context.Context, cfg Config) error {
+	// A reinstall over a box with configured remote subscriptions must keep
+	// aggregating them; a fresh install simply has an empty remotes list.
+	remotes, err := LoadRemoteSubscriptions(o.Layout)
+	if err != nil {
+		return err
+	}
+	if len(remotes) == 0 {
+		return WriteSubscriptions(o.Layout, cfg)
+	}
+	return WriteSubscriptionsWithRemotes(ctx, o.Layout, cfg, remotes, DefaultSubscriptionFetch, LoadLocalSubscriptionPosition(o.Layout))
 }
 
 func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {

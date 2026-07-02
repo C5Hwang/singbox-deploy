@@ -32,6 +32,10 @@ type UpdateOptions struct {
 	// is newly enabled and no stored value exists yet.
 	RealityServerName string
 
+	// Fetch retrieves remote subscription payloads when aggregating remote
+	// nodes into the regenerated subscription outputs.
+	Fetch deploy.SubscriptionFetcher
+
 	CheckPorts func(context.Context, deploy.Config, []config.Protocol) error
 	Progress   func(deploy.Event)
 }
@@ -49,11 +53,18 @@ func Update(ctx context.Context, opts UpdateOptions) (deploy.Config, error) {
 			return system.CheckPorts(ctx, cfg.Domain, addedLocalPortChecks(cfg, added))
 		}
 	}
+	if opts.Fetch == nil {
+		opts.Fetch = deploy.DefaultSubscriptionFetch
+	}
 	if len(opts.Selected) == 0 {
 		return deploy.Config{}, fmt.Errorf("select at least one protocol")
 	}
 
 	cfg, err := deploy.LoadProtocolConfig(opts.Layout)
+	if err != nil {
+		return deploy.Config{}, err
+	}
+	remotes, err := deploy.LoadRemoteSubscriptions(opts.Layout)
 	if err != nil {
 		return deploy.Config{}, err
 	}
@@ -73,7 +84,7 @@ func Update(ctx context.Context, opts UpdateOptions) (deploy.Config, error) {
 	}
 	changedPorts := protocolsNeedingPortChanges(oldCfg, cfg)
 
-	steps := protocolUpdateSteps(opts, changedPorts)
+	steps := protocolUpdateSteps(opts, changedPorts, remotes)
 	for i, s := range steps {
 		deploy.EmitProgress(opts.Progress, deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
 		if err := s.run(ctx, cfg); err != nil {
@@ -91,7 +102,7 @@ type protocolUpdateStep struct {
 	run    func(context.Context, deploy.Config) error
 }
 
-func protocolUpdateSteps(opts UpdateOptions, changedPorts []config.Protocol) []protocolUpdateStep {
+func protocolUpdateSteps(opts UpdateOptions, changedPorts []config.Protocol, remotes []deploy.RemoteSubscription) []protocolUpdateStep {
 	steps := []protocolUpdateStep{
 		{label: "Port check", detail: "check new or changed protocol ports", run: func(ctx context.Context, cfg deploy.Config) error {
 			return opts.CheckPorts(ctx, cfg, changedPorts)
@@ -116,8 +127,8 @@ func protocolUpdateSteps(opts UpdateOptions, changedPorts []config.Protocol) []p
 		protocolUpdateStep{label: "Activate config", detail: "replace config.json after validation", run: func(_ context.Context, _ deploy.Config) error {
 			return os.Rename(deploy.ProtocolConfigCandidate(opts.Layout), opts.Layout.ConfigJSON)
 		}},
-		protocolUpdateStep{label: "Subscriptions", detail: "regenerate subscription files", run: func(_ context.Context, cfg deploy.Config) error {
-			return deploy.WriteSubscriptions(opts.Layout, cfg)
+		protocolUpdateStep{label: "Subscriptions", detail: "regenerate subscription files", run: func(ctx context.Context, cfg deploy.Config) error {
+			return deploy.WriteSubscriptionsWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch, deploy.LoadLocalSubscriptionPosition(opts.Layout))
 		}},
 		protocolUpdateStep{label: "State", detail: "persist protocol selection and generated material", run: func(_ context.Context, cfg deploy.Config) error {
 			return deploy.WriteInstallState(opts.Layout.StateDir, cfg)
