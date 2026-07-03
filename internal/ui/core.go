@@ -3,8 +3,6 @@ package ui
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
@@ -84,9 +82,7 @@ type coreManager struct {
 	targetTag  string
 	resultTag  string
 
-	logs      string
-	logErr    error
-	logScroll int
+	svcLogs serviceLogViewport
 
 	commandRun
 }
@@ -116,8 +112,7 @@ func (cm *coreManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case coreStableTagsMsg:
 		cm.applyStableTags(msg)
 	case coreLogsMsg:
-		cm.logs, cm.logErr = msg.logs, msg.err
-		cm.logScroll = 0
+		cm.svcLogs.set(msg.logs, msg.err)
 		cm.phase = corePhaseLogs
 	case runMsg:
 		return cm.handleRun(msg), false
@@ -200,37 +195,14 @@ func (cm *coreManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	case corePhaseRunning:
-		switch msg.String() {
-		case "enter":
-			if cm.runComplete {
-				cm.refreshSnapshot()
-				cm.phase = corePhaseDone
-			}
-		case "up", "k":
-			cm.scrollLog(1, cm.logViewportHeight())
-		case "down", "j":
-			cm.scrollLog(-1, cm.logViewportHeight())
-		case "pgup":
-			cm.scrollLog(cm.logViewportHeight(), cm.logViewportHeight())
-		case "pgdown":
-			cm.scrollLog(-cm.logViewportHeight(), cm.logViewportHeight())
-		case "home":
-			cm.logScroll = cm.maxLogScroll(cm.logViewportHeight())
-		case "end":
-			cm.logScroll = 0
+		if msg.String() == "enter" && cm.runComplete {
+			cm.refreshSnapshot()
+			cm.phase = corePhaseDone
+		} else {
+			cm.handleScrollKey(msg.String(), cm.logViewportHeight())
 		}
 	case corePhaseDone:
-		if cm.runErr != nil {
-			switch msg.String() {
-			case "up", "k":
-				cm.scrollLog(1, cm.doneLogHeight())
-				return nil, false
-			case "down", "j":
-				cm.scrollLog(-1, cm.doneLogHeight())
-				return nil, false
-			}
-		}
-		return nil, true
+		return cm.handleDoneKey(msg.String())
 	case corePhaseStableLoading, corePhaseLogsLoading:
 		if isSelectionCancelKey(msg) || msg.String() == "esc" {
 			cm.phase = corePhaseAction
@@ -238,40 +210,27 @@ func (cm *coreManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 	case corePhaseLogs:
 		switch msg.String() {
-		case "up", "k":
-			cm.scrollLogs(1)
-		case "down", "j":
-			cm.scrollLogs(-1)
-		case "pgup":
-			cm.scrollLogs(cm.logsHeight())
-		case "pgdown":
-			cm.scrollLogs(-cm.logsHeight())
-		case "home":
-			cm.logScroll = cm.maxLogsScroll()
-		case "end":
-			cm.logScroll = 0
 		case "r":
 			return cm.loadLogsCmd(), false
 		case "esc", "q", "enter":
 			cm.phase = corePhaseAction
+		default:
+			cm.svcLogs.handleKey(msg.String(), cm.width, cm.height)
 		}
 	}
 	return nil, false
 }
 
 func (cm *coreManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		if cm.phase == corePhaseRunning || (cm.phase == corePhaseDone && cm.runErr != nil) {
-			cm.scrollLog(3, cm.logViewportHeight())
-		} else if cm.phase == corePhaseLogs {
-			cm.scrollLogs(3)
-		}
-	case tea.MouseButtonWheelDown:
-		if cm.phase == corePhaseRunning || (cm.phase == corePhaseDone && cm.runErr != nil) {
-			cm.scrollLog(-3, cm.logViewportHeight())
-		} else if cm.phase == corePhaseLogs {
-			cm.scrollLogs(-3)
+	if cm.handleLogWheel(msg.Button, cm.phase == corePhaseRunning || (cm.phase == corePhaseDone && cm.runErr != nil)) {
+		return nil
+	}
+	if cm.phase == corePhaseLogs {
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			cm.svcLogs.scrollBy(3, cm.width, cm.height)
+		case tea.MouseButtonWheelDown:
+			cm.svcLogs.scrollBy(-3, cm.width, cm.height)
 		}
 	}
 	return nil
@@ -336,24 +295,13 @@ func (cm *coreManager) loadLogsCmd() tea.Cmd {
 	}
 }
 
-func (cm *coreManager) canApply() bool {
-	return cm.hostErr == nil && cm.host.IsRoot && cm.host.Supported() && !cm.host.SELinux
-}
+func (cm *coreManager) canApply() bool { return hostCanApply(cm.host, cm.hostErr) }
 
 func (cm *coreManager) applyBlocker() string {
-	if cm.hostErr != nil {
-		return "failed to detect host: " + cm.hostErr.Error()
-	}
-	if !cm.host.IsRoot {
-		return "core management must be run as root"
-	}
-	if !cm.host.Supported() {
-		return fmt.Sprintf("unsupported system: family=%q arch=%q", cm.host.OS.Family, cm.host.Arch)
-	}
-	if cm.host.SELinux {
-		return "SELinux is enforcing; core management is blocked"
-	}
-	return "cannot apply core management action"
+	return hostApplyBlocker(cm.host, cm.hostErr,
+		"core management must be run as root",
+		"SELinux is enforcing; core management is blocked",
+		"cannot apply core management action")
 }
 
 func (cm *coreManager) startRun() tea.Cmd {
@@ -503,13 +451,13 @@ func (cm *coreManager) doneSummary() string {
 
 func (cm *coreManager) logsView() string {
 	body := flowTitle.Render("sing-box Core · Logs") + "\n\n"
-	if cm.logErr != nil {
-		body += flowErr.Render(cm.logErr.Error()) + "\n\n"
+	if cm.svcLogs.logErr != nil {
+		body += flowErr.Render(cm.svcLogs.logErr.Error()) + "\n\n"
 	}
-	if strings.TrimSpace(cm.logs) == "" {
+	if strings.TrimSpace(cm.svcLogs.logs) == "" {
 		body += dimStyle.Render("no logs returned")
 	} else {
-		body += strings.Join(cm.visibleLogOutput(), "\n")
+		body += strings.Join(cm.svcLogs.visible(cm.width, cm.height), "\n")
 	}
 	return body
 }
@@ -548,12 +496,7 @@ func (cm *coreManager) actions() []coreActionItem {
 }
 
 func (cm *coreManager) actionLabel() string {
-	for _, action := range cm.actions() {
-		if action.action == cm.action {
-			return action.label
-		}
-	}
-	return "unknown"
+	return currentActionLabel(cm.actions(), cm.action)
 }
 
 func (cm *coreManager) isReplaceAction() bool {
@@ -573,43 +516,6 @@ func (cm *coreManager) systemctlAction() string {
 	}
 }
 
-func (cm *coreManager) visibleLogOutput() []string {
-	cm.clampLogsScroll()
-	return visibleLogRows(cm.logRowsForOutput(), cm.logsHeight(), cm.logScroll)
-}
-
-func (cm *coreManager) logRowsForOutput() []string {
-	return logRows(cm.logs, cm.width)
-}
-
-func (cm *coreManager) scrollLogs(delta int) {
-	cm.logScroll += delta
-	cm.clampLogsScroll()
-}
-
-func (cm *coreManager) clampLogsScroll() {
-	cm.logScroll = clampLogScroll(cm.logScroll, len(cm.logRowsForOutput()), cm.logsHeight())
-}
-
-func (cm *coreManager) maxLogsScroll() int {
-	return max(0, len(cm.logRowsForOutput())-cm.logsHeight())
-}
-
-func (cm *coreManager) logsHeight() int {
-	return logBudget(cm.height)
-}
-
 func defaultCoreLogOutput(ctx context.Context, lines int) (string, error) {
-	if lines <= 0 {
-		lines = 200
-	}
-	out, err := exec.CommandContext(ctx, "journalctl", "-u", system.SingBoxService, "-n", strconv.Itoa(lines), "--no-pager").CombinedOutput()
-	if err != nil {
-		text := strings.TrimSpace(string(out))
-		if text == "" {
-			return "", err
-		}
-		return string(out), fmt.Errorf("%w: %s", err, text)
-	}
-	return string(out), nil
+	return journalctlOutput(ctx, system.SingBoxService, lines)
 }

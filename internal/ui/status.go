@@ -52,11 +52,7 @@ func loadStatus() Status {
 	if monitorPublicPort == "" {
 		monitorPublicPort = subscribePort
 	}
-	monitorStateValue := readStatusState(store, "monitor")
-	if monitorStateValue == "" {
-		monitorStateValue = readStatusState(store, "traffic_monitor")
-	}
-	monitorEnabled := monitorStateValue != "no"
+	monitorEnabled := readMonitorState(store) != "no"
 	monitorState := "disabled"
 	if monitorEnabled {
 		monitorState = serviceState(system.MonitorService)
@@ -92,6 +88,27 @@ func readStatusState(store state.Store, name string) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+// readMonitorState reads the monitor toggle, falling back to the legacy
+// traffic_monitor key written by older installs.
+func readMonitorState(store state.Store) string {
+	value := readStatusState(store, "monitor")
+	if value == "" {
+		value = readStatusState(store, "traffic_monitor")
+	}
+	return value
+}
+
+// readResetSchedule reads the quota reset day/hour, clamping the day to the
+// supported 1..28 window.
+func readResetSchedule(store state.Store) (day, hour int) {
+	day, _ = strconv.Atoi(readStatusState(store, "reset_day"))
+	hour, _ = strconv.Atoi(readStatusState(store, "reset_hour"))
+	if day < 1 || day > 28 {
+		day = deploy.DefaultResetDay
+	}
+	return day, hour
 }
 
 func osArchStatus() string {
@@ -141,8 +158,6 @@ func serviceState(unit string) string {
 		return "running"
 	case "inactive", "failed", "deactivating":
 		return "not running"
-	case "unknown":
-		return "unknown"
 	default:
 		if err != nil {
 			return "unknown"
@@ -172,11 +187,7 @@ func isQuotaExceeded(store state.Store, layout paths.Layout) bool {
 	if inLimit == 0 && outLimit == 0 && totalLimit == 0 {
 		return false
 	}
-	resetDay, _ := strconv.Atoi(readStatusState(store, "reset_day"))
-	resetHour, _ := strconv.Atoi(readStatusState(store, "reset_hour"))
-	if resetDay < 1 || resetDay > 28 {
-		resetDay = deploy.DefaultResetDay
-	}
+	resetDay, resetHour := readResetSchedule(store)
 	totals, err := monitor.CurrentTrafficTotals(layout, resetDay, resetHour, statusNow().UTC())
 	if err != nil {
 		return false
@@ -227,11 +238,7 @@ func monitorUIStatus(domain, port string, enabled bool) string {
 }
 
 func trafficQuotaStatus(store state.Store) string {
-	monitorStateValue := readStatusState(store, "monitor")
-	if monitorStateValue == "" {
-		monitorStateValue = readStatusState(store, "traffic_monitor")
-	}
-	if monitorStateValue == "no" {
+	if readMonitorState(store) == "no" {
 		return "disabled"
 	}
 	inRaw := readStatusState(store, "traffic_in_limit_bytes")
@@ -252,11 +259,7 @@ func trafficQuotaStatus(store state.Store) string {
 	if err != nil {
 		return "unknown"
 	}
-	resetDay, _ := strconv.Atoi(readStatusState(store, "reset_day"))
-	resetHour, _ := strconv.Atoi(readStatusState(store, "reset_hour"))
-	if resetDay < 1 || resetDay > 28 {
-		resetDay = deploy.DefaultResetDay
-	}
+	resetDay, resetHour := readResetSchedule(store)
 	parts := []string{
 		"in " + statusLimitLabel(inLimit),
 		"out " + statusLimitLabel(outLimit),

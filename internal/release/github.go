@@ -17,6 +17,12 @@ func SingBoxArchiveName(tag, goos, goarch string) string {
 	return "sing-box-" + version + "-" + goos + "-" + goarch + ".tar.gz"
 }
 
+// SafeTag sanitizes a release tag for use in a filename.
+func SafeTag(tag string) string {
+	replacer := strings.NewReplacer("/", "-", "\\", "-", "..", "-")
+	return replacer.Replace(tag)
+}
+
 // Client talks to the GitHub REST API.
 type Client struct {
 	baseURL string

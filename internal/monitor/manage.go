@@ -266,7 +266,7 @@ func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, sources []Mana
 			}
 			return opts.RunCommands(opts.Runner,
 				system.Command{Name: "nginx", Args: []string{"-t"}},
-				system.Command{Name: "systemctl", Args: []string{"restart", "nginx"}},
+				system.Systemctl("restart", "nginx"),
 			)
 		}})
 	}
@@ -342,7 +342,7 @@ func applyManageMonitorService(opts UpdateOptions, cfg ManageConfig) error {
 	return opts.RunCommands(opts.Runner,
 		system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
 		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.MonitorService}},
-		system.Command{Name: "systemctl", Args: []string{"restart", system.MonitorService}},
+		system.Systemctl("restart", system.MonitorService),
 	)
 }
 

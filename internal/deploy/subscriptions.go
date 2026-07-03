@@ -356,15 +356,16 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 		SurgeFragment: strings.Join(surgeItems, "\n") + "\n",
 	}
 
-	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
-	surgeProviderURL := fmt.Sprintf("https://%s:%d/s/surge/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
-	if err := fillProfiles(&out, outbounds, clashProviderURL, surgeProviderURL); err != nil {
+	if err := fillProfiles(&out, c, outbounds); err != nil {
 		return subscriptionOutputs{}, err
 	}
 	return out, nil
 }
 
-func fillProfiles(out *subscriptionOutputs, outbounds []map[string]any, clashProviderURL, surgeProviderURL string) error {
+func fillProfiles(out *subscriptionOutputs, c Config, outbounds []map[string]any) error {
+	token := SubscriptionToken(c.Salt)
+	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, token)
+	surgeProviderURL := fmt.Sprintf("https://%s:%d/s/surge/%s", c.Domain, c.SubscribePort, token)
 	obJSON, err := json.MarshalIndent(outbounds, "", "  ")
 	if err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
@@ -122,20 +123,13 @@ func (o *Orchestrator) steps(cfg Config) []step {
 // failing step and returns its error.
 func (o *Orchestrator) Run(ctx context.Context, cfg Config) error {
 	o.defaults()
-	steps := o.steps(cfg)
-	total := len(steps)
-	for i, s := range steps {
-		o.emit(Event{Index: i + 1, Total: total, Label: s.label, Detail: s.detail, Status: "running"})
-		if err := s.run(ctx, cfg); err != nil {
-			o.emit(Event{Index: i + 1, Total: total, Label: s.label, Detail: s.detail, Status: "fail", Err: err})
-			return fmt.Errorf("%s: %w", s.label, err)
-		}
-		o.emit(Event{Index: i + 1, Total: total, Label: s.label, Detail: s.detail, Status: "ok"})
+	local := o.steps(cfg)
+	steps := make([]Step, len(local))
+	for i, s := range local {
+		steps[i] = Step{Label: s.label, Detail: s.detail, Run: func(ctx context.Context) error { return s.run(ctx, cfg) }}
 	}
-	return nil
+	return RunSteps(ctx, o.Progress, steps)
 }
-
-func (o *Orchestrator) emit(e Event) { EmitProgress(o.Progress, e) }
 
 func (o *Orchestrator) run(cmds ...system.Command) error {
 	return RunCommands(o.Runner, cmds...)
@@ -157,7 +151,7 @@ func (o *Orchestrator) stepPortCheck(ctx context.Context, cfg Config) error {
 // running, and stepServices/stepNginxConfig restart them with the new config.
 func (o *Orchestrator) stepStopManaged(_ context.Context, _ Config) error {
 	_ = o.Runner.Run(system.Systemctl("stop", system.SingBoxService))
-	_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
+	_ = o.Runner.Run(system.Systemctl("stop", "nginx"))
 	return nil
 }
 
@@ -178,7 +172,7 @@ func (o *Orchestrator) stepFirewall(_ context.Context, cfg Config) error {
 
 func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	certPath, keyPath := o.certPaths(cfg)
-	if ok, err := certificatePairUsable(certPath, keyPath, cfg.Domain, now()); err != nil {
+	if ok, err := certificatePairUsable(certPath, keyPath, cfg.Domain, time.Now()); err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("check existing certificate: %w", err)
 		}
@@ -196,11 +190,11 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	// not leave an existing camouflage site down (mirrors certrenew).
 	stoppedNginx := false
 	if cfg.Challenge == acme.ChallengeHTTP01 {
-		_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
+		_ = o.Runner.Run(system.Systemctl("stop", "nginx"))
 		stoppedNginx = true
 		defer func() {
 			if stoppedNginx {
-				_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"start", "nginx"}})
+				_ = o.Runner.Run(system.Systemctl("start", "nginx"))
 			}
 		}()
 	}
@@ -300,7 +294,7 @@ func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
 	return o.run(
 		system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
 		system.Command{Name: "systemctl", Args: []string{"enable", system.SingBoxService}},
-		system.Command{Name: "systemctl", Args: []string{"restart", system.SingBoxService}},
+		system.Systemctl("restart", system.SingBoxService),
 		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.CertRenewTimer}},
 	)
 }
@@ -329,7 +323,7 @@ func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
 	return o.run(
 		system.Command{Name: "nginx", Args: []string{"-t"}},
 		system.Command{Name: "systemctl", Args: []string{"enable", "--now", "nginx"}},
-		system.Command{Name: "systemctl", Args: []string{"restart", "nginx"}},
+		system.Systemctl("restart", "nginx"),
 	)
 }
 
@@ -402,7 +396,7 @@ func WriteInstallState(stateDir string, cfg Config) error {
 		"hysteria2_port":         itoa(cfg.Ports.Hysteria2),
 		"tuic_port":              itoa(cfg.Ports.TUIC),
 		"anytls_port":            itoa(cfg.Ports.AnyTLS),
-		"subscribe_token":        subscriptionToken(cfg.Salt),
+		"subscribe_token":        SubscriptionToken(cfg.Salt),
 		"subscribe_port":         itoa(cfg.SubscribePort),
 		"monitor_public_port":    itoa(cfg.MonitorPublicPort),
 		"monitor_port":           itoa(cfg.MonitorPort),

@@ -8,6 +8,16 @@ type actionItem[T comparable] struct {
 	separator bool
 }
 
+// currentActionLabel returns the label of the current action in items.
+func currentActionLabel[T comparable](items []actionItem[T], current T) string {
+	for _, item := range items {
+		if item.action == current {
+			return item.label
+		}
+	}
+	return "unknown"
+}
+
 func moveActionCursor[T comparable](cursor int, items []actionItem[T], delta int) int {
 	n := len(items)
 	if n == 0 {

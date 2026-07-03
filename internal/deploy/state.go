@@ -18,15 +18,15 @@ import (
 func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 	layout = DefaultProtocolLayout(layout)
 	store := state.NewStore(layout.StateDir)
-	domain, err := readProtocolState(store, "domain", true)
+	domain, err := store.ReadValue("domain", true)
 	if err != nil {
 		return Config{}, fmt.Errorf("no managed installation state found; run install first: %w", err)
 	}
-	salt, err := readProtocolState(store, "subscribe_salt", true)
+	salt, err := store.ReadValue("subscribe_salt", true)
 	if err != nil {
 		return Config{}, err
 	}
-	enabledRaw, err := readProtocolState(store, "enabled_protocols", true)
+	enabledRaw, err := store.ReadValue("enabled_protocols", true)
 	if err != nil {
 		return Config{}, err
 	}
@@ -112,23 +112,8 @@ func DefaultProtocolLayout(layout paths.Layout) paths.Layout {
 	return layout
 }
 
-func readProtocolState(store state.Store, name string, required bool) (string, error) {
-	value, err := store.ReadString(name)
-	if err != nil {
-		if !required && os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("read state %s: %w", name, err)
-	}
-	value = strings.TrimSpace(value)
-	if required && value == "" {
-		return "", fmt.Errorf("state %s is empty", name)
-	}
-	return value, nil
-}
-
 func readProtocolStateDefault(store state.Store, name, fallback string) string {
-	value, err := readProtocolState(store, name, false)
+	value, err := store.ReadValue(name, false)
 	if err != nil || value == "" {
 		return fallback
 	}

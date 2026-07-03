@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
@@ -52,11 +51,11 @@ func (r Renewer) Run(ctx context.Context) error {
 
 	stoppedNginx := false
 	if req.Challenge == acme.ChallengeHTTP01 {
-		_ = r.Runner.Run(system.Command{Name: "systemctl", Args: []string{"stop", "nginx"}})
+		_ = r.Runner.Run(system.Systemctl("stop", "nginx"))
 		stoppedNginx = true
 		defer func() {
 			if stoppedNginx {
-				_ = r.Runner.Run(system.Command{Name: "systemctl", Args: []string{"start", "nginx"}})
+				_ = r.Runner.Run(system.Systemctl("start", "nginx"))
 			}
 		}()
 	}
@@ -72,8 +71,8 @@ func (r Renewer) Run(ctx context.Context) error {
 	}
 
 	if err := deploy.RunCommands(r.Runner,
-		system.Command{Name: "systemctl", Args: []string{"restart", system.SingBoxService}},
-		system.Command{Name: "systemctl", Args: []string{"restart", "nginx"}},
+		system.Systemctl("restart", system.SingBoxService),
+		system.Systemctl("restart", "nginx"),
 	); err != nil {
 		return err
 	}
@@ -112,23 +111,23 @@ func (r Renewer) logf(format string, args ...any) {
 
 func (r Renewer) requestFromState() (acme.Request, error) {
 	store := state.NewStore(r.Layout.StateDir)
-	domain, err := readState(store, "domain", true)
+	domain, err := store.ReadValue("domain", true)
 	if err != nil {
 		return acme.Request{}, err
 	}
-	email, err := readState(store, "email", false)
+	email, err := store.ReadValue("email", false)
 	if err != nil {
 		return acme.Request{}, err
 	}
-	challenge, err := readState(store, "acme_challenge", true)
+	challenge, err := store.ReadValue("acme_challenge", true)
 	if err != nil {
 		return acme.Request{}, err
 	}
-	dnsProvider, err := readState(store, "dns_provider", false)
+	dnsProvider, err := store.ReadValue("dns_provider", false)
 	if err != nil {
 		return acme.Request{}, err
 	}
-	dnsCredential, err := readState(store, "dns_credential", false)
+	dnsCredential, err := store.ReadValue("dns_credential", false)
 	if err != nil {
 		return acme.Request{}, err
 	}
@@ -140,21 +139,6 @@ func (r Renewer) requestFromState() (acme.Request, error) {
 		DNSProvider: dnsProvider,
 		Credentials: deploy.DNSCredentialsForProvider(dnsProvider, dnsCredential),
 	}, nil
-}
-
-func readState(store state.Store, name string, required bool) (string, error) {
-	value, err := store.ReadString(name)
-	if err != nil {
-		if !required && os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("read state %s: %w", name, err)
-	}
-	value = strings.TrimSpace(value)
-	if required && value == "" {
-		return "", fmt.Errorf("state %s is empty", name)
-	}
-	return value, nil
 }
 
 func renewalDue(certPath, keyPath, domain string, t time.Time, renewBefore time.Duration) (bool, string, error) {

@@ -149,6 +149,17 @@ func (f *parameterForm) startForm() {
 	f.advanceField()
 }
 
+// begin loads fields, seed values, and the validator, then advances to the
+// first visible field, reporting whether the form is already complete.
+func (f *parameterForm) begin(fields []field, values map[string]string, validate func(field, string, map[string]string) error) bool {
+	f.setFields(fields)
+	for k, v := range values {
+		f.values[k] = v
+	}
+	f.validate = validate
+	return f.advanceField()
+}
+
 func (f *parameterForm) advanceField() bool {
 	f.ensureValues()
 	for i := f.fieldIx + 1; i < len(f.fields); i++ {

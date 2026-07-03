@@ -15,9 +15,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 )
 
-// secondsToDuration converts a seconds count to a time.Duration.
-func secondsToDuration(sec int) time.Duration { return time.Duration(sec) * time.Second }
-
 // runMonitor dispatches the "monitor serve" subcommand that runs the long-lived
 // monitor HTTP/API service.
 func runMonitor(args []string) error {
@@ -68,7 +65,7 @@ func runMonitor(args []string) error {
 	cfg := monitor.Config{
 		Listen:            *listen,
 		Interface:         selectedIface,
-		SamplingInterval:  secondsToDuration(*intervalSec),
+		SamplingInterval:  time.Duration(*intervalSec) * time.Second,
 		InLimitBytes:      *inLimit,
 		OutLimitBytes:     *outLimit,
 		TotalLimitBytes:   *totalLimit,

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -194,56 +193,24 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	case protocolPhaseRunning:
-		switch msg.String() {
-		case "enter":
-			if pm.runComplete {
-				if cfg, err := deploy.LoadProtocolConfig(protocolUILayout()); err == nil {
-					pm.cfg = cfg
-					pm.result = cfg
-					pm.selected = selectedOptions(protocolSelectionValue(cfg.Enabled))
-				}
-				pm.phase = protocolPhaseDone
+		if msg.String() == "enter" && pm.runComplete {
+			if cfg, err := deploy.LoadProtocolConfig(protocolUILayout()); err == nil {
+				pm.cfg = cfg
+				pm.result = cfg
+				pm.selected = selectedOptions(protocolSelectionValue(cfg.Enabled))
 			}
-		case "up", "k":
-			pm.scrollLog(1, pm.logViewportHeight())
-		case "down", "j":
-			pm.scrollLog(-1, pm.logViewportHeight())
-		case "pgup":
-			pm.scrollLog(pm.logViewportHeight(), pm.logViewportHeight())
-		case "pgdown":
-			pm.scrollLog(-pm.logViewportHeight(), pm.logViewportHeight())
-		case "home":
-			pm.logScroll = pm.maxLogScroll(pm.logViewportHeight())
-		case "end":
-			pm.logScroll = 0
+			pm.phase = protocolPhaseDone
+		} else {
+			pm.handleScrollKey(msg.String(), pm.logViewportHeight())
 		}
 	case protocolPhaseDone:
-		if pm.runErr != nil {
-			switch msg.String() {
-			case "up", "k":
-				pm.scrollLog(1, pm.doneLogHeight())
-				return nil, false
-			case "down", "j":
-				pm.scrollLog(-1, pm.doneLogHeight())
-				return nil, false
-			}
-		}
-		return nil, true
+		return pm.handleDoneKey(msg.String())
 	}
 	return nil, false
 }
 
 func (pm *protocolManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		if pm.phase == protocolPhaseRunning || (pm.phase == protocolPhaseDone && pm.runErr != nil) {
-			pm.scrollLog(3, pm.logViewportHeight())
-		}
-	case tea.MouseButtonWheelDown:
-		if pm.phase == protocolPhaseRunning || (pm.phase == protocolPhaseDone && pm.runErr != nil) {
-			pm.scrollLog(-3, pm.logViewportHeight())
-		}
-	}
+	pm.handleLogWheel(msg.Button, pm.phase == protocolPhaseRunning || (pm.phase == protocolPhaseDone && pm.runErr != nil))
 	return nil
 }
 
@@ -341,10 +308,8 @@ func (pm *protocolManager) startRealitySNIForm() {
 }
 
 func (pm *protocolManager) startForm(fields []field) {
-	pm.parameterForm.setFields(fields)
-	pm.parameterForm.validate = validateProtocolParameterField
 	pm.phase = protocolPhaseForm
-	if pm.parameterForm.advanceField() {
+	if pm.parameterForm.begin(fields, nil, validateProtocolParameterField) {
 		pm.phase = protocolPhaseConfirm
 	}
 }
@@ -364,13 +329,6 @@ func (pm *protocolManager) previousField() {
 	pm.phase = protocolPhaseAction
 	if pm.action == protocolActionChange {
 		pm.phase = protocolPhaseSelect
-	}
-}
-
-func (pm *protocolManager) commitField() {
-	pm.parameterForm.validate = validateProtocolParameterField
-	if pm.parameterForm.commitField() {
-		pm.phase = protocolPhaseConfirm
 	}
 }
 
@@ -417,24 +375,13 @@ func (pm *protocolManager) editFields(proto config.Protocol) []field {
 	return fields
 }
 
-func (pm *protocolManager) canApply() bool {
-	return pm.hostErr == nil && pm.host.IsRoot && pm.host.Supported() && !pm.host.SELinux
-}
+func (pm *protocolManager) canApply() bool { return hostCanApply(pm.host, pm.hostErr) }
 
 func (pm *protocolManager) applyBlocker() string {
-	if pm.hostErr != nil {
-		return "failed to detect host: " + pm.hostErr.Error()
-	}
-	if !pm.host.IsRoot {
-		return "protocol changes must be run as root"
-	}
-	if !pm.host.Supported() {
-		return fmt.Sprintf("unsupported system: family=%q arch=%q", pm.host.OS.Family, pm.host.Arch)
-	}
-	if pm.host.SELinux {
-		return "SELinux is enforcing; protocol changes are blocked"
-	}
-	return "cannot apply protocol changes"
+	return hostApplyBlocker(pm.host, pm.hostErr,
+		"protocol changes must be run as root",
+		"SELinux is enforcing; protocol changes are blocked",
+		"cannot apply protocol changes")
 }
 
 func (pm *protocolManager) startRun() tea.Cmd {
@@ -746,11 +693,15 @@ func protocolDiff(current, target []config.Protocol) (added, removed []config.Pr
 }
 
 func protocolStrings(protocols []config.Protocol) string {
+	return strings.Join(protocolStringSlice(protocols), ", ")
+}
+
+func protocolStringSlice(protocols []config.Protocol) []string {
 	parts := make([]string, 0, len(protocols))
 	for _, p := range protocols {
 		parts = append(parts, string(p))
 	}
-	return strings.Join(parts, ", ")
+	return parts
 }
 
 func needsRealityProtocol(protocols []config.Protocol) bool {

@@ -84,23 +84,17 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, asset)
 	sumsURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/SHA256SUMS", repo, tag)
 	updateDir := filepath.Join(filepath.Dir(m.InstallBin), ".singbox-deploy-update")
-	candidatePath := filepath.Join(updateDir, "singbox-deploy-"+safeTag(tag))
+	candidatePath := filepath.Join(updateDir, "singbox-deploy-"+release.SafeTag(tag))
 	sumsPath := filepath.Join(updateDir, "SHA256SUMS")
 
-	type step struct {
-		label  string
-		detail string
-		run    func(context.Context) error
-	}
-
-	steps := []step{
-		{label: "Download", detail: "download " + tag, run: func(ctx context.Context) error {
+	steps := []deploy.Step{
+		{Label: "Download", Detail: "download " + tag, Run: func(ctx context.Context) error {
 			if err := os.MkdirAll(updateDir, 0o755); err != nil {
 				return err
 			}
 			return m.Download(ctx, url, candidatePath)
 		}},
-		{label: "Verify", detail: "verify checksum of downloaded binary", run: func(ctx context.Context) error {
+		{Label: "Verify", Detail: "verify checksum of downloaded binary", Run: func(ctx context.Context) error {
 			info, err := os.Stat(candidatePath)
 			if err != nil {
 				return fmt.Errorf("verify downloaded binary: %w", err)
@@ -119,29 +113,18 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 			}
 			return os.Chmod(candidatePath, 0o755)
 		}},
-		{label: "Replace", detail: "replace " + m.InstallBin, run: func(context.Context) error {
+		{Label: "Replace", Detail: "replace " + m.InstallBin, Run: func(context.Context) error {
 			return os.Rename(candidatePath, m.InstallBin)
 		}},
-		{label: "Cleanup", detail: "remove temporary files", run: func(context.Context) error {
+		{Label: "Cleanup", Detail: "remove temporary files", Run: func(context.Context) error {
 			return os.RemoveAll(updateDir)
 		}},
 	}
 
-	for i, s := range steps {
-		m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
-		if err := s.run(ctx); err != nil {
-			m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
-			return Result{}, fmt.Errorf("%s: %w", s.label, err)
-		}
-		m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
+	if err := deploy.RunSteps(ctx, m.Progress, steps); err != nil {
+		return Result{}, err
 	}
 	return Result{Tag: tag}, nil
-}
-
-func (m *Manager) emit(e deploy.Event) {
-	if m.Progress != nil {
-		m.Progress(e)
-	}
 }
 
 // verifyChecksum confirms the SHA-256 of binPath matches the entry for asset in
@@ -184,9 +167,4 @@ func expectedChecksum(sumsPath, asset string) (string, error) {
 		return "", err
 	}
 	return "", fmt.Errorf("no checksum found for %s", asset)
-}
-
-func safeTag(tag string) string {
-	replacer := strings.NewReplacer("/", "-", "\\", "-", "..", "-")
-	return replacer.Replace(tag)
 }

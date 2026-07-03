@@ -4,8 +4,10 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Store reads and writes named state files under a single directory.
@@ -19,10 +21,14 @@ func NewStore(dir string) Store {
 	return Store{dir: dir}
 }
 
-// WriteString writes value to the named state file with the given permissions,
-// creating the state directory if needed.
+// WriteString writes value to the named state file with the given permissions.
+// The state directory is created if needed and its mode tightened to 0o700 even
+// when it already exists, so permission fixes reach existing installs.
 func (s Store) WriteString(name string, value string, perm os.FileMode) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(s.dir, 0o700); err != nil {
 		return err
 	}
 	path := filepath.Join(s.dir, filepath.Clean(name))
@@ -105,4 +111,21 @@ func (s Store) ReadString(name string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// ReadValue returns the trimmed contents of the named state file. A missing
+// file is an error only when the value is required; otherwise it reads as "".
+func (s Store) ReadValue(name string, required bool) (string, error) {
+	value, err := s.ReadString(name)
+	if err != nil {
+		if !required && os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read state %s: %w", name, err)
+	}
+	value = strings.TrimSpace(value)
+	if required && value == "" {
+		return "", fmt.Errorf("state %s is empty", name)
+	}
+	return value, nil
 }

@@ -108,51 +108,19 @@ func (um *uninstallManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return cmd, done
 		}
 	case uninstallPhaseRunning:
-		switch msg.String() {
-		case "enter":
-			if um.runComplete {
-				um.phase = uninstallPhaseDone
-			}
-		case "up", "k":
-			um.scrollLog(1, um.logViewportHeight())
-		case "down", "j":
-			um.scrollLog(-1, um.logViewportHeight())
-		case "pgup":
-			um.scrollLog(um.logViewportHeight(), um.logViewportHeight())
-		case "pgdown":
-			um.scrollLog(-um.logViewportHeight(), um.logViewportHeight())
-		case "home":
-			um.logScroll = um.maxLogScroll(um.logViewportHeight())
-		case "end":
-			um.logScroll = 0
+		if msg.String() == "enter" && um.runComplete {
+			um.phase = uninstallPhaseDone
+		} else {
+			um.handleScrollKey(msg.String(), um.logViewportHeight())
 		}
 	case uninstallPhaseDone:
-		if um.runErr != nil {
-			switch msg.String() {
-			case "up", "k":
-				um.scrollLog(1, um.doneLogHeight())
-				return nil, false
-			case "down", "j":
-				um.scrollLog(-1, um.doneLogHeight())
-				return nil, false
-			}
-		}
-		return nil, true
+		return um.handleDoneKey(msg.String())
 	}
 	return nil, false
 }
 
 func (um *uninstallManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		if um.phase == uninstallPhaseRunning || (um.phase == uninstallPhaseDone && um.runErr != nil) {
-			um.scrollLog(3, um.logViewportHeight())
-		}
-	case tea.MouseButtonWheelDown:
-		if um.phase == uninstallPhaseRunning || (um.phase == uninstallPhaseDone && um.runErr != nil) {
-			um.scrollLog(-3, um.logViewportHeight())
-		}
-	}
+	um.handleLogWheel(msg.Button, um.phase == uninstallPhaseRunning || (um.phase == uninstallPhaseDone && um.runErr != nil))
 	return nil
 }
 
@@ -176,24 +144,13 @@ func (um *uninstallManager) toggleOption() {
 	um.fieldErr = ""
 }
 
-func (um *uninstallManager) canApply() bool {
-	return um.hostErr == nil && um.host.IsRoot && um.host.Supported() && !um.host.SELinux
-}
+func (um *uninstallManager) canApply() bool { return hostCanApply(um.host, um.hostErr) }
 
 func (um *uninstallManager) applyBlocker() string {
-	if um.hostErr != nil {
-		return "failed to detect host: " + um.hostErr.Error()
-	}
-	if !um.host.IsRoot {
-		return "uninstall must be run as root"
-	}
-	if !um.host.Supported() {
-		return fmt.Sprintf("unsupported system: family=%q arch=%q", um.host.OS.Family, um.host.Arch)
-	}
-	if um.host.SELinux {
-		return "SELinux is enforcing; uninstall is blocked"
-	}
-	return "cannot run uninstall"
+	return hostApplyBlocker(um.host, um.hostErr,
+		"uninstall must be run as root",
+		"SELinux is enforcing; uninstall is blocked",
+		"cannot run uninstall")
 }
 
 func (um *uninstallManager) startRun() tea.Cmd {

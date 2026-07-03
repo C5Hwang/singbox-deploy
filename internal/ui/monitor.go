@@ -79,9 +79,7 @@ type monitorManager struct {
 	serviceState string
 	fieldErr     string
 
-	logs         string
-	logErr       error
-	svcLogScroll int
+	svcLogs serviceLogViewport
 
 	cursor          int
 	editSourceIndex int
@@ -139,8 +137,7 @@ func (tm *monitorManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.WindowSizeMsg:
 		tm.setSize(msg.Width, msg.Height)
 	case monitorLogsMsg:
-		tm.logs, tm.logErr = msg.logs, msg.err
-		tm.svcLogScroll = 0
+		tm.svcLogs.set(msg.logs, msg.err)
 		tm.phase = monitorPhaseLogs
 		return nil, false
 	case runMsg:
@@ -233,37 +230,14 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	case monitorPhaseRunning:
-		switch msg.String() {
-		case "enter":
-			if tm.runComplete {
-				tm.reloadState()
-				tm.phase = monitorPhaseDone
-			}
-		case "up", "k":
-			tm.scrollLog(1, tm.logViewportHeight())
-		case "down", "j":
-			tm.scrollLog(-1, tm.logViewportHeight())
-		case "pgup":
-			tm.scrollLog(tm.logViewportHeight(), tm.logViewportHeight())
-		case "pgdown":
-			tm.scrollLog(-tm.logViewportHeight(), tm.logViewportHeight())
-		case "home":
-			tm.logScroll = tm.maxLogScroll(tm.logViewportHeight())
-		case "end":
-			tm.logScroll = 0
+		if msg.String() == "enter" && tm.runComplete {
+			tm.reloadState()
+			tm.phase = monitorPhaseDone
+		} else {
+			tm.handleScrollKey(msg.String(), tm.logViewportHeight())
 		}
 	case monitorPhaseDone:
-		if tm.runErr != nil {
-			switch msg.String() {
-			case "up", "k":
-				tm.scrollLog(1, tm.doneLogHeight())
-				return nil, false
-			case "down", "j":
-				tm.scrollLog(-1, tm.doneLogHeight())
-				return nil, false
-			}
-		}
-		return nil, true
+		return tm.handleDoneKey(msg.String())
 	case monitorPhaseServiceConfirm:
 		switch {
 		case isSelectionConfirmKey(msg), isSelectionYesKey(msg):
@@ -280,40 +254,27 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 	case monitorPhaseLogs:
 		switch msg.String() {
-		case "up", "k":
-			tm.scrollServiceLogs(1)
-		case "down", "j":
-			tm.scrollServiceLogs(-1)
-		case "pgup":
-			tm.scrollServiceLogs(tm.serviceLogsHeight())
-		case "pgdown":
-			tm.scrollServiceLogs(-tm.serviceLogsHeight())
-		case "home":
-			tm.svcLogScroll = tm.maxServiceLogsScroll()
-		case "end":
-			tm.svcLogScroll = 0
 		case "r":
 			return tm.loadServiceLogsCmd(), false
 		case "esc", "q", "enter":
 			tm.phase = monitorPhaseAction
+		default:
+			tm.svcLogs.handleKey(msg.String(), tm.width, tm.height)
 		}
 	}
 	return nil, false
 }
 
 func (tm *monitorManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		if tm.phase == monitorPhaseRunning || (tm.phase == monitorPhaseDone && tm.runErr != nil) {
-			tm.scrollLog(3, tm.logViewportHeight())
-		} else if tm.phase == monitorPhaseLogs {
-			tm.scrollServiceLogs(3)
-		}
-	case tea.MouseButtonWheelDown:
-		if tm.phase == monitorPhaseRunning || (tm.phase == monitorPhaseDone && tm.runErr != nil) {
-			tm.scrollLog(-3, tm.logViewportHeight())
-		} else if tm.phase == monitorPhaseLogs {
-			tm.scrollServiceLogs(-3)
+	if tm.handleLogWheel(msg.Button, tm.phase == monitorPhaseRunning || (tm.phase == monitorPhaseDone && tm.runErr != nil)) {
+		return nil
+	}
+	if tm.phase == monitorPhaseLogs {
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			tm.svcLogs.scrollBy(3, tm.width, tm.height)
+		case tea.MouseButtonWheelDown:
+			tm.svcLogs.scrollBy(-3, tm.width, tm.height)
 		}
 	}
 	return nil
@@ -388,10 +349,8 @@ func (tm *monitorManager) activateAction() tea.Cmd {
 }
 
 func (tm *monitorManager) startForm(fields []field) {
-	tm.parameterForm.setFields(fields)
-	tm.parameterForm.validate = validateMonitorField
 	tm.phase = monitorPhaseForm
-	if tm.parameterForm.advanceField() {
+	if tm.parameterForm.begin(fields, nil, validateMonitorField) {
 		tm.phase = monitorPhaseConfirm
 	}
 }
@@ -445,14 +404,12 @@ func (tm *monitorManager) startEditSourceForm() {
 		return
 	}
 	src := tm.monitorSources[tm.editSourceIndex]
-	fields := tm.addMonitorSourceFields()
-	tm.parameterForm.setFields(fields)
-	tm.parameterForm.values["monitor_source_domain"] = strings.TrimSpace(src.Domain)
-	tm.parameterForm.values["monitor_source_alias"] = strings.TrimSpace(src.Alias)
-	tm.parameterForm.values["monitor_source_port"] = strconv.Itoa(src.MonitorPublicPort)
-	tm.parameterForm.validate = validateMonitorField
 	tm.phase = monitorPhaseForm
-	if tm.parameterForm.advanceField() {
+	if tm.parameterForm.begin(tm.addMonitorSourceFields(), map[string]string{
+		"monitor_source_domain": strings.TrimSpace(src.Domain),
+		"monitor_source_alias":  strings.TrimSpace(src.Alias),
+		"monitor_source_port":   strconv.Itoa(src.MonitorPublicPort),
+	}, validateMonitorField) {
 		tm.phase = monitorPhaseConfirm
 	}
 }
@@ -553,24 +510,13 @@ func validateMonitorField(f field, val string, _ map[string]string) error {
 	return uiparams.ValidateMonitorParameterValue(f.key, val)
 }
 
-func (tm *monitorManager) canApply() bool {
-	return tm.hostErr == nil && tm.host.IsRoot && tm.host.Supported() && !tm.host.SELinux
-}
+func (tm *monitorManager) canApply() bool { return hostCanApply(tm.host, tm.hostErr) }
 
 func (tm *monitorManager) applyBlocker() string {
-	if tm.hostErr != nil {
-		return "failed to detect host: " + tm.hostErr.Error()
-	}
-	if !tm.host.IsRoot {
-		return "monitor changes must be run as root"
-	}
-	if !tm.host.Supported() {
-		return fmt.Sprintf("unsupported system: family=%q arch=%q", tm.host.OS.Family, tm.host.Arch)
-	}
-	if tm.host.SELinux {
-		return "SELinux is enforcing; monitor changes are blocked"
-	}
-	return "cannot apply monitor changes"
+	return hostApplyBlocker(tm.host, tm.hostErr,
+		"monitor changes must be run as root",
+		"SELinux is enforcing; monitor changes are blocked",
+		"cannot apply monitor changes")
 }
 
 func (tm *monitorManager) startRun() tea.Cmd {
@@ -888,12 +834,7 @@ func (tm *monitorManager) serviceConfirmView() string {
 }
 
 func (tm *monitorManager) serviceActionLabel() string {
-	for _, a := range tm.actions() {
-		if a.action == tm.action {
-			return a.label
-		}
-	}
-	return "unknown"
+	return currentActionLabel(tm.actions(), tm.action)
 }
 
 func (tm *monitorManager) serviceSystemctlAction() string {
@@ -947,56 +888,19 @@ func (tm *monitorManager) loadServiceLogsCmd() tea.Cmd {
 
 func (tm *monitorManager) serviceLogsView() string {
 	body := flowTitle.Render("Monitor · Logs") + "\n\n"
-	if tm.logErr != nil {
-		body += flowErr.Render(tm.logErr.Error()) + "\n\n"
+	if tm.svcLogs.logErr != nil {
+		body += flowErr.Render(tm.svcLogs.logErr.Error()) + "\n\n"
 	}
-	if strings.TrimSpace(tm.logs) == "" {
+	if strings.TrimSpace(tm.svcLogs.logs) == "" {
 		body += dimStyle.Render("no logs returned")
 	} else {
-		body += strings.Join(tm.visibleServiceLogOutput(), "\n")
+		body += strings.Join(tm.svcLogs.visible(tm.width, tm.height), "\n")
 	}
 	return body
 }
 
-func (tm *monitorManager) visibleServiceLogOutput() []string {
-	tm.clampServiceLogsScroll()
-	return visibleLogRows(tm.serviceLogRows(), tm.serviceLogsHeight(), tm.svcLogScroll)
-}
-
-func (tm *monitorManager) serviceLogRows() []string {
-	return logRows(tm.logs, tm.width)
-}
-
-func (tm *monitorManager) scrollServiceLogs(delta int) {
-	tm.svcLogScroll += delta
-	tm.clampServiceLogsScroll()
-}
-
-func (tm *monitorManager) clampServiceLogsScroll() {
-	tm.svcLogScroll = clampLogScroll(tm.svcLogScroll, len(tm.serviceLogRows()), tm.serviceLogsHeight())
-}
-
-func (tm *monitorManager) maxServiceLogsScroll() int {
-	return max(0, len(tm.serviceLogRows())-tm.serviceLogsHeight())
-}
-
-func (tm *monitorManager) serviceLogsHeight() int {
-	return logBudget(tm.height)
-}
-
 func defaultMonitorLogOutput(ctx context.Context, lines int) (string, error) {
-	if lines <= 0 {
-		lines = 200
-	}
-	out, err := exec.CommandContext(ctx, "journalctl", "-u", system.MonitorService, "-n", strconv.Itoa(lines), "--no-pager").CombinedOutput()
-	if err != nil {
-		text := strings.TrimSpace(string(out))
-		if text == "" {
-			return "", err
-		}
-		return string(out), fmt.Errorf("%w: %s", err, text)
-	}
-	return string(out), nil
+	return journalctlOutput(ctx, system.MonitorService, lines)
 }
 
 func (tm *monitorManager) monitorDeployCallbacksWithPosition() monitor.UpdateOptions {

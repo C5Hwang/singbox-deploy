@@ -204,60 +204,28 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	case subscriptionPhaseRunning:
-		switch msg.String() {
-		case "enter":
-			if sm.runComplete {
-				layout := subscriptionUILayout()
-				if cfg, err := deploy.LoadProtocolConfig(layout); err == nil {
-					sm.cfg = cfg
-					sm.result = cfg
-				}
-				if remotes, err := deploy.LoadRemoteSubscriptions(layout); err == nil {
-					sm.remotes = remotes
-				}
-				sm.localPosition = deploy.LoadLocalSubscriptionPosition(layout)
-				sm.phase = subscriptionPhaseDone
+		if msg.String() == "enter" && sm.runComplete {
+			layout := subscriptionUILayout()
+			if cfg, err := deploy.LoadProtocolConfig(layout); err == nil {
+				sm.cfg = cfg
+				sm.result = cfg
 			}
-		case "up", "k":
-			sm.scrollLog(1, sm.logViewportHeight())
-		case "down", "j":
-			sm.scrollLog(-1, sm.logViewportHeight())
-		case "pgup":
-			sm.scrollLog(sm.logViewportHeight(), sm.logViewportHeight())
-		case "pgdown":
-			sm.scrollLog(-sm.logViewportHeight(), sm.logViewportHeight())
-		case "home":
-			sm.logScroll = sm.maxLogScroll(sm.logViewportHeight())
-		case "end":
-			sm.logScroll = 0
+			if remotes, err := deploy.LoadRemoteSubscriptions(layout); err == nil {
+				sm.remotes = remotes
+			}
+			sm.localPosition = deploy.LoadLocalSubscriptionPosition(layout)
+			sm.phase = subscriptionPhaseDone
+		} else {
+			sm.handleScrollKey(msg.String(), sm.logViewportHeight())
 		}
 	case subscriptionPhaseDone:
-		if sm.runErr != nil {
-			switch msg.String() {
-			case "up", "k":
-				sm.scrollLog(1, sm.doneLogHeight())
-				return nil, false
-			case "down", "j":
-				sm.scrollLog(-1, sm.doneLogHeight())
-				return nil, false
-			}
-		}
-		return nil, true
+		return sm.handleDoneKey(msg.String())
 	}
 	return nil, false
 }
 
 func (sm *subscriptionManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		if sm.phase == subscriptionPhaseRunning || (sm.phase == subscriptionPhaseDone && sm.runErr != nil) {
-			sm.scrollLog(3, sm.logViewportHeight())
-		}
-	case tea.MouseButtonWheelDown:
-		if sm.phase == subscriptionPhaseRunning || (sm.phase == subscriptionPhaseDone && sm.runErr != nil) {
-			sm.scrollLog(-3, sm.logViewportHeight())
-		}
-	}
+	sm.handleLogWheel(msg.Button, sm.phase == subscriptionPhaseRunning || (sm.phase == subscriptionPhaseDone && sm.runErr != nil))
 	return nil
 }
 
@@ -307,10 +275,8 @@ func (sm *subscriptionManager) activateAction() {
 }
 
 func (sm *subscriptionManager) startForm(fields []field) {
-	sm.parameterForm.setFields(fields)
-	sm.parameterForm.validate = validateSubscriptionField
 	sm.phase = subscriptionPhaseForm
-	if sm.parameterForm.advanceField() {
+	if sm.parameterForm.begin(fields, nil, validateSubscriptionField) {
 		sm.phase = subscriptionPhaseConfirm
 	}
 }
@@ -333,10 +299,7 @@ func (sm *subscriptionManager) remoteFields() []field {
 }
 
 func (sm *subscriptionManager) deleteRemoteFields() []field {
-	options := make([]string, 0, len(sm.remotes))
-	for _, remote := range sm.remotes {
-		options = append(options, remoteOptionLabel(remote))
-	}
+	options := remoteLabels(sm.remotes)
 	return []field{{
 		key:     "delete_remotes",
 		label:   "Remote subscriptions to delete",
@@ -347,10 +310,7 @@ func (sm *subscriptionManager) deleteRemoteFields() []field {
 }
 
 func (sm *subscriptionManager) editRemoteSelectField() []field {
-	options := make([]string, 0, len(sm.remotes))
-	for _, remote := range sm.remotes {
-		options = append(options, remoteOptionLabel(remote))
-	}
+	options := remoteLabels(sm.remotes)
 	return []field{{
 		key:     "edit_remote_select",
 		label:   "Remote subscription to edit",
@@ -364,15 +324,13 @@ func (sm *subscriptionManager) startEditRemoteForm() {
 		return
 	}
 	remote := sm.remotes[sm.editRemoteIndex]
-	fields := sm.remoteFields()
-	sm.parameterForm.setFields(fields)
-	sm.parameterForm.values["remote_domain"] = strings.TrimSpace(remote.Domain)
-	sm.parameterForm.values["remote_alias"] = strings.TrimSpace(remote.Alias)
-	sm.parameterForm.values["remote_subscribe_port"] = strconv.Itoa(remote.Port)
-	sm.parameterForm.values["remote_salt"] = strings.TrimSpace(remote.Salt)
-	sm.parameterForm.validate = validateSubscriptionField
 	sm.phase = subscriptionPhaseForm
-	if sm.parameterForm.advanceField() {
+	if sm.parameterForm.begin(sm.remoteFields(), map[string]string{
+		"remote_domain":         strings.TrimSpace(remote.Domain),
+		"remote_alias":          strings.TrimSpace(remote.Alias),
+		"remote_subscribe_port": strconv.Itoa(remote.Port),
+		"remote_salt":           strings.TrimSpace(remote.Salt),
+	}, validateSubscriptionField) {
 		sm.phase = subscriptionPhaseConfirm
 	}
 }
@@ -426,24 +384,13 @@ func validateSubscriptionField(f field, val string, _ map[string]string) error {
 	return uiparams.ValidateSubscriptionParameterValue(f.key, val)
 }
 
-func (sm *subscriptionManager) canApply() bool {
-	return sm.hostErr == nil && sm.host.IsRoot && sm.host.Supported() && !sm.host.SELinux
-}
+func (sm *subscriptionManager) canApply() bool { return hostCanApply(sm.host, sm.hostErr) }
 
 func (sm *subscriptionManager) applyBlocker() string {
-	if sm.hostErr != nil {
-		return "failed to detect host: " + sm.hostErr.Error()
-	}
-	if !sm.host.IsRoot {
-		return "subscription changes must be run as root"
-	}
-	if !sm.host.Supported() {
-		return fmt.Sprintf("unsupported system: family=%q arch=%q", sm.host.OS.Family, sm.host.Arch)
-	}
-	if sm.host.SELinux {
-		return "SELinux is enforcing; subscription changes are blocked"
-	}
-	return "cannot apply subscription changes"
+	return hostApplyBlocker(sm.host, sm.hostErr,
+		"subscription changes must be run as root",
+		"SELinux is enforcing; subscription changes are blocked",
+		"cannot apply subscription changes")
 }
 
 func (sm *subscriptionManager) startRun() tea.Cmd {

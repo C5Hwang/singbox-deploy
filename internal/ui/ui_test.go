@@ -1159,6 +1159,7 @@ func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
 
 func TestProtocolMultiSelectRequiresAtLeastOne(t *testing.T) {
 	w := installFormForTest()
+	w.startForm()
 	w.setField(fieldIndex(t, w.fields, "protocols"))
 	for _, opt := range w.fields[w.fieldIx].options {
 		w.optionIx = optionIndex(w.fields[w.fieldIx].options, opt)

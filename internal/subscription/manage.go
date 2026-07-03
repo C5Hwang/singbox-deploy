@@ -157,7 +157,7 @@ func updateSteps(opts UpdateOptions, oldPort, newPort int, remotes []Remote) []u
 			}
 			return opts.RunCommands(opts.Runner,
 				system.Command{Name: "nginx", Args: []string{"-t"}},
-				system.Command{Name: "systemctl", Args: []string{"restart", "nginx"}},
+				system.Systemctl("restart", "nginx"),
 			)
 		}})
 	}

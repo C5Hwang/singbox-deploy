@@ -13,10 +13,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 )
 
-var (
-	letsEncryptLiveDir = "/etc/letsencrypt/live"
-	now                = time.Now
-)
+var letsEncryptLiveDir = "/etc/letsencrypt/live"
 
 type certificatePair struct {
 	cert string
@@ -28,7 +25,7 @@ func (o *Orchestrator) importExistingCertificate(cfg Config, certPath, keyPath s
 		if candidate.cert == certPath && candidate.key == keyPath {
 			continue
 		}
-		ok, err := certificatePairUsable(candidate.cert, candidate.key, cfg.Domain, now())
+		ok, err := certificatePairUsable(candidate.cert, candidate.key, cfg.Domain, time.Now())
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue

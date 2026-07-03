@@ -133,51 +133,19 @@ func (sm *selfUpdateManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	case selfUpdatePhaseRunning:
-		switch msg.String() {
-		case "enter":
-			if sm.runComplete {
-				sm.phase = selfUpdatePhaseDone
-			}
-		case "up", "k":
-			sm.scrollLog(1, sm.logViewportHeight())
-		case "down", "j":
-			sm.scrollLog(-1, sm.logViewportHeight())
-		case "pgup":
-			sm.scrollLog(sm.logViewportHeight(), sm.logViewportHeight())
-		case "pgdown":
-			sm.scrollLog(-sm.logViewportHeight(), sm.logViewportHeight())
-		case "home":
-			sm.logScroll = sm.maxLogScroll(sm.logViewportHeight())
-		case "end":
-			sm.logScroll = 0
+		if msg.String() == "enter" && sm.runComplete {
+			sm.phase = selfUpdatePhaseDone
+		} else {
+			sm.handleScrollKey(msg.String(), sm.logViewportHeight())
 		}
 	case selfUpdatePhaseDone:
-		if sm.runErr != nil {
-			switch msg.String() {
-			case "up", "k":
-				sm.scrollLog(1, sm.doneLogHeight())
-				return nil, false
-			case "down", "j":
-				sm.scrollLog(-1, sm.doneLogHeight())
-				return nil, false
-			}
-		}
-		return nil, true
+		return sm.handleDoneKey(msg.String())
 	}
 	return nil, false
 }
 
 func (sm *selfUpdateManager) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		if sm.phase == selfUpdatePhaseRunning || (sm.phase == selfUpdatePhaseDone && sm.runErr != nil) {
-			sm.scrollLog(3, sm.logViewportHeight())
-		}
-	case tea.MouseButtonWheelDown:
-		if sm.phase == selfUpdatePhaseRunning || (sm.phase == selfUpdatePhaseDone && sm.runErr != nil) {
-			sm.scrollLog(-3, sm.logViewportHeight())
-		}
-	}
+	sm.handleLogWheel(msg.Button, sm.phase == selfUpdatePhaseRunning || (sm.phase == selfUpdatePhaseDone && sm.runErr != nil))
 	return nil
 }
 

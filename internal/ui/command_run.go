@@ -136,6 +136,55 @@ func (r *commandRun) visibleLogLines(height int) []string {
 	return rows[start : start+visible]
 }
 
+// handleScrollKey processes the shared log-scroll keys against the given
+// viewport height, reporting whether the key was consumed.
+func (r *commandRun) handleScrollKey(key string, height int) bool {
+	switch key {
+	case "up", "k":
+		r.scrollLog(1, height)
+	case "down", "j":
+		r.scrollLog(-1, height)
+	case "pgup":
+		r.scrollLog(height, height)
+	case "pgdown":
+		r.scrollLog(-height, height)
+	case "home":
+		r.logScroll = r.maxLogScroll(height)
+	case "end":
+		r.logScroll = 0
+	default:
+		return false
+	}
+	return true
+}
+
+// handleDoneKey implements the shared done-phase keys: after a failed run the
+// scroll keys page through the error log; any other key closes the screen.
+func (r *commandRun) handleDoneKey(key string) (tea.Cmd, bool) {
+	if r.runErr != nil && r.handleScrollKey(key, r.doneLogHeight()) {
+		return nil, false
+	}
+	return nil, true
+}
+
+// handleLogWheel scrolls the run log on mouse-wheel events while it is
+// visible (running phase, or done phase after a failure), reporting whether
+// the event was consumed.
+func (r *commandRun) handleLogWheel(button tea.MouseButton, visible bool) bool {
+	if !visible {
+		return false
+	}
+	switch button {
+	case tea.MouseButtonWheelUp:
+		r.scrollLog(3, r.logViewportHeight())
+	case tea.MouseButtonWheelDown:
+		r.scrollLog(-3, r.logViewportHeight())
+	default:
+		return false
+	}
+	return true
+}
+
 func (r *commandRun) scrollLog(delta, height int) {
 	r.logScroll += delta
 	r.clampLogScroll(height)

@@ -158,28 +158,33 @@ func (s *Store) InsertSample(ts int64, iface string, rx, tx, deltaIn, deltaOut u
 // TotalsSince returns in/out usage for samples and aggregated hourly buckets at
 // or after since.
 func (s *Store) TotalsSince(since int64) (TrafficTotals, error) {
-	var rawIn, rawOut sql.NullInt64
-	if err := s.db.QueryRow(
-		`SELECT COALESCE(SUM(delta_rx_bytes), 0), COALESCE(SUM(delta_tx_bytes), 0) FROM samples WHERE ts >= ?`, since,
-	).Scan(&rawIn, &rawOut); err != nil {
-		return TrafficTotals{}, err
-	}
-	var aggIn, aggOut sql.NullInt64
-	if err := s.db.QueryRow(
-		`SELECT COALESCE(SUM(in_bytes), 0), COALESCE(SUM(out_bytes), 0) FROM hourly WHERE ts_hour >= ?`, since,
-	).Scan(&aggIn, &aggOut); err != nil {
-		return TrafficTotals{}, err
-	}
-	var adjIn, adjOut sql.NullInt64
-	if err := s.db.QueryRow(
-		`SELECT COALESCE(SUM(in_bytes), 0), COALESCE(SUM(out_bytes), 0) FROM adjustments WHERE ts >= ?`, since,
-	).Scan(&adjIn, &adjOut); err != nil {
-		return TrafficTotals{}, err
+	var inSum, outSum int64
+	for _, query := range []string{
+		`SELECT COALESCE(SUM(delta_rx_bytes), 0), COALESCE(SUM(delta_tx_bytes), 0) FROM samples WHERE ts >= ?`,
+		`SELECT COALESCE(SUM(in_bytes), 0), COALESCE(SUM(out_bytes), 0) FROM hourly WHERE ts_hour >= ?`,
+		`SELECT COALESCE(SUM(in_bytes), 0), COALESCE(SUM(out_bytes), 0) FROM adjustments WHERE ts >= ?`,
+	} {
+		in, out, err := s.sumPair(query, since)
+		if err != nil {
+			return TrafficTotals{}, err
+		}
+		inSum += in
+		outSum += out
 	}
 	return TrafficTotals{
-		InBytes:  nonNegativeUint64(rawIn.Int64 + aggIn.Int64 + adjIn.Int64),
-		OutBytes: nonNegativeUint64(rawOut.Int64 + aggOut.Int64 + adjOut.Int64),
+		InBytes:  nonNegativeUint64(inSum),
+		OutBytes: nonNegativeUint64(outSum),
 	}, nil
+}
+
+// sumPair runs a two-column SUM query with a single bind value and returns
+// both sums.
+func (s *Store) sumPair(query string, since int64) (int64, int64, error) {
+	var a, b sql.NullInt64
+	if err := s.db.QueryRow(query, since).Scan(&a, &b); err != nil {
+		return 0, 0, err
+	}
+	return a.Int64, b.Int64, nil
 }
 
 // SetTotalsSince adjusts the current cycle so totals since the boundary match
@@ -236,18 +241,25 @@ ORDER BY ts_hour ASC`, since)
 // AggregateHourly folds raw samples older than before into the hourly table and
 // deletes those raw samples. Keeping raw data bounded controls database size.
 func (s *Store) AggregateHourly(before int64) error {
+	return s.foldAndPrune(before, `
+INSERT INTO hourly(ts_hour, in_bytes, out_bytes)
+SELECT (ts/3600)*3600 AS h, SUM(delta_rx_bytes), SUM(delta_tx_bytes) FROM samples WHERE ts < ? GROUP BY h
+ON CONFLICT(ts_hour) DO UPDATE SET in_bytes = in_bytes + excluded.in_bytes, out_bytes = out_bytes + excluded.out_bytes`,
+		`DELETE FROM samples WHERE ts < ?`)
+}
+
+// foldAndPrune runs the fold INSERT and the raw-table DELETE in a single
+// transaction so a crash never drops samples that were not yet folded.
+func (s *Store) foldAndPrune(before int64, insertSQL, deleteSQL string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`
-INSERT INTO hourly(ts_hour, in_bytes, out_bytes)
-SELECT (ts/3600)*3600 AS h, SUM(delta_rx_bytes), SUM(delta_tx_bytes) FROM samples WHERE ts < ? GROUP BY h
-ON CONFLICT(ts_hour) DO UPDATE SET in_bytes = in_bytes + excluded.in_bytes, out_bytes = out_bytes + excluded.out_bytes`, before); err != nil {
+	if _, err := tx.Exec(insertSQL, before); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM samples WHERE ts < ?`, before); err != nil {
+	if _, err := tx.Exec(deleteSQL, before); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -395,14 +407,9 @@ FROM samples WHERE ts >= ? ORDER BY ts ASC`, since)
 // AggregateResourceHourly folds raw resource samples older than before into
 // the resource_hourly table and deletes those raw samples.
 func (s *Store) AggregateResourceHourly(before int64) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	// Successive folds of the same hour cover unequal spans (the maintenance
 	// tick is rarely hour-aligned), so averages merge weighted by sample count.
-	if _, err := tx.Exec(`
+	return s.foldAndPrune(before, `
 INSERT INTO resource_hourly(ts_hour, cpu_avg, cpu_max, mem_avg, mem_max, disk_avg, disk_max,
     dio_read_avg, dio_read_max, dio_write_avg, dio_write_max, sample_count)
 SELECT (ts/3600)*3600 AS h,
@@ -428,13 +435,8 @@ ON CONFLICT(ts_hour) DO UPDATE SET
     dio_write_avg = (resource_hourly.dio_write_avg * resource_hourly.sample_count + excluded.dio_write_avg * excluded.sample_count)
                     / (resource_hourly.sample_count + excluded.sample_count),
     dio_write_max = MAX(resource_hourly.dio_write_max, excluded.dio_write_max),
-    sample_count  = resource_hourly.sample_count + excluded.sample_count`, before); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM resource_samples WHERE ts < ?`, before); err != nil {
-		return err
-	}
-	return tx.Commit()
+    sample_count  = resource_hourly.sample_count + excluded.sample_count`,
+		`DELETE FROM resource_samples WHERE ts < ?`)
 }
 
 // Close closes the underlying database.

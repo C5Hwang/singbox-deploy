@@ -179,11 +179,7 @@ func (f *installForm) setSize(width, height int) {
 }
 
 func protocolOptions() []string {
-	options := make([]string, 0, len(config.AllProtocols))
-	for _, p := range config.AllProtocols {
-		options = append(options, string(p))
-	}
-	return options
+	return protocolStringSlice(config.AllProtocols)
 }
 
 func defaultProtocolValue() string {
@@ -193,11 +189,7 @@ func defaultProtocolValue() string {
 // protocolSelectionValue is the machine-readable value used by form state.
 // Display text must use protocolLabels instead.
 func protocolSelectionValue(protocols []config.Protocol) string {
-	parts := make([]string, 0, len(protocols))
-	for _, p := range protocols {
-		parts = append(parts, string(p))
-	}
-	return strings.Join(parts, ",")
+	return strings.Join(protocolStringSlice(protocols), ",")
 }
 
 func protocolsFromValue(value string) []config.Protocol {
@@ -238,15 +230,6 @@ func monitorFrontendEnabled(vals map[string]string) bool {
 	return value == "yes"
 }
 
-func hasProtocol(protocols []config.Protocol, want config.Protocol) bool {
-	for _, p := range protocols {
-		if p == want {
-			return true
-		}
-	}
-	return false
-}
-
 func protocolLabels(protocols []config.Protocol) string {
 	if len(protocols) == 0 {
 		return "none"
@@ -257,16 +240,6 @@ func protocolLabels(protocols []config.Protocol) string {
 func (f *installForm) startForm() {
 	f.parameterForm.validate = f.validateField
 	f.parameterForm.startForm()
-}
-
-// commitField stores the current field value (or its default) and advances.
-func (f *installForm) commitField() bool {
-	f.parameterForm.validate = f.validateField
-	done := f.parameterForm.commitField()
-	if done {
-		f.confirmScroll = 0
-	}
-	return done
 }
 
 func (f *installForm) validateField(field field, val string, vals map[string]string) error {
@@ -426,54 +399,13 @@ func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 	case phaseRunning:
-		switch msg.String() {
-		case "enter":
-			if f.run.runComplete {
-				f.phase = phaseDone
-			}
-		case "up", "k":
-			f.run.scrollLog(1, f.run.logViewportHeight())
-			return nil, false
-		case "down", "j":
-			f.run.scrollLog(-1, f.run.logViewportHeight())
-			return nil, false
-		case "pgup":
-			f.run.scrollLog(f.run.logViewportHeight(), f.run.logViewportHeight())
-			return nil, false
-		case "pgdown":
-			f.run.scrollLog(-f.run.logViewportHeight(), f.run.logViewportHeight())
-			return nil, false
-		case "home":
-			f.run.logScroll = f.run.maxLogScroll(f.run.logViewportHeight())
-			return nil, false
-		case "end":
-			f.run.logScroll = 0
-			return nil, false
+		if msg.String() == "enter" && f.run.runComplete {
+			f.phase = phaseDone
+		} else {
+			f.run.handleScrollKey(msg.String(), f.run.logViewportHeight())
 		}
 	case phaseDone:
-		if f.run.runErr != nil {
-			switch msg.String() {
-			case "up", "k":
-				f.run.scrollLog(1, f.run.doneLogHeight())
-				return nil, false
-			case "down", "j":
-				f.run.scrollLog(-1, f.run.doneLogHeight())
-				return nil, false
-			case "pgup":
-				f.run.scrollLog(f.run.doneLogHeight(), f.run.doneLogHeight())
-				return nil, false
-			case "pgdown":
-				f.run.scrollLog(-f.run.doneLogHeight(), f.run.doneLogHeight())
-				return nil, false
-			case "home":
-				f.run.logScroll = f.run.maxLogScroll(f.run.doneLogHeight())
-				return nil, false
-			case "end":
-				f.run.logScroll = 0
-				return nil, false
-			}
-		}
-		return nil, true
+		return f.run.handleDoneKey(msg.String())
 	}
 	return nil, false
 }
@@ -636,7 +568,7 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		iface, _ = monitor.DefaultInterface()
 	}
 	realityServerName := ""
-	if hasProtocol(enabled, config.ProtocolRealityVision) || hasProtocol(enabled, config.ProtocolRealityGRPC) {
+	if needsRealityProtocol(enabled) {
 		realityServerName, err = uiparams.NormalizeRealityServerName(vals["reality_sni"])
 		if err != nil {
 			return deploy.Config{}, err
@@ -963,7 +895,7 @@ func (w *installForm) summary(host system.Host) string {
 			summaryRow("Next reset", nextResetFromValues(w.values["reset_day"], w.values["reset_hour"])),
 		)
 	}
-	if hasProtocol(protocols, config.ProtocolRealityVision) || hasProtocol(protocols, config.ProtocolRealityGRPC) {
+	if needsRealityProtocol(protocols) {
 		rows = append(rows, summaryRow("Reality URL/SNI", w.values["reality_sni"]))
 	}
 	rows = append(rows, summaryText("Protocol parameters:"))

@@ -44,12 +44,6 @@ type Manager struct {
 	GOARCH string
 }
 
-type step struct {
-	label  string
-	detail string
-	run    func(context.Context) error
-}
-
 // Defaults fills unset production dependencies.
 func (m *Manager) Defaults() {
 	if m.Layout.Root == "" {
@@ -106,8 +100,8 @@ func (m *Manager) Run(ctx context.Context, action Action, tag string) (Result, e
 }
 
 func (m *Manager) replaceWithTag(ctx context.Context, tag, label string) (Result, error) {
-	steps := append([]step{{label: "Target", detail: label + " to " + tag, run: func(context.Context) error { return nil }}}, m.replaceSteps(&tag)...)
-	if err := m.runSteps(ctx, steps); err != nil {
+	steps := append([]deploy.Step{{Label: "Target", Detail: label + " to " + tag, Run: func(context.Context) error { return nil }}}, m.replaceSteps(&tag)...)
+	if err := deploy.RunSteps(ctx, m.Progress, steps); err != nil {
 		os.RemoveAll(m.updateDir())
 		return Result{}, err
 	}
@@ -121,10 +115,10 @@ func (m *Manager) updateDir() string {
 // replaceSteps downloads and fully validates the candidate binary before the
 // running service is stopped or the old binary touched, so any failure up to
 // Replace leaves the existing install running untouched.
-func (m *Manager) replaceSteps(tag *string) []step {
+func (m *Manager) replaceSteps(tag *string) []deploy.Step {
 	var archivePath, candidatePath string
-	return []step{
-		{label: "Download", detail: "download selected sing-box release", run: func(ctx context.Context) error {
+	return []deploy.Step{
+		{Label: "Download", Detail: "download selected sing-box release", Run: func(ctx context.Context) error {
 			if strings.TrimSpace(*tag) == "" {
 				return fmt.Errorf("release tag is empty")
 			}
@@ -134,7 +128,7 @@ func (m *Manager) replaceSteps(tag *string) []step {
 			}
 			archive := release.SingBoxArchiveName(*tag, m.GOOS, m.GOARCH)
 			archivePath = filepath.Join(updateDir, archive)
-			candidatePath = filepath.Join(updateDir, "sing-box-"+safeTag(*tag))
+			candidatePath = filepath.Join(updateDir, "sing-box-"+release.SafeTag(*tag))
 			url := fmt.Sprintf("https://github.com/SagerNet/sing-box/releases/download/%s/%s", *tag, archive)
 			if err := m.Download(ctx, url, archivePath); err != nil {
 				return err
@@ -148,7 +142,7 @@ func (m *Manager) replaceSteps(tag *string) []step {
 			}
 			return nil
 		}},
-		{label: "Verify", detail: "extract and verify sing-box binary", run: func(context.Context) error {
+		{Label: "Verify", Detail: "extract and verify sing-box binary", Run: func(context.Context) error {
 			f, err := os.Open(archivePath)
 			if err != nil {
 				return err
@@ -159,59 +153,36 @@ func (m *Manager) replaceSteps(tag *string) []step {
 			}
 			return verifyCandidate(candidatePath)
 		}},
-		{label: "Validate", detail: "validate config with new binary", run: func(context.Context) error {
+		{Label: "Validate", Detail: "validate config with new binary", Run: func(context.Context) error {
 			return m.run(system.Command{Name: candidatePath, Args: []string{"check", "-c", m.Layout.ConfigJSON}})
 		}},
-		{label: "Stop", detail: "stop sing-box.service", run: func(context.Context) error {
+		{Label: "Stop", Detail: "stop sing-box.service", Run: func(context.Context) error {
 			return m.run(system.Systemctl("stop", system.SingBoxService))
 		}},
-		{label: "Replace", detail: "replace managed sing-box binary", run: func(context.Context) error {
+		{Label: "Replace", Detail: "replace managed sing-box binary", Run: func(context.Context) error {
 			if err := os.MkdirAll(filepath.Dir(m.Layout.SingBoxBin), 0o755); err != nil {
 				return err
 			}
 			return os.Rename(candidatePath, m.Layout.SingBoxBin)
 		}},
-		{label: "Restart", detail: "restart sing-box.service", run: func(context.Context) error {
+		{Label: "Restart", Detail: "restart sing-box.service", Run: func(context.Context) error {
 			return m.run(system.Systemctl("restart", system.SingBoxService))
 		}},
-		{label: "Cleanup", detail: "remove temporary download files", run: func(context.Context) error {
+		{Label: "Cleanup", Detail: "remove temporary download files", Run: func(context.Context) error {
 			return os.RemoveAll(m.updateDir())
 		}},
 	}
 }
 
 func (m *Manager) serviceAction(ctx context.Context, label, systemctlAction string) (Result, error) {
-	steps := []step{{label: label, detail: systemctlAction + " sing-box.service", run: func(context.Context) error {
+	steps := []deploy.Step{{Label: label, Detail: systemctlAction + " sing-box.service", Run: func(context.Context) error {
 		return m.run(system.Systemctl(systemctlAction, system.SingBoxService))
 	}}}
-	return Result{}, m.runSteps(ctx, steps)
-}
-
-func (m *Manager) runSteps(ctx context.Context, steps []step) error {
-	for i, s := range steps {
-		m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
-		if err := s.run(ctx); err != nil {
-			m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
-			return fmt.Errorf("%s: %w", s.label, err)
-		}
-		m.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
-	}
-	return nil
-}
-
-func (m *Manager) emit(e deploy.Event) {
-	if m.Progress != nil {
-		m.Progress(e)
-	}
+	return Result{}, deploy.RunSteps(ctx, m.Progress, steps)
 }
 
 func (m *Manager) run(cmds ...system.Command) error {
-	for _, c := range cmds {
-		if err := m.Runner.Run(c); err != nil {
-			return fmt.Errorf("command %q: %w", c.String(), err)
-		}
-	}
-	return nil
+	return deploy.RunCommands(m.Runner, cmds...)
 }
 
 func verifyCandidate(path string) error {
@@ -229,9 +200,4 @@ func verifyCandidate(path string) error {
 		return fmt.Errorf("extracted sing-box binary is not executable")
 	}
 	return nil
-}
-
-func safeTag(tag string) string {
-	replacer := strings.NewReplacer("/", "-", "\\", "-", "..", "-")
-	return replacer.Replace(tag)
 }

@@ -91,10 +91,42 @@ func ValidateRemoteSubscriptions(remotes []RemoteSubscription) error {
 
 // LoadRemoteSubscriptions reads configured remote subscription entries.
 func LoadRemoteSubscriptions(layout paths.Layout) ([]RemoteSubscription, error) {
+	remotes, err := loadEntryDirs(layout, remoteSubscriptionsDir, func(root string) RemoteSubscription {
+		remote := RemoteSubscription{
+			Domain: readRemoteStateDefault(root, "domain", ""),
+			Port:   readRemoteStateIntDefault(root, "subscribe_port", 0),
+			Alias:  readRemoteStateDefault(root, "alias", ""),
+			Salt:   readRemoteStateDefault(root, "salt", ""),
+		}
+		remote.Alias = aliasOrDomain(remote.Alias, remote.Domain)
+		return remote
+	})
+	if err != nil {
+		return nil, err
+	}
+	return remotes, ValidateRemoteSubscriptions(remotes)
+}
+
+// SaveRemoteSubscriptions persists remote subscription entries as small state
+// files, one directory per remote.
+func SaveRemoteSubscriptions(layout paths.Layout, remotes []RemoteSubscription) error {
+	return saveEntryDirs(layout, remoteSubscriptionsDir, remotes, func(r RemoteSubscription) map[string]string {
+		return map[string]string{
+			"domain":         strings.TrimSpace(r.Domain),
+			"subscribe_port": itoa(r.Port),
+			"alias":          strings.TrimSpace(r.effectiveAlias()),
+			"salt":           strings.TrimSpace(r.Salt),
+		}
+	})
+}
+
+// loadEntryDirs reads the numbered entry directories under stateDir/subdir in
+// name order and decodes each into an entry value.
+func loadEntryDirs[T any](layout paths.Layout, subdir string, decode func(root string) T) ([]T, error) {
 	if layout.Root == "" {
 		layout = paths.DefaultLayout()
 	}
-	dir := filepath.Join(layout.StateDir, remoteSubscriptionsDir)
+	dir := filepath.Join(layout.StateDir, subdir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -103,45 +135,29 @@ func LoadRemoteSubscriptions(layout paths.Layout) ([]RemoteSubscription, error) 
 		return nil, err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	var remotes []RemoteSubscription
+	var out []T
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		root := filepath.Join(dir, entry.Name())
-		remote := RemoteSubscription{
-			Domain: readRemoteStateDefault(root, "domain", ""),
-			Port:   readRemoteStateIntDefault(root, "subscribe_port", 0),
-			Alias:  readRemoteStateDefault(root, "alias", ""),
-			Salt:   readRemoteStateDefault(root, "salt", ""),
-		}
-		if strings.TrimSpace(remote.Alias) == "" {
-			remote.Alias = remote.Domain
-		}
-		remotes = append(remotes, remote)
+		out = append(out, decode(filepath.Join(dir, entry.Name())))
 	}
-	return remotes, ValidateRemoteSubscriptions(remotes)
+	return out, nil
 }
 
-// SaveRemoteSubscriptions persists remote subscription entries as small state
-// files, one directory per remote.
-func SaveRemoteSubscriptions(layout paths.Layout, remotes []RemoteSubscription) error {
+// saveEntryDirs replaces stateDir/subdir with one numbered directory of state
+// files per entry, as produced by encode.
+func saveEntryDirs[T any](layout paths.Layout, subdir string, items []T, encode func(T) map[string]string) error {
 	if layout.Root == "" {
 		layout = paths.DefaultLayout()
 	}
-	dir := filepath.Join(layout.StateDir, remoteSubscriptionsDir)
+	dir := filepath.Join(layout.StateDir, subdir)
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	for i, remote := range remotes {
+	for i, item := range items {
 		entryDir := filepath.Join(dir, fmt.Sprintf("%03d", i+1))
-		values := map[string]string{
-			"domain":         strings.TrimSpace(remote.Domain),
-			"subscribe_port": itoa(remote.Port),
-			"alias":          strings.TrimSpace(remote.effectiveAlias()),
-			"salt":           strings.TrimSpace(remote.Salt),
-		}
-		for name, value := range values {
+		for name, value := range encode(item) {
 			if err := writeStateFile(entryDir, name, value+"\n"); err != nil {
 				return err
 			}
@@ -283,9 +299,7 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 	out.DefaultBase64 = subscription.EncodeBase64(strings.Join(defaultParts, "\n"))
 	out.ClashFragment = "proxies:\n" + strings.Join(nonEmptyStrings(clashParts), "\n") + "\n"
 	out.SurgeFragment = strings.Join(nonEmptyStrings(surgeParts), "\n") + "\n"
-	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
-	surgeProviderURL := fmt.Sprintf("https://%s:%d/s/surge/%s", c.Domain, c.SubscribePort, subscriptionToken(c.Salt))
-	if err := fillProfiles(&out, outbounds, clashProviderURL, surgeProviderURL); err != nil {
+	if err := fillProfiles(&out, c, outbounds); err != nil {
 		return subscriptionOutputs{}, err
 	}
 	return out, nil
@@ -307,7 +321,7 @@ func mergeSourceParts(local subscriptionSourceParts, remotes []subscriptionSourc
 }
 
 func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionOutputs) error {
-	token := subscriptionToken(cfg.Salt)
+	token := SubscriptionToken(cfg.Salt)
 	pathsByDir := map[string]string{
 		"default":           out.DefaultBase64,
 		"clashMeta":         out.ClashFragment,
@@ -395,18 +409,14 @@ func (r RemoteSubscription) entry() subscription.RemoteEntry {
 	return subscription.RemoteEntry{Domain: strings.TrimSpace(r.Domain), Port: r.Port, Alias: r.effectiveAlias(), Salt: strings.TrimSpace(r.Salt)}
 }
 
-func (r RemoteSubscription) effectiveAlias() string {
-	alias := strings.TrimSpace(r.Alias)
-	if alias == "" {
-		alias = strings.TrimSpace(r.Domain)
-	}
-	return alias
-}
+func (r RemoteSubscription) effectiveAlias() string { return aliasOrDomain(r.Alias, r.Domain) }
 
-func (s MonitorSource) effectiveAlias() string {
-	alias := strings.TrimSpace(s.Alias)
+func (s MonitorSource) effectiveAlias() string { return aliasOrDomain(s.Alias, s.Domain) }
+
+func aliasOrDomain(alias, domain string) string {
+	alias = strings.TrimSpace(alias)
 	if alias == "" {
-		alias = strings.TrimSpace(s.Domain)
+		alias = strings.TrimSpace(domain)
 	}
 	return alias
 }
@@ -554,60 +564,30 @@ func ValidateMonitorSources(sources []MonitorSource) error {
 
 // LoadMonitorSources reads configured monitor source entries.
 func LoadMonitorSources(layout paths.Layout) ([]MonitorSource, error) {
-	if layout.Root == "" {
-		layout = paths.DefaultLayout()
-	}
-	dir := filepath.Join(layout.StateDir, monitorSourcesDir)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	var sources []MonitorSource
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		root := filepath.Join(dir, entry.Name())
+	sources, err := loadEntryDirs(layout, monitorSourcesDir, func(root string) MonitorSource {
 		src := MonitorSource{
 			Domain:            readRemoteStateDefault(root, "domain", ""),
 			Alias:             readRemoteStateDefault(root, "alias", ""),
 			MonitorPublicPort: readRemoteStateIntDefault(root, "monitor_public_port", 0),
 		}
-		if strings.TrimSpace(src.Alias) == "" {
-			src.Alias = src.Domain
-		}
-		sources = append(sources, src)
+		src.Alias = aliasOrDomain(src.Alias, src.Domain)
+		return src
+	})
+	if err != nil {
+		return nil, err
 	}
 	return sources, ValidateMonitorSources(sources)
 }
 
 // SaveMonitorSources persists monitor source entries as small state files.
 func SaveMonitorSources(layout paths.Layout, sources []MonitorSource) error {
-	if layout.Root == "" {
-		layout = paths.DefaultLayout()
-	}
-	dir := filepath.Join(layout.StateDir, monitorSourcesDir)
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	for i, src := range sources {
-		entryDir := filepath.Join(dir, fmt.Sprintf("%03d", i+1))
-		values := map[string]string{
-			"domain":              strings.TrimSpace(src.Domain),
-			"alias":               strings.TrimSpace(src.effectiveAlias()),
-			"monitor_public_port": itoa(src.MonitorPublicPort),
+	return saveEntryDirs(layout, monitorSourcesDir, sources, func(s MonitorSource) map[string]string {
+		return map[string]string{
+			"domain":              strings.TrimSpace(s.Domain),
+			"alias":               strings.TrimSpace(s.effectiveAlias()),
+			"monitor_public_port": itoa(s.MonitorPublicPort),
 		}
-		for name, value := range values {
-			if err := writeStateFile(entryDir, name, value+"\n"); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	})
 }
 
 const (
@@ -622,7 +602,7 @@ func LoadLocalSubscriptionPosition(layout paths.Layout) int {
 	if layout.Root == "" {
 		layout = paths.DefaultLayout()
 	}
-	return readStateInt(layout.StateDir, localSubscriptionPositionFile, 0)
+	return readRemoteStateIntDefault(layout.StateDir, localSubscriptionPositionFile, 0)
 }
 
 // SaveLocalSubscriptionPosition persists the local subscription position.
@@ -639,7 +619,7 @@ func LoadLocalMonitorPosition(layout paths.Layout) int {
 	if layout.Root == "" {
 		layout = paths.DefaultLayout()
 	}
-	return readStateInt(layout.StateDir, localMonitorPositionFile, 0)
+	return readRemoteStateIntDefault(layout.StateDir, localMonitorPositionFile, 0)
 }
 
 // SaveLocalMonitorPosition persists the local monitor position.
@@ -648,18 +628,6 @@ func SaveLocalMonitorPosition(layout paths.Layout, pos int) error {
 		layout = paths.DefaultLayout()
 	}
 	return writeStateFile(layout.StateDir, localMonitorPositionFile, itoa(pos)+"\n")
-}
-
-func readStateInt(dir, name string, fallback int) int {
-	b, err := os.ReadFile(filepath.Join(dir, name))
-	if err != nil {
-		return fallback
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
-		return fallback
-	}
-	return n
 }
 
 // ClampLocalPosition ensures pos is valid for the given remote count.

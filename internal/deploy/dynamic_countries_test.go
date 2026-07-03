@@ -50,7 +50,7 @@ func TestFillProfilesProducesValidOutput(t *testing.T) {
 		{"type": "hysteria2", "tag": "🇺🇸 US-vps1-Hysteria2"},
 	}
 	var out subscriptionOutputs
-	err := fillProfiles(&out, outbounds, "https://example.com:2096/s/clashMeta/token", "https://example.com:2096/s/surge/token")
+	err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"}, outbounds)
 	if err != nil {
 		t.Fatalf("fillProfiles error: %v", err)
 	}

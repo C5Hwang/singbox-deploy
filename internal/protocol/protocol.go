@@ -85,32 +85,20 @@ func Update(ctx context.Context, opts UpdateOptions) (deploy.Config, error) {
 	changedPorts := protocolsNeedingPortChanges(oldCfg, cfg)
 	stalePorts := stalePortsToClose(oldCfg, cfg)
 
-	steps := protocolUpdateSteps(opts, changedPorts, stalePorts, remotes)
-	for i, s := range steps {
-		deploy.EmitProgress(opts.Progress, deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
-		if err := s.run(ctx, cfg); err != nil {
-			deploy.EmitProgress(opts.Progress, deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
-			return deploy.Config{}, fmt.Errorf("%s: %w", s.label, err)
-		}
-		deploy.EmitProgress(opts.Progress, deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
+	if err := deploy.RunSteps(ctx, opts.Progress, protocolUpdateSteps(opts, cfg, changedPorts, stalePorts, remotes)); err != nil {
+		return deploy.Config{}, err
 	}
 	return cfg, nil
 }
 
-type protocolUpdateStep struct {
-	label  string
-	detail string
-	run    func(context.Context, deploy.Config) error
-}
-
-func protocolUpdateSteps(opts UpdateOptions, changedPorts []config.Protocol, stalePorts []system.Port, remotes []deploy.RemoteSubscription) []protocolUpdateStep {
-	steps := []protocolUpdateStep{
-		{label: "Port check", detail: "check new or changed protocol ports", run: func(ctx context.Context, cfg deploy.Config) error {
+func protocolUpdateSteps(opts UpdateOptions, cfg deploy.Config, changedPorts []config.Protocol, stalePorts []system.Port, remotes []deploy.RemoteSubscription) []deploy.Step {
+	steps := []deploy.Step{
+		{Label: "Port check", Detail: "check new or changed protocol ports", Run: func(ctx context.Context) error {
 			return opts.CheckPorts(ctx, cfg, changedPorts)
 		}},
 	}
 	if opts.Firewall != system.FirewallNone && (len(changedPorts) > 0 || len(stalePorts) > 0) {
-		steps = append(steps, protocolUpdateStep{label: "Firewall", detail: "open new ports and close removed ones", run: func(_ context.Context, cfg deploy.Config) error {
+		steps = append(steps, deploy.Step{Label: "Firewall", Detail: "open new ports and close removed ones", Run: func(context.Context) error {
 			// Open added/changed ports first, then close ports no longer used so
 			// disabling a protocol or moving its port does not leave the old
 			// port open forever.
@@ -121,22 +109,22 @@ func protocolUpdateSteps(opts UpdateOptions, changedPorts []config.Protocol, sta
 		}})
 	}
 	steps = append(steps,
-		protocolUpdateStep{label: "Config", detail: "render candidate config.json", run: func(_ context.Context, cfg deploy.Config) error {
+		deploy.Step{Label: "Config", Detail: "render candidate config.json", Run: func(context.Context) error {
 			return deploy.WriteProtocolConfigCandidate(opts.Layout, cfg)
 		}},
-		protocolUpdateStep{label: "Validate", detail: "validate candidate config with sing-box", run: func(_ context.Context, _ deploy.Config) error {
+		deploy.Step{Label: "Validate", Detail: "validate candidate config with sing-box", Run: func(context.Context) error {
 			return opts.Runner.Run(system.Command{Name: opts.Layout.SingBoxBin, Args: []string{"check", "-c", deploy.ProtocolConfigCandidate(opts.Layout)}})
 		}},
-		protocolUpdateStep{label: "Activate config", detail: "replace config.json after validation", run: func(_ context.Context, _ deploy.Config) error {
+		deploy.Step{Label: "Activate config", Detail: "replace config.json after validation", Run: func(context.Context) error {
 			return os.Rename(deploy.ProtocolConfigCandidate(opts.Layout), opts.Layout.ConfigJSON)
 		}},
-		protocolUpdateStep{label: "Subscriptions", detail: "regenerate subscription files", run: func(ctx context.Context, cfg deploy.Config) error {
+		deploy.Step{Label: "Subscriptions", Detail: "regenerate subscription files", Run: func(ctx context.Context) error {
 			return deploy.WriteSubscriptionsWithRemotes(ctx, opts.Layout, cfg, remotes, opts.Fetch, deploy.LoadLocalSubscriptionPosition(opts.Layout))
 		}},
-		protocolUpdateStep{label: "State", detail: "persist protocol selection and generated material", run: func(_ context.Context, cfg deploy.Config) error {
+		deploy.Step{Label: "State", Detail: "persist protocol selection and generated material", Run: func(context.Context) error {
 			return deploy.WriteInstallState(opts.Layout.StateDir, cfg)
 		}},
-		protocolUpdateStep{label: "Restart", detail: "restart sing-box.service", run: func(_ context.Context, _ deploy.Config) error {
+		deploy.Step{Label: "Restart", Detail: "restart sing-box.service", Run: func(context.Context) error {
 			return opts.Runner.Run(system.Systemctl("restart", system.SingBoxService))
 		}},
 	)

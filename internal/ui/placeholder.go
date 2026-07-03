@@ -11,8 +11,7 @@ func newPlaceholderManager(title string) *placeholderManager {
 }
 
 func (pm *placeholderManager) Update(msg tea.Msg) (tea.Cmd, bool) {
-	if msg, ok := msg.(tea.KeyMsg); ok {
-		_ = msg
+	if _, ok := msg.(tea.KeyMsg); ok {
 		return nil, true
 	}
 	return nil, false

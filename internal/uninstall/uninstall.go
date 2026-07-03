@@ -32,26 +32,11 @@ type Options struct {
 	Progress func(deploy.Event)
 }
 
-type uninstallStep struct {
-	label  string
-	detail string
-	run    func(context.Context) error
-}
-
 // Run removes only singbox-deploy managed integration files and selected
 // data categories. Unknown files under the layout root are never removed.
 func Run(ctx context.Context, opts Options) error {
 	opts.defaults()
-	steps := opts.steps()
-	for i, s := range steps {
-		opts.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "running"})
-		if err := s.run(ctx); err != nil {
-			opts.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "fail", Err: err})
-			return fmt.Errorf("%s: %w", s.label, err)
-		}
-		opts.emit(deploy.Event{Index: i + 1, Total: len(steps), Label: s.label, Detail: s.detail, Status: "ok"})
-	}
-	return nil
+	return deploy.RunSteps(ctx, opts.Progress, opts.steps())
 }
 
 func (o *Options) defaults() {
@@ -72,14 +57,14 @@ func (o *Options) defaults() {
 	}
 }
 
-func (o Options) steps() []uninstallStep {
-	return []uninstallStep{
-		{"Stop services", "stop and disable managed systemd units", o.stepStopServices},
-		{"Firewall", "close managed protocol and subscription ports", o.stepFirewall},
-		{"Systemd units", "remove managed systemd unit and timer files", o.stepSystemdUnits},
-		{"ACME renewal", "remove managed cron renewal entry if present", o.stepCronRenewal},
-		{"Nginx config", "remove only the managed singbox-deploy Nginx config", o.stepNginxConfig},
-		{"Selected data", "remove selected /etc/singbox-deploy data categories", o.stepSelectedData},
+func (o Options) steps() []deploy.Step {
+	return []deploy.Step{
+		{Label: "Stop services", Detail: "stop and disable managed systemd units", Run: o.stepStopServices},
+		{Label: "Firewall", Detail: "close managed protocol and subscription ports", Run: o.stepFirewall},
+		{Label: "Systemd units", Detail: "remove managed systemd unit and timer files", Run: o.stepSystemdUnits},
+		{Label: "ACME renewal", Detail: "remove managed cron renewal entry if present", Run: o.stepCronRenewal},
+		{Label: "Nginx config", Detail: "remove only the managed singbox-deploy Nginx config", Run: o.stepNginxConfig},
+		{Label: "Selected data", Detail: "remove selected /etc/singbox-deploy data categories", Run: o.stepSelectedData},
 	}
 }
 
@@ -109,12 +94,6 @@ func (o Options) stepFirewall(context.Context) error {
 	return nil
 }
 
-func (o Options) emit(e deploy.Event) {
-	if o.Progress != nil {
-		o.Progress(e)
-	}
-}
-
 func (o Options) stepStopServices(context.Context) error {
 	for _, unit := range []string{system.CertRenewTimer, system.MonitorService, system.SingBoxService} {
 		if !fileExists(filepath.Join(o.SystemdDir, unit)) {
@@ -126,7 +105,7 @@ func (o Options) stepStopServices(context.Context) error {
 		}
 	}
 	if fileExists(filepath.Join(o.SystemdDir, system.CertRenewService)) {
-		cmd := system.Command{Name: "systemctl", Args: []string{"stop", system.CertRenewService}}
+		cmd := system.Systemctl("stop", system.CertRenewService)
 		if err := o.Runner.Run(cmd); err != nil {
 			return fmt.Errorf("%s: %w", cmd.String(), err)
 		}
@@ -167,7 +146,7 @@ func (o Options) stepNginxConfig(context.Context) error {
 		// Reload so the running Nginx drops the just-removed managed vhost
 		// (and its now-deleted certificate); ignore errors when Nginx is not
 		// running.
-		_ = o.Runner.Run(system.Command{Name: "systemctl", Args: []string{"reload", "nginx"}})
+		_ = o.Runner.Run(system.Systemctl("reload", "nginx"))
 	}
 	return nil
 }

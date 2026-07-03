@@ -15,9 +15,6 @@ type InterfaceCounters struct {
 	TXBytes uint64
 }
 
-// Total returns RX+TX.
-func (c InterfaceCounters) Total() uint64 { return c.RXBytes + c.TXBytes }
-
 // sysClassNet is the Linux interface statistics root, overridable in tests.
 const sysClassNet = "/sys/class/net"
 
