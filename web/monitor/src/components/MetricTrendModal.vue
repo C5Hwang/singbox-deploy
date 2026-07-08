@@ -94,6 +94,7 @@ function buildOption(): any {
     width: chartRef.value?.clientWidth ?? 800,
     unit,
     legend: machines.value.map((m) => m.name),
+    sortTooltip: true,
     tooltipUnit: isRecent ? "second" : unit,
     tooltipValue: (p) => {
       const value = Array.isArray(p.value) ? p.value[1] : p.value;

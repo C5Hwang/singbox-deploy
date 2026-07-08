@@ -96,11 +96,17 @@ export function fmtTooltipTime(value: number, unit: TimeUnit): string {
   return d.toLocaleString("en-US", { ...MONTH_DAY, ...HOUR_MIN }) + ` ${label}`;
 }
 
-function tooltipFormatter(unit: TimeUnit, valueText: (p: any) => string) {
+function tooltipValueOf(p: any): number {
+  const value = Number(Array.isArray(p.value) ? p.value[1] : p.value);
+  return Number.isFinite(value) ? value : -Infinity;
+}
+
+function tooltipFormatter(unit: TimeUnit, valueText: (p: any) => string, sortByValue: boolean) {
   return (params: any) => {
     if (!Array.isArray(params) || params.length === 0) return "";
+    const rows = sortByValue ? [...params].sort((a, b) => tooltipValueOf(b) - tooltipValueOf(a)) : params;
     let html = `<div style="font-weight:700;margin-bottom:6px">${fmtTooltipTime(params[0].value[0], unit)}</div>`;
-    for (const p of params) {
+    for (const p of rows) {
       html +=
         `<div style="display:flex;align-items:center;gap:6px;margin:3px 0">` +
         `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${p.color}"></span>` +
@@ -116,6 +122,9 @@ export interface FrameParams {
   legend: string[];
   tooltipUnit: TimeUnit;
   tooltipValue: (p: any) => string;
+  // Sort tooltip rows by value (largest first) instead of series order; used
+  // by the all-sources chart where machine ranking matters more than order.
+  sortTooltip?: boolean;
 }
 
 export interface ChartFrame {
@@ -125,7 +134,7 @@ export interface ChartFrame {
 
 // Shared chart skeleton: tooltip, legend, grid, time axis and zoom slider,
 // sized for the available width so axes and legend never collide on phones.
-export function buildFrame({ width, unit, legend, tooltipUnit, tooltipValue }: FrameParams): ChartFrame {
+export function buildFrame({ width, unit, legend, tooltipUnit, tooltipValue, sortTooltip }: FrameParams): ChartFrame {
   const narrow = width < 600;
   // Slider handle labels render outside the track; keep enough inset on both
   // sides so the two-line "date / time" label stays inside the canvas.
@@ -144,7 +153,7 @@ export function buildFrame({ width, unit, legend, tooltipUnit, tooltipValue }: F
       backgroundColor: "rgba(255,255,255,0.96)",
       borderColor: "#e7ecf4",
       textStyle: { color: "#172033", fontSize: narrow ? 12 : 13 },
-      formatter: tooltipFormatter(tooltipUnit, tooltipValue),
+      formatter: tooltipFormatter(tooltipUnit, tooltipValue, sortTooltip ?? false),
     },
     legend: {
       data: legend,
