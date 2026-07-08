@@ -6,7 +6,10 @@ export type TimeUnit = "second" | "hour" | "day";
 
 // Machine-identity colors for multi-source charts, assigned by source order.
 // Ordered so adjacent hues stay distinguishable under color-vision deficiency.
-export const SOURCE_COLORS = ["#2563eb", "#f59e0b", "#06b6d4", "#ec4899", "#22c55e", "#8b5cf6"];
+export const SOURCE_COLORS = [
+  "#2563eb", "#f59e0b", "#06b6d4", "#ec4899", "#22c55e",
+  "#8b5cf6", "#f97316", "#0d9488", "#d946ef", "#65a30d",
+];
 
 // Days are bucketed at midnight in the selected display timezone so daily
 // values line up with the dates shown on the axis.
@@ -127,7 +130,10 @@ export function buildFrame({ width, unit, legend, tooltipUnit, tooltipValue }: F
   // Slider handle labels render outside the track; keep enough inset on both
   // sides so the two-line "date / time" label stays inside the canvas.
   const sliderInset = narrow ? 56 : 76;
-  const legendRows = narrow && legend.length > 3 ? 2 : 1;
+  // Long legends (one entry per machine) scroll in a single row instead of
+  // wrapping, so they can never spill into the plot area.
+  const scrollLegend = legend.length > 4;
+  const legendRows = narrow && !scrollLegend && legend.length > 3 ? 2 : 1;
   const option = {
     animation: true,
     animationDuration: 800,
@@ -147,6 +153,15 @@ export function buildFrame({ width, unit, legend, tooltipUnit, tooltipValue }: F
       itemGap: narrow ? 10 : 20,
       itemWidth: narrow ? 16 : 25,
       textStyle: { fontSize: narrow ? 11 : 13, fontWeight: 600 },
+      ...(scrollLegend
+        ? {
+            type: "scroll",
+            pageIconColor: "#526075",
+            pageIconInactiveColor: "#c9d4e5",
+            pageIconSize: 11,
+            pageTextStyle: { color: "#7a869a", fontSize: narrow ? 10 : 11 },
+          }
+        : {}),
     },
     grid: {
       left: narrow ? 6 : 14,
