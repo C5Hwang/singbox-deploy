@@ -204,6 +204,7 @@ body {
 @keyframes cardIn { from { opacity: 0; transform: translateY(12px); } }
 .metric-card { padding: 16px; display: flex; flex-direction: column; }
 .metric-card > .progress { margin-top: auto; }
+.metric-foot { display: flex; justify-content: flex-end; margin-top: 12px; min-height: 28px; }
 .source-card { grid-column: span 12; }
 .span-3 { grid-column: span 3; }
 .span-4 { grid-column: span 4; }

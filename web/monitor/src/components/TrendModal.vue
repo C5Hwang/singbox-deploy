@@ -1,45 +1,32 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, shallowRef, nextTick } from "vue";
-import * as echarts from "echarts/core";
-import { LineChart } from "echarts/charts";
-import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent } from "echarts/components";
-import { CanvasRenderer } from "echarts/renderers";
+import { ref } from "vue";
 import { fetchTrafficTrend, fetchTrafficRecent } from "../api";
 import { formatBytes } from "../utils";
-import { buildFrame, lineSeries, bytesAxis, type TimeUnit } from "../chartOptions";
+import { buildFrame, lineSeries, bytesAxis, aggregateTrafficDaily, type TimeUnit } from "../chartOptions";
 import { tzOffsetMinutes } from "../timezone";
+import { useTrendChart } from "../useTrendChart";
 import type { SourceSummary, HourlyPoint, TrafficRawPoint } from "../types";
-
-echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer]);
 
 const props = defineProps<{ source: SourceSummary }>();
 const emit = defineEmits<{ close: [] }>();
 
-const chartRef = ref<HTMLDivElement>();
-const chart = shallowRef<echarts.ECharts>();
 type Granularity = "recent" | "hourly" | "daily";
 const granularity = ref<Granularity>("hourly");
 const trend = ref<HourlyPoint[]>([]);
 const recentPoints = ref<TrafficRawPoint[]>([]);
-const loading = ref(true);
 
-// Days are bucketed at midnight in the selected display timezone so daily
-// totals line up with the dates shown on the axis.
-function aggregateDaily(points: HourlyPoint[]): HourlyPoint[] {
-  const offsetSec = tzOffsetMinutes.value * 60;
-  const buckets = new Map<number, HourlyPoint>();
-  for (const p of points) {
-    const dayTs = Math.floor((p.hourTs + offsetSec) / 86400) * 86400 - offsetSec;
-    const existing = buckets.get(dayTs);
-    if (existing) {
-      existing.inBytes += p.inBytes;
-      existing.outBytes += p.outBytes;
-      existing.totalBytes += p.totalBytes;
-    } else {
-      buckets.set(dayTs, { ...p, hourTs: dayTs });
-    }
+async function load() {
+  try {
+    const [trendData, recentData] = await Promise.all([
+      fetchTrafficTrend(props.source.name),
+      fetchTrafficRecent(props.source.name),
+    ]);
+    trend.value = trendData;
+    recentPoints.value = recentData;
+  } catch {
+    trend.value = [];
+    recentPoints.value = [];
   }
-  return Array.from(buckets.values()).sort((a, b) => a.hourTs - b.hourTs);
 }
 
 function buildOption(): any {
@@ -64,7 +51,7 @@ function buildOption(): any {
       lineSeries("Total", "#22c55e", data.map((p) => [p.ts * 1000, p.totalBytes])),
     ];
   } else {
-    const data = isDaily ? aggregateDaily(trend.value) : trend.value;
+    const data = isDaily ? aggregateTrafficDaily(trend.value) : trend.value;
     const showSymbol = !narrow;
     series = [
       lineSeries("Inbound", "#2563eb", data.map((p) => [p.hourTs * 1000, p.inBytes]), { showSymbol }),
@@ -76,56 +63,11 @@ function buildOption(): any {
   return { ...option, yAxis: bytesAxis(narrow), series };
 }
 
-let resizeHandler: (() => void) | undefined;
-let resizeTimer: number | undefined;
-let keyHandler: ((e: KeyboardEvent) => void) | undefined;
-
-onMounted(async () => {
-  keyHandler = (e) => {
-    if (e.key === "Escape") close();
-  };
-  window.addEventListener("keydown", keyHandler);
-  try {
-    const [trendData, recentData] = await Promise.all([
-      fetchTrafficTrend(props.source.name),
-      fetchTrafficRecent(props.source.name),
-    ]);
-    trend.value = trendData;
-    recentPoints.value = recentData;
-  } catch {
-    trend.value = [];
-    recentPoints.value = [];
-  }
-  loading.value = false;
-  await nextTick();
-  if (chartRef.value) {
-    chart.value = echarts.init(chartRef.value);
-    chart.value.setOption(buildOption());
-    resizeHandler = () => {
-      if (resizeTimer) window.clearTimeout(resizeTimer);
-      resizeTimer = window.setTimeout(() => {
-        chart.value?.resize();
-        chart.value?.setOption(buildOption(), true);
-      }, 120);
-    };
-    window.addEventListener("resize", resizeHandler);
-  }
-});
-
-onUnmounted(() => {
-  if (resizeHandler) window.removeEventListener("resize", resizeHandler);
-  if (keyHandler) window.removeEventListener("keydown", keyHandler);
-  if (resizeTimer) window.clearTimeout(resizeTimer);
-  chart.value?.dispose();
-});
-
-watch([granularity, tzOffsetMinutes], () => {
-  chart.value?.setOption(buildOption(), true);
-});
-
 function close() {
   emit("close");
 }
+
+const { chartRef, loading } = useTrendChart(load, buildOption, [granularity, tzOffsetMinutes], close);
 </script>
 
 <template>

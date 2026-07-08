@@ -1,27 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, shallowRef, nextTick } from "vue";
-import * as echarts from "echarts/core";
-import { LineChart } from "echarts/charts";
-import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent } from "echarts/components";
-import { CanvasRenderer } from "echarts/renderers";
+import { ref } from "vue";
 import { fetchResourceTrend, fetchResourceRecent } from "../api";
 import { formatRate } from "../utils";
-import { buildFrame, lineSeries, percentAxis, rateAxis, type TimeUnit } from "../chartOptions";
+import { buildFrame, lineSeries, percentAxis, rateAxis, aggregateResourceDaily, type TimeUnit } from "../chartOptions";
 import { tzOffsetMinutes } from "../timezone";
+import { useTrendChart } from "../useTrendChart";
 import type { SourceSummary, ResourceHourlyPoint, ResourceRawPoint } from "../types";
-
-echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer]);
 
 const props = defineProps<{ source: SourceSummary }>();
 const emit = defineEmits<{ close: [] }>();
 
-const chartRef = ref<HTMLDivElement>();
-const chart = shallowRef<echarts.ECharts>();
 type Mode = "recent" | "hourly-avg" | "hourly-max" | "daily-avg" | "daily-max";
 const mode = ref<Mode>("hourly-avg");
 const trend = ref<ResourceHourlyPoint[]>([]);
 const recentPoints = ref<ResourceRawPoint[]>([]);
-const loading = ref(true);
 
 const modes: { key: Mode; label: string }[] = [
   { key: "recent", label: "Recent" },
@@ -31,14 +23,18 @@ const modes: { key: Mode; label: string }[] = [
   { key: "daily-max", label: "Daily (Max)" },
 ];
 
-function avg(arr: number[]): number {
-  if (arr.length === 0) return 0;
-  return arr.reduce((a, b) => a + b, 0) / arr.length;
-}
-
-function agg(arr: number[], isMax: boolean): number {
-  if (arr.length === 0) return 0;
-  return isMax ? Math.max(...arr) : avg(arr);
+async function load() {
+  try {
+    const [trendData, recentData] = await Promise.all([
+      fetchResourceTrend(props.source.name),
+      fetchResourceRecent(props.source.name),
+    ]);
+    trend.value = trendData;
+    recentPoints.value = recentData;
+  } catch {
+    trend.value = [];
+    recentPoints.value = [];
+  }
 }
 
 function formatTooltipValue(param: any): string {
@@ -46,36 +42,6 @@ function formatTooltipValue(param: any): string {
   if (param.seriesName === "Disk IO Read" || param.seriesName === "Disk IO Write") return formatRate(value);
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? `${numberValue.toFixed(1)}%` : "NA";
-}
-
-// Days are bucketed at midnight in the selected display timezone so daily
-// aggregates line up with the dates shown on the axis.
-function aggregateDaily(points: ResourceHourlyPoint[], isMax: boolean): ResourceHourlyPoint[] {
-  const offsetSec = tzOffsetMinutes.value * 60;
-  const buckets = new Map<number, ResourceHourlyPoint[]>();
-  for (const p of points) {
-    const dayTs = Math.floor((p.hourTs + offsetSec) / 86400) * 86400 - offsetSec;
-    if (!buckets.has(dayTs)) buckets.set(dayTs, []);
-    buckets.get(dayTs)!.push(p);
-  }
-  return Array.from(buckets.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([dayTs, pts]) => {
-      const v = (key: keyof ResourceHourlyPoint) => pts.map((p) => p[key] as number);
-      return {
-        hourTs: dayTs,
-        cpuAvg: agg(v("cpuAvg"), isMax),
-        cpuMax: agg(v("cpuMax"), isMax),
-        memAvg: agg(v("memAvg"), isMax),
-        memMax: agg(v("memMax"), isMax),
-        diskAvg: agg(v("diskAvg"), isMax),
-        diskMax: agg(v("diskMax"), isMax),
-        dioReadAvg: agg(v("dioReadAvg"), isMax),
-        dioReadMax: agg(v("dioReadMax"), isMax),
-        dioWriteAvg: agg(v("dioWriteAvg"), isMax),
-        dioWriteMax: agg(v("dioWriteMax"), isMax),
-      };
-    });
 }
 
 function buildOption(): any {
@@ -102,7 +68,7 @@ function buildOption(): any {
     ];
   } else {
     const isMax = mode.value.endsWith("max");
-    const data = isDaily ? aggregateDaily(trend.value, isMax) : trend.value;
+    const data = isDaily ? aggregateResourceDaily(trend.value, isMax) : trend.value;
     const cpuKey = isMax ? "cpuMax" : "cpuAvg";
     const memKey = isMax ? "memMax" : "memAvg";
     const readKey = isMax ? "dioReadMax" : "dioReadAvg";
@@ -119,56 +85,11 @@ function buildOption(): any {
   return { ...option, yAxis: [percentAxis(narrow), rateAxis(narrow)], series };
 }
 
-let resizeHandler: (() => void) | undefined;
-let resizeTimer: number | undefined;
-let keyHandler: ((e: KeyboardEvent) => void) | undefined;
-
-onMounted(async () => {
-  keyHandler = (e) => {
-    if (e.key === "Escape") close();
-  };
-  window.addEventListener("keydown", keyHandler);
-  try {
-    const [trendData, recentData] = await Promise.all([
-      fetchResourceTrend(props.source.name),
-      fetchResourceRecent(props.source.name),
-    ]);
-    trend.value = trendData;
-    recentPoints.value = recentData;
-  } catch {
-    trend.value = [];
-    recentPoints.value = [];
-  }
-  loading.value = false;
-  await nextTick();
-  if (chartRef.value) {
-    chart.value = echarts.init(chartRef.value);
-    chart.value.setOption(buildOption());
-    resizeHandler = () => {
-      if (resizeTimer) window.clearTimeout(resizeTimer);
-      resizeTimer = window.setTimeout(() => {
-        chart.value?.resize();
-        chart.value?.setOption(buildOption(), true);
-      }, 120);
-    };
-    window.addEventListener("resize", resizeHandler);
-  }
-});
-
-onUnmounted(() => {
-  if (resizeHandler) window.removeEventListener("resize", resizeHandler);
-  if (keyHandler) window.removeEventListener("keydown", keyHandler);
-  if (resizeTimer) window.clearTimeout(resizeTimer);
-  chart.value?.dispose();
-});
-
-watch([mode, tzOffsetMinutes], () => {
-  chart.value?.setOption(buildOption(), true);
-});
-
 function close() {
   emit("close");
 }
+
+const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMinutes], close);
 </script>
 
 <template>

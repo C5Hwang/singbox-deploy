@@ -2,11 +2,13 @@
 import { ref, computed } from "vue";
 import SourceCard from "../components/SourceCard.vue";
 import TrendModal from "../components/TrendModal.vue";
+import MetricTrendModal from "../components/MetricTrendModal.vue";
 import { formatBytes, percentFor, percentText, tone, barStyle } from "../utils";
-import type { Summary, SourceSummary } from "../types";
+import type { Summary, SourceSummary, MetricDef } from "../types";
 
 const props = defineProps<{ summary: Summary | null; error: string }>();
 const modalSource = ref<SourceSummary | null>(null);
+const modalMetric = ref<MetricDef | null>(null);
 
 const sources = computed<SourceSummary[]>(() => {
   const s = props.summary;
@@ -24,6 +26,7 @@ interface TrafficCard {
   percent: number | null;
   detail: string;
   color: string;
+  trendKey: "inBytes" | "outBytes" | "totalBytes";
 }
 
 // Unlimited sources (limit = 0) still count toward the displayed usage, but
@@ -45,10 +48,10 @@ function sumOf(usedKey: UsedKey, limitKey: LimitKey) {
 }
 
 const cards = computed<TrafficCard[]>(() => {
-  const defs: { label: string; usedKey: UsedKey; limitKey: LimitKey; color: string }[] = [
-    { label: "Inbound", usedKey: "inUsedBytes", limitKey: "inLimitBytes", color: "var(--blue)" },
-    { label: "Outbound", usedKey: "outUsedBytes", limitKey: "outLimitBytes", color: "var(--cyan)" },
-    { label: "Total", usedKey: "totalUsedBytes", limitKey: "totalLimitBytes", color: "var(--green)" },
+  const defs: { label: string; usedKey: UsedKey; limitKey: LimitKey; color: string; trendKey: TrafficCard["trendKey"] }[] = [
+    { label: "Inbound", usedKey: "inUsedBytes", limitKey: "inLimitBytes", color: "var(--blue)", trendKey: "inBytes" },
+    { label: "Outbound", usedKey: "outUsedBytes", limitKey: "outLimitBytes", color: "var(--cyan)", trendKey: "outBytes" },
+    { label: "Total", usedKey: "totalUsedBytes", limitKey: "totalLimitBytes", color: "var(--green)", trendKey: "totalBytes" },
   ];
   return defs.map((d) => {
     const { used, limitedUsed, limit, unlimited } = sumOf(d.usedKey, d.limitKey);
@@ -60,7 +63,7 @@ const cards = computed<TrafficCard[]>(() => {
       detail = `Quota ${formatBytes(limitedUsed)} / ${formatBytes(limit)}`;
       if (unlimited > 0) detail += ` · ${unlimited} unlimited`;
     }
-    return { label: d.label, used, percent, detail, color: d.color };
+    return { label: d.label, used, percent, detail, color: d.color, trendKey: d.trendKey };
   });
 });
 
@@ -104,9 +107,15 @@ const availableDetail = computed(() => {
         <span :class="`delta${tone(availableCount.unavailablePercent)}`">{{ percentText(availableCount.percent) }}</span>
       </div>
       <div class="progress" :style="barStyle(availableCount.percent, 'var(--green)')"></div>
+      <div class="metric-foot" aria-hidden="true"></div>
     </article>
 
-    <article v-for="card in cards" :key="card.label" class="card metric-card span-3">
+    <article
+      v-for="card in cards"
+      :key="card.label"
+      class="card metric-card span-3 clickable"
+      @click="modalMetric = { kind: 'traffic', title: card.label, key: card.trendKey }"
+    >
       <div class="metric-head">
         <div>
           <p class="eyebrow">{{ card.label }}</p>
@@ -116,6 +125,14 @@ const availableDetail = computed(() => {
         <span :class="`delta${tone(card.percent)}`">{{ percentText(card.percent) }}</span>
       </div>
       <div class="progress" :class="{ empty: card.percent === null }" :style="barStyle(card.percent, card.color)"></div>
+      <div class="metric-foot">
+        <span class="view-trend">
+          View Trend
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 3l5 5-5 5" />
+          </svg>
+        </span>
+      </div>
     </article>
   </section>
 
@@ -132,5 +149,12 @@ const availableDetail = computed(() => {
     v-if="modalSource"
     :source="modalSource"
     @close="modalSource = null"
+  />
+
+  <MetricTrendModal
+    v-if="modalMetric"
+    :metric="modalMetric"
+    :sources="sources"
+    @close="modalMetric = null"
   />
 </template>

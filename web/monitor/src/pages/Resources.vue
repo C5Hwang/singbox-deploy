@@ -2,11 +2,13 @@
 import { ref, computed } from "vue";
 import ResourceSourceCard from "../components/ResourceSourceCard.vue";
 import ResourceModal from "../components/ResourceModal.vue";
+import MetricTrendModal from "../components/MetricTrendModal.vue";
 import { formatBytes, tone, barStyle } from "../utils";
-import type { Summary, SourceSummary, ResourceSnapshot } from "../types";
+import type { Summary, SourceSummary, ResourceSnapshot, MetricDef } from "../types";
 
 const props = defineProps<{ summary: Summary | null; error: string }>();
 const modalSource = ref<SourceSummary | null>(null);
+const modalMetric = ref<MetricDef | null>(null);
 
 const sources = computed<SourceSummary[]>(() => {
   const s = props.summary;
@@ -47,44 +49,50 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
   if (!used && !total) return "";
   return `${formatBytes(used ?? 0)} / ${formatBytes(total ?? 0)}`;
 }
+
+interface ResourceCardDef {
+  key: "cpu" | "mem" | "disk";
+  label: string;
+  pct: number | null;
+  detail: string;
+  color: string;
+}
+
+const metricCards = computed<ResourceCardDef[]>(() => {
+  const r = peakRes.value;
+  return [
+    { key: "cpu", label: "CPU", pct: r?.cpuPct ?? null, detail: "", color: "var(--blue)" },
+    { key: "mem", label: "Memory", pct: r?.memPct ?? null, detail: r ? fmtUsage(r.memUsedBytes, r.memTotalBytes) : "", color: "var(--cyan)" },
+    { key: "disk", label: "Disk Usage", pct: r?.diskUsagePct ?? null, detail: r ? fmtUsage(r.diskUsedBytes, r.diskTotalBytes) : "", color: "var(--green)" },
+  ];
+});
 </script>
 
 <template>
   <section class="grid">
-    <article class="card metric-card span-4">
+    <article
+      v-for="card in metricCards"
+      :key="card.key"
+      class="card metric-card span-4 clickable"
+      @click="modalMetric = { kind: 'resource', title: card.label, key: card.key }"
+    >
       <div class="metric-head">
         <div>
-          <p class="eyebrow">CPU</p>
-          <p class="metric-value">{{ fmtPct(peakRes?.cpuPct) }}</p>
-          <p class="metric-detail" aria-hidden="true"></p>
+          <p class="eyebrow">{{ card.label }}</p>
+          <p class="metric-value">{{ fmtPct(card.pct) }}</p>
+          <p class="metric-detail">{{ card.detail }}</p>
         </div>
-        <span :class="`delta${tone(peakRes?.cpuPct ?? null)}`">Live</span>
+        <span :class="`delta${tone(card.pct)}`">Live</span>
       </div>
-      <div class="progress" :style="barStyle(peakRes?.cpuPct ?? null, 'var(--blue)')"></div>
-    </article>
-
-    <article class="card metric-card span-4">
-      <div class="metric-head">
-        <div>
-          <p class="eyebrow">Memory</p>
-          <p class="metric-value">{{ fmtPct(peakRes?.memPct) }}</p>
-          <p class="metric-detail">{{ peakRes ? fmtUsage(peakRes.memUsedBytes, peakRes.memTotalBytes) : "" }}</p>
-        </div>
-        <span :class="`delta${tone(peakRes?.memPct ?? null)}`">Live</span>
+      <div class="progress" :style="barStyle(card.pct, card.color)"></div>
+      <div class="metric-foot">
+        <span class="view-trend">
+          View Trend
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 3l5 5-5 5" />
+          </svg>
+        </span>
       </div>
-      <div class="progress" :style="barStyle(peakRes?.memPct ?? null, 'var(--cyan)')"></div>
-    </article>
-
-    <article class="card metric-card span-4">
-      <div class="metric-head">
-        <div>
-          <p class="eyebrow">Disk Usage</p>
-          <p class="metric-value">{{ fmtPct(peakRes?.diskUsagePct) }}</p>
-          <p class="metric-detail">{{ peakRes ? fmtUsage(peakRes.diskUsedBytes, peakRes.diskTotalBytes) : "" }}</p>
-        </div>
-        <span :class="`delta${tone(peakRes?.diskUsagePct ?? null)}`">Live</span>
-      </div>
-      <div class="progress" :style="barStyle(peakRes?.diskUsagePct ?? null, 'var(--green)')"></div>
     </article>
   </section>
 
@@ -101,5 +109,12 @@ function fmtUsage(used: number | undefined, total: number | undefined): string {
     v-if="modalSource"
     :source="modalSource"
     @close="modalSource = null"
+  />
+
+  <MetricTrendModal
+    v-if="modalMetric"
+    :metric="modalMetric"
+    :sources="sources"
+    @close="modalMetric = null"
   />
 </template>

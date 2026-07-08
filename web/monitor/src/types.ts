@@ -80,6 +80,11 @@ export interface Summary {
   sources?: SourceSummary[];
 }
 
+// Overview-card metric opened in the all-sources trend modal.
+export type MetricDef =
+  | { kind: "traffic"; title: string; key: "inBytes" | "outBytes" | "totalBytes" }
+  | { kind: "resource"; title: string; key: "cpu" | "mem" | "disk" };
+
 export interface UsageRow {
   label: string;
   key: "in" | "out" | "total";

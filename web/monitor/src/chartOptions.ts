@@ -1,7 +1,72 @@
 import { formatBytes } from "./utils";
 import { gmtLabel, shiftToTz, tzOffsetMinutes } from "./timezone";
+import type { HourlyPoint, ResourceHourlyPoint } from "./types";
 
 export type TimeUnit = "second" | "hour" | "day";
+
+// Machine-identity colors for multi-source charts, assigned by source order.
+// Ordered so adjacent hues stay distinguishable under color-vision deficiency.
+export const SOURCE_COLORS = ["#2563eb", "#f59e0b", "#06b6d4", "#ec4899", "#22c55e", "#8b5cf6"];
+
+// Days are bucketed at midnight in the selected display timezone so daily
+// values line up with the dates shown on the axis.
+function tzDayStart(hourTs: number): number {
+  const offsetSec = tzOffsetMinutes.value * 60;
+  return Math.floor((hourTs + offsetSec) / 86400) * 86400 - offsetSec;
+}
+
+export function aggregateTrafficDaily(points: HourlyPoint[]): HourlyPoint[] {
+  const buckets = new Map<number, HourlyPoint>();
+  for (const p of points) {
+    const dayTs = tzDayStart(p.hourTs);
+    const existing = buckets.get(dayTs);
+    if (existing) {
+      existing.inBytes += p.inBytes;
+      existing.outBytes += p.outBytes;
+      existing.totalBytes += p.totalBytes;
+    } else {
+      buckets.set(dayTs, { ...p, hourTs: dayTs });
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.hourTs - b.hourTs);
+}
+
+function avg(arr: number[]): number {
+  if (arr.length === 0) return 0;
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+function agg(arr: number[], isMax: boolean): number {
+  if (arr.length === 0) return 0;
+  return isMax ? Math.max(...arr) : avg(arr);
+}
+
+export function aggregateResourceDaily(points: ResourceHourlyPoint[], isMax: boolean): ResourceHourlyPoint[] {
+  const buckets = new Map<number, ResourceHourlyPoint[]>();
+  for (const p of points) {
+    const dayTs = tzDayStart(p.hourTs);
+    if (!buckets.has(dayTs)) buckets.set(dayTs, []);
+    buckets.get(dayTs)!.push(p);
+  }
+  return Array.from(buckets.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([dayTs, pts]) => {
+      const v = (key: keyof ResourceHourlyPoint) => pts.map((p) => p[key] as number);
+      return {
+        hourTs: dayTs,
+        cpuAvg: agg(v("cpuAvg"), isMax),
+        cpuMax: agg(v("cpuMax"), isMax),
+        memAvg: agg(v("memAvg"), isMax),
+        memMax: agg(v("memMax"), isMax),
+        diskAvg: agg(v("diskAvg"), isMax),
+        diskMax: agg(v("diskMax"), isMax),
+        dioReadAvg: agg(v("dioReadAvg"), isMax),
+        dioReadMax: agg(v("dioReadMax"), isMax),
+        dioWriteAvg: agg(v("dioWriteAvg"), isMax),
+        dioWriteMax: agg(v("dioWriteMax"), isMax),
+      };
+    });
+}
 
 // Timestamps are pre-shifted into the selected display offset, so the "UTC"
 // here only stops the browser from shifting them a second time.
