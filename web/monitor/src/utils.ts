@@ -1,3 +1,5 @@
+import { gmtLabel, shiftToTz, tzOffsetMinutes } from "./timezone";
+
 export function formatBytes(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "NA";
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -39,12 +41,9 @@ export function barStyle(percent: number | null, color: string): Record<string, 
   };
 }
 
-export function formatGMTDateTime(value: string | number | Date): string {
+export function formatDateTime(value: string | number | Date): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "NA";
-  return date.toLocaleString("en-US", {
-    hour12: false,
-    timeZone: "UTC",
-    timeZoneName: "short",
-  }).replace(/\bUTC\b/g, "GMT");
+  const text = shiftToTz(date).toLocaleString("en-US", { hour12: false, timeZone: "UTC" });
+  return `${text} ${gmtLabel(tzOffsetMinutes.value)}`;
 }

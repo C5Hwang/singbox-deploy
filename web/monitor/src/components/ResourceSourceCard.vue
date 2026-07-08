@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { SourceSummary } from "../types";
-import { formatBytes, formatRate, formatGMTDateTime } from "../utils";
+import { formatBytes, formatRate, formatDateTime } from "../utils";
 
 const props = defineProps<{ source: SourceSummary }>();
 defineEmits<{ click: [] }>();
@@ -41,7 +41,7 @@ function levelClass(pct: number | null): string {
 function ringColor(g: Gauge): string {
   const level = levelClass(g.pct);
   if (level === "danger") return "var(--red)";
-  if (level === "warn") return "var(--orange)";
+  if (level === "warn") return "var(--yellow)";
   return g.base;
 }
 
@@ -113,8 +113,8 @@ function pctText(pct: number | null): string {
     <div v-else class="no-data">Resource data unavailable</div>
 
     <div class="rc-meta">
-      <span v-if="source.resetTime">Reset: {{ formatGMTDateTime(source.resetTime) }}</span>
-      <span>Sampled: {{ source.sampledAt ? formatGMTDateTime(source.sampledAt) : "NA" }}</span>
+      <span v-if="source.resetTime">Reset: {{ formatDateTime(source.resetTime) }}</span>
+      <span>Sampled: {{ source.sampledAt ? formatDateTime(source.sampledAt) : "NA" }}</span>
     </div>
   </article>
 </template>

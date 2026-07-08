@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SourceSummary, UsageRow } from "../types";
-import { formatBytes, percentFor, percentText, barStyle, formatGMTDateTime } from "../utils";
+import { formatBytes, percentFor, percentText, barStyle, formatDateTime } from "../utils";
 
 defineProps<{ source: SourceSummary }>();
 defineEmits<{ click: [] }>();
@@ -51,7 +51,7 @@ function sourceStatusLabel(source: SourceSummary): string {
 function ringColor(percent: number | null): string {
   const level = percentClass(percent);
   if (level === "danger") return "var(--red)";
-  if (level === "warn") return "var(--orange)";
+  if (level === "warn") return "var(--yellow)";
   return "var(--blue)";
 }
 
@@ -112,8 +112,8 @@ function ringOffset(percent: number | null): number {
     </div>
 
     <div class="rc-meta">
-      <span>Reset: {{ source.resetTime ? formatGMTDateTime(source.resetTime) : "NA" }}</span>
-      <span>Sampled: {{ source.sampledAt ? formatGMTDateTime(source.sampledAt) : "NA" }}</span>
+      <span>Reset: {{ source.resetTime ? formatDateTime(source.resetTime) : "NA" }}</span>
+      <span>Sampled: {{ source.sampledAt ? formatDateTime(source.sampledAt) : "NA" }}</span>
     </div>
   </article>
 </template>

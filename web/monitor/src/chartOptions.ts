@@ -1,27 +1,31 @@
 import { formatBytes } from "./utils";
+import { gmtLabel, shiftToTz, tzOffsetMinutes } from "./timezone";
 
 export type TimeUnit = "second" | "hour" | "day";
 
+// Timestamps are pre-shifted into the selected display offset, so the "UTC"
+// here only stops the browser from shifting them a second time.
 const MONTH_DAY: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", timeZone: "UTC" };
 const HOUR_MIN: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" };
 
 export function fmtDate(value: number): string {
-  return new Date(value).toLocaleDateString("en-US", MONTH_DAY);
+  return shiftToTz(value).toLocaleDateString("en-US", MONTH_DAY);
 }
 
 export function fmtTime(value: number): string {
-  return new Date(value).toLocaleTimeString("en-US", HOUR_MIN);
+  return shiftToTz(value).toLocaleTimeString("en-US", HOUR_MIN);
 }
 
 export function fmtTooltipTime(value: number, unit: TimeUnit): string {
-  const d = new Date(value);
+  const d = shiftToTz(value);
   if (unit === "day") {
     return d.toLocaleDateString("en-US", { ...MONTH_DAY, year: "numeric" });
   }
+  const label = gmtLabel(tzOffsetMinutes.value);
   if (unit === "second") {
-    return d.toLocaleString("en-US", { ...MONTH_DAY, ...HOUR_MIN, second: "2-digit" }) + " GMT";
+    return d.toLocaleString("en-US", { ...MONTH_DAY, ...HOUR_MIN, second: "2-digit" }) + ` ${label}`;
   }
-  return d.toLocaleString("en-US", { ...MONTH_DAY, ...HOUR_MIN }) + " GMT";
+  return d.toLocaleString("en-US", { ...MONTH_DAY, ...HOUR_MIN }) + ` ${label}`;
 }
 
 function tooltipFormatter(unit: TimeUnit, valueText: (p: any) => string) {

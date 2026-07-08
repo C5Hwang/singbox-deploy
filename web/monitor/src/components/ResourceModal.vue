@@ -7,6 +7,7 @@ import { CanvasRenderer } from "echarts/renderers";
 import { fetchResourceTrend, fetchResourceRecent } from "../api";
 import { formatRate } from "../utils";
 import { buildFrame, lineSeries, percentAxis, rateAxis, type TimeUnit } from "../chartOptions";
+import { tzOffsetMinutes } from "../timezone";
 import type { SourceSummary, ResourceHourlyPoint, ResourceRawPoint } from "../types";
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer]);
@@ -47,10 +48,13 @@ function formatTooltipValue(param: any): string {
   return Number.isFinite(numberValue) ? `${numberValue.toFixed(1)}%` : "NA";
 }
 
+// Days are bucketed at midnight in the selected display timezone so daily
+// aggregates line up with the dates shown on the axis.
 function aggregateDaily(points: ResourceHourlyPoint[], isMax: boolean): ResourceHourlyPoint[] {
+  const offsetSec = tzOffsetMinutes.value * 60;
   const buckets = new Map<number, ResourceHourlyPoint[]>();
   for (const p of points) {
-    const dayTs = Math.floor(p.hourTs / 86400) * 86400;
+    const dayTs = Math.floor((p.hourTs + offsetSec) / 86400) * 86400 - offsetSec;
     if (!buckets.has(dayTs)) buckets.set(dayTs, []);
     buckets.get(dayTs)!.push(p);
   }
@@ -158,7 +162,7 @@ onUnmounted(() => {
   chart.value?.dispose();
 });
 
-watch(mode, () => {
+watch([mode, tzOffsetMinutes], () => {
   chart.value?.setOption(buildOption(), true);
 });
 

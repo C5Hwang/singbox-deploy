@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watchEffect } from "vue";
 import SidebarNav from "./components/SidebarNav.vue";
+import TimezonePicker from "./components/TimezonePicker.vue";
 import NetworkTraffic from "./pages/NetworkTraffic.vue";
 import Resources from "./pages/Resources.vue";
 import { fetchSummary } from "./api";
@@ -9,9 +10,7 @@ import type { Summary } from "./types";
 const activeTab = ref<"traffic" | "resources">("traffic");
 const summary = ref<Summary | null>(null);
 const error = ref<string>("");
-const now = ref(new Date());
 let loadTimer: number | undefined;
-let clockTimer: number | undefined;
 
 async function load() {
   try {
@@ -22,10 +21,6 @@ async function load() {
     error.value = e instanceof Error ? e.message : String(e);
   }
 }
-
-const clockLabel = computed(() =>
-  `${now.value.toLocaleTimeString("en-US", { hour12: false, timeZone: "UTC" })} GMT`,
-);
 
 const sourceCount = computed(() => summary.value?.sources?.length ?? 0);
 const pageTitle = computed(() => (activeTab.value === "traffic" ? "Network Traffic" : "Resources"));
@@ -39,16 +34,12 @@ const subtitle = computed(() => {
 onMounted(() => {
   load();
   loadTimer = window.setInterval(load, 10000);
-  clockTimer = window.setInterval(() => {
-    now.value = new Date();
-  }, 1000);
 });
 watchEffect(() => {
   document.title = pageTitle.value;
 });
 onUnmounted(() => {
   if (loadTimer) window.clearInterval(loadTimer);
-  if (clockTimer) window.clearInterval(clockTimer);
 });
 </script>
 
@@ -67,7 +58,7 @@ onUnmounted(() => {
             <button :class="{ active: activeTab === 'traffic' }" @click="activeTab = 'traffic'">Traffic</button>
             <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">Resources</button>
           </div>
-          <div class="chip">{{ clockLabel }}</div>
+          <TimezonePicker />
         </div>
       </header>
 
@@ -90,7 +81,7 @@ onUnmounted(() => {
   --blue: #2563eb;
   --cyan: #06b6d4;
   --green: #22c55e;
-  --orange: #f59e0b;
+  --yellow: #ca8a04;
   --red: #ef4444;
   --shadow: 0 18px 45px rgba(18, 32, 64, 0.08);
   --radius-xl: 24px;
@@ -161,6 +152,44 @@ body {
   line-height: 1; white-space: nowrap;
 }
 
+/* ── Timezone picker ──────────────────────────────────────── */
+.tz-picker { position: relative; }
+.tz-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: pointer; transition: color 0.15s, border-color 0.15s;
+}
+.tz-chip:hover, .tz-chip.open {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue), transparent 55%);
+}
+.tz-chip svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform 0.2s; }
+.tz-chip.open svg { transform: rotate(180deg); }
+.tz-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 600;
+  width: 224px; overflow: hidden;
+  background: white; border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 18px 45px rgba(18, 32, 64, 0.16);
+  animation: fadeIn 0.15s ease;
+}
+.tz-menu-head {
+  padding: 11px 14px 9px; border-bottom: 1px solid var(--line);
+  color: var(--muted); font-size: 11px; font-weight: 750;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.tz-menu-list { max-height: 296px; overflow-y: auto; padding: 6px; }
+.tz-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; border: none; border-radius: 9px; padding: 8px 10px;
+  background: transparent; color: var(--text); text-align: left;
+  font: inherit; font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums;
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.tz-option:hover { background: #f0f4f8; }
+.tz-option.active { background: #edf4ff; color: var(--blue); }
+.tz-note { color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.tz-option.active .tz-note { color: inherit; opacity: 0.75; }
+
 /* ── Grid & Cards ─────────────────────────────────────────── */
 .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 18px; }
 .sources { margin-top: 18px; }
@@ -207,21 +236,28 @@ body {
 }
 .metric-head .delta { margin-top: 1px; }
 .delta { background: #ecfdf5; color: #15803d; }
-.delta.warn { background: #fff7ed; color: #c2410c; }
+.delta.warn { background: #fefce8; color: #a16207; }
 .delta.danger { background: #fef2f2; color: #b91c1c; }
 .tag.red { background: #fef2f2; color: #b91c1c; }
 .status { color: #0f766e; background: #ecfeff; }
-.status.warn { color: #c2410c; background: #fff7ed; }
+.status.warn { color: #a16207; background: #fefce8; }
 .status.danger { color: #b91c1c; background: #fef2f2; }
 .status.gray { color: #64748b; background: #f1f5f9; }
 .dot {
+  position: relative;
   width: 8px; height: 8px; border-radius: 999px; background: currentColor;
+}
+/* Halo pulses via transform/opacity: box-shadow spread snaps to device
+   pixels on an element this small, which reads as jitter. */
+.dot::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: currentColor;
   animation: pulseDot 2.4s ease-in-out infinite;
 }
-.status.gray .dot { animation: none; box-shadow: 0 0 0 4px color-mix(in srgb, currentColor, transparent 84%); }
+.status.gray .dot::before { animation: none; transform: scale(2); opacity: 0.16; }
 @keyframes pulseDot {
-  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor, transparent 82%); }
-  50% { box-shadow: 0 0 0 7px color-mix(in srgb, currentColor, transparent 93%); }
+  0%, 100% { transform: scale(1.75); opacity: 0.18; }
+  50% { transform: scale(2.75); opacity: 0.07; }
 }
 
 .view-trend {
@@ -272,7 +308,7 @@ body {
   overflow-wrap: anywhere; font-variant-numeric: tabular-nums;
 }
 .percent { font-size: 13px; font-weight: 850; font-variant-numeric: tabular-nums; text-align: right; }
-.percent.warn { color: var(--orange); }
+.percent.warn { color: var(--yellow); }
 .percent.danger { color: var(--red); }
 
 /* ── Resource card ────────────────────────────────────────── */
@@ -299,7 +335,7 @@ body {
   position: absolute; inset: 0; display: grid; place-items: center;
   font-size: 16px; font-weight: 850; font-variant-numeric: tabular-nums;
 }
-.ring-value.warn { color: var(--orange); }
+.ring-value.warn { color: var(--yellow); }
 .ring-value.danger { color: var(--red); }
 .ring-value.infinite { font-size: 24px; font-weight: 800; color: var(--muted); }
 .gauge-label {
