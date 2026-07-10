@@ -81,3 +81,48 @@ func TestRunRejectsTamperedBinary(t *testing.T) {
 		t.Fatalf("expected checksum mismatch failure, got %v", err)
 	}
 }
+
+func TestRunCallsReplaceFailureRollbackAfterSpokesPrepared(t *testing.T) {
+	body := []byte("verified-candidate")
+	bodies := map[string][]byte{
+		"singbox-deploy-linux-amd64": body,
+		"SHA256SUMS":                 []byte(sha256Hex(body) + "  singbox-deploy-linux-amd64\n"),
+	}
+	root := t.TempDir()
+	// Renaming a regular candidate over an existing directory fails after the
+	// spoke preparation hook has succeeded.
+	installPath := filepath.Join(root, "occupied")
+	if err := os.Mkdir(installPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prepared := false
+	rolledBack := false
+	m := &Manager{
+		Download:   fakeDownload(bodies),
+		GOARCH:     "amd64",
+		InstallBin: installPath,
+		BeforeReplace: func(_ context.Context, candidatePath, targetVersion string) error {
+			prepared = true
+			if targetVersion != "v2.0.0" {
+				t.Fatalf("target version = %q", targetVersion)
+			}
+			if info, err := os.Stat(candidatePath); err != nil || info.Mode()&0o111 == 0 {
+				t.Fatalf("candidate was not verified/executable: info=%v err=%v", info, err)
+			}
+			return nil
+		},
+		ReplaceFailed: func(_ context.Context, targetVersion string) error {
+			rolledBack = true
+			if targetVersion != "v2.0.0" {
+				t.Fatalf("rollback target version = %q", targetVersion)
+			}
+			return nil
+		},
+	}
+	if _, err := m.Run(context.Background(), "v2.0.0"); err == nil {
+		t.Fatal("expected hub replacement to fail")
+	}
+	if !prepared || !rolledBack {
+		t.Fatalf("prepared=%v rolledBack=%v", prepared, rolledBack)
+	}
+}

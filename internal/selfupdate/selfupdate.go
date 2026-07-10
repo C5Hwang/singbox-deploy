@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,6 +39,14 @@ type Manager struct {
 	Progress     func(deploy.Event)
 	Version      string
 	GOARCH       string
+	// BeforeReplace receives the verified, executable candidate path. The TUI
+	// uses it to export the candidate's embedded agents and upgrade every spoke
+	// before the hub binary itself is replaced, preserving version equality.
+	BeforeReplace func(ctx context.Context, candidatePath, targetVersion string) error
+	// ReplaceFailed is invoked when BeforeReplace succeeded but committing the
+	// hub binary failed. A hub/spoke deployment uses it to roll already-upgraded
+	// agents back to the still-running hub version.
+	ReplaceFailed func(ctx context.Context, targetVersion string) error
 	// InstallBin is the path of the binary to replace; defaults to
 	// /usr/bin/singbox-deploy. Overridable for tests.
 	InstallBin string
@@ -113,13 +122,26 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 			}
 			return os.Chmod(candidatePath, 0o755)
 		}},
-		{Label: "Replace", Detail: "replace " + m.InstallBin, Run: func(context.Context) error {
-			return os.Rename(candidatePath, m.InstallBin)
+	}
+	if m.BeforeReplace != nil {
+		steps = append(steps, deploy.Step{Label: "Spoke agents", Detail: "upgrade embedded agents to " + tag, Run: func(ctx context.Context) error {
+			return m.BeforeReplace(ctx, candidatePath, tag)
+		}})
+	}
+	steps = append(steps,
+		deploy.Step{Label: "Replace", Detail: "replace " + m.InstallBin, Run: func(ctx context.Context) error {
+			if err := os.Rename(candidatePath, m.InstallBin); err != nil {
+				if m.ReplaceFailed != nil {
+					return errors.Join(err, m.ReplaceFailed(ctx, tag))
+				}
+				return err
+			}
+			return nil
 		}},
-		{Label: "Cleanup", Detail: "remove temporary files", Run: func(context.Context) error {
+		deploy.Step{Label: "Cleanup", Detail: "remove temporary files", Run: func(context.Context) error {
 			return os.RemoveAll(updateDir)
 		}},
-	}
+	)
 
 	if err := deploy.RunSteps(ctx, m.Progress, steps); err != nil {
 		return Result{}, err

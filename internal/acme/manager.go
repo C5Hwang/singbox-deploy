@@ -1,6 +1,7 @@
 // Package acme issues and renews Let's Encrypt certificates using a built-in
-// ACME client. Only Let's Encrypt is supported, with HTTP-01 and DNS-01
-// (Cloudflare and Aliyun) challenges. acme.sh is not used.
+// ACME client. Only Let's Encrypt is supported, and only the DNS-01 challenge
+// (Cloudflare and Aliyun): certificates are issued centrally on the hub, which
+// runs no per-node HTTP challenge server. acme.sh is not used.
 package acme
 
 import (
@@ -12,8 +13,7 @@ import (
 type Challenge string
 
 const (
-	ChallengeHTTP01 Challenge = "http-01"
-	ChallengeDNS01  Challenge = "dns-01"
+	ChallengeDNS01 Challenge = "dns-01"
 )
 
 // String renders the challenge identifier.
@@ -47,8 +47,6 @@ func (r Request) Validate() error {
 		return fmt.Errorf("domain is required")
 	}
 	switch r.Challenge {
-	case ChallengeHTTP01:
-		// no extra requirements
 	case ChallengeDNS01:
 		if r.DNSProvider == "" {
 			return fmt.Errorf("dns-01 requires a DNS provider")

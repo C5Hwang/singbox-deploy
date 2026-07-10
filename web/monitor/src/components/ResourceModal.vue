@@ -26,8 +26,8 @@ const modes: { key: Mode; label: string }[] = [
 async function load() {
   try {
     const [trendData, recentData] = await Promise.all([
-      fetchResourceTrend(props.source.name),
-      fetchResourceRecent(props.source.name),
+      fetchResourceTrend(props.source.id || props.source.name),
+      fetchResourceRecent(props.source.id || props.source.name),
     ]);
     trend.value = trendData;
     recentPoints.value = recentData;

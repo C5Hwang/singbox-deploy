@@ -48,6 +48,7 @@ export interface ResourceHourlyPoint {
 }
 
 export interface SourceSummary {
+  id: string;
   name: string;
   fetchedAt?: string;
   sampledAt?: string;

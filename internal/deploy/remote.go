@@ -220,70 +220,88 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		fetch = DefaultSubscriptionFetch
 	}
 
-	defaultBody, err := subscription.DecodeBase64(out.DefaultBase64)
-	if err != nil {
-		return subscriptionOutputs{}, err
-	}
-	localOutbounds, err := decodeSubscriptionOutbounds([]byte(out.SingBoxOutbounds))
-	if err != nil {
-		return subscriptionOutputs{}, err
-	}
-	local := subscriptionSourceParts{
-		defaultLines: splitNonEmptyLines(defaultBody),
-		clashPart:    stripClashHeader(out.ClashFragment),
-		surgePart:    strings.TrimRight(out.SurgeFragment, "\n"),
-		outbounds:    localOutbounds,
-	}
-
 	remoteParts := make([]subscriptionSourceParts, 0, len(remotes))
 	for _, remote := range remotes {
 		entry := remote.entry()
 		alias := remote.effectiveAlias()
-
-		remoteDefault, err := fetch(ctx, entry.DefaultURL())
+		defaultBody, err := fetch(ctx, entry.DefaultURL())
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("fetch remote default %s: %w", remote.Domain, err)
 		}
-		decodedDefault, err := subscription.DecodeBase64(string(remoteDefault))
-		if err != nil {
-			return subscriptionOutputs{}, fmt.Errorf("decode remote default %s: %w", remote.Domain, err)
-		}
-
-		remoteClash, err := fetch(ctx, entry.ClashURL())
+		clashBody, err := fetch(ctx, entry.ClashURL())
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("fetch remote clash %s: %w", remote.Domain, err)
 		}
-
-		remoteSingBox, err := fetch(ctx, entry.SingBoxProfilesURL())
+		singBoxBody, err := fetch(ctx, entry.SingBoxProfilesURL())
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("fetch remote sing-box %s: %w", remote.Domain, err)
 		}
-		nodeOutbounds, err := subscription.ExtractSingBoxNodeOutbounds(remoteSingBox)
-		if err != nil {
-			return subscriptionOutputs{}, fmt.Errorf("extract remote sing-box %s: %w", remote.Domain, err)
-		}
-		renamedOutbounds, err := subscription.RenameSingBoxOutbounds(nodeOutbounds, alias)
-		if err != nil {
-			return subscriptionOutputs{}, fmt.Errorf("rename remote sing-box %s: %w", remote.Domain, err)
-		}
-		remoteOutbounds, err := decodeSubscriptionOutbounds(renamedOutbounds)
-		if err != nil {
-			return subscriptionOutputs{}, err
-		}
-
-		remoteSurge, err := fetch(ctx, entry.SurgeURL())
+		surgeBody, err := fetch(ctx, entry.SurgeURL())
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("fetch remote surge %s: %w", remote.Domain, err)
 		}
-
-		remoteParts = append(remoteParts, subscriptionSourceParts{
-			defaultLines: splitNonEmptyLines(subscription.RenameDefaultLinks(decodedDefault, alias)),
-			clashPart:    stripClashHeader(subscription.RenameClashFragment(string(remoteClash), alias)),
-			surgePart:    subscription.RenameSurgeFragment(string(remoteSurge), alias),
-			outbounds:    remoteOutbounds,
-		})
+		parts, err := remoteSourcePartsFromBodies(remote.Domain, alias, defaultBody, clashBody, singBoxBody, surgeBody)
+		if err != nil {
+			return subscriptionOutputs{}, err
+		}
+		remoteParts = append(remoteParts, parts)
 	}
+	return c.assembleCombinedSubscriptions(out, remoteParts, localPosition)
+}
 
+// remoteSourcePartsFromBodies processes one remote node's four subscription
+// format bodies (default base64, clash fragment, sing-box profile, surge
+// fragment), renaming its nodes to alias. label identifies the source in errors.
+func remoteSourcePartsFromBodies(label, alias string, defaultBody, clashBody, singBoxBody, surgeBody []byte) (subscriptionSourceParts, error) {
+	decodedDefault, err := subscription.DecodeBase64(string(defaultBody))
+	if err != nil {
+		return subscriptionSourceParts{}, fmt.Errorf("decode remote default %s: %w", label, err)
+	}
+	nodeOutbounds, err := subscription.ExtractSingBoxNodeOutbounds(singBoxBody)
+	if err != nil {
+		return subscriptionSourceParts{}, fmt.Errorf("extract remote sing-box %s: %w", label, err)
+	}
+	renamedOutbounds, err := subscription.RenameSingBoxOutbounds(nodeOutbounds, alias)
+	if err != nil {
+		return subscriptionSourceParts{}, fmt.Errorf("rename remote sing-box %s: %w", label, err)
+	}
+	remoteOutbounds, err := decodeSubscriptionOutbounds(renamedOutbounds)
+	if err != nil {
+		return subscriptionSourceParts{}, err
+	}
+	return subscriptionSourceParts{
+		defaultLines: splitNonEmptyLines(subscription.RenameDefaultLinks(decodedDefault, alias)),
+		clashPart:    stripClashHeader(subscription.RenameClashFragment(string(clashBody), alias)),
+		surgePart:    subscription.RenameSurgeFragment(string(surgeBody), alias),
+		outbounds:    remoteOutbounds,
+	}, nil
+}
+
+// localSubscriptionParts builds the source parts for this node's own outputs.
+func (c Config) localSubscriptionParts(out subscriptionOutputs) (subscriptionSourceParts, error) {
+	defaultBody, err := subscription.DecodeBase64(out.DefaultBase64)
+	if err != nil {
+		return subscriptionSourceParts{}, err
+	}
+	localOutbounds, err := decodeSubscriptionOutbounds([]byte(out.SingBoxOutbounds))
+	if err != nil {
+		return subscriptionSourceParts{}, err
+	}
+	return subscriptionSourceParts{
+		defaultLines: splitNonEmptyLines(defaultBody),
+		clashPart:    stripClashHeader(out.ClashFragment),
+		surgePart:    strings.TrimRight(out.SurgeFragment, "\n"),
+		outbounds:    localOutbounds,
+	}, nil
+}
+
+// assembleCombinedSubscriptions merges the local node's parts with the remote
+// parts at localPosition and rebuilds every output format.
+func (c Config) assembleCombinedSubscriptions(out subscriptionOutputs, remoteParts []subscriptionSourceParts, localPosition int) (subscriptionOutputs, error) {
+	local, err := c.localSubscriptionParts(out)
+	if err != nil {
+		return subscriptionOutputs{}, err
+	}
 	ordered := mergeSourceParts(local, remoteParts, localPosition)
 
 	var defaultParts []string
@@ -484,6 +502,7 @@ func fetchRemoteMonitorSource(ctx context.Context, src MonitorSource, fetch Subs
 		remoteSampledAt = payload.Sources[0].SampledAt
 	}
 	return monitor.SourceSummary{
+		ID:                  "legacy:" + strings.ToLower(strings.TrimSpace(src.Domain)),
 		Name:                subscription.AddNodePrefixFlag(src.effectiveAlias()),
 		FetchedAt:           time.Now().UTC().Format(time.RFC3339),
 		SampledAt:           remoteSampledAt,

@@ -54,16 +54,20 @@ func NginxInstallCommands(osr system.OSRelease) []system.Command {
 func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath string) error {
 	certPath, keyPath := CertificatePaths(layout, cfg.Domain)
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":     cfg.SubscribePort,
-		"MonitorPublicPort": cfg.MonitorPublicPort,
-		"Domain":            cfg.Domain,
-		"CertificatePath":   certPath,
-		"KeyPath":           keyPath,
-		"WebRoot":           layout.WebRoot,
-		"SubscribeDir":      layout.SubscribeDir,
+		"SubscribePort":         cfg.SubscribePort,
+		"MonitorPublicPort":     cfg.MonitorPublicPort,
+		"Domain":                cfg.Domain,
+		"CertificatePath":       certPath,
+		"KeyPath":               keyPath,
+		"WebRoot":               layout.WebRoot,
+		"SubscribeDir":          layout.SubscribeDir,
 		"EnableMonitor":         cfg.DeployMonitor,
 		"EnableMonitorFrontend": cfg.DeployMonitorFrontend,
 		"MonitorPort":           cfg.MonitorPort,
+		// A spoke serves only the camouflage site; the hub also serves the public
+		// subscription and monitor endpoints.
+		"PublicSubscription": !cfg.SpokeMode,
+		"PublicMonitor":      !cfg.SpokeMode,
 	})
 	if err != nil {
 		return err

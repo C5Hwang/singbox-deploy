@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
@@ -52,13 +51,9 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		monitorAlias = readProtocolStateDefault(store, "traffic_alias", DefaultMonitorAlias)
 	}
 
-	dnsProvider := readProtocolStateDefault(store, "dns_provider", "")
 	cfg := Config{
 		Domain:                 domain,
 		Email:                  readProtocolStateDefault(store, "email", ""),
-		Challenge:              "http-01",
-		DNSProvider:            dnsProvider,
-		DNSCredentials:         DNSCredentialsForProvider(dnsProvider, readProtocolStateDefault(store, "dns_credential", "")),
 		Enabled:                enabled,
 		DisplayName:            readProtocolStateDefault(store, "display_name", DefaultDisplayName),
 		Salt:                   salt,
@@ -96,9 +91,6 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 			RealityPublicKey:  readProtocolStateDefault(store, "reality_public_key", ""),
 			RealityShortID:    readProtocolStateDefault(store, "reality_short_id", ""),
 		},
-	}
-	if challenge := readProtocolStateDefault(store, "acme_challenge", ""); challenge != "" {
-		cfg.Challenge = acmeChallenge(challenge)
 	}
 	return cfg, nil
 }
@@ -143,8 +135,6 @@ func readProtocolStateUintDefault(store state.Store, name string, fallback uint6
 	}
 	return n
 }
-
-func acmeChallenge(value string) acme.Challenge { return acme.Challenge(value) }
 
 func parseProtocolState(value string) ([]config.Protocol, error) {
 	out := CanonicalProtocols(canonicalProtocolsFromString(value))

@@ -8,11 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/C5Hwang/singbox-deploy/internal/acme"
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
-	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 )
@@ -31,10 +30,12 @@ type Event struct {
 // files are written under Layout; network operations are injectable hooks so
 // the flow can be tested with a recording runner and a temporary root.
 type Orchestrator struct {
-	Runner   system.Runner
-	Layout   paths.Layout
-	ACME     *acme.Manager
-	Releases *release.Client
+	Runner system.Runner
+	Layout paths.Layout
+	// CertManager issues the hub's certificate via DNS-01. Spokes never issue
+	// (the hub pushes their pair), so it is unused in spoke mode.
+	CertManager *certmgr.Manager
+	Releases    *release.Client
 
 	// Hooks (nil values fall back to real implementations in Run).
 	Download       func(ctx context.Context, url, dest string) error
@@ -94,6 +95,9 @@ func (o *Orchestrator) defaults() {
 	if o.CheckPorts == nil {
 		o.CheckPorts = o.checkPorts
 	}
+	if o.CertManager == nil {
+		o.CertManager = &certmgr.Manager{Layout: o.Layout}
+	}
 }
 
 // steps returns the ordered install steps.
@@ -112,7 +116,9 @@ func (o *Orchestrator) steps(cfg Config) []step {
 		{"Subscriptions", "generate subscription files", o.stepSubscriptions},
 		{"Nginx config", "write managed config, deploy site, and reload", o.stepNginxConfig},
 	}
-	if cfg.DeployMonitor {
+	// On a spoke the agent daemon runs the monitor sampler in-process, so no
+	// standalone monitor unit is installed; the hub still installs one.
+	if cfg.DeployMonitor && !cfg.SpokeMode {
 		steps = append(steps, step{"Monitor", "install and start monitor", o.stepMonitor})
 	}
 	steps = append(steps, step{"Finalize", "write account state", o.stepFinalize})
@@ -124,6 +130,25 @@ func (o *Orchestrator) steps(cfg Config) []step {
 func (o *Orchestrator) Run(ctx context.Context, cfg Config) error {
 	o.defaults()
 	local := o.steps(cfg)
+	steps := make([]Step, len(local))
+	for i, s := range local {
+		steps[i] = Step{Label: s.label, Detail: s.detail, Run: func(ctx context.Context) error { return s.run(ctx, cfg) }}
+	}
+	return RunSteps(ctx, o.Progress, steps)
+}
+
+// Reconfigure applies an already-installed node's desired configuration
+// without reinstalling packages, Nginx, or the sing-box core. Certificates are
+// validated and written by the spoke agent before this method is called.
+func (o *Orchestrator) Reconfigure(ctx context.Context, cfg Config) error {
+	o.defaults()
+	local := []step{
+		{"Config", "regenerate and validate config.json", o.stepConfig},
+		{"Services", "reload sing-box with the new configuration", o.stepServices},
+		{"Subscriptions", "regenerate private node subscription data", o.stepSubscriptions},
+		{"Nginx config", "rewrite managed config and reload", o.stepNginxConfig},
+		{"Finalize", "persist desired node state", o.stepFinalize},
+	}
 	steps := make([]Step, len(local))
 	for i, s := range local {
 		steps[i] = Step{Label: s.label, Detail: s.detail, Run: func(ctx context.Context) error { return s.run(ctx, cfg) }}
@@ -171,6 +196,26 @@ func (o *Orchestrator) stepFirewall(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
+	if err := o.ensureCertificate(ctx, cfg); err != nil {
+		return err
+	}
+	// Track the hub's own certificate in the central inventory so it is renewed
+	// and shown alongside the spokes'. Spoke certificates are registered on the
+	// hub when the node is added, not here.
+	if !cfg.SpokeMode {
+		if err := certmgr.Register(o.Layout, cfg.Domain, cfg.Email); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureCertificate guarantees a usable certificate pair exists on disk for the
+// domain. It reuses a valid managed pair or an existing Let's Encrypt cert, and
+// otherwise issues one via DNS-01 through the central certificate manager. A
+// spoke never issues: the hub pushes its pair before install, so a missing pair
+// is a provisioning error.
+func (o *Orchestrator) ensureCertificate(ctx context.Context, cfg Config) error {
 	certPath, keyPath := o.certPaths(cfg)
 	if ok, err := certificatePairUsable(certPath, keyPath, cfg.Domain, time.Now()); err != nil {
 		if !os.IsNotExist(err) {
@@ -179,41 +224,22 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	} else if ok {
 		return nil
 	}
+	if cfg.SpokeMode {
+		return fmt.Errorf("certificate for %s was not provisioned by the hub", cfg.Domain)
+	}
 	if ok, err := o.importExistingCertificate(cfg, certPath, keyPath); err != nil {
 		return err
 	} else if ok {
 		return nil
 	}
-
-	// HTTP-01 binds port 80; free it by stopping Nginx (ignore if not running).
-	// If issuance fails, bring Nginx back so an aborted install/reinstall does
-	// not leave an existing camouflage site down (mirrors certrenew).
-	stoppedNginx := false
-	if cfg.Challenge == acme.ChallengeHTTP01 {
-		_ = o.Runner.Run(system.Systemctl("stop", "nginx"))
-		stoppedNginx = true
-		defer func() {
-			if stoppedNginx {
-				_ = o.Runner.Run(system.Systemctl("start", "nginx"))
-			}
-		}()
+	// DNS-01 needs no port 80, so Nginx keeps serving throughout issuance. The
+	// certificate manager writes the pair to the managed paths and registers it.
+	if o.CertManager == nil {
+		return fmt.Errorf("no certificate manager configured")
 	}
-	cert, err := o.ACME.Obtain(ctx, acme.Request{
-		Domain:      cfg.Domain,
-		Email:       cfg.Email,
-		Challenge:   cfg.Challenge,
-		DNSProvider: cfg.DNSProvider,
-		Credentials: cfg.DNSCredentials,
-	})
-	if err != nil {
+	if _, err := o.CertManager.Issue(ctx, cfg.Domain, cfg.Email); err != nil {
 		return err
 	}
-	if err := state.WriteFilePair(keyPath, cert.PrivateKeyPEM, 0o600, certPath, cert.CertificatePEM, 0o644); err != nil {
-		return err
-	}
-	// Success: keep Nginx stopped; stepNginxConfig restarts it with the new
-	// certificate later in the flow.
-	stoppedNginx = false
 	return nil
 }
 
@@ -271,45 +297,45 @@ func (o *Orchestrator) stepServices(_ context.Context, cfg Config) error {
 	if err := WriteFile(filepath.Join(o.SystemdDir, system.SingBoxService), []byte(unit), 0o644); err != nil {
 		return err
 	}
-	renewUnit, err := templatefs.Render("service/singbox-deploy-cert-renew.service.tmpl", map[string]any{
-		"DeployBin":     o.DeployBin,
-		"ThresholdDays": 30,
-	})
-	if err != nil {
-		return err
+	cmds := []system.Command{
+		{Name: "systemctl", Args: []string{"daemon-reload"}},
+		{Name: "systemctl", Args: []string{"enable", system.SingBoxService}},
+		system.Systemctl("restart", system.SingBoxService),
 	}
-	if err := WriteFile(filepath.Join(o.SystemdDir, system.CertRenewService), []byte(renewUnit), 0o644); err != nil {
-		return err
-	}
-	renewTimer, err := templatefs.Render("service/singbox-deploy-cert-renew.timer.tmpl", map[string]any{})
-	if err != nil {
-		return err
-	}
-	if err := WriteFile(filepath.Join(o.SystemdDir, system.CertRenewTimer), []byte(renewTimer), 0o644); err != nil {
-		return err
+	// The cert-renew timer lives only on the hub: it renews every certificate in
+	// the inventory (its own and each spoke's) and pushes refreshed pairs to the
+	// spokes. Spokes never run ACME, so they get no timer.
+	if !cfg.SpokeMode {
+		renewUnit, err := templatefs.Render("service/singbox-deploy-cert-renew.service.tmpl", map[string]any{
+			"DeployBin":     o.DeployBin,
+			"ThresholdDays": 30,
+		})
+		if err != nil {
+			return err
+		}
+		if err := WriteFile(filepath.Join(o.SystemdDir, system.CertRenewService), []byte(renewUnit), 0o644); err != nil {
+			return err
+		}
+		renewTimer, err := templatefs.Render("service/singbox-deploy-cert-renew.timer.tmpl", map[string]any{})
+		if err != nil {
+			return err
+		}
+		if err := WriteFile(filepath.Join(o.SystemdDir, system.CertRenewTimer), []byte(renewTimer), 0o644); err != nil {
+			return err
+		}
+		cmds = append(cmds, system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.CertRenewTimer}})
 	}
 	// enable + restart (not enable --now): on a reinstall the service is often
 	// already active, where --now is a no-op that would leave the old config
 	// loaded. restart guarantees the freshly written config.json takes effect.
-	return o.run(
-		system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
-		system.Command{Name: "systemctl", Args: []string{"enable", system.SingBoxService}},
-		system.Systemctl("restart", system.SingBoxService),
-		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.CertRenewTimer}},
-	)
+	return o.run(cmds...)
 }
 
-func (o *Orchestrator) stepSubscriptions(ctx context.Context, cfg Config) error {
-	// A reinstall over a box with configured remote subscriptions must keep
-	// aggregating them; a fresh install simply has an empty remotes list.
-	remotes, err := LoadRemoteSubscriptions(o.Layout)
-	if err != nil {
-		return err
-	}
-	if len(remotes) == 0 {
-		return WriteSubscriptions(o.Layout, cfg)
-	}
-	return WriteSubscriptionsWithRemotes(ctx, o.Layout, cfg, remotes, DefaultSubscriptionFetch, LoadLocalSubscriptionPosition(o.Layout))
+func (o *Orchestrator) stepSubscriptions(_ context.Context, cfg Config) error {
+	// Write this node's own subscription outputs only. On the hub, spoke nodes
+	// are folded in afterwards over the overlay (hubctl.RefreshSubscriptions);
+	// on a spoke, these local outputs are what the hub fetches to aggregate.
+	return WriteSubscriptions(o.Layout, cfg)
 }
 
 func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 )
 
@@ -39,10 +42,6 @@ func runMonitor(args []string) error {
 		return err
 	}
 
-	if err := deploy.MigrateMonitorSources(layout); err != nil {
-		return err
-	}
-
 	selectedIface := *iface
 	if selectedIface == "" {
 		detected, err := monitor.DefaultInterface()
@@ -62,6 +61,7 @@ func runMonitor(args []string) error {
 		return err
 	}
 
+	ctrl := &hubctl.Controller{Layout: layout, ExpectedVersion: version}
 	cfg := monitor.Config{
 		Listen:            *listen,
 		Interface:         selectedIface,
@@ -74,12 +74,17 @@ func runMonitor(args []string) error {
 		Alias:             *alias,
 		RemoteMonitorPath: *remoteMonitorPath,
 		LocalPositionPath: filepath.Join(layout.StateDir, "local_monitor_position"),
+		// The hub pulls every spoke's monitor summary over the WireGuard overlay,
+		// so monitor data never traverses the public internet.
 		RefreshRemoteSources: func(ctx context.Context) error {
-			sources, err := deploy.LoadMonitorSources(layout)
+			return ctrl.RefreshMonitor(ctx)
+		},
+		FetchRemoteData: func(ctx context.Context, sourceID, path string) ([]byte, error) {
+			endpoint, err := monitorEndpointForPath(path)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			return deploy.RefreshRemoteMonitorTo(ctx, *remoteMonitorPath, sources, deploy.DefaultSubscriptionFetch)
+			return ctrl.MonitorData(ctx, sourceID, endpoint)
 		},
 		Now: clock.Now,
 	}
@@ -88,6 +93,21 @@ func runMonitor(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return m.Run(ctx)
+}
+
+func monitorEndpointForPath(path string) (nodeapi.MonitorEndpoint, error) {
+	switch path {
+	case "/api/traffic-trend":
+		return nodeapi.MonitorTrafficTrend, nil
+	case "/api/traffic-recent":
+		return nodeapi.MonitorTrafficRecent, nil
+	case "/api/resource-trend":
+		return nodeapi.MonitorResourceTrend, nil
+	case "/api/resource-recent":
+		return nodeapi.MonitorResourceRecent, nil
+	default:
+		return "", fmt.Errorf("unsupported monitor resource %q", path)
+	}
 }
 
 // systemdSingBox controls sing-box.service via systemctl for quota enforcement.

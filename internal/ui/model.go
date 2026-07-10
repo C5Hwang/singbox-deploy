@@ -63,19 +63,26 @@ type MenuGroup struct {
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	width       int
-	height      int
-	status      Status
-	groups      []MenuGroup
-	cursor      int // flat index across all items
-	install     *installFlow
-	protocols   *protocolManager
-	subscribe   *subscriptionManager
-	monitor     *monitorManager
-	core        *coreManager
-	selfupdate  *selfUpdateManager
-	uninstall   *uninstallManager
-	placeholder *placeholderManager
+	width        int
+	height       int
+	status       Status
+	groups       []MenuGroup
+	cursor       int // flat index across all items
+	install      *installFlow
+	protocols    *protocolManager
+	subscribe    *subscriptionManager
+	monitor      *monitorManager
+	core         *coreManager
+	certificates *certManager
+	nodes        *nodeManager
+	// A domain field can suspend its flow and redirect into Certificate
+	// management. The exact form state is retained here and restored when the
+	// certificate flow finishes or is cancelled.
+	suspendedInstall *installFlow
+	suspendedNodes   *nodeManager
+	selfupdate       *selfUpdateManager
+	uninstall        *uninstallManager
+	placeholder      *placeholderManager
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -91,7 +98,8 @@ func defaultGroups() []MenuGroup {
 			{Label: "Subscription settings", Activate: activateSubscriptions},
 		}},
 		{Title: "Server", Items: []MenuItem{
-			{Label: "Certificate & site", Activate: activatePlaceholder("Certificate & site")},
+			{Label: "Certificate management", Activate: activateCertificates},
+			{Label: "Spoke nodes", Activate: activateNodes},
 			{Label: "Monitor & quota", Activate: activateMonitor},
 			{Label: "Routing rules", Activate: activatePlaceholder("Routing rules")},
 			{Label: "sing-box core", Activate: activateCore},
@@ -135,6 +143,20 @@ func activateCore(m *Model) tea.Cmd {
 	c := newCoreManager()
 	c.setSize(m.width, m.height)
 	m.core = c
+	return nil
+}
+
+func activateCertificates(m *Model) tea.Cmd {
+	c := newCertManager()
+	c.setSize(m.width, m.height)
+	m.certificates = c
+	return nil
+}
+
+func activateNodes(m *Model) tea.Cmd {
+	n := newNodeManager()
+	n.setSize(m.width, m.height)
+	m.nodes = n
 	return nil
 }
 
@@ -208,6 +230,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.install != nil {
 		flow := m.install
 		cmd, done := m.install.Update(msg)
+		if domain := flow.certificateDomainRequest; domain != "" {
+			flow.certificateDomainRequest = ""
+			m.suspendedInstall = flow
+			m.install = nil
+			certs := newCertManagerForDomain(domain, flow.form.values["email"])
+			certs.setSize(m.width, m.height)
+			m.certificates = certs
+			return m, cmd
+		}
 		if done {
 			if flow.phase == phaseDone && flow.run.runErr == nil {
 				m.RefreshStatus()
@@ -257,6 +288,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.RefreshStatus()
 			}
 			m.core = nil
+		}
+		return m, cmd
+	}
+	if m.certificates != nil {
+		cmd, done := m.certificates.Update(msg)
+		if done {
+			m.certificates = nil
+			if m.suspendedInstall != nil {
+				m.install = m.suspendedInstall
+				m.suspendedInstall = nil
+				m.install.form.fieldErr = ""
+				m.install.form.validationErr = nil
+			} else if m.suspendedNodes != nil {
+				m.nodes = m.suspendedNodes
+				m.suspendedNodes = nil
+				m.nodes.form.fieldErr = ""
+				m.nodes.form.validationErr = nil
+			}
+		}
+		return m, cmd
+	}
+	if m.nodes != nil {
+		nodeFlow := m.nodes
+		cmd, done := nodeFlow.Update(msg)
+		if domain := nodeFlow.certificateDomainRequest; domain != "" {
+			nodeFlow.certificateDomainRequest = ""
+			m.suspendedNodes = nodeFlow
+			m.nodes = nil
+			certs := newCertManagerForDomain(domain, "")
+			certs.setSize(m.width, m.height)
+			m.certificates = certs
+			return m, cmd
+		}
+		if done {
+			m.RefreshStatus()
+			m.nodes = nil
 		}
 		return m, cmd
 	}
@@ -398,6 +465,14 @@ func (m *Model) contentView(width, height int) string {
 		m.core.setSize(width, height)
 		return m.core.View()
 	}
+	if m.certificates != nil {
+		m.certificates.setSize(width, height)
+		return m.certificates.View()
+	}
+	if m.nodes != nil {
+		m.nodes.setSize(width, height)
+		return m.nodes.View()
+	}
 	if m.selfupdate != nil {
 		m.selfupdate.setSize(width, height)
 		return m.selfupdate.View()
@@ -415,7 +490,7 @@ func (m *Model) contentView(width, height int) string {
 func (m *Model) footerView() string {
 	var parts []operationHint
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.selfupdate == nil && m.uninstall == nil && m.placeholder == nil {
+		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.certificates == nil && m.nodes == nil && m.selfupdate == nil && m.uninstall == nil && m.placeholder == nil {
 			parts = append(parts, menuFooterHints()...)
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
@@ -425,6 +500,10 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.monitor.footerHints()...)
 		} else if m.core != nil {
 			parts = append(parts, m.core.footerHints()...)
+		} else if m.certificates != nil {
+			parts = append(parts, m.certificates.footerHints()...)
+		} else if m.nodes != nil {
+			parts = append(parts, m.nodes.footerHints()...)
 		} else if m.selfupdate != nil {
 			parts = append(parts, m.selfupdate.footerHints()...)
 		} else if m.uninstall != nil {

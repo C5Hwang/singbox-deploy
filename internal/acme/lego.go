@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	"github.com/go-acme/lego/v4/certificate"
-	"github.com/go-acme/lego/v4/challenge/http01"
 	"github.com/go-acme/lego/v4/lego"
 	legolog "github.com/go-acme/lego/v4/log"
 	"github.com/go-acme/lego/v4/providers/dns/alidns"
@@ -41,10 +40,6 @@ func (u *legoUser) GetPrivateKey() crypto.PrivateKey        { return u.key }
 
 // LegoIssuer is the production Issuer backed by lego and Let's Encrypt.
 type LegoIssuer struct {
-	// HTTP01Port is the port lego's standalone HTTP-01 server binds to. The
-	// installer frees this port (stopping Nginx) during issuance. Defaults to
-	// "80" when empty.
-	HTTP01Port string
 	// Staging selects the Let's Encrypt staging directory when true.
 	Staging bool
 	// Output receives lego's own informational logs. When nil, lego keeps its
@@ -57,8 +52,8 @@ type LegoIssuer struct {
 	AccountKeyPath string
 }
 
-// NewLegoIssuer returns a LegoIssuer using the production directory and port 80.
-func NewLegoIssuer() *LegoIssuer { return &LegoIssuer{HTTP01Port: "80"} }
+// NewLegoIssuer returns a LegoIssuer using the production directory.
+func NewLegoIssuer() *LegoIssuer { return &LegoIssuer{} }
 
 // AccountKeyPathFor returns the canonical location of the persisted ACME
 // account key inside the managed state directory.
@@ -173,15 +168,9 @@ func (i *LegoIssuer) accountKey() (crypto.PrivateKey, error) {
 	}
 }
 
-// configureChallenge wires the selected challenge provider onto the client.
+// configureChallenge wires the DNS-01 provider onto the client.
 func (i *LegoIssuer) configureChallenge(client *lego.Client, r Request) error {
 	switch r.Challenge {
-	case ChallengeHTTP01:
-		port := i.HTTP01Port
-		if port == "" {
-			port = "80"
-		}
-		return client.Challenge.SetHTTP01Provider(http01.NewProviderServer("", port))
 	case ChallengeDNS01:
 		provider, err := dnsProvider(r)
 		if err != nil {

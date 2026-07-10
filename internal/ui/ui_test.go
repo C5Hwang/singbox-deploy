@@ -19,6 +19,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -170,12 +171,11 @@ func confirmInstallFlowForTest() *installFlow {
 	return &installFlow{
 		phase: phaseConfirm,
 		form: installFormWithValuesForTest(map[string]string{
-			"domain":                 "example.com",
-			"challenge":              "http-01",
-			"protocols":              defaultProtocolValue(),
-			"reality_sni":            "www.microsoft.com",
-			"display_name":           "Node",
-			"monitor":                "yes",
+			"domain":              "example.com",
+			"protocols":           defaultProtocolValue(),
+			"reality_sni":         "www.microsoft.com",
+			"display_name":        "Node",
+			"monitor":             "yes",
 			"traffic_in_limit":    "0",
 			"traffic_out_limit":   "0",
 			"traffic_total_limit": "0",
@@ -187,6 +187,7 @@ func confirmInstallFlowForTest() *installFlow {
 func installFormForTest() installForm {
 	w := newInstallForm()
 	w.validateDomain = nil
+	w.validateDomainCovered = nil
 	return w
 }
 
@@ -201,7 +202,7 @@ func TestInstallFieldShowsUsageNote(t *testing.T) {
 	w.width = 80
 	w.startForm()
 	view := w.View()
-	if !strings.Contains(view, "Used for certificate issuance") {
+	if !strings.Contains(view, "covered by a DNS credential in Certificate management") {
 		t.Fatalf("field usage note missing:\n%s", view)
 	}
 }
@@ -232,11 +233,11 @@ func TestSubscriptionMenuEntryOpens(t *testing.T) {
 		t.Fatalf("subscription manager was not opened")
 	}
 	view := m.View()
-	if !strings.Contains(view, "Manage Subscriptions") || !strings.Contains(view, "Remote subscriptions") || !strings.Contains(view, "Edit display name") {
+	if !strings.Contains(view, "Manage Subscriptions") || !strings.Contains(view, "Spoke nodes") || !strings.Contains(view, "Edit hub display name") {
 		t.Fatalf("subscription manager view missing expected content:\n%s", view)
 	}
-	if !strings.Contains(view, "Delete remote subscription") || strings.Contains(strings.ToLower(view), "aggregation") {
-		t.Fatalf("subscription manager should use remote subscription wording:\n%s", view)
+	if !strings.Contains(view, "WireGuard") || strings.Contains(view, "Add remote subscription") {
+		t.Fatalf("subscription manager should expose only private spoke management:\n%s", view)
 	}
 }
 
@@ -254,13 +255,13 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 	withMonitorDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 4
+	m.cursor = 5
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.monitor == nil {
 		t.Fatalf("monitor manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust traffic counters", "Add monitor source", "Delete monitor sources"} {
+	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust hub traffic counters", "Edit spoke monitor settings", "WireGuard only"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("monitor manager view missing %q:\n%s", want, view)
 		}
@@ -272,7 +273,7 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 	withCoreDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 6
+	m.cursor = 7
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.core == nil {
 		t.Fatalf("core manager was not opened")
@@ -291,7 +292,7 @@ func TestUninstallMenuEntryOpens(t *testing.T) {
 
 	m := NewModel()
 	m.SetSize(180, 40)
-	m.cursor = 8
+	m.cursor = 9
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.uninstall == nil {
 		t.Fatalf("uninstall manager was not opened")
@@ -408,14 +409,14 @@ func TestCoreChangeStableListsEightReleases(t *testing.T) {
 	}
 }
 
-func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
+func TestSubscriptionSpokeEditingUsesRegisteredNodes(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
-	remotes := []deploy.RemoteSubscription{
-		{Domain: "one.example.com", Port: 9443, Salt: "salt-one"},
-		{Domain: "two.example.com", Port: 9444, Salt: "salt-two"},
+	list := []nodes.Node{
+		{ID: "node-one", Alias: "JP-01", Domain: "one.example.com", WGIP: "10.90.0.2", Installed: true, IncludeInSubscription: true, EnabledProtocols: []string{"vless-reality-vision"}, RealityVisionPort: 8443},
+		{ID: "node-two", Alias: "US-01", Domain: "two.example.com", WGIP: "10.90.0.3", Installed: true, IncludeInSubscription: true, EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 9443},
 	}
-	if err := deploy.SaveRemoteSubscriptions(layout, remotes); err != nil {
-		t.Fatalf("save remotes: %v", err)
+	if err := nodes.Save(layout, list); err != nil {
+		t.Fatalf("save nodes: %v", err)
 	}
 	withSubscriptionDeps(t, layout)
 
@@ -424,53 +425,42 @@ func TestSubscriptionDeleteRemoteUsesMultiSelect(t *testing.T) {
 	if sm.loadErr != nil {
 		t.Fatalf("load subscription manager: %v", sm.loadErr)
 	}
-	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDeleteRemotes)
+	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionEditSpoke)
 	_, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || sm.phase != subscriptionPhaseForm {
-		t.Fatalf("enter should open delete multi-select, phase=%v done=%v", sm.phase, done)
+		t.Fatalf("enter should open spoke selector, phase=%v done=%v", sm.phase, done)
 	}
 	view := sm.View()
-	for _, want := range []string{"Remote subscriptions to delete", "[ ] one.example.com (one.example.com:9443)", "[ ] two.example.com (two.example.com:9444)"} {
+	for _, want := range []string{"Spoke subscription settings to edit", "JP-01", "10.90.0.2", "node-one"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("delete multi-select missing %q:\n%s", want, view)
+			t.Fatalf("spoke selector missing %q:\n%s", want, view)
 		}
-	}
-	if got := hintText(sm.footerHints()...); !strings.Contains(got, "Space: Toggle") {
-		t.Fatalf("delete multi-select footer missing toggle hint: %s", got)
-	}
-
-	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
-	if done || !strings.Contains(sm.View(), "[x] one.example.com (one.example.com:9443)") {
-		t.Fatalf("space should select first remote, done=%v:\n%s", done, sm.View())
 	}
 	_, done = sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || sm.phase != subscriptionPhaseConfirm {
-		t.Fatalf("enter should confirm selected delete, phase=%v done=%v", sm.phase, done)
+	if done || sm.phase != subscriptionPhaseForm || sm.editNodeIndex != 0 {
+		t.Fatalf("enter should open selected spoke form, phase=%v index=%d done=%v", sm.phase, sm.editNodeIndex, done)
 	}
 	view = sm.View()
-	for _, want := range []string{"Delete remote subscriptions", "Remaining remote subscriptions", "Delete", "one.example.com (one.example.com:9443)", "Keep", "two.example.com (two.example.com:9444)"} {
+	for _, want := range []string{"Spoke display alias", "JP-01"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("delete confirm missing %q:\n%s", want, view)
+			t.Fatalf("spoke form missing %q:\n%s", want, view)
 		}
-	}
-	target := sm.targetRemotes()
-	if len(target) != 1 || target[0].Domain != "two.example.com" {
-		t.Fatalf("target remotes = %#v, want only two.example.com", target)
 	}
 }
 
-func TestSubscriptionDeleteRemoteRequiresConfiguredRemote(t *testing.T) {
+func TestSubscriptionHasNoPublicRemoteCRUD(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withSubscriptionDeps(t, layout)
 
 	sm := newSubscriptionManager()
-	sm.cursor = subscriptionActionCursor(t, sm, subscriptionActionDeleteRemotes)
-	_, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || sm.phase != subscriptionPhaseAction {
-		t.Fatalf("empty delete should stay on action phase, phase=%v done=%v", sm.phase, done)
+	view := sm.View()
+	for _, forbidden := range []string{"Add remote subscription", "Delete remote subscription", "Remote subscription HTTPS port"} {
+		if strings.Contains(view, forbidden) {
+			t.Fatalf("public remote CRUD %q must not be exposed:\n%s", forbidden, view)
+		}
 	}
-	if !strings.Contains(sm.View(), "no remote subscriptions to delete") {
-		t.Fatalf("missing empty delete warning:\n%s", sm.View())
+	if !strings.Contains(view, "WireGuard") {
+		t.Fatalf("subscription page should identify the private transport:\n%s", view)
 	}
 }
 
@@ -569,6 +559,19 @@ func TestParameterInputShowsTwoCharacterDefaultWhenUnsized(t *testing.T) {
 	form.input.Cursor.Blink = true
 	if got := form.input.View(); !strings.Contains(got, "50") {
 		t.Fatalf("zero-width placeholder = %q, want full default 50", got)
+	}
+}
+
+func TestParameterFormMasksSecretFields(t *testing.T) {
+	form := newParameterForm([]field{{key: "credential", label: "API credential", secret: true}})
+	form.startForm()
+	form.input.SetValue("top-secret-token")
+	view := form.View("Credential")
+	if strings.Contains(view, "top-secret-token") {
+		t.Fatalf("secret value was rendered in clear text:\n%s", view)
+	}
+	if !strings.Contains(view, "••••") {
+		t.Fatalf("secret input did not render a mask:\n%s", view)
 	}
 }
 
@@ -1109,51 +1112,16 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
 	w := installFormForTest()
 	w.startForm()
+	// domain → email → protocols (multi) → site_template (single choice).
 	w.input.SetValue("example.com")
 	w.commitField()
 	w.commitField()
-
-	if got := w.fields[w.fieldIx].key; got != "challenge" {
-		t.Fatalf("current field = %q, want challenge", got)
+	w.setField(fieldIndex(t, w.fields, "site_template"))
+	if !w.currentFieldHasOptions() || w.currentFieldIsMulti() {
+		t.Fatalf("site_template should render as a single-choice selection")
 	}
-	if !strings.Contains(w.View(), "> http-01") {
-		t.Fatalf("challenge should render as a selection:\n%s", w.View())
-	}
-	w.moveOption(1)
-	w.commitField()
-	if got := w.values["challenge"]; got != "dns-01" {
-		t.Fatalf("challenge = %q, want dns-01", got)
-	}
-	if got := w.fields[w.fieldIx].key; got != "dns_provider" {
-		t.Fatalf("current field = %q, want dns_provider", got)
-	}
-}
-
-func TestDNSCredentialNoteMatchesSelectedProvider(t *testing.T) {
-	fields := installFields()
-	for _, tc := range []struct {
-		provider string
-		want     string
-		link     string
-		avoid    string
-	}{
-		{provider: "cloudflare", want: "Cloudflare uses an API token.", link: "https://dash.cloudflare.com/profile/api-tokens", avoid: "Aliyun uses"},
-		{provider: "aliyun", want: "Aliyun uses accessKey:secretKey", link: "https://ram.console.aliyun.com/manage/ak", avoid: "Cloudflare uses"},
-	} {
-		w := installFormWithValuesForTest(map[string]string{"dns_provider": tc.provider})
-		w.fields = fields
-		w.width = 100
-		w.setField(fieldIndex(t, fields, "dns_credential"))
-		view := w.View()
-		if !strings.Contains(view, tc.want) || !strings.Contains(view, tc.link) {
-			t.Fatalf("%s note missing provider text or link:\n%s", tc.provider, view)
-		}
-		if !strings.Contains(view, "You can apply at "+tc.link) {
-			t.Fatalf("%s note should use application hint format:\n%s", tc.provider, view)
-		}
-		if strings.Contains(view, tc.avoid) {
-			t.Fatalf("%s note should not include other provider text:\n%s", tc.provider, view)
-		}
+	if !strings.Contains(w.View(), "> "+deploy.DefaultSiteTemplate) {
+		t.Fatalf("single-choice field should highlight the default:\n%s", w.View())
 	}
 }
 
@@ -1228,7 +1196,6 @@ func TestBuildConfigRejectsInvalidSiteTemplate(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":        "example.com",
-			"challenge":     "http-01",
 			"protocols":     "tuic",
 			"display_name":  "Node",
 			"site_template": "unknown",
@@ -1290,7 +1257,6 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":                   "example.com",
-			"challenge":                "http-01",
 			"protocols":                "vless-reality-vision,tuic",
 			"reality_sni":              "https://www.cloudflare.com/cdn-cgi/trace",
 			"reality_vision_uuid":      "11111111-1111-4111-8111-111111111111",
@@ -1307,9 +1273,9 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 			"monitor_public_port":      "24447",
 			"monitor_port":             "24446",
 			"monitor_interval_seconds": "60",
-			"traffic_in_limit":      "40GB",
-			"traffic_out_limit":     "50GB",
-			"traffic_total_limit":   "100GB",
+			"traffic_in_limit":         "40GB",
+			"traffic_out_limit":        "50GB",
+			"traffic_total_limit":      "100GB",
 			"reset_day":                "1",
 			"reset_hour":               "5",
 		}),
@@ -1362,7 +1328,6 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
 			"domain":         "example.com",
-			"challenge":      "http-01",
 			"protocols":      "tuic",
 			"tuic_port":      "24444",
 			"display_name":   "Node",
@@ -1396,15 +1361,14 @@ func TestBuildConfigRejectsManagedPortConflicts(t *testing.T) {
 func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
-			"domain":                 "example.com",
-			"challenge":              "http-01",
-			"protocols":              "hysteria2,anytls",
-			"display_name":           "Node",
-			"monitor":                "yes",
+			"domain":              "example.com",
+			"protocols":           "hysteria2,anytls",
+			"display_name":        "Node",
+			"monitor":             "yes",
 			"traffic_in_limit":    "0",
 			"traffic_out_limit":   "0",
 			"traffic_total_limit": "0",
-			"reset_day":              "1",
+			"reset_day":           "1",
 		}),
 		host: supportedTestHost(),
 	}
@@ -1439,15 +1403,14 @@ func TestBuildConfigRandomizesBlankSelectedPorts(t *testing.T) {
 func TestBuildConfigDisablesMonitor(t *testing.T) {
 	w := &installFlow{
 		form: installFormWithValuesForTest(map[string]string{
-			"domain":                 "example.com",
-			"challenge":              "http-01",
-			"protocols":              "tuic",
-			"tuic_uuid":              "22222222-2222-4222-8222-222222222222",
-			"display_name":           "Node",
-			"monitor":              "no",
-			"traffic_in_limit":     "40GB",
-			"traffic_out_limit":    "50GB",
-			"traffic_total_limit":  "100GB",
+			"domain":              "example.com",
+			"protocols":           "tuic",
+			"tuic_uuid":           "22222222-2222-4222-8222-222222222222",
+			"display_name":        "Node",
+			"monitor":             "no",
+			"traffic_in_limit":    "40GB",
+			"traffic_out_limit":   "50GB",
+			"traffic_total_limit": "100GB",
 		}),
 		host: supportedTestHost(),
 	}

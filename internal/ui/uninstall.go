@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
@@ -162,8 +163,9 @@ func (um *uninstallManager) startRun() tea.Cmd {
 	um.resetRun(make(chan runMsg, 64))
 	ch := um.ch
 	logs := &logWriter{ch: ch}
+	layout := uninstallUILayout()
 	opts := uninstall.Options{
-		Layout:              uninstallUILayout(),
+		Layout:              layout,
 		Runner:              system.NewExecRunner(logs),
 		DeleteRuntime:       um.selected(uninstallRuntimeKey),
 		DeleteCertificates:  um.selected(uninstallCertificatesKey),
@@ -176,6 +178,13 @@ func (um *uninstallManager) startRun() tea.Cmd {
 		},
 	}
 	go func() {
+		// Tear down every spoke and the overlay before removing the hub, so no
+		// orphaned agents or WireGuard state are left behind.
+		ctrl := &hubctl.Controller{Layout: layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion}
+		if err := ctrl.TeardownAll(context.Background(), logs); err != nil {
+			ch <- runMsg{done: true, err: err}
+			return
+		}
 		err := uninstallRun(context.Background(), opts)
 		ch <- runMsg{done: true, err: err}
 	}()

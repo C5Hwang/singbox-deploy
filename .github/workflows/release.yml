@@ -35,10 +35,22 @@ jobs:
           pnpm --dir web/monitor install --frozen-lockfile
           pnpm --dir web/monitor build
 
+      - name: Build embedded agent binaries
+        run: |
+          # The deploy binary embeds both agent architectures from
+          # assets/agentbin, so generate them before testing or building deploy.
+          rm -f assets/agentbin/singbox-deploy-agent-linux-*
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=${arch} \
+              go build -trimpath \
+              -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o assets/agentbin/singbox-deploy-agent-linux-${arch} ./cmd/singbox-deploy-agent
+          done
+
       - name: Run tests
         run: go test ./...
 
-      - name: Build binaries
+      - name: Build deploy binaries
         run: |
           mkdir -p dist
           for arch in amd64 arm64; do

@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/C5Hwang/singbox-deploy/internal/acme"
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
@@ -35,7 +35,6 @@ const (
 
 // installFields defines the install form's input sequence.
 func installFields() []field {
-	isDNS := func(v map[string]string) bool { return v["challenge"] != "dns-01" }
 	missingProtocol := func(p config.Protocol) func(map[string]string) bool {
 		return func(v map[string]string) bool { return !protocolSelected(v, p) }
 	}
@@ -44,11 +43,8 @@ func installFields() []field {
 	}
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
-		{key: "domain", label: "Domain (must resolve to this server)", note: "Used for certificate issuance, Nginx server_name, subscription URLs, and TLS SNI."},
+		{key: "domain", label: "Domain (must resolve to this server)", note: "Must be covered by a DNS credential in Certificate management; the hub issues its certificate via DNS-01. Also used for Nginx server_name, subscription URLs, and TLS SNI."},
 		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
-		{key: "challenge", label: "ACME challenge", def: "http-01", options: []string{"http-01", "dns-01"}, note: "http-01 validates through port 80; dns-01 validates through the DNS API provider."},
-		{key: "dns_provider", label: "DNS provider", def: "cloudflare", options: []string{"cloudflare", "aliyun"}, note: "Only used for dns-01. Supported providers are Cloudflare and Aliyun.", skip: isDNS},
-		{key: "dns_credential", label: "DNS API credential", skip: isDNS, noteFunc: dnsCredentialNote},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
 		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
@@ -87,13 +83,6 @@ func protocolParameterBadge(protocols ...config.Protocol) func(map[string]string
 	}
 }
 
-func dnsCredentialNote(vals map[string]string) string {
-	if vals["dns_provider"] == "aliyun" {
-		return "Aliyun uses accessKey:secretKey (AccessKey ID:AccessKey Secret).\nYou can apply at https://ram.console.aliyun.com/manage/ak"
-	}
-	return "Cloudflare uses an API token.\nYou can apply at https://dash.cloudflare.com/profile/api-tokens"
-}
-
 // runMsg carries an orchestrator progress event, a streamed log line, or
 // completion into the UI. It is the only channel the orchestrator goroutine
 // uses to communicate, so all UI state stays mutated on the UI goroutine.
@@ -110,7 +99,11 @@ type installForm struct {
 	parameterForm
 
 	validateDomain func(context.Context, string) error
-	confirmScroll  int
+	// validateDomainCovered rejects a domain not covered by any DNS credential
+	// in Certificate management, so the hub can issue its certificate via DNS-01.
+	// Tests set it nil to skip the check.
+	validateDomainCovered func(string) error
+	confirmScroll         int
 }
 
 // installFlow owns the install lifecycle and delegates input collection to form
@@ -123,12 +116,16 @@ type installFlow struct {
 	form installForm
 	run  commandRun
 	cfg  deploy.Config
+	// certificateDomainRequest asks the root model to suspend this form and
+	// open Certificate management for the entered domain.
+	certificateDomainRequest string
 }
 
 func newInstallForm() installForm {
 	return installForm{
-		parameterForm:  newParameterForm(installFields()),
-		validateDomain: validateDomainResolvesToCurrentIP,
+		parameterForm:         newParameterForm(installFields()),
+		validateDomain:        validateDomainResolvesToCurrentIP,
+		validateDomainCovered: domainCoveredByCredential,
 	}
 }
 
@@ -247,6 +244,11 @@ func (f *installForm) validateField(field field, val string, vals map[string]str
 	case "domain":
 		if val == "" {
 			return fmt.Errorf("domain is required")
+		}
+		if f.validateDomainCovered != nil {
+			if err := f.validateDomainCovered(val); err != nil {
+				return err
+			}
 		}
 		if f.validateDomain == nil {
 			return nil
@@ -367,6 +369,9 @@ func (f *installFlow) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				return nil, true
 			},
 		})
+		if domain := certificateRedirectDomain(f.form.validationErr); domain != "" {
+			f.certificateDomainRequest = domain
+		}
 		if handled {
 			return cmd, done
 		}
@@ -466,19 +471,16 @@ func (w *installFlow) startRun() tea.Cmd {
 	logs := &logWriter{ch: ch}
 	runner := system.Runner(system.NewExecRunner(logs))
 	layout := paths.DefaultLayout()
-	issuer := acme.NewLegoIssuer()
-	issuer.Output = logs
-	issuer.AccountKeyPath = acme.AccountKeyPathFor(layout.StateDir)
-	acmeManager := acme.NewManager(issuer)
+	certManager := &certmgr.Manager{Layout: layout, Output: logs}
 	releases := release.NewClient("", nil)
 
 	orch := &deploy.Orchestrator{
-		Runner:   runner,
-		Layout:   layout,
-		ACME:     acmeManager,
-		Releases: releases,
-		GOOS:     "linux",
-		GOARCH:   w.host.Arch,
+		Runner:      runner,
+		Layout:      layout,
+		CertManager: certManager,
+		Releases:    releases,
+		GOOS:        "linux",
+		GOARCH:      w.host.Arch,
 	}
 	orch.Progress = func(e deploy.Event) {
 		ev := e
@@ -486,6 +488,11 @@ func (w *installFlow) startRun() tea.Cmd {
 	}
 	go func() {
 		err := orch.Run(context.Background(), cfg)
+		if err == nil {
+			// A successful hub install unlocks spoke management: mark the hub
+			// installed and bring up the WireGuard overlay so nodes can be added.
+			err = finalizeHubInstall(layout, cfg, runner, logs)
+		}
 		ch <- runMsg{done: true, err: err}
 	}()
 	return w.run.waitForRun()
@@ -557,12 +564,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		monitorAlias = deploy.DefaultMonitorAlias
 	}
 
-	challenge := acme.Challenge(vals["challenge"])
-	dnsCreds := map[string]string{}
-	if challenge == acme.ChallengeDNS01 {
-		dnsCreds = deploy.DNSCredentialsForProvider(vals["dns_provider"], vals["dns_credential"])
-	}
-
 	iface := ""
 	if deployMonitor {
 		iface, _ = monitor.DefaultInterface()
@@ -578,9 +579,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 	return deploy.Config{
 		Domain:                 vals["domain"],
 		Email:                  vals["email"],
-		Challenge:              challenge,
-		DNSProvider:            vals["dns_provider"],
-		DNSCredentials:         dnsCreds,
 		Ports:                  ports,
 		Enabled:                enabled,
 		DisplayName:            vals["display_name"],
@@ -715,7 +713,6 @@ func installedPortsSummary(enabled []config.Protocol, ports config.Ports) string
 	}
 	return strings.Join(parts, ", ")
 }
-
 
 func randomListenPort(used map[int]bool) (int, error) {
 	const minPort = 20000
@@ -868,7 +865,6 @@ func (w *installForm) summary(host system.Host) string {
 	rows := []summaryLine{
 		summaryRow("Domain", w.values["domain"]),
 		summaryRow("Email", or(w.values["email"], "not set")),
-		summaryRow("ACME challenge", w.values["challenge"]),
 		summaryRow("Protocols", protocolLabels(protocols)),
 		summaryRow("Display name", w.values["display_name"]),
 		summaryRow("Masquerade site", or(w.values["site_template"], deploy.DefaultSiteTemplate)),

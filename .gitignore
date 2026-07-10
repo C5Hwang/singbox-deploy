@@ -8,3 +8,4 @@ web/monitor/node_modules/
 # Build artifacts
 /dist/
 /assets/monitor-ui/
+/assets/agentbin/singbox-deploy-agent-linux-*

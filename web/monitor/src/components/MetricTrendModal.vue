@@ -58,8 +58,8 @@ async function load() {
     props.sources.map(async (source) => {
       try {
         const [trend, recent] = isTraffic
-          ? await Promise.all([fetchTrafficTrend(source.name), fetchTrafficRecent(source.name)])
-          : await Promise.all([fetchResourceTrend(source.name), fetchResourceRecent(source.name)]);
+          ? await Promise.all([fetchTrafficTrend(source.id || source.name), fetchTrafficRecent(source.id || source.name)])
+          : await Promise.all([fetchResourceTrend(source.id || source.name), fetchResourceRecent(source.id || source.name)]);
         return { name: source.name, trend, recent };
       } catch {
         return { name: source.name, trend: [], recent: [] };

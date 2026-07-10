@@ -9,7 +9,6 @@ package deploy
 import (
 	"fmt"
 
-	"github.com/C5Hwang/singbox-deploy/internal/acme"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -68,14 +67,12 @@ func GenerateCredentials() (Credentials, error) {
 	return c, nil
 }
 
-// Config is the complete input to an installation.
+// Config is the complete input to an installation. Certificates are issued
+// centrally via DNS-01 (see internal/certmgr), so no per-install challenge or
+// DNS-provider fields live here.
 type Config struct {
 	Domain string
 	Email  string
-
-	Challenge      acme.Challenge
-	DNSProvider    string
-	DNSCredentials map[string]string
 
 	Ports   config.Ports
 	Enabled []config.Protocol
@@ -104,6 +101,17 @@ type Config struct {
 
 	OS       system.OSRelease
 	Firewall system.Firewall
+
+	// SpokeMode installs a spoke managed by the hub: the certificate is pushed
+	// in (no local ACME), no public subscription/monitor ports are opened, no
+	// cert-renew timer or monitor unit is installed (the hub renews and the
+	// agent runs the monitor in-process), and Nginx serves only the camouflage
+	// site. False installs a hub with the full public surface.
+	SpokeMode bool
+
+	// WGListenPort, when > 0, is the hub's WireGuard UDP port to open in the
+	// firewall during install so spokes can dial in.
+	WGListenPort int
 
 	Creds Credentials
 }
@@ -175,15 +183,22 @@ func (c Config) firewallPorts() []system.Port {
 			ports = append(ports, system.Port{Number: spec.port, Proto: spec.proto})
 		}
 	}
-	// Subscriptions, the monitor UI, and ACME HTTP-01 need the public web ports.
-	ports = append(ports, system.Port{Number: c.SubscribePort, Proto: "tcp"})
-	if c.DeployMonitor {
-		ports = append(ports, system.Port{Number: c.MonitorPublicPort, Proto: "tcp"})
+	// A spoke serves only the camouflage site publicly; its subscription and
+	// monitor data reach the hub over the WireGuard overlay, so no public
+	// subscription/monitor ports are opened. A hub opens both.
+	if !c.SpokeMode {
+		ports = append(ports, system.Port{Number: c.SubscribePort, Proto: "tcp"})
+		if c.DeployMonitor {
+			ports = append(ports, system.Port{Number: c.MonitorPublicPort, Proto: "tcp"})
+		}
 	}
 	ports = append(ports,
 		system.Port{Number: 80, Proto: "tcp"},
 		system.Port{Number: 443, Proto: "tcp"},
 	)
+	if c.WGListenPort > 0 {
+		ports = append(ports, system.Port{Number: c.WGListenPort, Proto: "udp"})
+	}
 	return ports
 }
 
@@ -207,9 +222,12 @@ func (c Config) portChecks() []system.Port {
 			checks = append(checks, system.Port{Number: c.Ports.AnyTLS, Proto: "tcp", Label: "AnyTLS", Public: true})
 		}
 	}
-	checks = append(checks, system.Port{Number: c.SubscribePort, Proto: "tcp", Label: "subscription/Nginx", Public: true})
-	if c.DeployMonitor {
-		checks = append(checks, system.Port{Number: c.MonitorPublicPort, Proto: "tcp", Label: "monitor/Nginx", Public: true})
+	// A spoke exposes neither the subscription nor the monitor port publicly.
+	if !c.SpokeMode {
+		checks = append(checks, system.Port{Number: c.SubscribePort, Proto: "tcp", Label: "subscription/Nginx", Public: true})
+		if c.DeployMonitor {
+			checks = append(checks, system.Port{Number: c.MonitorPublicPort, Proto: "tcp", Label: "monitor/Nginx", Public: true})
+		}
 	}
 	// Nginx always listens on 80 (HTTP redirect) and 443 (camouflage site), so
 	// both must be free regardless of the ACME challenge. Skip the duplicates
@@ -219,7 +237,7 @@ func (c Config) portChecks() []system.Port {
 		seen[p.Number] = true
 	}
 	if !seen[80] {
-		checks = append(checks, system.Port{Number: 80, Proto: "tcp", Label: "Nginx HTTP / ACME HTTP-01", Public: true})
+		checks = append(checks, system.Port{Number: 80, Proto: "tcp", Label: "Nginx HTTP redirect", Public: true})
 	}
 	if !seen[443] {
 		checks = append(checks, system.Port{Number: 443, Proto: "tcp", Label: "Nginx HTTPS camouflage", Public: true})
@@ -251,12 +269,16 @@ func (c Config) ValidatePorts() error {
 		owner[port] = label
 		return nil
 	}
-	if err := claim(c.SubscribePort, "subscription", true); err != nil {
-		return err
+	if !c.SpokeMode {
+		if err := claim(c.SubscribePort, "subscription", true); err != nil {
+			return err
+		}
 	}
 	if c.DeployMonitor {
-		if err := claim(c.MonitorPublicPort, "monitor public", true); err != nil {
-			return err
+		if !c.SpokeMode {
+			if err := claim(c.MonitorPublicPort, "monitor public", true); err != nil {
+				return err
+			}
 		}
 		if err := claim(c.MonitorPort, "monitor service", false); err != nil {
 			return err

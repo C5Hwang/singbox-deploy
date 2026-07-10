@@ -24,6 +24,7 @@ type field struct {
 	note      string
 	options   []string
 	multi     bool
+	secret    bool
 	skip      func(vals map[string]string) bool
 	noteFunc  func(vals map[string]string) string
 	badgeFunc func(vals map[string]string) string
@@ -75,6 +76,7 @@ type parameterForm struct {
 	optionIx       int
 	optionSelected map[string]bool
 	fieldErr       string
+	validationErr  error
 	validate       func(field, string, map[string]string) error
 }
 
@@ -115,6 +117,7 @@ func (f *parameterForm) setFields(fields []field) {
 	f.optionIx = 0
 	f.optionSelected = nil
 	f.fieldErr = ""
+	f.validationErr = nil
 }
 
 func (f *parameterForm) setField(index int) {
@@ -122,6 +125,12 @@ func (f *parameterForm) setField(index int) {
 	field := f.fields[index]
 	f.fieldIx = index
 	f.fieldErr = ""
+	f.validationErr = nil
+	f.input.EchoMode = textinput.EchoNormal
+	if field.secret {
+		f.input.EchoMode = textinput.EchoPassword
+		f.input.EchoCharacter = '•'
+	}
 	if len(field.options) > 0 {
 		value := f.values[field.key]
 		if value == "" {
@@ -217,10 +226,12 @@ func (f *parameterForm) commitField() bool {
 	if f.validate != nil {
 		if err := f.validate(field, val, f.values); err != nil {
 			f.fieldErr = err.Error()
+			f.validationErr = err
 			return false
 		}
 	}
 	f.fieldErr = ""
+	f.validationErr = nil
 	f.values[field.key] = val
 	return f.advanceField()
 }
@@ -244,6 +255,7 @@ func (f *parameterForm) updateInput(msg tea.Msg) tea.Cmd {
 	// as cursor blinks are also forwarded here and must not wipe it.
 	if _, isKey := msg.(tea.KeyMsg); isKey {
 		f.fieldErr = ""
+		f.validationErr = nil
 	}
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(msg)

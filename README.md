@@ -1,18 +1,25 @@
 # singbox-deploy
 
-`singbox-deploy` is an **unofficial** [sing-box](https://github.com/SagerNet/sing-box)-focused
-deployment and management tool written in Go, not affiliated with SagerNet or sing-box.
-It automates the setup of sing-box, Nginx, Let's Encrypt certificates, and subscription
-files on Linux servers, and includes a built-in resource monitor.
+`singbox-deploy` is an [sing-box](https://github.com/SagerNet/sing-box)
+deployment and management tool written in Go.
+
+It automates the setup of sing-box, Nginx, Let's Encrypt certificates, and
+subscription files on Linux servers, and manages a whole fleet from a single
+hub: additional servers join as spokes over a private WireGuard overlay and
+are controlled entirely from the hub's terminal UI.
 
 ## Core Features
 
-- Interactive terminal UI for deployment and management.
-- Automated deployment of sing-box, Nginx, certificates, and subscriptions.
-- Let's Encrypt certificate issuance and renewal via HTTP-01 and DNS-01 challenges.
-- Subscription output in share-link, Clash Meta, and sing-box formats.
-- Selectable HTML5 UP masquerade site templates served by Nginx.
-- Resource monitor with a web dashboard and quota enforcement.
+- Hub-and-spoke management: install the TUI once, then add, reconfigure,
+  monitor, and remove spoke servers from the hub.
+- One-time SSH bootstrap of spokes; all later control traffic runs over
+  WireGuard.
+- Centralized Let's Encrypt certificate management (DNS-01) with automatic
+  renewal and distribution to spokes.
+- Aggregated subscription output in share-link, Clash Meta, sing-box, and
+  Surge formats.
+- Resource monitor with a web dashboard and per-node quota enforcement.
+- Selectable [HTML5 UP](https://html5up.net) masquerade site templates served by Nginx.
 
 ## Supported Protocols
 
@@ -22,8 +29,6 @@ files on Linux servers, and includes a built-in resource monitor.
 - [AnyTLS](https://github.com/anytls/anytls-go)
 
 ## Install
-
-### Install from the latest release
 
 ```bash
 curl -fsSL https://github.com/C5Hwang/singbox-deploy/releases/latest/download/install.sh | sudo bash
@@ -38,34 +43,49 @@ the interactive setup.
 The monitor UI is embedded into the Go binary via `go:embed`, so it must be
 built before compiling the Go binary.
 
+The hub binary also embeds the spoke **agent** binaries for both architectures
+(`assets/agentbin`), so the agents must be cross-compiled into the embed
+directory before the hub is built.
+
 ### Requirements
 
 - Go 1.25 or newer.
 - Node.js 22 or newer.
 - pnpm 9 or newer.
 
-### 1. Build the monitor UI
+### Build everything with one script
 
 ```bash
-pnpm --dir web/monitor install --frozen-lockfile
-pnpm --dir web/monitor build
+VERSION=v1.2.3 scripts/build.sh
 ```
 
-This writes the production build output to `assets/monitor-ui`, which the Go
-build embeds automatically.
+`scripts/build.sh` runs the whole pipeline: it builds the monitor UI,
+cross-compiles the `amd64` and `arm64` spoke agents into `assets/agentbin/`,
+then builds the hub binaries into `dist/`.
 
-### 2. Build the binary
+If the monitor UI has already been built, set `SKIP_MONITOR_UI=1` to skip that
+step and reuse the existing assets.
+
+### Build from scratch
 
 ```bash
-# Build for the current Linux architecture.
+# 1. Build the monitor UI.
+pnpm --dir web/monitor install --frozen-lockfile
+pnpm --dir web/monitor build
+
+# 2. Cross-compile the spoke agents into the embed dir.
+rm -f assets/agentbin/singbox-deploy-agent-linux-*
+for arch in amd64 arm64; do
+  CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" \
+    -o assets/agentbin/singbox-deploy-agent-linux-$arch ./cmd/singbox-deploy-agent
+done
+
+# 3. Build the hub binaries.
 mkdir -p dist
-CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy ./cmd/singbox-deploy
-
-# Build for Linux amd64.
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy-linux-amd64 ./cmd/singbox-deploy
-
-# Build for Linux arm64.
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/singbox-deploy-linux-arm64 ./cmd/singbox-deploy
+for arch in amd64 arm64; do
+  CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" \
+    -o dist/singbox-deploy-linux-$arch ./cmd/singbox-deploy
+done
 ```
 
 ## Acknowledgments

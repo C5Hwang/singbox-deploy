@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -28,33 +29,61 @@ func (r *recordingRunner) Run(c system.Command) error {
 }
 
 type fakeIssuer struct {
-	calls int
-	got   acme.Request
+	calls       int
+	got         acme.Request
+	certificate acme.Certificate
 }
 
 func (i *fakeIssuer) Issue(_ context.Context, r acme.Request) (acme.Certificate, error) {
 	i.calls++
 	i.got = r
-	return acme.Certificate{CertificatePEM: []byte("NEWCERT"), PrivateKeyPEM: []byte("NEWKEY")}, nil
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return acme.Certificate{}, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return acme.Certificate{}, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: r.Domain},
+		DNSNames:     []string{r.Domain},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return acme.Certificate{}, err
+	}
+	i.certificate = acme.Certificate{
+		CertificatePEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		PrivateKeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}),
+	}
+	return i.certificate, nil
+}
+
+func renewer(layout paths.Layout, issuer acme.Issuer, runner system.Runner) Renewer {
+	return Renewer{
+		Layout:      layout,
+		Manager:     &certmgr.Manager{Layout: layout, ACME: acme.NewManager(issuer), Now: time.Now},
+		Runner:      runner,
+		Now:         time.Now,
+		RenewBefore: 30 * 24 * time.Hour,
+	}
 }
 
 func TestRunSkipsCertificateNotNearExpiry(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	domain := "example.com"
-	writeRenewalState(t, layout, map[string]string{"domain": domain, "email": "", "acme_challenge": "http-01"})
 	writeTestCertificatePair(t, filepath.Join(layout.TLSDir, domain+".crt"), filepath.Join(layout.TLSDir, domain+".key"), domain, time.Now().Add(90*24*time.Hour))
 	issuer := &fakeIssuer{}
 	runner := &recordingRunner{}
 
-	r := Renewer{
-		Layout:      layout,
-		ACME:        acme.NewManager(issuer),
-		Runner:      runner,
-		Now:         time.Now,
-		RenewBefore: 30 * 24 * time.Hour,
-	}
-	if err := r.Run(context.Background()); err != nil {
+	if err := renewer(layout, issuer, runner).Run(context.Background()); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if issuer.calls != 0 {
@@ -68,35 +97,27 @@ func TestRunSkipsCertificateNotNearExpiry(t *testing.T) {
 func TestRunRenewsNearExpiryCertificate(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
-	domain := "example.com"
-	writeRenewalState(t, layout, map[string]string{
-		"domain":         domain,
-		"email":          "",
-		"acme_challenge": "dns-01",
-		"dns_provider":   "cloudflare",
-		"dns_credential": "cf-token",
-	})
+	domain := "vpn.example.com"
+	// A credential for the apex covers the subdomain via suffix match.
+	if err := certmgr.SaveCredentials(layout, []certmgr.DNSCredential{{
+		Domain: "example.com", Provider: "cloudflare", Credential: "cf-token",
+	}}); err != nil {
+		t.Fatalf("save credentials: %v", err)
+	}
 	certPath := filepath.Join(layout.TLSDir, domain+".crt")
 	keyPath := filepath.Join(layout.TLSDir, domain+".key")
 	writeTestCertificatePair(t, certPath, keyPath, domain, time.Now().Add(5*24*time.Hour))
 	issuer := &fakeIssuer{}
 	runner := &recordingRunner{}
 
-	r := Renewer{
-		Layout:      layout,
-		ACME:        acme.NewManager(issuer),
-		Runner:      runner,
-		Now:         time.Now,
-		RenewBefore: 30 * 24 * time.Hour,
-	}
-	if err := r.Run(context.Background()); err != nil {
+	if err := renewer(layout, issuer, runner).Run(context.Background()); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if issuer.calls != 1 {
 		t.Fatalf("expected one ACME call, got %d", issuer.calls)
 	}
-	if issuer.got.Email != "" {
-		t.Fatalf("email = %q, want empty", issuer.got.Email)
+	if issuer.got.Domain != domain {
+		t.Fatalf("issued for %q, want %q", issuer.got.Domain, domain)
 	}
 	if issuer.got.Challenge != acme.ChallengeDNS01 || issuer.got.DNSProvider != "cloudflare" {
 		t.Fatalf("bad ACME request: %#v", issuer.got)
@@ -115,20 +136,8 @@ func TestRunRenewsNearExpiryCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read key: %v", err)
 	}
-	if string(gotCert) != "NEWCERT" || string(gotKey) != "NEWKEY" {
+	if string(gotCert) != string(issuer.certificate.CertificatePEM) || string(gotKey) != string(issuer.certificate.PrivateKeyPEM) {
 		t.Fatalf("renewed certificate pair not written")
-	}
-}
-
-func writeRenewalState(t *testing.T, layout paths.Layout, values map[string]string) {
-	t.Helper()
-	if err := os.MkdirAll(layout.StateDir, 0o700); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-	for name, value := range values {
-		if err := os.WriteFile(filepath.Join(layout.StateDir, name), []byte(value+"\n"), 0o600); err != nil {
-			t.Fatalf("write state %s: %v", name, err)
-		}
 	}
 }
 

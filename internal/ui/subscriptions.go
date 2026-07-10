@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/account"
+	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -32,9 +36,7 @@ type subscriptionAction int
 const (
 	subscriptionActionDisplayName subscriptionAction = iota
 	subscriptionActionLocal
-	subscriptionActionAddRemote
-	subscriptionActionEditRemote
-	subscriptionActionDeleteRemotes
+	subscriptionActionEditSpoke
 	subscriptionActionReorder
 	subscriptionActionRefresh
 )
@@ -58,13 +60,13 @@ type subscriptionManager struct {
 	host    system.Host
 	hostErr error
 	cfg     deploy.Config
-	remotes []deploy.RemoteSubscription
+	nodes   []nodes.Node
 	loadErr error
 
-	cursor          int
-	editRemoteIndex int
-	localPosition   int
-	reorder         reorderForm
+	cursor        int
+	editNodeIndex int
+	localPosition int
+	reorder       reorderForm
 	parameterForm
 	commandRun
 	result deploy.Config
@@ -72,11 +74,11 @@ type subscriptionManager struct {
 
 func newSubscriptionManager() *subscriptionManager {
 	sm := &subscriptionManager{
-		phase:           subscriptionPhaseAction,
-		cursor:          1,
-		editRemoteIndex: -1,
-		parameterForm:   newParameterForm(nil),
-		commandRun:      newCommandRun(),
+		phase:         subscriptionPhaseAction,
+		cursor:        1,
+		editNodeIndex: -1,
+		parameterForm: newParameterForm(nil),
+		commandRun:    newCommandRun(),
 	}
 	host, err := detectSubscriptionHost()
 	sm.host = host
@@ -88,12 +90,12 @@ func newSubscriptionManager() *subscriptionManager {
 		return sm
 	}
 	sm.cfg = cfg
-	remotes, err := deploy.LoadRemoteSubscriptions(layout)
+	list, err := nodes.Load(layout)
 	if err != nil {
 		sm.loadErr = err
 		return sm
 	}
-	sm.remotes = remotes
+	sm.nodes = list
 	sm.localPosition = deploy.LoadLocalSubscriptionPosition(layout)
 	return sm
 }
@@ -148,24 +150,24 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case subscriptionPhaseForm:
 		cmd, done, handled := sm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
-				if sm.action == subscriptionActionEditRemote && sm.editRemoteIndex < 0 {
-					selectedLabel := sm.values["edit_remote_select"]
-					for i, r := range sm.remotes {
-						if remoteOptionLabel(r) == selectedLabel {
-							sm.editRemoteIndex = i
+				if sm.action == subscriptionActionEditSpoke && sm.editNodeIndex < 0 {
+					selectedLabel := sm.values["edit_spoke_select"]
+					for i, node := range sm.nodes {
+						if spokeOptionLabel(node) == selectedLabel {
+							sm.editNodeIndex = i
 							break
 						}
 					}
-					sm.startEditRemoteForm()
+					sm.startEditSpokeForm()
 					return
 				}
 				sm.phase = subscriptionPhaseConfirm
 			},
 			Back: func() {
 				if !sm.previousField() {
-					if sm.action == subscriptionActionEditRemote && sm.editRemoteIndex >= 0 {
-						sm.editRemoteIndex = -1
-						sm.startForm(sm.editRemoteSelectField())
+					if sm.action == subscriptionActionEditSpoke && sm.editNodeIndex >= 0 {
+						sm.editNodeIndex = -1
+						sm.startForm(sm.editSpokeSelectField())
 						return
 					}
 					sm.phase = subscriptionPhaseAction
@@ -210,8 +212,8 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				sm.cfg = cfg
 				sm.result = cfg
 			}
-			if remotes, err := deploy.LoadRemoteSubscriptions(layout); err == nil {
-				sm.remotes = remotes
+			if list, err := nodes.Load(layout); err == nil {
+				sm.nodes = list
 			}
 			sm.localPosition = deploy.LoadLocalSubscriptionPosition(layout)
 			sm.phase = subscriptionPhaseDone
@@ -236,7 +238,7 @@ func (sm *subscriptionManager) moveAction(delta int) {
 
 func (sm *subscriptionManager) activateAction() {
 	sm.fieldErr = ""
-	sm.editRemoteIndex = -1
+	sm.editNodeIndex = -1
 	actions := sm.actions()
 	idx, ok := selectedIndex(sm.cursor, len(actions))
 	if !ok {
@@ -248,20 +250,12 @@ func (sm *subscriptionManager) activateAction() {
 		sm.startForm(sm.displayNameFields())
 	case subscriptionActionLocal:
 		sm.startForm(sm.localFields())
-	case subscriptionActionAddRemote:
-		sm.startForm(sm.remoteFields())
-	case subscriptionActionEditRemote:
-		if len(sm.remotes) == 0 {
-			sm.fieldErr = "no remote subscriptions to edit"
+	case subscriptionActionEditSpoke:
+		if len(sm.nodes) == 0 {
+			sm.fieldErr = "no spoke nodes are registered; add one under Server → Spoke nodes"
 			return
 		}
-		sm.startForm(sm.editRemoteSelectField())
-	case subscriptionActionDeleteRemotes:
-		if len(sm.remotes) == 0 {
-			sm.fieldErr = "no remote subscriptions to delete"
-			return
-		}
-		sm.startForm(sm.deleteRemoteFields())
+		sm.startForm(sm.editSpokeSelectField())
 	case subscriptionActionReorder:
 		sm.reorder = newReorderForm(sm.buildReorderItems())
 		sm.phase = subscriptionPhaseReorder
@@ -289,67 +283,73 @@ func (sm *subscriptionManager) localFields() []field {
 	return fieldsFromParameters(uiparams.SubscriptionLocalFields(sm.cfg))
 }
 
-func (sm *subscriptionManager) remoteFields() []field {
-	return []field{
-		{key: "remote_domain", label: "Remote domain", note: "Domain name of the remote singbox-deploy server, for example node.example.com. Used to build remote subscription URLs."},
-		{key: "remote_alias", label: "Remote alias", note: "Alias used to rename aggregated remote nodes and display remote traffic. The node-name prefix (e.g. JP in JP-01) is replaced with this alias while preserving the numbering suffix, and the corresponding country flag emoji is prepended (e.g. JP-01 → 🇺🇸 US-vps1-01 when alias is US-vps1)."},
-		{key: "remote_subscribe_port", label: "Remote subscription HTTPS port", def: strconv.Itoa(sm.cfg.SubscribePort)},
-		{key: "remote_salt", label: "Remote subscription salt"},
-	}
-}
-
-func (sm *subscriptionManager) deleteRemoteFields() []field {
-	options := remoteLabels(sm.remotes)
+func (sm *subscriptionManager) editSpokeSelectField() []field {
+	options := spokeLabels(sm.nodes)
 	return []field{{
-		key:     "delete_remotes",
-		label:   "Remote subscriptions to delete",
+		key:     "edit_spoke_select",
+		label:   "Spoke subscription settings to edit",
 		options: options,
-		multi:   true,
-		note:    "Select one or more configured remote subscriptions to delete.",
+		note:    "The hub talks to this node over WireGuard; no public subscription endpoint is used.",
 	}}
 }
 
-func (sm *subscriptionManager) editRemoteSelectField() []field {
-	options := remoteLabels(sm.remotes)
-	return []field{{
-		key:     "edit_remote_select",
-		label:   "Remote subscription to edit",
-		options: options,
-		note:    "Select a remote subscription to edit.",
-	}}
-}
-
-func (sm *subscriptionManager) startEditRemoteForm() {
-	if sm.editRemoteIndex < 0 || sm.editRemoteIndex >= len(sm.remotes) {
+func (sm *subscriptionManager) startEditSpokeForm() {
+	if sm.editNodeIndex < 0 || sm.editNodeIndex >= len(sm.nodes) {
 		return
 	}
-	remote := sm.remotes[sm.editRemoteIndex]
+	node := sm.nodes[sm.editNodeIndex]
+	protocols := strings.Join(node.EnabledProtocols, ",")
+	if protocols == "" {
+		protocols = defaultProtocolValue()
+	}
+	fields := []field{
+		{key: "spoke_alias", label: "Spoke display alias", note: "Used to name this node in the hub's combined subscription."},
+		{key: "include_subscription", label: "Include in hub subscription", options: []string{"yes", "no"}, note: "No subscription endpoint is exposed on the spoke; the hub fetches node data over WireGuard."},
+		{key: "protocols", label: "Enabled protocols", options: protocolOptions(), multi: true},
+		{key: "reality_sni", label: "Reality URL/SNI", skip: func(v map[string]string) bool {
+			return !protocolSelected(v, config.ProtocolRealityVision) && !protocolSelected(v, config.ProtocolRealityGRPC)
+		}},
+	}
+	for _, proto := range config.AllProtocols {
+		p := proto
+		fields = append(fields, field{
+			key: portFieldKey(p), label: string(p) + " listen port",
+			skip: func(v map[string]string) bool { return !protocolSelected(v, p) },
+		})
+	}
 	sm.phase = subscriptionPhaseForm
-	if sm.parameterForm.begin(sm.remoteFields(), map[string]string{
-		"remote_domain":         strings.TrimSpace(remote.Domain),
-		"remote_alias":          strings.TrimSpace(remote.Alias),
-		"remote_subscribe_port": strconv.Itoa(remote.Port),
-		"remote_salt":           strings.TrimSpace(remote.Salt),
+	if sm.parameterForm.begin(fields, map[string]string{
+		"spoke_alias":          node.EffectiveAlias(),
+		"include_subscription": yesNoString(node.IncludeInSubscription),
+		"protocols":            protocols,
+		"reality_sni":          or(node.RealityServerName, defaultRealityServerName),
+		"reality_vision_port":  strconv.Itoa(node.RealityVisionPort),
+		"reality_grpc_port":    strconv.Itoa(node.RealityGRPCPort),
+		"hysteria2_port":       strconv.Itoa(node.Hysteria2Port),
+		"tuic_port":            strconv.Itoa(node.TUICPort),
+		"anytls_port":          strconv.Itoa(node.AnyTLSPort),
 	}, validateSubscriptionField) {
 		sm.phase = subscriptionPhaseConfirm
 	}
 }
 
 func (sm *subscriptionManager) buildReorderItems() []reorderItem {
-	total := 1 + len(sm.remotes)
+	included := sm.includedNodes()
+	total := 1 + len(included)
 	items := make([]reorderItem, 0, total)
-	localPos := deploy.ClampLocalPosition(sm.localPosition, len(sm.remotes))
+	localPos := deploy.ClampLocalPosition(sm.localPosition, len(included))
 	localLabel := "Local"
 	if sm.cfg.DisplayName != "" && sm.cfg.DisplayName != deploy.DefaultDisplayName {
 		localLabel = "Local (" + sm.cfg.DisplayName + ")"
 	}
-	remoteIdx := 0
+	nodeIdx := 0
 	for i := 0; i < total; i++ {
 		if i == localPos {
 			items = append(items, reorderItem{key: "local", label: localLabel})
 		} else {
-			items = append(items, reorderItem{key: strconv.Itoa(remoteIdx), label: remoteOptionLabel(sm.remotes[remoteIdx])})
-			remoteIdx++
+			node := included[nodeIdx]
+			items = append(items, reorderItem{key: node.ID, label: spokeOptionLabel(node)})
+			nodeIdx++
 		}
 	}
 	return items
@@ -366,22 +366,24 @@ func (sm *subscriptionManager) targetLocalPosition() int {
 	return sm.localPosition
 }
 
-func validateSubscriptionField(f field, val string, _ map[string]string) error {
+func validateSubscriptionField(f field, val string, vals map[string]string) error {
 	switch f.key {
-	case "remote_domain":
+	case "spoke_alias":
 		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("remote domain is required")
+			return fmt.Errorf("spoke alias is required")
 		}
-	case "remote_alias":
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("remote alias is required")
-		}
-	case "delete_remotes":
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("select at least one remote entry to delete")
+	case "protocols":
+		if len(protocolsFromValue(val)) == 0 {
+			return fmt.Errorf("select at least one protocol")
 		}
 	}
-	return uiparams.ValidateSubscriptionParameterValue(f.key, val)
+	if err := uiparams.ValidateSubscriptionParameterValue(f.key, val); err != nil {
+		return err
+	}
+	if err := uiparams.ValidateSharedParameterValue(f.key, val); err != nil {
+		return err
+	}
+	return validateInstallPortConflict(f.key, val, vals)
 }
 
 func (sm *subscriptionManager) canApply() bool { return hostCanApply(sm.host, sm.hostErr) }
@@ -415,6 +417,35 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 		}
 		go func() {
 			_, err := updateDisplayNameRun(context.Background(), opts)
+			if err == nil {
+				refreshHubSubscriptions(logs)
+			}
+			ch <- runMsg{done: true, err: err}
+		}()
+		return sm.waitForRun()
+	}
+	if sm.action == subscriptionActionEditSpoke {
+		go func() {
+			err := sm.applySpokeSubscription(context.Background(), logs)
+			ch <- runMsg{done: true, err: err}
+		}()
+		return sm.waitForRun()
+	}
+	if sm.action == subscriptionActionReorder {
+		go func() {
+			err := sm.applySourceOrder(context.Background(), logs)
+			ch <- runMsg{done: true, err: err}
+		}()
+		return sm.waitForRun()
+	}
+	if sm.action == subscriptionActionRefresh {
+		go func() {
+			// Remove obsolete public remote definitions before publishing only
+			// hub + registered spoke data fetched through WireGuard.
+			err := deploy.SaveRemoteSubscriptions(subscriptionUILayout(), nil)
+			if err == nil {
+				err = (&hubctl.Controller{Layout: subscriptionUILayout(), ExpectedVersion: toolVersion}).RefreshSubscriptions(context.Background())
+			}
 			ch <- runMsg{done: true, err: err}
 		}()
 		return sm.waitForRun()
@@ -428,16 +459,119 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 	}
 	go func() {
 		_, err := updateSubscriptionsRun(context.Background(), opts)
+		if err == nil {
+			refreshHubSubscriptions(logs)
+		}
 		ch <- runMsg{done: true, err: err}
 	}()
 	return sm.waitForRun()
+}
+
+func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs *logWriter) error {
+	if sm.editNodeIndex < 0 || sm.editNodeIndex >= len(sm.nodes) {
+		return fmt.Errorf("selected spoke no longer exists")
+	}
+	selected := sm.nodes[sm.editNodeIndex]
+	updated := selected
+	updated.Alias = strings.TrimSpace(sm.values["spoke_alias"])
+	updated.IncludeInSubscription = sm.values["include_subscription"] != "no"
+	updated.EnabledProtocols = protocolStringSlice(protocolsFromValue(sm.values["protocols"]))
+	if sni, err := uiparams.NormalizeRealityServerName(sm.values["reality_sni"]); err == nil {
+		updated.RealityServerName = sni
+	}
+	updated.RealityVisionPort, _ = strconv.Atoi(sm.values["reality_vision_port"])
+	updated.RealityGRPCPort, _ = strconv.Atoi(sm.values["reality_grpc_port"])
+	updated.Hysteria2Port, _ = strconv.Atoi(sm.values["hysteria2_port"])
+	updated.TUICPort, _ = strconv.Atoi(sm.values["tuic_port"])
+	updated.AnyTLSPort, _ = strconv.Atoi(sm.values["anytls_port"])
+
+	layout := subscriptionUILayout()
+	var original nodes.Node
+	if err := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
+		original = *current
+		current.Alias = updated.Alias
+		current.IncludeInSubscription = updated.IncludeInSubscription
+		current.EnabledProtocols = append([]string(nil), updated.EnabledProtocols...)
+		current.RealityServerName = updated.RealityServerName
+		current.RealityVisionPort = updated.RealityVisionPort
+		current.RealityGRPCPort = updated.RealityGRPCPort
+		current.Hysteria2Port = updated.Hysteria2Port
+		current.TUICPort = updated.TUICPort
+		current.AnyTLSPort = updated.AnyTLSPort
+		updated = *current
+		return nil
+	}); err != nil {
+		return err
+	}
+	ctrl := &hubctl.Controller{Layout: layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion}
+	if err := ctrl.Reconfigure(ctx, updated, logs); err != nil {
+		rollbackStateErr := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
+			current.Alias = original.Alias
+			current.IncludeInSubscription = original.IncludeInSubscription
+			current.EnabledProtocols = append([]string(nil), original.EnabledProtocols...)
+			current.RealityServerName = original.RealityServerName
+			current.RealityVisionPort = original.RealityVisionPort
+			current.RealityGRPCPort = original.RealityGRPCPort
+			current.Hysteria2Port = original.Hysteria2Port
+			current.TUICPort = original.TUICPort
+			current.AnyTLSPort = original.AnyTLSPort
+			return nil
+		})
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		rollbackRemoteErr := ctrl.Reconfigure(rollbackCtx, original, logs)
+		cancel()
+		if rollbackStateErr != nil || rollbackRemoteErr != nil {
+			return fmt.Errorf("apply spoke settings over WireGuard: %w (rollback state: %v; rollback spoke: %v)", err, rollbackStateErr, rollbackRemoteErr)
+		}
+		return fmt.Errorf("apply spoke settings over WireGuard: %w (previous settings restored)", err)
+	}
+	return nil
+}
+
+func (sm *subscriptionManager) applySourceOrder(ctx context.Context, logs *logWriter) error {
+	byID := make(map[string]nodes.Node, len(sm.nodes))
+	for _, node := range sm.nodes {
+		byID[node.ID] = node
+	}
+	ordered := make([]nodes.Node, 0, len(sm.nodes))
+	seen := map[string]bool{}
+	localPosition := 0
+	for i, item := range sm.reorder.items {
+		if item.key == "local" {
+			localPosition = i
+			continue
+		}
+		if node, ok := byID[item.key]; ok {
+			ordered = append(ordered, node)
+			seen[node.ID] = true
+		}
+	}
+	// Excluded and newly-added nodes keep their registry order after the
+	// explicitly ordered subscription sources.
+	for _, node := range sm.nodes {
+		if !seen[node.ID] {
+			ordered = append(ordered, node)
+		}
+	}
+	layout := subscriptionUILayout()
+	orderedIDs := make([]string, len(ordered))
+	for i := range ordered {
+		orderedIDs[i] = ordered[i].ID
+	}
+	if err := nodes.Reorder(layout, orderedIDs); err != nil {
+		return err
+	}
+	if err := deploy.SaveLocalSubscriptionPosition(layout, localPosition); err != nil {
+		return err
+	}
+	return (&hubctl.Controller{Layout: layout, ExpectedVersion: toolVersion}).RefreshSubscriptions(ctx)
 }
 
 func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.UpdateOptions {
 	opts := subscription.UpdateOptions{
 		Salt:          sm.cfg.Salt,
 		SubscribePort: sm.cfg.SubscribePort,
-		Remotes:       toSubscriptionRemotes(sm.targetRemotes()),
+		Remotes:       nil,
 		SetRemotes:    true,
 		Fetch:         deploy.DefaultSubscriptionFetch,
 		LoadConfig: func(l paths.Layout) (subscription.Config, error) {
@@ -447,16 +581,8 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 			}
 			return subscription.Config{Domain: cfg.Domain, Salt: cfg.Salt, SubscribePort: cfg.SubscribePort}, nil
 		},
-		LoadRemotes: func(l paths.Layout) ([]subscription.Remote, error) {
-			remotes, err := deploy.LoadRemoteSubscriptions(l)
-			if err != nil {
-				return nil, err
-			}
-			return toSubscriptionRemotes(remotes), nil
-		},
-		ValidateRemotes: func(remotes []subscription.Remote) error {
-			return deploy.ValidateRemoteSubscriptions(toDeployRemotes(remotes))
-		},
+		LoadRemotes:     func(paths.Layout) ([]subscription.Remote, error) { return nil, nil },
+		ValidateRemotes: func([]subscription.Remote) error { return nil },
 		WriteState: func(stateDir string, cfg subscription.Config) error {
 			full, err := deploy.LoadProtocolConfig(subscriptionUILayout())
 			if err != nil {
@@ -466,11 +592,11 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 			full.SubscribePort = cfg.SubscribePort
 			return deploy.WriteInstallState(stateDir, full)
 		},
-		SaveRemotes: func(l paths.Layout, remotes []subscription.Remote) error {
-			if err := deploy.SaveRemoteSubscriptions(l, toDeployRemotes(remotes)); err != nil {
+		SaveRemotes: func(l paths.Layout, _ []subscription.Remote) error {
+			if err := deploy.SaveRemoteSubscriptions(l, nil); err != nil {
 				return err
 			}
-			return deploy.SaveLocalSubscriptionPosition(l, sm.targetLocalPosition())
+			return nil
 		},
 		WriteNginxConfig: func(l paths.Layout, cfg subscription.Config, confPath string) error {
 			full, err := deploy.LoadProtocolConfig(l)
@@ -481,14 +607,14 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 			full.SubscribePort = cfg.SubscribePort
 			return deploy.WriteManagedNginxConfig(l, full, confPath)
 		},
-		WriteWithRemotes: func(ctx context.Context, l paths.Layout, cfg subscription.Config, remotes []subscription.Remote, fetch subscription.Fetcher) error {
+		WriteWithRemotes: func(ctx context.Context, l paths.Layout, cfg subscription.Config, _ []subscription.Remote, _ subscription.Fetcher) error {
 			full, err := deploy.LoadProtocolConfig(l)
 			if err != nil {
 				return err
 			}
 			full.Salt = cfg.Salt
 			full.SubscribePort = cfg.SubscribePort
-			return deploy.WriteSubscriptionsWithRemotes(ctx, l, full, toDeployRemotes(remotes), deploy.SubscriptionFetcher(fetch), sm.targetLocalPosition())
+			return deploy.WriteSubscriptionsWithRemotes(ctx, l, full, nil, nil, sm.localPosition)
 		},
 		RunCommands: deploy.RunCommands,
 		CheckPorts: func(ctx context.Context, domain string, port int) error {
@@ -504,79 +630,30 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 	return opts
 }
 
-func toSubscriptionRemotes(remotes []deploy.RemoteSubscription) []subscription.Remote {
-	out := make([]subscription.Remote, len(remotes))
-	for i, r := range remotes {
-		out[i] = subscription.Remote{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt}
+func (sm *subscriptionManager) includedNodes() []nodes.Node {
+	out := make([]nodes.Node, 0, len(sm.nodes))
+	for _, node := range sm.nodes {
+		if node.IncludeInSubscription && node.Installed {
+			out = append(out, node)
+		}
 	}
 	return out
 }
 
-func toDeployRemotes(remotes []subscription.Remote) []deploy.RemoteSubscription {
-	out := make([]deploy.RemoteSubscription, len(remotes))
-	for i, r := range remotes {
-		out[i] = deploy.RemoteSubscription{Domain: r.Domain, Port: r.Port, Alias: r.Alias, Salt: r.Salt}
+func spokeOptionLabel(node nodes.Node) string {
+	id := node.ID
+	if len(id) > 8 {
+		id = id[:8]
 	}
-	return out
+	return fmt.Sprintf("%s (%s · %s)", node.EffectiveAlias(), node.WGIP, id)
 }
 
-func (sm *subscriptionManager) targetRemotes() []deploy.RemoteSubscription {
-	switch sm.action {
-	case subscriptionActionAddRemote:
-		remotes := append([]deploy.RemoteSubscription(nil), sm.remotes...)
-		port, _ := strconv.Atoi(strings.TrimSpace(sm.values["remote_subscribe_port"]))
-		remotes = append(remotes, deploy.RemoteSubscription{
-			Domain: strings.TrimSpace(sm.values["remote_domain"]),
-			Port:   port,
-			Alias:  strings.TrimSpace(sm.values["remote_alias"]),
-			Salt:   strings.TrimSpace(sm.values["remote_salt"]),
-		})
-		return remotes
-	case subscriptionActionEditRemote:
-		remotes := append([]deploy.RemoteSubscription(nil), sm.remotes...)
-		if sm.editRemoteIndex >= 0 && sm.editRemoteIndex < len(remotes) {
-			port, _ := strconv.Atoi(strings.TrimSpace(sm.values["remote_subscribe_port"]))
-			remotes[sm.editRemoteIndex] = deploy.RemoteSubscription{
-				Domain: strings.TrimSpace(sm.values["remote_domain"]),
-				Port:   port,
-				Alias:  strings.TrimSpace(sm.values["remote_alias"]),
-				Salt:   strings.TrimSpace(sm.values["remote_salt"]),
-			}
-		}
-		return remotes
-	case subscriptionActionDeleteRemotes:
-		deleted := selectedOptions(sm.values["delete_remotes"])
-		remotes := make([]deploy.RemoteSubscription, 0, len(sm.remotes))
-		for _, remote := range sm.remotes {
-			if deleted[remoteOptionLabel(remote)] {
-				continue
-			}
-			remotes = append(remotes, remote)
-		}
-		return remotes
-	case subscriptionActionReorder:
-		remotes := make([]deploy.RemoteSubscription, 0, len(sm.remotes))
-		for _, item := range sm.reorder.items {
-			if item.key == "local" {
-				continue
-			}
-			idx, _ := strconv.Atoi(item.key)
-			if idx >= 0 && idx < len(sm.remotes) {
-				remotes = append(remotes, sm.remotes[idx])
-			}
-		}
-		return remotes
-	default:
-		return append([]deploy.RemoteSubscription(nil), sm.remotes...)
+func spokeLabels(list []nodes.Node) []string {
+	labels := make([]string, len(list))
+	for i, node := range list {
+		labels[i] = spokeOptionLabel(node)
 	}
-}
-
-func remoteOptionLabel(remote deploy.RemoteSubscription) string {
-	alias := strings.TrimSpace(remote.Alias)
-	if alias == "" {
-		alias = strings.TrimSpace(remote.Domain)
-	}
-	return fmt.Sprintf("%s (%s:%d)", alias, strings.TrimSpace(remote.Domain), remote.Port)
+	return labels
 }
 
 func (sm *subscriptionManager) handleRun(msg runMsg) tea.Cmd { return handleCommandRun(sm, msg) }
@@ -614,7 +691,9 @@ func (sm *subscriptionManager) actionView() string {
 	rows := []summaryLine{
 		summaryRow("Subscription port", strconv.Itoa(sm.cfg.SubscribePort)),
 		summaryRow("Subscription salt", sm.cfg.Salt),
-		summaryRow("Remote subscriptions", strconv.Itoa(len(sm.remotes))),
+		summaryRow("Spoke nodes", strconv.Itoa(len(sm.nodes))),
+		summaryRow("Included spokes", strconv.Itoa(len(sm.includedNodes()))),
+		summaryRow("Control path", "WireGuard only"),
 	}
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("Manage Subscriptions") + "\n\n")
@@ -645,39 +724,21 @@ func (sm *subscriptionManager) confirmView() string {
 			summaryRow("Current port", strconv.Itoa(sm.cfg.SubscribePort)),
 			summaryRow("New port", sm.values["subscribe_port"]),
 		)
-	case subscriptionActionAddRemote:
-		rows = append(rows,
-			summaryRow("Add remote domain", sm.values["remote_domain"]),
-			summaryRow("Remote subscription port", sm.values["remote_subscribe_port"]),
-			summaryRow("Remote alias", sm.values["remote_alias"]),
-		)
-	case subscriptionActionEditRemote:
-		if sm.editRemoteIndex >= 0 && sm.editRemoteIndex < len(sm.remotes) {
-			old := sm.remotes[sm.editRemoteIndex]
+	case subscriptionActionEditSpoke:
+		if sm.editNodeIndex >= 0 && sm.editNodeIndex < len(sm.nodes) {
+			old := sm.nodes[sm.editNodeIndex]
 			rows = append(rows,
-				summaryRow("Current domain", old.Domain),
-				summaryRow("New domain", sm.values["remote_domain"]),
-				summaryRow("Current alias", old.Alias),
-				summaryRow("New alias", sm.values["remote_alias"]),
-				summaryRow("Current port", strconv.Itoa(old.Port)),
-				summaryRow("New port", sm.values["remote_subscribe_port"]),
+				summaryRow("Spoke", spokeOptionLabel(old)),
+				summaryRow("Current alias", old.EffectiveAlias()),
+				summaryRow("New alias", sm.values["spoke_alias"]),
+				summaryRow("Include in hub subscription", sm.values["include_subscription"]),
+				summaryRow("Enabled protocols", sm.values["protocols"]),
+				summaryRow("Reality Vision port", sm.values["reality_vision_port"]),
+				summaryRow("Reality gRPC port", sm.values["reality_grpc_port"]),
+				summaryRow("Hysteria2 port", sm.values["hysteria2_port"]),
+				summaryRow("TUIC port", sm.values["tuic_port"]),
+				summaryRow("AnyTLS port", sm.values["anytls_port"]),
 			)
-		}
-	case subscriptionActionDeleteRemotes:
-		selected := sm.selectedRemoteDeleteLabels()
-		remaining := remoteLabels(sm.targetRemotes())
-		rows = append(rows,
-			summaryRow("Delete remote subscriptions", strconv.Itoa(len(selected))),
-		)
-		for _, label := range selected {
-			rows = append(rows, summaryIndentedRow(2, "Delete", label))
-		}
-		rows = append(rows, summaryRow("Remaining remote subscriptions", strconv.Itoa(len(remaining))))
-		if len(remaining) == 0 {
-			rows = append(rows, summaryIndentedRow(2, "Keep", "none"))
-		}
-		for _, label := range remaining {
-			rows = append(rows, summaryIndentedRow(2, "Keep", label))
 		}
 	case subscriptionActionReorder:
 		rows = append(rows, summaryRow("New order", ""))
@@ -685,7 +746,10 @@ func (sm *subscriptionManager) confirmView() string {
 			rows = append(rows, summaryIndentedRow(2, strconv.Itoa(i+1), item.label))
 		}
 	case subscriptionActionRefresh:
-		rows = append(rows, summaryRow("Refresh remote subscriptions", strconv.Itoa(len(sm.remotes))))
+		rows = append(rows,
+			summaryRow("Refresh spoke subscriptions", strconv.Itoa(len(sm.includedNodes()))),
+			summaryRow("Transport", "WireGuard overlay"),
+		)
 	}
 	rows = append(rows, summaryBlank())
 	if sm.action == subscriptionActionDisplayName {
@@ -696,26 +760,6 @@ func (sm *subscriptionManager) confirmView() string {
 	return flowTitle.Render("Manage Subscriptions · Confirm") + "\n\n" + renderSummary(rows)
 }
 
-func (sm *subscriptionManager) selectedRemoteDeleteLabels() []string {
-	selected := selectedOptions(sm.values["delete_remotes"])
-	labels := make([]string, 0, len(selected))
-	for _, remote := range sm.remotes {
-		label := remoteOptionLabel(remote)
-		if selected[label] {
-			labels = append(labels, label)
-		}
-	}
-	return labels
-}
-
-func remoteLabels(remotes []deploy.RemoteSubscription) []string {
-	labels := make([]string, 0, len(remotes))
-	for _, remote := range remotes {
-		labels = append(labels, remoteOptionLabel(remote))
-	}
-	return labels
-}
-
 func (sm *subscriptionManager) doneSummary() string {
 	cfg := sm.result
 	if cfg.Domain == "" {
@@ -724,7 +768,8 @@ func (sm *subscriptionManager) doneSummary() string {
 	return renderSummary([]summaryLine{
 		summaryRow("Display name", cfg.DisplayName),
 		summaryRow("Subscription port", strconv.Itoa(cfg.SubscribePort)),
-		summaryRow("Remote subscriptions", strconv.Itoa(len(sm.remotes))),
+		summaryRow("Included spokes", strconv.Itoa(len(sm.includedNodes()))),
+		summaryRow("Spoke transport", "WireGuard"),
 		summaryRow("Subscriptions", "refreshed"),
 	})
 }
@@ -753,15 +798,12 @@ func (sm *subscriptionManager) footerHints() []operationHint {
 
 func (sm *subscriptionManager) actions() []subscriptionActionItem {
 	return []subscriptionActionItem{
-		{separator: true, label: "Settings"},
-		{action: subscriptionActionDisplayName, label: "Edit display name"},
-		{action: subscriptionActionLocal, label: "Edit subscription salt & port"},
-		{separator: true, label: "Remote"},
-		{action: subscriptionActionAddRemote, label: "Add remote subscription"},
-		{action: subscriptionActionEditRemote, label: "Edit remote subscription"},
-		{action: subscriptionActionDeleteRemotes, label: "Delete remote subscription"},
-		{separator: true, label: "Manage"},
-		{action: subscriptionActionReorder, label: "Reorder subscriptions"},
-		{action: subscriptionActionRefresh, label: "Refresh subscriptions"},
+		{separator: true, label: "Hub"},
+		{action: subscriptionActionDisplayName, label: "Edit hub display name"},
+		{action: subscriptionActionLocal, label: "Edit hub subscription salt & port"},
+		{separator: true, label: "Spokes (WireGuard)"},
+		{action: subscriptionActionEditSpoke, label: "Edit spoke subscription settings"},
+		{action: subscriptionActionReorder, label: "Reorder hub and spoke sources"},
+		{action: subscriptionActionRefresh, label: "Refresh from spokes now"},
 	}
 }

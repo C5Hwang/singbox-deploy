@@ -1,0 +1,255 @@
+package ui
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/C5Hwang/singbox-deploy/internal/bootstrap"
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/system"
+)
+
+func TestCertificateMenuEntryOpens(t *testing.T) {
+	m := NewModel()
+	m.SetSize(180, 40)
+	m.cursor = 3 // Server → Certificate management
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.certificates == nil {
+		t.Fatalf("certificate manager was not opened")
+	}
+	view := m.View()
+	for _, want := range []string{"Certificate management", "Add / force renew certificate now", "Manage DNS credentials"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("certificate view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestNodesMenuEntryGatedBeforeHubInstall(t *testing.T) {
+	m := NewModel()
+	m.SetSize(180, 40)
+	m.cursor = 4 // Server → Spoke nodes
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.nodes == nil {
+		t.Fatalf("node manager was not opened")
+	}
+	// With no hub install present, adding a node must be gated.
+	if m.nodes.hubReady {
+		t.Skip("a hub is installed on this host; gate test not applicable")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Install the hub first") {
+		t.Fatalf("node view should gate on hub install:\n%s", view)
+	}
+	// Selecting "Add spoke node" while gated surfaces the reason instead of a form.
+	m.nodes.actionCur = 0
+	_, _ = m.nodes.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.nodes.phase != nodePhaseList {
+		t.Fatalf("gated add should stay on the list, phase=%d", m.nodes.phase)
+	}
+}
+
+func TestCertFormRedirectsWhenNoCredential(t *testing.T) {
+	m := newCertManager()
+	m.creds = nil // no credentials cover anything
+	m.beginCertForm()
+	// Fill the domain field and complete.
+	m.form.values["domain"] = "vpn.example.com"
+	m.completeForm()
+	if m.phase != certPhaseCredForm {
+		t.Fatalf("expected redirect to credential form, phase=%d", m.phase)
+	}
+	if !m.resumeIssueAfterCred || m.pendingDomain != "vpn.example.com" {
+		t.Fatalf("issuance should be queued to resume: resume=%v domain=%q", m.resumeIssueAfterCred, m.pendingDomain)
+	}
+	// The credential form is pre-seeded with the domain.
+	if m.form.values["domain"] != "vpn.example.com" {
+		t.Fatalf("credential form not seeded with domain: %q", m.form.values["domain"])
+	}
+}
+
+func TestRootModelSuspendsAndRestoresNodeFormForCertificate(t *testing.T) {
+	root := NewModel()
+	flow := newNodeManager()
+	flow.phase = nodePhaseForm
+	flow.certificateDomainRequest = "spoke.example.com"
+	root.nodes = flow
+
+	// A non-key message lets the root observe the redirect request without
+	// changing the form's own phase.
+	_, _ = root.Update(struct{}{})
+	if root.nodes != nil || root.suspendedNodes != flow || root.certificates == nil {
+		t.Fatalf("node form was not suspended: nodes=%p suspended=%p certs=%p", root.nodes, root.suspendedNodes, root.certificates)
+	}
+	if root.certificates.form.values["domain"] != "spoke.example.com" || !root.certificates.returnAfterIssue {
+		t.Fatalf("certificate flow was not seeded: values=%v return=%v", root.certificates.form.values, root.certificates.returnAfterIssue)
+	}
+
+	// A completed issuance returns to the exact retained node form. The operator
+	// can press Enter again to revalidate the now-managed domain and continue.
+	root.certificates.phase = certPhaseDone
+	root.certificates.run.runErr = nil
+	_, _ = root.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if root.certificates != nil || root.nodes != flow || root.suspendedNodes != nil {
+		t.Fatalf("node form was not restored: nodes=%p suspended=%p certs=%p", root.nodes, root.suspendedNodes, root.certificates)
+	}
+}
+
+func TestRootModelSuspendsAndRestoresInstallFormForCertificate(t *testing.T) {
+	root := NewModel()
+	flow := newInstallFlow()
+	flow.phase = phaseForm
+	flow.form.values["email"] = "admin@example.com"
+	flow.certificateDomainRequest = "hub.example.com"
+	root.install = flow
+
+	_, _ = root.Update(struct{}{})
+	if root.install != nil || root.suspendedInstall != flow || root.certificates == nil {
+		t.Fatalf("install form was not suspended")
+	}
+	if root.certificates.form.values["domain"] != "hub.example.com" || root.certificates.form.values["email"] != "admin@example.com" {
+		t.Fatalf("certificate flow seed = %v", root.certificates.form.values)
+	}
+	root.certificates.phase = certPhaseDone
+	root.certificates.run.runErr = nil
+	_, _ = root.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if root.certificates != nil || root.install != flow || root.suspendedInstall != nil {
+		t.Fatalf("install form was not restored")
+	}
+}
+
+func TestCertificateDeleteRefusesInstalledSpokeConsumer(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	const domain = "spoke.example.com"
+	if err := certmgr.Register(layout, domain, "admin@example.com"); err != nil {
+		t.Fatalf("register certificate: %v", err)
+	}
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "tokyo", SSHHost: "tokyo.example.com", Domain: domain,
+		WGIP: "10.90.0.2", Installed: true,
+	}); err != nil {
+		t.Fatalf("register spoke: %v", err)
+	}
+
+	m := newCertManager()
+	m.layout = layout
+	m.reload()
+	if len(m.inventory) != 1 || m.inventory[0].Domain != domain {
+		t.Fatalf("unexpected certificate inventory: %+v", m.inventory)
+	}
+	m.phase = certPhaseCertPick
+	m.pickCursor = 0
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(m.result, "cannot delete "+domain) || !strings.Contains(m.result, "certificate is used by") {
+		t.Fatalf("delete was not blocked: %q", m.result)
+	}
+	managed, err := certmgr.IsManaged(layout, domain)
+	if err != nil || !managed {
+		t.Fatalf("in-use certificate was deregistered: managed=%v err=%v", managed, err)
+	}
+}
+
+func TestNodeHostKeyFingerprintRequiresExplicitConfirmation(t *testing.T) {
+	m := newNodeManager()
+	m.pendingTarget = bootstrap.Target{
+		Host: "2001:db8::20", Port: 22, User: "root",
+		Auth: bootstrap.Auth{PrivateKeyPEM: []byte("secret-key")},
+	}
+	m.phase = nodePhaseHostKeyScan
+	info := bootstrap.HostKeyInfo{Algorithm: "ssh-ed25519", Fingerprint: "SHA256:confirmed-key"}
+	_, _ = m.Update(nodeHostKeyScanMsg{info: info})
+	if m.phase != nodePhaseHostKeyConfirm {
+		t.Fatalf("scan did not enter confirmation phase: %d", m.phase)
+	}
+	view := m.View()
+	for _, want := range []string{"[2001:db8::20]:22", "ssh-ed25519", "SHA256:confirmed-key", "Press y"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("confirmation view missing %q:\n%s", want, view)
+		}
+	}
+	// Enter is intentionally not an affirmative action: the operator must type y.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != nodePhaseHostKeyConfirm {
+		t.Fatalf("Enter implicitly trusted the key")
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if m.phase != nodePhaseList || len(m.pendingTarget.Auth.PrivateKeyPEM) != 0 {
+		t.Fatalf("cancel did not discard pending auth: phase=%d auth=%+v", m.phase, m.pendingTarget.Auth)
+	}
+}
+
+func TestForceDetachRequiresExplicitYConfirmation(t *testing.T) {
+	m := newNodeManager()
+	m.hubReady = true
+	m.list = []nodes.Node{{ID: "node-id", Alias: "lost", Domain: "lost.example.com"}}
+	m.actionCur = 2
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != nodePhaseDeletePick || m.action != "Force detach" {
+		t.Fatalf("force action did not open picker: phase=%d action=%q", m.phase, m.action)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != nodePhaseForceConfirm {
+		t.Fatalf("picker did not open force confirmation: phase=%d", m.phase)
+	}
+	if view := m.View(); !strings.Contains(view, "may remain active") || !strings.Contains(view, "Press y") {
+		t.Fatalf("force warning is incomplete:\n%s", view)
+	}
+	// Enter must never be treated as destructive confirmation.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != nodePhaseForceConfirm {
+		t.Fatal("Enter force-detached a node without explicit y")
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if m.phase != nodePhaseList || m.pendingRemove.ID != "" {
+		t.Fatalf("cancel did not return safely: phase=%d pending=%+v", m.phase, m.pendingRemove)
+	}
+}
+
+func TestNodeHostKeyScanRunsAsCommand(t *testing.T) {
+	original := scanSpokeHostKey
+	t.Cleanup(func() { scanSpokeHostKey = original })
+	scanSpokeHostKey = func(_ context.Context, target bootstrap.Target) (bootstrap.HostKeyInfo, error) {
+		if target.Host != "spoke.example.com" {
+			t.Fatalf("unexpected scan target: %+v", target)
+		}
+		return bootstrap.HostKeyInfo{Fingerprint: "SHA256:async"}, nil
+	}
+	m := newNodeManager()
+	m.form.values = map[string]string{
+		"alias": "spoke", "ssh_host": "spoke.example.com", "ssh_port": "22", "ssh_user": "root",
+		"ssh_auth": "password", "ssh_password": "memory-only", "domain": "spoke.example.com",
+	}
+	m.completeForm()
+	if m.phase != nodePhaseHostKeyScan || m.startCmd == nil {
+		t.Fatalf("form completion did not schedule asynchronous scan")
+	}
+	msg := m.startCmd()
+	if _, ok := msg.(nodeHostKeyScanMsg); !ok {
+		t.Fatalf("scan command returned %T", msg)
+	}
+}
+
+func TestFinalizeHubInstallDoesNotMarkInstalledOnOverlayFailure(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.SetHubInstalled(layout, true); err != nil {
+		t.Fatal(err)
+	}
+	err := finalizeHubInstall(layout, deploy.Config{Domain: "hub.example.com"}, failingOverlayRunner{}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "overlay") {
+		t.Fatalf("expected overlay failure, got %v", err)
+	}
+	if nodes.HubInstalled(layout) {
+		t.Fatal("hub_installed remained yes after overlay initialization failed")
+	}
+}
+
+type failingOverlayRunner struct{}
+
+func (failingOverlayRunner) Run(system.Command) error { return errors.New("injected command failure") }

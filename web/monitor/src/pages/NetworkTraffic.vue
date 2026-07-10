@@ -14,7 +14,7 @@ const sources = computed<SourceSummary[]>(() => {
   const s = props.summary;
   if (!s) return [];
   if (s.sources && s.sources.length > 0) return s.sources;
-  return [{ ...s, name: "Local Server" }];
+  return [{ ...s, id: "local", name: "Local Server" }];
 });
 
 type UsedKey = "inUsedBytes" | "outUsedBytes" | "totalUsedBytes";
@@ -138,7 +138,7 @@ const availableDetail = computed(() => {
   <section class="grid sources" aria-label="monitor sources">
     <SourceCard
       v-for="source in sources"
-      :key="source.name"
+      :key="source.id || source.name"
       :source="source"
       @click="modalSource = source"
     />

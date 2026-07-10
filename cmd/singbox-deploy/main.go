@@ -29,6 +29,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "agent" {
+		if err := runAgentAsset(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "agent:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	p := tea.NewProgram(ui.NewModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {

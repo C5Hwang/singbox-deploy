@@ -1,0 +1,21 @@
+[Unit]
+Description=singbox-deploy spoke agent
+Documentation=https://github.com/C5Hwang/singbox-deploy
+After=network-online.target wg-quick@{{ .Interface }}.service
+Wants=network-online.target
+Requires=wg-quick@{{ .Interface }}.service
+
+[Service]
+Type=simple
+ExecStart={{ .AgentBin }}
+Restart=on-failure
+RestartSec=5
+User=root
+LimitNOFILE=infinity
+# Upgrade requests briefly hold the verified Agent plus its base64 JSON body.
+# The wire payload is capped at 64 MiB by nodeapi; leave enough headroom for the
+# Go runtime and the in-process monitor while still bounding the daemon.
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

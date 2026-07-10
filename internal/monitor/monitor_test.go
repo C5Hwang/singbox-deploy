@@ -348,11 +348,11 @@ func TestEnforceQuotaStopsServiceWhenExceeded(t *testing.T) {
 
 	ctrl := &fakeController{active: true}
 	m := New(store, Config{
-		InLimitBytes:  400,
-		OutLimitBytes: 0,
+		InLimitBytes:    400,
+		OutLimitBytes:   0,
 		TotalLimitBytes: 0,
-		ResetDay:      1,
-		Now:           func() time.Time { return now },
+		ResetDay:        1,
+		Now:             func() time.Time { return now },
 	}, ctrl)
 
 	m.enforceQuota(now)
@@ -1000,6 +1000,69 @@ func TestTrafficTrendAPIRemoteEmbeddedTrend(t *testing.T) {
 	}
 	if len(result.Trend) != 1 || result.Trend[0].InBytes != 10 {
 		t.Fatalf("trend = %+v", result.Trend)
+	}
+}
+
+func TestRemoteDrillDownUsesStableIDFetcherInsteadOfStoredURL(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "monitor.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	remotePath := filepath.Join(dir, "state", "remote_monitor.json")
+	if err := WriteRemoteSources(remotePath, []SourceSummary{{
+		ID: "stable-node-id", Name: "mutable alias", MonitorURL: "http://127.0.0.1:1/should-not-be-used",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var gotID, gotPath string
+	m := New(store, Config{
+		Alias:             "local",
+		RemoteMonitorPath: remotePath,
+		FetchRemoteData: func(_ context.Context, sourceID, path string) ([]byte, error) {
+			gotID, gotPath = sourceID, path
+			return []byte(`{"trend":[{"hourTs":1000,"inBytes":7}]}`), nil
+		},
+	}, nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/traffic-trend?source=stable-node-id", nil)
+	m.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotID != "stable-node-id" || gotPath != "/api/traffic-trend" {
+		t.Fatalf("fetcher got id=%q path=%q", gotID, gotPath)
+	}
+	if !strings.Contains(rec.Body.String(), `"inBytes":7`) {
+		t.Fatalf("unexpected proxied body: %s", rec.Body.String())
+	}
+}
+
+func TestManagedHubDoesNotFallBackToLegacyPublicMonitorURL(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "monitor.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	remotePath := filepath.Join(dir, "remote_monitor.json")
+	if err := WriteRemoteSources(remotePath, []SourceSummary{{
+		Name: "legacy", MonitorURL: "http://127.0.0.1:1/public-legacy",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	m := New(store, Config{
+		RemoteMonitorPath: remotePath,
+		FetchRemoteData: func(context.Context, string, string) ([]byte, error) {
+			t.Fatal("legacy source without stable ID must not reach the spoke fetcher")
+			return nil, nil
+		},
+	}, nil)
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/traffic-trend?source=legacy", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -1,0 +1,537 @@
+// Package nodes is the hub's registry of spoke nodes and its own overlay
+// identity. Each spoke is one numbered directory of small state files under
+// state/nodes/; the hub's WireGuard identity (key pair, public endpoint, subnet)
+// lives in dedicated state files. The registry holds SSH bootstrap details, the
+// overlay address and key material, the agent API token, and the editable
+// install parameters the hub pushes to the agent.
+package nodes
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
+	"github.com/C5Hwang/singbox-deploy/internal/wgnet"
+)
+
+const (
+	nodesDir            = "nodes"
+	hubPrivateKeyFile   = "hub_wg_private_key"
+	hubPublicKeyFile    = "hub_wg_public_key"
+	hubEndpointHostFile = "hub_wg_endpoint_host"
+	hubListenPortFile   = "hub_wg_listen_port"
+	hubSubnetFile       = "hub_wg_subnet"
+	hubInstalledFile    = "hub_installed"
+
+	// DefaultAgentPort is the spoke agent API port. It binds to the node's
+	// overlay address only, so it is never publicly reachable.
+	DefaultAgentPort = 19091
+)
+
+// Node is one spoke registered with the hub.
+type Node struct {
+	// ID is the stable registry identity. It is independent of mutable
+	// connectivity fields such as the SSH host and overlay address.
+	ID string
+
+	// Identity and connectivity.
+	Alias   string
+	SSHHost string
+	SSHPort int
+	SSHUser string
+
+	// Overlay membership.
+	WGPublicKey string
+	WGIP        string // overlay address, e.g. 10.90.0.2
+
+	// Agent API.
+	Token     string // bearer token for the agent API
+	AgentPort int
+	Arch      string // amd64 | arm64
+	Installed bool
+
+	// Hub-observed agent state. LastSeen is updated only after an authenticated
+	// health response has been received over the overlay.
+	AgentVersion string
+	LastSeen     time.Time
+
+	// IncludeInSubscription controls whether this spoke contributes entries to
+	// the hub's aggregate subscription. Legacy entries default to true.
+	IncludeInSubscription bool
+	// PendingCertificate marks a certificate that could not yet be delivered;
+	// a later health check or reconfigure retries it over the overlay.
+	PendingCertificate bool
+
+	// Proxy configuration the hub pushes to the agent.
+	Domain               string
+	RealityServerName    string
+	RealityHandshakePort int
+	EnabledProtocols     []string
+	RealityVisionPort    int
+	RealityGRPCPort      int
+	Hysteria2Port        int
+	TUICPort             int
+	AnyTLSPort           int
+
+	// Monitor configuration.
+	Monitor                bool
+	MonitorAlias           string
+	MonitorInterface       string
+	MonitorPort            int
+	MonitorIntervalSeconds int
+	TrafficInLimitBytes    uint64
+	TrafficOutLimitBytes   uint64
+	TrafficTotalLimitBytes uint64
+	ResetDay               int
+	ResetHour              int
+}
+
+func (n Node) effectiveAlias() string {
+	alias := strings.TrimSpace(n.Alias)
+	if alias == "" {
+		alias = strings.TrimSpace(n.Domain)
+	}
+	if alias == "" {
+		alias = strings.TrimSpace(n.SSHHost)
+	}
+	return alias
+}
+
+// EffectiveAlias returns the display alias, falling back to domain then host.
+func (n Node) EffectiveAlias() string { return n.effectiveAlias() }
+
+// AgentAddr returns the WG host:port the hub dials to reach the agent API.
+func (n Node) AgentAddr() string {
+	port := n.AgentPort
+	if port <= 0 {
+		port = DefaultAgentPort
+	}
+	return fmt.Sprintf("%s:%d", n.WGIP, port)
+}
+
+func nodesPath(layout paths.Layout) string {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	return filepath.Join(layout.StateDir, nodesDir)
+}
+
+// Load reads all registered nodes in saved order.
+func Load(layout paths.Layout) ([]Node, error) {
+	list, err := state.LoadEntryDirs(nodesPath(layout), decodeNode)
+	if err != nil {
+		return nil, err
+	}
+	// Registry entries created before stable IDs were introduced are upgraded
+	// deterministically. Including the original saved position disambiguates
+	// even accidentally duplicated legacy records, and the immediate save makes
+	// the result independent of future reordering.
+	migrated, err := normalizeNodeIDs(list)
+	if err != nil {
+		return nil, err
+	}
+	if migrated {
+		// Re-read and migrate while holding the registry's complete transaction
+		// lock. Saving the earlier snapshot here could discard a node or status
+		// update committed by another process after LoadEntryDirs returned.
+		list, err = transact(layout, func(current []Node) ([]Node, error) {
+			return current, nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("persist migrated node IDs: %w", err)
+		}
+	}
+	return list, nil
+}
+
+// Save persists the node list, one directory per node.
+func Save(layout paths.Layout, list []Node) error {
+	return state.SaveEntryDirs(nodesPath(layout), list, encodeNode)
+}
+
+// Add appends a node and persists the list.
+func Add(layout paths.Layout, n Node) error {
+	var err error
+	n.ID = strings.ToLower(strings.TrimSpace(n.ID))
+	if n.ID == "" {
+		n.ID, err = GenerateID()
+		if err != nil {
+			return err
+		}
+	}
+	// A newly-created node participates in aggregation unless explicitly
+	// changed later through Update. A plain bool cannot distinguish an omitted
+	// field from false at creation time, so Add owns this default.
+	n.IncludeInSubscription = true
+	_, err = transact(layout, func(list []Node) ([]Node, error) {
+		if err := ValidateNew(list, n); err != nil {
+			return nil, err
+		}
+		return append(list, n), nil
+	})
+	return err
+}
+
+// Update replaces a node by stable ID. WGIP is retained as a compatibility
+// fallback for callers holding a legacy Node without an ID.
+func Update(layout paths.Layout, n Node) error {
+	n.ID = strings.ToLower(strings.TrimSpace(n.ID))
+	_, err := transact(layout, func(list []Node) ([]Node, error) {
+		match := -1
+		for i := range list {
+			if n.ID != "" {
+				if list[i].ID == n.ID {
+					match = i
+					break
+				}
+			} else if n.WGIP != "" && list[i].WGIP == n.WGIP {
+				match = i
+				break
+			}
+		}
+		if match < 0 {
+			identity := n.ID
+			if identity == "" {
+				identity = n.WGIP
+			}
+			return nil, fmt.Errorf("node %s not found", identity)
+		}
+		if n.ID == "" {
+			n.ID = list[match].ID
+		}
+		if err := validateUnique(list, n, match); err != nil {
+			return nil, err
+		}
+		list[match] = n
+		return list, nil
+	})
+	return err
+}
+
+// Mutate updates the current value of one node while holding the registry's
+// complete read-modify-write transaction lock. Unlike Update, callers do not
+// need to carry a full Node snapshot across the lock boundary, so independent
+// status updates from the TUI, monitor, and certificate processes cannot
+// overwrite each other. id must be the stable node ID; the callback must not
+// call another nodes registry operation because it executes under the lock.
+func Mutate(layout paths.Layout, id string, mutate func(*Node) error) error {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return fmt.Errorf("node ID is required")
+	}
+	if mutate == nil {
+		return fmt.Errorf("node mutation callback is required")
+	}
+	_, err := transact(layout, func(list []Node) ([]Node, error) {
+		match := -1
+		for i := range list {
+			if list[i].ID == id {
+				match = i
+				break
+			}
+		}
+		if match < 0 {
+			return nil, fmt.Errorf("node %s not found", id)
+		}
+
+		candidate := list[match]
+		candidate.EnabledProtocols = append([]string(nil), candidate.EnabledProtocols...)
+		if err := mutate(&candidate); err != nil {
+			return nil, err
+		}
+		candidate.ID = strings.ToLower(strings.TrimSpace(candidate.ID))
+		if candidate.ID != id {
+			return nil, fmt.Errorf("node mutation cannot change stable ID %q", id)
+		}
+		if err := validateUnique(list, candidate, match); err != nil {
+			return nil, err
+		}
+		list[match] = candidate
+		return list, nil
+	})
+	return err
+}
+
+// Remove deletes a node by stable ID, falling back to WGIP for legacy callers.
+// It is idempotent when the requested node no longer exists.
+func Remove(layout paths.Layout, identifier string) error {
+	identifier = strings.TrimSpace(identifier)
+	_, err := transact(layout, func(list []Node) ([]Node, error) {
+		match := -1
+		for i := range list {
+			if strings.EqualFold(list[i].ID, identifier) {
+				match = i
+				break
+			}
+		}
+		if match < 0 {
+			for i := range list {
+				if list[i].WGIP == identifier {
+					match = i
+					break
+				}
+			}
+		}
+		if match < 0 {
+			return list, nil
+		}
+		return append(list[:match], list[match+1:]...), nil
+	})
+	return err
+}
+
+// Reorder moves the requested stable node IDs to the front in the supplied
+// order, then appends every unlisted node in its current relative order. The
+// current Node objects are read under the registry transaction lock, so a
+// reorder based on an older UI snapshot cannot overwrite fields concurrently
+// refreshed by another process.
+func Reorder(layout paths.Layout, orderedIDs []string) error {
+	normalized := make([]string, len(orderedIDs))
+	requested := make(map[string]struct{}, len(orderedIDs))
+	for i, id := range orderedIDs {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			return fmt.Errorf("node ID at position %d is required", i+1)
+		}
+		if _, duplicate := requested[id]; duplicate {
+			return fmt.Errorf("node ID %q is repeated in reorder request", id)
+		}
+		requested[id] = struct{}{}
+		normalized[i] = id
+	}
+
+	_, err := transact(layout, func(list []Node) ([]Node, error) {
+		byID := make(map[string]Node, len(list))
+		for _, node := range list {
+			byID[node.ID] = node
+		}
+		ordered := make([]Node, 0, len(list))
+		for _, id := range normalized {
+			node, ok := byID[id]
+			if !ok {
+				return nil, fmt.Errorf("node %s not found", id)
+			}
+			ordered = append(ordered, node)
+		}
+		for _, node := range list {
+			if _, selected := requested[node.ID]; !selected {
+				ordered = append(ordered, node)
+			}
+		}
+		return ordered, nil
+	})
+	return err
+}
+
+func transact(layout paths.Layout, mutate func([]Node) ([]Node, error)) ([]Node, error) {
+	return state.TransactEntryDirs(nodesPath(layout), decodeNode, encodeNode, func(list []Node) ([]Node, error) {
+		if _, err := normalizeNodeIDs(list); err != nil {
+			return nil, err
+		}
+		return mutate(list)
+	})
+}
+
+func normalizeNodeIDs(list []Node) (bool, error) {
+	migrated := false
+	used := make(map[string]struct{}, len(list))
+	for i := range list {
+		if list[i].ID == "" {
+			list[i].ID = legacyID(list[i], i)
+			migrated = true
+		} else if normalized := strings.ToLower(strings.TrimSpace(list[i].ID)); normalized != list[i].ID {
+			list[i].ID = normalized
+			migrated = true
+		}
+		if _, duplicate := used[list[i].ID]; duplicate {
+			return false, fmt.Errorf("duplicate node ID %q in registry", list[i].ID)
+		}
+		used[list[i].ID] = struct{}{}
+	}
+	return migrated, nil
+}
+
+// GenerateID returns a cryptographically random 128-bit registry identity.
+func GenerateID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate node ID: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+// ValidateNew rejects identities and operator-facing endpoints that would make
+// a registry entry ambiguous. Empty optional fields are not considered equal.
+func ValidateNew(list []Node, n Node) error {
+	return validateUnique(list, n, -1)
+}
+
+func validateUnique(list []Node, candidate Node, skip int) error {
+	for i, existing := range list {
+		if i == skip {
+			continue
+		}
+		if candidate.ID != "" && strings.EqualFold(strings.TrimSpace(candidate.ID), strings.TrimSpace(existing.ID)) {
+			return fmt.Errorf("node ID %q is already registered", candidate.ID)
+		}
+		if sameName(candidate.SSHHost, existing.SSHHost) {
+			return fmt.Errorf("SSH host %q is already registered", strings.TrimSpace(candidate.SSHHost))
+		}
+		if sameDomain(candidate.Domain, existing.Domain) {
+			return fmt.Errorf("domain %q is already registered", strings.TrimSpace(candidate.Domain))
+		}
+		if candidate.WGIP != "" && candidate.WGIP == existing.WGIP {
+			return fmt.Errorf("WireGuard address %q is already registered", candidate.WGIP)
+		}
+		if candidate.WGPublicKey != "" && candidate.WGPublicKey == existing.WGPublicKey {
+			return fmt.Errorf("WireGuard public key is already registered by %s", existing.effectiveAlias())
+		}
+	}
+	return nil
+}
+
+func sameName(a, b string) bool {
+	a = strings.TrimSuffix(strings.TrimSpace(a), ".")
+	b = strings.TrimSuffix(strings.TrimSpace(b), ".")
+	if ipA, ipB := net.ParseIP(strings.Trim(a, "[]")), net.ParseIP(strings.Trim(b, "[]")); ipA != nil && ipB != nil {
+		return ipA.Equal(ipB)
+	}
+	return a != "" && b != "" && strings.EqualFold(a, b)
+}
+
+func sameDomain(a, b string) bool {
+	a = strings.TrimSuffix(strings.TrimSpace(a), ".")
+	b = strings.TrimSuffix(strings.TrimSpace(b), ".")
+	return a != "" && b != "" && strings.EqualFold(a, b)
+}
+
+func legacyID(n Node, position int) string {
+	material := strings.Join([]string{
+		"singbox-deploy legacy node ID v1",
+		strconv.Itoa(position),
+		n.WGPublicKey,
+		n.WGIP,
+		n.SSHHost,
+		strconv.Itoa(n.SSHPort),
+		n.SSHUser,
+		n.Domain,
+		n.Alias,
+	}, "\x00")
+	sum := sha256.Sum256([]byte(material))
+	return hex.EncodeToString(sum[:16])
+}
+
+// UsedIPs returns the hub address plus every allocated overlay address.
+func UsedIPs(list []Node) []string {
+	ips := []string{wgnet.HubAddress}
+	for _, n := range list {
+		if n.WGIP != "" {
+			ips = append(ips, n.WGIP)
+		}
+	}
+	return ips
+}
+
+func decodeNode(root string) Node {
+	get := func(name, fallback string) string { return state.ReadEntryValue(root, name, fallback) }
+	geti := func(name string) int { n, _ := strconv.Atoi(get(name, "0")); return n }
+	getu := func(name string) uint64 { n, _ := strconv.ParseUint(get(name, "0"), 10, 64); return n }
+	var protocols []string
+	if v := get("enabled_protocols", ""); v != "" {
+		protocols = strings.Split(v, ",")
+	}
+	lastSeen, _ := time.Parse(time.RFC3339Nano, get("last_seen", ""))
+	return Node{
+		ID:                     get("id", ""),
+		Alias:                  get("alias", ""),
+		SSHHost:                get("ssh_host", ""),
+		SSHPort:                geti("ssh_port"),
+		SSHUser:                get("ssh_user", ""),
+		WGPublicKey:            get("wg_public_key", ""),
+		WGIP:                   get("wg_ip", ""),
+		Token:                  get("token", ""),
+		AgentPort:              geti("agent_port"),
+		Arch:                   get("arch", ""),
+		Installed:              get("installed", "no") == "yes",
+		AgentVersion:           get("agent_version", ""),
+		LastSeen:               lastSeen,
+		IncludeInSubscription:  get("include_in_subscription", "yes") == "yes",
+		PendingCertificate:     get("pending_certificate", "no") == "yes",
+		Domain:                 get("domain", ""),
+		RealityServerName:      get("reality_server_name", ""),
+		RealityHandshakePort:   geti("reality_handshake_port"),
+		EnabledProtocols:       protocols,
+		RealityVisionPort:      geti("reality_vision_port"),
+		RealityGRPCPort:        geti("reality_grpc_port"),
+		Hysteria2Port:          geti("hysteria2_port"),
+		TUICPort:               geti("tuic_port"),
+		AnyTLSPort:             geti("anytls_port"),
+		Monitor:                get("monitor", "no") == "yes",
+		MonitorAlias:           get("monitor_alias", ""),
+		MonitorInterface:       get("monitor_interface", ""),
+		MonitorPort:            geti("monitor_port"),
+		MonitorIntervalSeconds: geti("monitor_interval_seconds"),
+		TrafficInLimitBytes:    getu("traffic_in_limit_bytes"),
+		TrafficOutLimitBytes:   getu("traffic_out_limit_bytes"),
+		TrafficTotalLimitBytes: getu("traffic_total_limit_bytes"),
+		ResetDay:               geti("reset_day"),
+		ResetHour:              geti("reset_hour"),
+	}
+}
+
+func encodeNode(n Node) map[string]string {
+	yesNo := func(b bool) string {
+		if b {
+			return "yes"
+		}
+		return "no"
+	}
+	lastSeen := ""
+	if !n.LastSeen.IsZero() {
+		lastSeen = n.LastSeen.UTC().Format(time.RFC3339Nano)
+	}
+	return map[string]string{
+		"id":                        strings.TrimSpace(n.ID),
+		"alias":                     strings.TrimSpace(n.Alias),
+		"ssh_host":                  strings.TrimSpace(n.SSHHost),
+		"ssh_port":                  strconv.Itoa(n.SSHPort),
+		"ssh_user":                  strings.TrimSpace(n.SSHUser),
+		"wg_public_key":             strings.TrimSpace(n.WGPublicKey),
+		"wg_ip":                     strings.TrimSpace(n.WGIP),
+		"token":                     strings.TrimSpace(n.Token),
+		"agent_port":                strconv.Itoa(n.AgentPort),
+		"arch":                      strings.TrimSpace(n.Arch),
+		"installed":                 yesNo(n.Installed),
+		"agent_version":             strings.TrimSpace(n.AgentVersion),
+		"last_seen":                 lastSeen,
+		"include_in_subscription":   yesNo(n.IncludeInSubscription),
+		"pending_certificate":       yesNo(n.PendingCertificate),
+		"domain":                    strings.TrimSpace(n.Domain),
+		"reality_server_name":       strings.TrimSpace(n.RealityServerName),
+		"reality_handshake_port":    strconv.Itoa(n.RealityHandshakePort),
+		"enabled_protocols":         strings.Join(n.EnabledProtocols, ","),
+		"reality_vision_port":       strconv.Itoa(n.RealityVisionPort),
+		"reality_grpc_port":         strconv.Itoa(n.RealityGRPCPort),
+		"hysteria2_port":            strconv.Itoa(n.Hysteria2Port),
+		"tuic_port":                 strconv.Itoa(n.TUICPort),
+		"anytls_port":               strconv.Itoa(n.AnyTLSPort),
+		"monitor":                   yesNo(n.Monitor),
+		"monitor_alias":             strings.TrimSpace(n.MonitorAlias),
+		"monitor_interface":         strings.TrimSpace(n.MonitorInterface),
+		"monitor_port":              strconv.Itoa(n.MonitorPort),
+		"monitor_interval_seconds":  strconv.Itoa(n.MonitorIntervalSeconds),
+		"traffic_in_limit_bytes":    strconv.FormatUint(n.TrafficInLimitBytes, 10),
+		"traffic_out_limit_bytes":   strconv.FormatUint(n.TrafficOutLimitBytes, 10),
+		"traffic_total_limit_bytes": strconv.FormatUint(n.TrafficTotalLimitBytes, 10),
+		"reset_day":                 strconv.Itoa(n.ResetDay),
+		"reset_hour":                strconv.Itoa(n.ResetHour),
+	}
+}

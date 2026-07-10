@@ -1,0 +1,202 @@
+package main
+
+import (
+	"context"
+	"log"
+	"net"
+	"net/http"
+	"os/exec"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
+)
+
+// monitorSupervisor runs the in-process monitor sampler and makes its handler
+// available to the authenticated agent API. Its own listener is loopback-only.
+// It reads settings from install state and can restart after a reconfigure. A
+// spoke does not aggregate remote sources, so no remote refresh is wired.
+type monitorSupervisor struct {
+	layout paths.Layout
+
+	mu      sync.RWMutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	handler http.Handler
+}
+
+func newMonitorSupervisor(layout paths.Layout) *monitorSupervisor {
+	return &monitorSupervisor{layout: layout}
+}
+
+// reload (re)starts the monitor from current install state. It is a no-op when
+// monitoring is disabled or the install is incomplete.
+func (s *monitorSupervisor) reload(parent context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopLocked()
+
+	store := state.NewStore(s.layout.StateDir)
+	if v, _ := store.ReadValue("monitor", false); v == "no" {
+		return
+	}
+	if _, err := store.ReadValue("domain", true); err != nil {
+		return // not installed yet
+	}
+
+	cfg, err := s.buildConfig(store)
+	if err != nil {
+		log.Printf("agent monitor: %v", err)
+		return
+	}
+	dbStore, err := monitor.OpenStore(s.layout.MonitorDB)
+	if err != nil {
+		log.Printf("agent monitor: open store: %v", err)
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	s.cancel = cancel
+	s.done = make(chan struct{})
+	m := monitor.New(dbStore, cfg, systemdSingBox{})
+	s.handler = m.Handler()
+	go func(done chan struct{}) {
+		defer close(done)
+		defer dbStore.Close()
+		err := m.Run(ctx)
+		if ctx.Err() == nil {
+			if err != nil {
+				log.Printf("agent monitor exited: %v", err)
+			}
+			// Unexpected exit: wait for any in-flight API read, then make the
+			// closed monitor unavailable. During an intentional stop ctx is
+			// cancelled, so this branch never contends with stopLocked waiting
+			// for done while holding the write lock.
+			s.mu.Lock()
+			if s.done == done {
+				s.handler = nil
+				s.cancel = nil
+				s.done = nil
+			}
+			s.mu.Unlock()
+		}
+	}(s.done)
+}
+
+func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, error) {
+	iface := readString(store, "monitor_interface", "")
+	if iface == "" {
+		detected, err := monitor.DefaultInterface()
+		if err != nil {
+			return monitor.Config{}, err
+		}
+		iface = detected
+	}
+	interval := readInt(store, "monitor_interval_seconds", deploy.DefaultMonitorIntervalSeconds)
+	clock, err := monitor.NewNetworkClock(context.Background())
+	if err != nil {
+		return monitor.Config{}, err
+	}
+	return monitor.Config{
+		// Monitor reads are mounted behind the bearer-authenticated agent API.
+		// Monitor.Run still owns its sampling lifecycle and HTTP server, so bind
+		// that internal listener to an ephemeral loopback port only.
+		Listen:            net.JoinHostPort("127.0.0.1", "0"),
+		Interface:         iface,
+		SamplingInterval:  time.Duration(interval) * time.Second,
+		InLimitBytes:      readUint(store, "traffic_in_limit_bytes", 0),
+		OutLimitBytes:     readUint(store, "traffic_out_limit_bytes", 0),
+		TotalLimitBytes:   readUint(store, "traffic_total_limit_bytes", 0),
+		ResetDay:          readInt(store, "reset_day", deploy.DefaultResetDay),
+		ResetHour:         readInt(store, "reset_hour", deploy.DefaultResetHour),
+		Alias:             readString(store, "monitor_alias", deploy.DefaultMonitorAlias),
+		LocalPositionPath: s.layout.StateDir + "/local_monitor_position",
+		Now:               clock.Now,
+	}, nil
+}
+
+func (s *monitorSupervisor) stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopLocked()
+}
+
+func (s *monitorSupervisor) stopLocked() {
+	if s.cancel != nil {
+		s.cancel()
+		<-s.done
+		s.cancel = nil
+		s.done = nil
+	}
+	s.handler = nil
+}
+
+// ServeHTTP dispatches to the currently active in-process monitor. Holding a
+// read lock for the request prevents reload from closing its database while a
+// monitor response is being produced.
+func (s *monitorSupervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.handler == nil {
+		http.Error(w, "agent monitor is not running", http.StatusServiceUnavailable)
+		return
+	}
+	s.handler.ServeHTTP(w, r)
+}
+
+func readString(store state.Store, name, fallback string) string {
+	v, err := store.ReadValue(name, false)
+	if err != nil || v == "" {
+		return fallback
+	}
+	return v
+}
+
+func readInt(store state.Store, name string, fallback int) int {
+	v := readString(store, name, "")
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func readUint(store state.Store, name string, fallback uint64) uint64 {
+	v := readString(store, name, "")
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+// systemdSingBox controls sing-box.service for quota enforcement.
+type systemdSingBox struct{}
+
+func (systemdSingBox) Start() error {
+	return exec.Command("systemctl", "start", "sing-box.service").Run()
+}
+
+func (systemdSingBox) Stop() error {
+	return exec.Command("systemctl", "stop", "sing-box.service").Run()
+}
+
+func (systemdSingBox) IsActive() (bool, error) {
+	err := exec.Command("systemctl", "is-active", "--quiet", "sing-box.service").Run()
+	if err == nil {
+		return true, nil
+	}
+	if _, ok := err.(*exec.ExitError); ok {
+		return false, nil
+	}
+	return false, err
+}

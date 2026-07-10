@@ -2,13 +2,19 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/assets/agentbin"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/selfupdate"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -193,8 +199,91 @@ func (sm *selfUpdateManager) backendManager(logs *logWriter) *selfupdate.Manager
 			ev := e
 			logs.ch <- runMsg{event: &ev}
 		}
+		mgr.BeforeReplace = func(ctx context.Context, candidatePath, targetVersion string) error {
+			return upgradeSpokeAgentsBeforeHub(ctx, candidatePath, targetVersion, logs)
+		}
+		mgr.ReplaceFailed = func(_ context.Context, _ string) error {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			return restoreSpokeAgentsToCurrentHub(rollbackCtx, logs)
+		}
 	}
 	return mgr
+}
+
+func upgradeSpokeAgentsBeforeHub(ctx context.Context, candidatePath, targetVersion string, logs *logWriter) error {
+	layout := paths.DefaultLayout()
+	list, err := nodes.Load(layout)
+	if err != nil {
+		return err
+	}
+	cache := map[string][]byte{}
+	loadAgent := func(arch string) ([]byte, error) {
+		if binary, ok := cache[arch]; ok {
+			return binary, nil
+		}
+		cmd := exec.CommandContext(ctx, candidatePath, "agent", "export", "--arch", arch)
+		binary, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("export %s agent from candidate hub: %w", arch, err)
+		}
+		if len(binary) == 0 {
+			return nil, fmt.Errorf("candidate hub exported an empty %s agent", arch)
+		}
+		cache[arch] = binary
+		return binary, nil
+	}
+	ctrl := &hubctl.Controller{
+		Layout:          layout,
+		ExpectedVersion: targetVersion,
+		AgentBinary:     loadAgent,
+	}
+	var upgraded []nodes.Node
+	for _, node := range list {
+		if !node.Installed {
+			continue
+		}
+		fmt.Fprintf(logs, "upgrading %s agent over WireGuard before replacing the hub...\n", node.EffectiveAlias())
+		if _, err := ctrl.CheckHealth(ctx, node, logs); err != nil {
+			upgradeErr := fmt.Errorf("upgrade %s: %w", node.EffectiveAlias(), err)
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			rollbackErr := restoreSelectedSpokeAgents(rollbackCtx, upgraded, logs)
+			cancel()
+			return errors.Join(upgradeErr, rollbackErr)
+		}
+		upgraded = append(upgraded, node)
+	}
+	return nil
+}
+
+// restoreSpokeAgentsToCurrentHub is used when the candidate agents were all
+// upgraded but the atomic hub-binary rename failed. The old process still owns
+// the current embedded agents, so it can restore version equality immediately.
+func restoreSpokeAgentsToCurrentHub(ctx context.Context, logs *logWriter) error {
+	list, err := nodes.Load(paths.DefaultLayout())
+	if err != nil {
+		return err
+	}
+	return restoreSelectedSpokeAgents(ctx, list, logs)
+}
+
+func restoreSelectedSpokeAgents(ctx context.Context, list []nodes.Node, logs *logWriter) error {
+	ctrl := &hubctl.Controller{
+		Layout:          paths.DefaultLayout(),
+		ExpectedVersion: toolVersion,
+		AgentBinary:     agentbin.Binary,
+	}
+	var errs []error
+	for _, node := range list {
+		if !node.Installed {
+			continue
+		}
+		fmt.Fprintf(logs, "restoring %s agent to hub version %s...\n", node.EffectiveAlias(), toolVersion)
+		if _, err := ctrl.CheckHealth(ctx, node, logs); err != nil {
+			errs = append(errs, fmt.Errorf("restore %s: %w", node.EffectiveAlias(), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (sm *selfUpdateManager) handleRun(msg runMsg) tea.Cmd {

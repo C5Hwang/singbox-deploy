@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/acme"
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
@@ -34,8 +36,12 @@ func (r *recordingRunner) Run(c system.Command) error {
 
 type fakeIssuer struct{}
 
-func (fakeIssuer) Issue(_ context.Context, _ acme.Request) (acme.Certificate, error) {
-	return acme.Certificate{CertificatePEM: []byte("CERTPEM"), PrivateKeyPEM: []byte("KEYPEM")}, nil
+func (fakeIssuer) Issue(_ context.Context, request acme.Request) (acme.Certificate, error) {
+	certPEM, keyPEM, err := generateTestCertificatePair(request.Domain)
+	if err != nil {
+		return acme.Certificate{}, err
+	}
+	return acme.Certificate{CertificatePEM: certPEM, PrivateKeyPEM: keyPEM}, nil
 }
 
 type countingIssuer struct {
@@ -47,6 +53,18 @@ type countingIssuer struct {
 func (i *countingIssuer) Issue(_ context.Context, _ acme.Request) (acme.Certificate, error) {
 	i.calls++
 	return i.cert, i.err
+}
+
+// certManagerFor returns a certificate manager backed by the given issuer, with
+// a DNS credential covering the test domain so DNS-01 issuance can proceed.
+func certManagerFor(t *testing.T, layout paths.Layout, issuer acme.Issuer) *certmgr.Manager {
+	t.Helper()
+	if err := certmgr.SaveCredentials(layout, []certmgr.DNSCredential{{
+		Domain: "example.com", Provider: "cloudflare", Credential: "cf-token",
+	}}); err != nil {
+		t.Fatalf("save credential: %v", err)
+	}
+	return &certmgr.Manager{Layout: layout, ACME: acme.NewManager(issuer)}
 }
 
 // writeFakeArchive writes a tar.gz containing a sing-box binary to dest.
@@ -84,7 +102,6 @@ func testConfig(t *testing.T) Config {
 	return Config{
 		Domain:                 "example.com",
 		Email:                  "admin@example.com",
-		Challenge:              acme.ChallengeHTTP01,
 		Ports:                  config.Ports{RealityVision: 7443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
 		DisplayName:            "US-vps1",
 		Salt:                   "testsalt",
@@ -118,7 +135,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	o := &Orchestrator{
 		Runner:         runner,
 		Layout:         layout,
-		ACME:           acme.NewManager(fakeIssuer{}),
+		CertManager:    certManagerFor(t, layout, fakeIssuer{}),
 		LatestSingBox:  func(context.Context) (string, error) { return "v1.12.0", nil },
 		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
 		CheckConflicts: func(context.Context, Config) error { return nil },
@@ -337,7 +354,6 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	}
 	mustExist(t, layout.SingBoxBin)
 	mustExist(t, filepath.Join(layout.StateDir, "domain"))
-	mustExist(t, filepath.Join(layout.StateDir, "acme_challenge"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_in_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_out_limit_bytes"))
 	mustExist(t, filepath.Join(layout.StateDir, "traffic_total_limit_bytes"))
@@ -387,7 +403,7 @@ func TestOrchestratorSkipsMonitorWhenDisabled(t *testing.T) {
 	o := &Orchestrator{
 		Runner:         runner,
 		Layout:         layout,
-		ACME:           acme.NewManager(fakeIssuer{}),
+		CertManager:    certManagerFor(t, layout, fakeIssuer{}),
 		LatestSingBox:  func(context.Context) (string, error) { return "v1.12.0", nil },
 		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
 		CheckConflicts: func(context.Context, Config) error { return nil },
@@ -424,6 +440,122 @@ func TestOrchestratorSkipsMonitorWhenDisabled(t *testing.T) {
 	mustNotExist(t, filepath.Join(layout.StateDir, "traffic_in_limit_bytes"))
 }
 
+func TestOrchestratorSpokeMode(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	runner := &recordingRunner{}
+	cfg := testConfig(t)
+	cfg.SpokeMode = true
+	// The hub pushes the certificate before install; place a usable pair.
+	certPath, keyPath := CertificatePaths(layout, cfg.Domain)
+	writeTestCertificatePair(t, certPath, keyPath, cfg.Domain)
+
+	o := &Orchestrator{
+		Runner:         runner,
+		Layout:         layout,
+		CertManager:    certManagerFor(t, layout, fakeIssuer{}),
+		LatestSingBox:  func(context.Context) (string, error) { return "v1.12.0", nil },
+		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
+		CheckConflicts: func(context.Context, Config) error { return nil },
+		CheckPorts:     func(context.Context, Config) error { return nil },
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		DeployBin:      "/usr/bin/singbox-deploy",
+		SystemdDir:     filepath.Join(root, "systemd"),
+		NginxConfPath:  filepath.Join(root, "nginx", "singbox-deploy.conf"),
+	}
+	if err := o.Run(context.Background(), cfg); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	joined := strings.Join(runner.commands, "\n")
+
+	// No cert-renew timer and no standalone monitor unit on a spoke.
+	if strings.Contains(joined, system.CertRenewTimer) {
+		t.Fatalf("spoke must not enable the cert-renew timer:\n%s", joined)
+	}
+	if strings.Contains(joined, system.MonitorService) {
+		t.Fatalf("spoke must not enable the monitor service (agent runs it in-process):\n%s", joined)
+	}
+	mustNotExist(t, filepath.Join(o.SystemdDir, system.CertRenewTimer))
+	mustNotExist(t, filepath.Join(o.SystemdDir, system.MonitorService))
+	// sing-box still runs.
+	if !strings.Contains(joined, "systemctl restart sing-box.service") {
+		t.Fatalf("spoke must start sing-box:\n%s", joined)
+	}
+
+	// Nginx is camouflage-only: no subscription or monitor exposure.
+	nginxConf, err := os.ReadFile(o.NginxConfPath)
+	if err != nil {
+		t.Fatalf("read nginx config: %v", err)
+	}
+	conf := string(nginxConf)
+	if strings.Contains(conf, "/s/") || strings.Contains(conf, "/monitor/") {
+		t.Fatalf("spoke nginx must not expose subscription/monitor:\n%s", conf)
+	}
+	if strings.Contains(conf, "listen 2096 ssl;") || strings.Contains(conf, "listen 2097 ssl;") {
+		t.Fatalf("spoke nginx must not open public subscription/monitor ports:\n%s", conf)
+	}
+	if !strings.Contains(conf, "listen 443 ssl default_server;") {
+		t.Fatalf("spoke nginx must serve the camouflage site on 443:\n%s", conf)
+	}
+
+	// Firewall opens protocol ports and 80/443 but not the public web ports.
+	if strings.Contains(joined, "ufw allow 2096/tcp") || strings.Contains(joined, "ufw allow 2097/tcp") {
+		t.Fatalf("spoke must not open public subscription/monitor ports in the firewall:\n%s", joined)
+	}
+	if !strings.Contains(joined, "ufw allow 9443/udp") {
+		t.Fatalf("spoke must still open protocol ports:\n%s", joined)
+	}
+}
+
+func TestReconfigureSkipsDependenciesCoreAndCertificateIssuance(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	runner := &recordingRunner{}
+	cfg := testConfig(t)
+	cfg.SpokeMode = true
+	latestCalls := 0
+	downloadCalls := 0
+	issuer := &countingIssuer{}
+	o := &Orchestrator{
+		Runner:      runner,
+		Layout:      layout,
+		CertManager: &certmgr.Manager{Layout: layout, ACME: acme.NewManager(issuer)},
+		LatestSingBox: func(context.Context) (string, error) {
+			latestCalls++
+			return "v1.12.0", nil
+		},
+		Download: func(context.Context, string, string) error {
+			downloadCalls++
+			return nil
+		},
+		SystemdDir:    filepath.Join(root, "systemd"),
+		NginxConfPath: filepath.Join(root, "nginx", "singbox-deploy.conf"),
+	}
+
+	if err := o.Reconfigure(context.Background(), cfg); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	if latestCalls != 0 || downloadCalls != 0 {
+		t.Fatalf("reconfigure attempted core install: latest=%d download=%d", latestCalls, downloadCalls)
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("reconfigure attempted certificate issuance: calls=%d", issuer.calls)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	for _, forbidden := range []string{"apt-get", "dnf install", "yum install", system.CertRenewTimer} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("reconfigure ran install-only command %q:\n%s", forbidden, joined)
+		}
+	}
+	if !strings.Contains(joined, "check -c "+layout.ConfigJSON) || !strings.Contains(joined, "systemctl restart sing-box.service") {
+		t.Fatalf("reconfigure did not validate and activate config:\n%s", joined)
+	}
+	mustNotExist(t, layout.SingBoxBin)
+	mustExist(t, layout.ConfigJSON)
+	mustExist(t, filepath.Join(o.SystemdDir, system.SingBoxService))
+}
+
 func mustExist(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
@@ -446,7 +578,7 @@ func TestStepCertificatesReusesExistingManagedCertificate(t *testing.T) {
 	cfg := testConfig(t)
 	runner := &recordingRunner{}
 	issuer := &countingIssuer{}
-	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer)}
+	o := &Orchestrator{Runner: runner, Layout: layout, CertManager: &certmgr.Manager{Layout: layout, ACME: acme.NewManager(issuer)}}
 	certPath, keyPath := o.certPaths(cfg)
 	writeTestCertificatePair(t, certPath, keyPath, cfg.Domain)
 
@@ -461,24 +593,20 @@ func TestStepCertificatesReusesExistingManagedCertificate(t *testing.T) {
 	}
 }
 
-func TestStepCertificatesRestartsNginxWhenHTTP01IssuanceFails(t *testing.T) {
+func TestStepCertificatesFailsWhenIssuanceFails(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
-	cfg.Challenge = acme.ChallengeHTTP01
 	runner := &recordingRunner{}
 	issuer := &countingIssuer{err: errors.New("acme unavailable")}
-	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer)}
+	o := &Orchestrator{Runner: runner, Layout: layout, CertManager: certManagerFor(t, layout, issuer)}
 
 	if err := o.stepCertificates(context.Background(), cfg); err == nil {
 		t.Fatal("expected issuance failure")
 	}
-	joined := strings.Join(runner.commands, "\n")
-	if !strings.Contains(joined, "systemctl stop nginx") {
-		t.Fatalf("nginx should be stopped for HTTP-01:\n%s", joined)
-	}
-	if !strings.Contains(joined, "systemctl start nginx") {
-		t.Fatalf("nginx must be restored after a failed issuance:\n%s", joined)
+	// DNS-01 issuance runs no host commands (no port 80, so Nginx keeps serving).
+	if len(runner.commands) != 0 {
+		t.Fatalf("dns-01 issuance should run no commands, got %#v", runner.commands)
 	}
 }
 
@@ -493,7 +621,7 @@ func TestStepCertificatesImportsLetsEncryptCertificate(t *testing.T) {
 	srcKey := filepath.Join(letsEncryptLiveDir, cfg.Domain, "privkey.pem")
 	certPEM, keyPEM := writeTestCertificatePair(t, srcCert, srcKey, cfg.Domain)
 	issuer := &countingIssuer{}
-	o := &Orchestrator{Runner: &recordingRunner{}, Layout: layout, ACME: acme.NewManager(issuer)}
+	o := &Orchestrator{Runner: &recordingRunner{}, Layout: layout, CertManager: &certmgr.Manager{Layout: layout, ACME: acme.NewManager(issuer)}}
 
 	if err := o.stepCertificates(context.Background(), cfg); err != nil {
 		t.Fatalf("stepCertificates error: %v", err)
@@ -520,8 +648,12 @@ func TestStepCertificatesObtainsWhenExistingCertificateInvalid(t *testing.T) {
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
 	runner := &recordingRunner{}
-	issuer := &countingIssuer{cert: acme.Certificate{CertificatePEM: []byte("NEWCERT"), PrivateKeyPEM: []byte("NEWKEY")}}
-	o := &Orchestrator{Runner: runner, Layout: layout, ACME: acme.NewManager(issuer)}
+	issuedCert, issuedKey, err := generateTestCertificatePair(cfg.Domain)
+	if err != nil {
+		t.Fatalf("generate issued pair: %v", err)
+	}
+	issuer := &countingIssuer{cert: acme.Certificate{CertificatePEM: issuedCert, PrivateKeyPEM: issuedKey}}
+	o := &Orchestrator{Runner: runner, Layout: layout, CertManager: certManagerFor(t, layout, issuer)}
 	certPath, keyPath := o.certPaths(cfg)
 	if err := WriteFile(certPath, []byte("invalid cert"), 0o644); err != nil {
 		t.Fatalf("write invalid cert: %v", err)
@@ -536,8 +668,9 @@ func TestStepCertificatesObtainsWhenExistingCertificateInvalid(t *testing.T) {
 	if issuer.calls != 1 {
 		t.Fatalf("expected ACME call, got %d", issuer.calls)
 	}
-	if len(runner.commands) != 1 || runner.commands[0] != "systemctl stop nginx" {
-		t.Fatalf("expected nginx stop before ACME, got %#v", runner.commands)
+	// DNS-01 needs no port 80, so issuance runs no host commands.
+	if len(runner.commands) != 0 {
+		t.Fatalf("dns-01 issuance should run no commands, got %#v", runner.commands)
 	}
 	gotCert, err := os.ReadFile(certPath)
 	if err != nil {
@@ -547,20 +680,34 @@ func TestStepCertificatesObtainsWhenExistingCertificateInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read key: %v", err)
 	}
-	if string(gotCert) != "NEWCERT" || string(gotKey) != "NEWKEY" {
+	if string(gotCert) != string(issuedCert) || string(gotKey) != string(issuedKey) {
 		t.Fatalf("new certificate pair not written")
 	}
 }
 
 func writeTestCertificatePair(t *testing.T, certPath, keyPath, domain string) ([]byte, []byte) {
 	t.Helper()
+	certPEM, keyPEM, err := generateTestCertificatePair(domain)
+	if err != nil {
+		t.Fatalf("generate certificate pair: %v", err)
+	}
+	if err := WriteFile(certPath, certPEM, 0o644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	return certPEM, keyPEM
+}
+
+func generateTestCertificatePair(domain string) ([]byte, []byte, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		return nil, nil, fmt.Errorf("generate key: %w", err)
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		t.Fatalf("generate serial: %v", err)
+		return nil, nil, fmt.Errorf("generate serial: %w", err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
@@ -574,17 +721,11 @@ func writeTestCertificatePair(t *testing.T, certPath, keyPath, domain string) ([
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatalf("create certificate: %v", err)
+		return nil, nil, fmt.Errorf("create certificate: %w", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	if err := WriteFile(certPath, certPEM, 0o644); err != nil {
-		t.Fatalf("write cert: %v", err)
-	}
-	if err := WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
-	return certPEM, keyPEM
+	return certPEM, keyPEM, nil
 }
 
 func assertNewDNSServerFormat(t *testing.T, name string, b []byte) {
@@ -632,7 +773,6 @@ func TestOrchestratorStopsOnStepFailure(t *testing.T) {
 	o := &Orchestrator{
 		Runner:         &failingRunner{},
 		Layout:         paths.LayoutForRoot(root),
-		ACME:           acme.NewManager(fakeIssuer{}),
 		LatestSingBox:  func(context.Context) (string, error) { return "v1.12.0", nil },
 		Download:       func(_ context.Context, _, dest string) error { return writeFakeArchive(dest) },
 		CheckConflicts: func(context.Context, Config) error { return nil },

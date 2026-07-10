@@ -71,4 +71,32 @@ func TestValidatePorts(t *testing.T) {
 			t.Fatal("monitor service port 443 must conflict with Nginx")
 		}
 	})
+
+	t.Run("spoke ignores unused public web ports", func(t *testing.T) {
+		cfg := base()
+		cfg.SpokeMode = true
+		cfg.Ports.RealityVision = cfg.SubscribePort
+		cfg.Ports.Hysteria2 = cfg.MonitorPublicPort
+		if err := cfg.ValidatePorts(); err != nil {
+			t.Fatalf("spoke protocols may reuse unbound public web ports: %v", err)
+		}
+	})
+
+	for _, tt := range []struct {
+		name string
+		port int
+	}{
+		{name: "monitor service", port: 19090},
+		{name: "nginx HTTP", port: 80},
+		{name: "nginx HTTPS", port: 443},
+	} {
+		t.Run("spoke protocol conflicts with "+tt.name, func(t *testing.T) {
+			cfg := base()
+			cfg.SpokeMode = true
+			cfg.Ports.RealityVision = tt.port
+			if err := cfg.ValidatePorts(); err == nil {
+				t.Fatalf("spoke protocol port %d must conflict with %s", tt.port, tt.name)
+			}
+		})
+	}
 }

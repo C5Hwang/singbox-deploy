@@ -16,6 +16,8 @@ func TestRenderNginxTemplate(t *testing.T) {
 		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
 		"EnableMonitor":         true,
 		"EnableMonitorFrontend": true,
+		"PublicSubscription":    true,
+		"PublicMonitor":         true,
 		"MonitorPort":           19090,
 	})
 	if err != nil {
@@ -51,6 +53,8 @@ func TestRenderNginxTemplateWithoutMonitor(t *testing.T) {
 		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
 		"EnableMonitor":         false,
 		"EnableMonitorFrontend": false,
+		"PublicSubscription":    true,
+		"PublicMonitor":         true,
 		"MonitorPort":           19090,
 	})
 	if err != nil {
@@ -79,6 +83,8 @@ func TestRenderNginxTemplateWithoutFrontend(t *testing.T) {
 		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
 		"EnableMonitor":         true,
 		"EnableMonitorFrontend": false,
+		"PublicSubscription":    true,
+		"PublicMonitor":         true,
 		"MonitorPort":           19090,
 	})
 	if err != nil {
@@ -109,6 +115,8 @@ func TestRenderNginxTemplateSubscribeOn443(t *testing.T) {
 		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
 		"EnableMonitor":         true,
 		"EnableMonitorFrontend": true,
+		"PublicSubscription":    true,
+		"PublicMonitor":         true,
 		"MonitorPort":           19090,
 	})
 	if err != nil {
@@ -138,6 +146,8 @@ func TestRenderNginxTemplateMonitorOn443(t *testing.T) {
 		"SubscribeDir":          "/etc/singbox-deploy/subscribe",
 		"EnableMonitor":         true,
 		"EnableMonitorFrontend": true,
+		"PublicSubscription":    true,
+		"PublicMonitor":         true,
 		"MonitorPort":           19090,
 	})
 	if err != nil {

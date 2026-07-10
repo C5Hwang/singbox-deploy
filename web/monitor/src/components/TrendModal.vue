@@ -18,8 +18,8 @@ const recentPoints = ref<TrafficRawPoint[]>([]);
 async function load() {
   try {
     const [trendData, recentData] = await Promise.all([
-      fetchTrafficTrend(props.source.name),
-      fetchTrafficRecent(props.source.name),
+      fetchTrafficTrend(props.source.id || props.source.name),
+      fetchTrafficRecent(props.source.id || props.source.name),
     ]);
     trend.value = trendData;
     recentPoints.value = recentData;

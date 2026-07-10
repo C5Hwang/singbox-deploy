@@ -1,7 +1,6 @@
 package deploy
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -9,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 )
@@ -55,10 +55,14 @@ func (o *Orchestrator) importExistingCertificate(cfg Config, certPath, keyPath s
 // It is the single source of truth for the TLSDir/<domain>.crt/.key naming used
 // across install, renewal, and nginx config.
 func CertificatePaths(layout paths.Layout, domain string) (cert, key string) {
-	return filepath.Join(layout.TLSDir, domain+".crt"), filepath.Join(layout.TLSDir, domain+".key")
+	return certmgr.CertPaths(layout, domain)
 }
 
 func existingCertificateCandidates(domain string) []certificatePair {
+	domain, err := certmgr.NormalizeDomain(domain)
+	if err != nil {
+		return nil
+	}
 	return []certificatePair{{
 		cert: filepath.Join(letsEncryptLiveDir, domain, "fullchain.pem"),
 		key:  filepath.Join(letsEncryptLiveDir, domain, "privkey.pem"),
@@ -66,6 +70,10 @@ func existingCertificateCandidates(domain string) []certificatePair {
 }
 
 func certificatePairUsable(certPath, keyPath, domain string, t time.Time) (bool, error) {
+	normalized, err := certmgr.NormalizeDomain(domain)
+	if err != nil {
+		return false, err
+	}
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return false, err
@@ -74,17 +82,7 @@ func certificatePairUsable(certPath, keyPath, domain string, t time.Time) (bool,
 	if err != nil {
 		return false, err
 	}
-	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
-		return false, nil
-	}
-	cert, err := FirstCertificate(certPEM)
-	if err != nil {
-		return false, nil
-	}
-	if t.Before(cert.NotBefore) || !t.Before(cert.NotAfter) {
-		return false, nil
-	}
-	if err := cert.VerifyHostname(domain); err != nil {
+	if _, err := certmgr.ValidateCertificatePair(certPEM, keyPEM, normalized, t); err != nil {
 		return false, nil
 	}
 	return true, nil

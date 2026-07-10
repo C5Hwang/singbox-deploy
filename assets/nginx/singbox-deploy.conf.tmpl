@@ -13,14 +13,14 @@ server {
     ssl_certificate_key {{ .KeyPath }};
 
     root {{ .WebRoot }};
-{{ if eq .SubscribePort 443 }}
+{{ if and .PublicSubscription (eq .SubscribePort 443) }}
     location /s/ {
         alias {{ .SubscribeDir }}/;
         default_type text/plain;
         charset utf-8;
     }
 {{ end }}
-{{ if and .EnableMonitor (eq .MonitorPublicPort 443) }}
+{{ if and .PublicMonitor .EnableMonitor (eq .MonitorPublicPort 443) }}
 {{ if .EnableMonitorFrontend }}
     location /monitor/ {
         proxy_pass http://127.0.0.1:{{ .MonitorPort }}/;
@@ -41,7 +41,7 @@ server {
     }
 }
 
-{{ if ne .SubscribePort 443 }}
+{{ if and .PublicSubscription (ne .SubscribePort 443) }}
 server {
     listen {{ .SubscribePort }} ssl;
     http2 on;
@@ -63,7 +63,7 @@ server {
     }
 }
 {{ end }}
-{{ if and .EnableMonitor (ne .MonitorPublicPort 443) }}
+{{ if and .PublicMonitor .EnableMonitor (ne .MonitorPublicPort 443) }}
 server {
     listen {{ .MonitorPublicPort }} ssl;
     http2 on;

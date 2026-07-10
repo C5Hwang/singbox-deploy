@@ -51,7 +51,11 @@ type Config struct {
 	RemoteMonitorPath    string
 	LocalPositionPath    string
 	RefreshRemoteSources func(context.Context) error
-	Now                  func() time.Time
+	// FetchRemoteData retrieves one fixed drill-down resource for a stable
+	// source ID. The hub wires this to its authenticated spoke-agent API; the
+	// browser never receives overlay addresses or bearer tokens.
+	FetchRemoteData func(context.Context, string, string) ([]byte, error)
+	Now             func() time.Time
 }
 
 // Monitor samples interface counters, enforces the quota, and serves the API/UI.
@@ -131,6 +135,7 @@ type summary struct {
 
 // SourceSummary is one traffic source shown by the monitor UI.
 type SourceSummary struct {
+	ID                  string                `json:"id"`
 	Name                string                `json:"name"`
 	FetchedAt           string                `json:"fetchedAt,omitempty"`
 	SampledAt           string                `json:"sampledAt,omitempty"`
@@ -162,6 +167,7 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 		sampledAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
 	}
 	local := SourceSummary{
+		ID:                  "local",
 		Name:                m.localAlias(),
 		SampledAt:           sampledAt,
 		InUsedBytes:         used.InBytes,
@@ -214,7 +220,7 @@ func (m *Monitor) refreshRemoteSources(ctx context.Context) {
 
 func (m *Monitor) handleTrafficTrend(w http.ResponseWriter, r *http.Request) {
 	now := m.now()
-	m.serveSourceData(w, sourceQuery(r), sourceEndpoint{
+	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
 		key:       "trend",
 		proxyPath: "/api/traffic-trend",
 		local:     func() (any, error) { return m.store.TrendHourly(now.Add(-historyRetention).Unix()) },
@@ -224,7 +230,7 @@ func (m *Monitor) handleTrafficTrend(w http.ResponseWriter, r *http.Request) {
 
 func (m *Monitor) handleResourceTrend(w http.ResponseWriter, r *http.Request) {
 	now := m.now()
-	m.serveSourceData(w, sourceQuery(r), sourceEndpoint{
+	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
 		key:       "trend",
 		proxyPath: "/api/resource-trend",
 		local: func() (any, error) {
@@ -240,7 +246,7 @@ func (m *Monitor) handleResourceTrend(w http.ResponseWriter, r *http.Request) {
 
 func (m *Monitor) handleTrafficRecent(w http.ResponseWriter, r *http.Request) {
 	now := m.now()
-	m.serveSourceData(w, sourceQuery(r), sourceEndpoint{
+	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
 		key:       "points",
 		proxyPath: "/api/traffic-recent",
 		local:     func() (any, error) { return m.store.TrafficRawSamples(now.Add(-rawRetention).Unix()) },
@@ -249,7 +255,7 @@ func (m *Monitor) handleTrafficRecent(w http.ResponseWriter, r *http.Request) {
 
 func (m *Monitor) handleResourceRecent(w http.ResponseWriter, r *http.Request) {
 	now := m.now()
-	m.serveSourceData(w, sourceQuery(r), sourceEndpoint{
+	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
 		key:       "points",
 		proxyPath: "/api/resource-recent",
 		local: func() (any, error) {
@@ -273,7 +279,7 @@ type sourceEndpoint struct {
 	embedded  func(SourceSummary) (any, bool) // optional embedded-snapshot fallback
 }
 
-func (m *Monitor) serveSourceData(w http.ResponseWriter, source string, ep sourceEndpoint) {
+func (m *Monitor) serveSourceData(ctx context.Context, w http.ResponseWriter, source string, ep sourceEndpoint) {
 	if source == "" || source == "local" || source == m.localAlias() {
 		data, err := ep.local()
 		if err != nil {
@@ -285,8 +291,22 @@ func (m *Monitor) serveSourceData(w http.ResponseWriter, source string, ep sourc
 	}
 	remotes, _ := ReadRemoteSources(m.cfg.RemoteMonitorPath)
 	for _, rs := range remotes {
-		if rs.Name != source {
+		if rs.ID != source && rs.Name != source {
 			continue
+		}
+		if m.cfg.FetchRemoteData != nil {
+			if rs.ID == "" {
+				http.Error(w, "remote source is not a managed spoke", http.StatusNotFound)
+				return
+			}
+			body, err := m.cfg.FetchRemoteData(ctx, rs.ID, ep.proxyPath)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+			return
 		}
 		if rs.MonitorURL != "" {
 			m.proxyRemote(w, rs.MonitorURL+ep.proxyPath)
