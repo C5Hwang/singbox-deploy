@@ -23,6 +23,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 	"github.com/C5Hwang/singbox-deploy/internal/wgnet"
+	"golang.org/x/mod/semver"
 )
 
 // Controller performs hub-side node operations.
@@ -30,9 +31,14 @@ type Controller struct {
 	Layout paths.Layout
 	Runner system.Runner // hub command runner (wg, systemctl, firewall)
 	// ExpectedVersion is the hub build version. When set, authenticated health
-	// checks automatically push the matching embedded agent if a spoke reports
-	// a different version.
+	// checks automatically advance older agents to the matching embedded agent.
+	// Newer agents are left untouched so a stale hub process cannot downgrade
+	// them after a coordinated self-update.
 	ExpectedVersion string
+	// AllowAgentDowngrade permits exact version reconciliation even when the
+	// expected version is older or cannot be ordered. It is reserved for an
+	// explicit recovery path after a failed coordinated self-update.
+	AllowAgentDowngrade bool
 
 	// WGConfDir overrides the WireGuard config directory (defaults to
 	// wgnet.DefaultConfDir); tests point it at a temp directory.
@@ -500,9 +506,9 @@ func (c *Controller) waitHealthy(ctx context.Context, node nodes.Node, log io.Wr
 	}
 }
 
-// CheckHealth records authenticated liveness, enforces the hub's expected
-// agent version, and retries any certificate delivery left pending by renewal.
-// The returned node contains the freshly observed status fields.
+// CheckHealth records authenticated liveness, advances an older agent to the
+// hub's expected version, and retries any certificate delivery left pending by
+// renewal. The returned node contains the freshly observed status fields.
 func (c *Controller) CheckHealth(ctx context.Context, node nodes.Node, log io.Writer) (nodes.Node, error) {
 	c.defaults()
 	client := c.NewClient(node)
@@ -519,40 +525,45 @@ func (c *Controller) CheckHealth(ctx context.Context, node nodes.Node, log io.Wr
 
 	expected := strings.TrimSpace(c.ExpectedVersion)
 	if expected != "" && health.Version != expected {
-		if node.Arch == "" {
-			return node, fmt.Errorf("cannot upgrade agent %s: node architecture is unknown", node.EffectiveAlias())
-		}
-		binary, err := c.AgentBinary(node.Arch)
-		if err != nil {
-			return node, fmt.Errorf("load %s agent upgrade: %w", node.Arch, err)
-		}
-		fmt.Fprintf(log, "agent %s reports %s; upgrading to hub version %s...\n", node.EffectiveAlias(), health.Version, expected)
-		if err := client.Upgrade(ctx, nodeapi.NewUpgradeRequest(expected, binary), log); err != nil {
-			return node, fmt.Errorf("upgrade agent %s: %w", node.EffectiveAlias(), err)
-		}
-		deadline := time.Now().Add(60 * time.Second)
-		var lastErr error
-		for {
-			select {
-			case <-ctx.Done():
-				return node, ctx.Err()
-			case <-time.After(time.Second):
+		if shouldReplaceAgentVersion(health.Version, expected, c.AllowAgentDowngrade) {
+			if node.Arch == "" {
+				return node, fmt.Errorf("cannot reconcile agent %s: node architecture is unknown", node.EffectiveAlias())
 			}
-			health, err = client.Health(ctx)
-			if err == nil && health.OK && health.Version == expected {
-				if err := c.persistAgentHealth(&node, health.Version); err != nil {
-					return node, fmt.Errorf("persist upgraded agent health: %w", err)
-				}
-				break
-			}
+			binary, err := c.AgentBinary(node.Arch)
 			if err != nil {
-				lastErr = err
-			} else {
-				lastErr = fmt.Errorf("agent still reports version %q", health.Version)
+				return node, fmt.Errorf("load %s agent binary: %w", node.Arch, err)
 			}
-			if !time.Now().Before(deadline) {
-				return node, fmt.Errorf("agent %s did not return on version %s: %w", node.EffectiveAlias(), expected, lastErr)
+			fmt.Fprintf(log, "agent %s reports %s; reconciling to hub version %s...\n", node.EffectiveAlias(), health.Version, expected)
+			if err := client.Upgrade(ctx, nodeapi.NewUpgradeRequest(expected, binary), log); err != nil {
+				return node, fmt.Errorf("reconcile agent %s: %w", node.EffectiveAlias(), err)
 			}
+			deadline := time.Now().Add(60 * time.Second)
+			var lastErr error
+			for {
+				select {
+				case <-ctx.Done():
+					return node, ctx.Err()
+				case <-time.After(time.Second):
+				}
+				health, err = client.Health(ctx)
+				if err == nil && health.OK && health.Version == expected {
+					if err := c.persistAgentHealth(&node, health.Version); err != nil {
+						return node, fmt.Errorf("persist reconciled agent health: %w", err)
+					}
+					break
+				}
+				if err != nil {
+					lastErr = err
+				} else {
+					lastErr = fmt.Errorf("agent still reports version %q", health.Version)
+				}
+				if !time.Now().Before(deadline) {
+					return node, fmt.Errorf("agent %s did not return on version %s: %w", node.EffectiveAlias(), expected, lastErr)
+				}
+			}
+		} else {
+			fmt.Fprintf(log, "agent %s reports %s, newer or unordered relative to hub version %s; leaving it unchanged\n",
+				node.EffectiveAlias(), health.Version, expected)
 		}
 	}
 
@@ -570,6 +581,44 @@ func (c *Controller) CheckHealth(ctx context.Context, node nodes.Node, log io.Wr
 		}
 	}
 	return node, nil
+}
+
+// shouldReplaceAgentVersion implements the automatic upgrade-only policy.
+// Release versions use semantic ordering; a release hub may also repair an
+// unversioned/legacy agent. Unknown expected versions never overwrite a
+// different agent unless an explicit recovery operation opts into downgrade.
+func shouldReplaceAgentVersion(reported, expected string, allowDowngrade bool) bool {
+	reported = strings.TrimSpace(reported)
+	expected = strings.TrimSpace(expected)
+	if expected == "" || reported == expected {
+		return false
+	}
+	if allowDowngrade {
+		return true
+	}
+	expectedSemver := canonicalAgentSemver(expected)
+	if expectedSemver == "" {
+		return false
+	}
+	reportedSemver := canonicalAgentSemver(reported)
+	if reportedSemver == "" {
+		return true
+	}
+	return semver.Compare(expectedSemver, reportedSemver) > 0
+}
+
+func canonicalAgentSemver(version string) string {
+	version = strings.TrimSpace(version)
+	if semver.IsValid(version) {
+		return version
+	}
+	if !strings.HasPrefix(version, "v") {
+		withPrefix := "v" + version
+		if semver.IsValid(withPrefix) {
+			return withPrefix
+		}
+	}
+	return ""
 }
 
 // persistAgentHealth patches only hub-observed status fields into the current

@@ -19,8 +19,12 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/wgnet"
 )
 
-// AgentBinaryPath is where the agent binary is installed on a spoke.
-const AgentBinaryPath = "/usr/bin/singbox-deploy-agent"
+const (
+	// AgentBinaryPath is where the agent binary is installed on a spoke.
+	AgentBinaryPath     = "/usr/bin/singbox-deploy-agent"
+	spokeLayoutRoot     = "/etc/singbox-deploy"
+	spokeAgentConfigDir = spokeLayoutRoot + "/state/agent"
+)
 
 const spokePrivateKeyMarker = "__SINGBOX_DEPLOY_SPOKE_PRIVATE_KEY__"
 
@@ -227,7 +231,10 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 	}
 
 	// 4. Agent config (token, bind address, port).
-	agentDir := "/etc/singbox-deploy/state/agent"
+	agentDir := spokeAgentConfigDir
+	if err := prepareAgentConfigDir(ctx, runner, spokeLayoutRoot, agentDir); err != nil {
+		return Result{}, fmt.Errorf("prepare agent config directory: %w", err)
+	}
 	files := map[string]struct {
 		content string
 		mode    string
@@ -403,14 +410,31 @@ func renderShellCommand(cmd system.Command) string {
 	return b.String()
 }
 
+// prepareAgentConfigDir gives Nginx traverse access to the managed layout root
+// while keeping all state, including the agent token, root-only. Explicit
+// chmod calls make the result independent of the remote root user's umask and
+// repair directories left by an interrupted earlier bootstrap.
+func prepareAgentConfigDir(ctx context.Context, runner Runner, layoutRoot, agentDir string) error {
+	stateDir := parentDir(agentDir)
+	cmd := fmt.Sprintf("mkdir -p %s %s %s && chmod 0755 %s && chmod 0700 %s %s",
+		shellQuote(layoutRoot), shellQuote(stateDir), shellQuote(agentDir),
+		shellQuote(layoutRoot), shellQuote(stateDir), shellQuote(agentDir))
+	if out, err := runner.Run(ctx, cmd, nil); err != nil {
+		return fmt.Errorf("%w: %s", err, out)
+	}
+	return nil
+}
+
 // uploadFile writes content to remotePath with the given octal mode, creating
 // parent directories. It streams the bytes over stdin so no size limit or
-// escaping of the payload is needed.
+// escaping of the payload is needed. Removing a fixed stale temporary file and
+// restricting umask only around its creation prevent an old 0644 inode from
+// exposing a secret without changing the permissions of newly-created parents.
 func uploadFile(ctx context.Context, runner Runner, remotePath string, content []byte, mode string) error {
 	dir := parentDir(remotePath)
 	tmp := remotePath + ".singbox-deploy.tmp"
-	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod %s %s && mv %s %s",
-		shellQuote(dir), shellQuote(tmp), mode, shellQuote(tmp), shellQuote(tmp), shellQuote(remotePath))
+	cmd := fmt.Sprintf("mkdir -p %s && rm -f %s && (umask 077 && cat > %s) && chmod %s %s && mv %s %s",
+		shellQuote(dir), shellQuote(tmp), shellQuote(tmp), mode, shellQuote(tmp), shellQuote(tmp), shellQuote(remotePath))
 	if out, err := runner.Run(ctx, cmd, content); err != nil {
 		return fmt.Errorf("%w: %s", err, out)
 	}

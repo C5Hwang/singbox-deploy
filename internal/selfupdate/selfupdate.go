@@ -25,11 +25,25 @@ const (
 	installBin = "/usr/bin/singbox-deploy"
 )
 
-// Result is returned after a successful update check or apply.
+// Result identifies the installed release. Tag is also populated when the
+// binary replacement committed but a post-replace action failed.
 type Result struct {
 	Tag      string
 	UpToDate bool
 }
+
+// CommittedError reports a failure that happened after the new hub binary was
+// atomically installed. Callers must not describe this state as an update
+// rollback or retry it as though the old binary were still installed.
+type CommittedError struct {
+	Err error
+}
+
+func (e *CommittedError) Error() string {
+	return "hub update committed, but a post-update step failed: " + e.Err.Error()
+}
+
+func (e *CommittedError) Unwrap() error { return e.Err }
 
 // Manager performs self-update operations.
 type Manager struct {
@@ -47,6 +61,10 @@ type Manager struct {
 	// hub binary failed. A hub/spoke deployment uses it to roll already-upgraded
 	// agents back to the still-running hub version.
 	ReplaceFailed func(ctx context.Context, targetVersion string) error
+	// AfterReplace is invoked after the new hub binary has been committed. It is
+	// used to restart long-lived services that would otherwise keep executing
+	// the unlinked old binary.
+	AfterReplace func(ctx context.Context, targetVersion string) error
 	// InstallBin is the path of the binary to replace; defaults to
 	// /usr/bin/singbox-deploy. Overridable for tests.
 	InstallBin string
@@ -95,6 +113,7 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 	updateDir := filepath.Join(filepath.Dir(m.InstallBin), ".singbox-deploy-update")
 	candidatePath := filepath.Join(updateDir, "singbox-deploy-"+release.SafeTag(tag))
 	sumsPath := filepath.Join(updateDir, "SHA256SUMS")
+	committed := false
 
 	steps := []deploy.Step{
 		{Label: "Download", Detail: "download " + tag, Run: func(ctx context.Context) error {
@@ -136,15 +155,31 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 				}
 				return err
 			}
+			committed = true
 			return nil
 		}},
-		deploy.Step{Label: "Cleanup", Detail: "remove temporary files", Run: func(context.Context) error {
-			return os.RemoveAll(updateDir)
-		}},
 	)
+	if m.AfterReplace != nil {
+		steps = append(steps, deploy.Step{Label: "Activate", Detail: "restart services on the updated hub", Run: func(ctx context.Context) error {
+			return m.AfterReplace(ctx, tag)
+		}})
+	}
+	steps = append(steps, deploy.Step{Label: "Cleanup", Detail: "remove temporary files", Run: func(context.Context) error {
+		return os.RemoveAll(updateDir)
+	}})
 
 	if err := deploy.RunSteps(ctx, m.Progress, steps); err != nil {
-		return Result{}, err
+		if !committed {
+			return Result{}, err
+		}
+		// RunSteps stops at the first error, so an activation failure would
+		// otherwise skip Cleanup. Retry RemoveAll here even when Cleanup itself
+		// was the failing step; it is idempotent and keeps committed updates from
+		// accumulating stale candidates.
+		if cleanupErr := os.RemoveAll(updateDir); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("cleanup committed update: %w", cleanupErr))
+		}
+		return Result{Tag: tag}, &CommittedError{Err: err}
 	}
 	return Result{Tag: tag}, nil
 }

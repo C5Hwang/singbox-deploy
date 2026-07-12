@@ -159,6 +159,104 @@ func TestCheckHealthUpgradesMismatchedAgentAndPersistsStatus(t *testing.T) {
 	}
 }
 
+func TestCheckHealthDoesNotDowngradeNewerAgent(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "tokyo", SSHHost: "tokyo.example", Domain: "spoke.example.com",
+		WGIP: "10.90.0.2", Token: "tok", Arch: "arm64", Installed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := nodes.Load(layout)
+	node := list[0]
+	h := &upgradeHealthHandler{version: "v3.0.0"}
+	srv := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: h}).Mux())
+	defer srv.Close()
+	ctrl := &Controller{
+		Layout:          layout,
+		ExpectedVersion: "v2.0.0",
+		AgentBinary: func(string) ([]byte, error) {
+			t.Fatal("newer agent must not be replaced by a stale hub")
+			return nil, nil
+		},
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	updated, err := ctrl.CheckHealth(context.Background(), node, io.Discard)
+	if err != nil {
+		t.Fatalf("CheckHealth: %v", err)
+	}
+	if updated.AgentVersion != "v3.0.0" || updated.LastSeen.IsZero() {
+		t.Fatalf("newer status not preserved: %+v", updated)
+	}
+	h.mu.Lock()
+	upgradeVersion := h.upgradeReq.Version
+	h.mu.Unlock()
+	if upgradeVersion != "" {
+		t.Fatalf("newer agent was downgraded to %q", upgradeVersion)
+	}
+}
+
+func TestCheckHealthAllowsExplicitRecoveryDowngrade(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "tokyo", SSHHost: "tokyo.example", Domain: "spoke.example.com",
+		WGIP: "10.90.0.2", Token: "tok", Arch: "arm64", Installed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := nodes.Load(layout)
+	node := list[0]
+	h := &upgradeHealthHandler{version: "v3.0.0"}
+	srv := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: h}).Mux())
+	defer srv.Close()
+	ctrl := &Controller{
+		Layout:              layout,
+		ExpectedVersion:     "v2.0.0",
+		AllowAgentDowngrade: true,
+		AgentBinary:         func(string) ([]byte, error) { return []byte("embedded-agent-v2"), nil },
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	updated, err := ctrl.CheckHealth(context.Background(), node, io.Discard)
+	if err != nil {
+		t.Fatalf("CheckHealth: %v", err)
+	}
+	if updated.AgentVersion != "v2.0.0" {
+		t.Fatalf("explicit recovery left version %q", updated.AgentVersion)
+	}
+	h.mu.Lock()
+	upgradeVersion := h.upgradeReq.Version
+	h.mu.Unlock()
+	if upgradeVersion != "v2.0.0" {
+		t.Fatalf("explicit recovery requested version %q", upgradeVersion)
+	}
+}
+
+func TestShouldReplaceAgentVersion(t *testing.T) {
+	tests := []struct {
+		name, reported, expected string
+		allowDowngrade           bool
+		want                     bool
+	}{
+		{name: "older", reported: "v1.9.0", expected: "v2.0.0", want: true},
+		{name: "newer", reported: "v2.1.0", expected: "v2.0.0", want: false},
+		{name: "without v prefix", reported: "1.9.0", expected: "2.0.0", want: true},
+		{name: "release repairs legacy", reported: "dev", expected: "v2.0.0", want: true},
+		{name: "unknown hub does not overwrite", reported: "v2.0.0", expected: "dev", want: false},
+		{name: "explicit recovery", reported: "v3.0.0", expected: "v2.0.0", allowDowngrade: true, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldReplaceAgentVersion(tt.reported, tt.expected, tt.allowDowngrade); got != tt.want {
+				t.Fatalf("shouldReplaceAgentVersion(%q, %q, %v) = %v, want %v", tt.reported, tt.expected, tt.allowDowngrade, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCheckHealthRetriesPendingCertificate(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	if err := nodes.Add(layout, nodes.Node{

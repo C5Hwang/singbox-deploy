@@ -1,8 +1,12 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -34,6 +38,17 @@ func (f *fakeRunner) Run(_ context.Context, cmd string, stdin []byte) (string, e
 }
 
 func (f *fakeRunner) Close() error { return nil }
+
+type localShellRunner struct{}
+
+func (localShellRunner) Run(ctx context.Context, command string, stdin []byte) (string, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Stdin = bytes.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func (localShellRunner) Close() error { return nil }
 
 func TestDetectArch(t *testing.T) {
 	cases := map[string]string{"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
@@ -234,10 +249,91 @@ func TestUploadFileUsesStdin(t *testing.T) {
 		t.Fatalf("expected 1 command, got %d", len(runner.commands))
 	}
 	cmd := runner.commands[0]
-	if !strings.Contains(cmd, "mkdir -p '/tmp'") || !strings.Contains(cmd, "chmod 0644") {
+	for _, want := range []string{"mkdir -p '/tmp'", "rm -f '/tmp/x.singbox-deploy.tmp'", "(umask 077 && cat > '/tmp/x.singbox-deploy.tmp')", "chmod 0644"} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("upload command missing %q: %s", want, cmd)
+		}
+	}
+	if strings.HasPrefix(cmd, "umask 077") {
 		t.Fatalf("unexpected upload command: %s", cmd)
 	}
 	if string(runner.stdins[0]) != "data'with'quotes" {
 		t.Fatalf("stdin content mismatch: %q", runner.stdins[0])
+	}
+}
+
+func TestUploadFileReplacesStaleWorldReadableTempPrivately(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "public-parent")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "token")
+	tmp := dest + ".singbox-deploy.tmp"
+	if err := os.WriteFile(tmp, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := uploadFile(context.Background(), localShellRunner{}, dest, []byte("secret\n"), "0600"); err != nil {
+		t.Fatalf("uploadFile: %v", err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("destination mode = %04o, want 0600", got)
+	}
+	if parent, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	} else if got := parent.Mode().Perm(); got != 0o755 {
+		t.Fatalf("parent mode = %04o, want unchanged 0755", got)
+	}
+	if body, err := os.ReadFile(dest); err != nil {
+		t.Fatal(err)
+	} else if string(body) != "secret\n" {
+		t.Fatalf("destination body = %q", body)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("temporary file still exists: %v", err)
+	}
+}
+
+func TestPrepareAgentConfigDirEnforcesPublicRootAndPrivateState(t *testing.T) {
+	layoutRoot := filepath.Join(t.TempDir(), "singbox-deploy")
+	agentDir := filepath.Join(layoutRoot, "state", "agent")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Model the bad permissions left by the prefix-wide umask fix: the layout
+	// root is not traversable by Nginx, while pre-existing state may be too open.
+	for path, mode := range map[string]os.FileMode{
+		layoutRoot:                         0o700,
+		filepath.Join(layoutRoot, "state"): 0o755,
+		agentDir:                           0o755,
+	} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := prepareAgentConfigDir(context.Background(), localShellRunner{}, layoutRoot, agentDir); err != nil {
+		t.Fatalf("prepareAgentConfigDir: %v", err)
+	}
+	for path, want := range map[string]os.FileMode{
+		layoutRoot:                         0o755,
+		filepath.Join(layoutRoot, "state"): 0o700,
+		agentDir:                           0o700,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("%s mode = %04o, want %04o", path, got, want)
+		}
 	}
 }

@@ -37,8 +37,32 @@ type selfUpdateCheckedMsg struct {
 }
 
 var (
-	detectSelfUpdateHost = system.DetectHost
-	selfUpdateRelease    = func() *release.Client { return release.NewClient("", nil) }
+	detectSelfUpdateHost    = system.DetectHost
+	selfUpdateRelease       = func() *release.Client { return release.NewClient("", nil) }
+	selfUpdateServiceRunner = func(logs *logWriter) system.Runner { return system.NewExecRunner(logs) }
+	selfUpdateUpgradeSpokes = upgradeSpokeAgentsBeforeHub
+	selfUpdateRestoreSpokes = restoreSpokeAgentsToCurrentHub
+	selfUpdateMonitorActive = func(ctx context.Context) (bool, error) {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(probeCtx, "systemctl", "is-active", system.MonitorService).CombinedOutput()
+		if probeCtx.Err() != nil {
+			return false, probeCtx.Err()
+		}
+		state := strings.ToLower(strings.TrimSpace(string(out)))
+		switch state {
+		case "active", "reloading", "activating":
+			return true, nil
+		case "inactive", "failed", "deactivating", "unknown":
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("systemctl is-active: %w: %s", err, state)
+		}
+		// A successful but unfamiliar state is treated as active so the updated
+		// binary gets one conservative try-restart after it is committed.
+		return true, nil
+	}
 )
 
 type selfUpdateManager struct {
@@ -145,6 +169,14 @@ func (sm *selfUpdateManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			sm.handleScrollKey(msg.String(), sm.logViewportHeight())
 		}
 	case selfUpdatePhaseDone:
+		if sm.resultTag != "" {
+			if sm.runErr != nil && sm.handleScrollKey(msg.String(), sm.doneLogHeight()) {
+				return nil, false
+			}
+			// This process still contains the previous embedded agent and version.
+			// Never return it to an operational menu after the binary is replaced.
+			return tea.Quit, false
+		}
 		return sm.handleDoneKey(msg.String())
 	}
 	return nil, false
@@ -195,17 +227,39 @@ func (sm *selfUpdateManager) backendManager(logs *logWriter) *selfupdate.Manager
 		GOARCH:   sm.host.Arch,
 	}
 	if logs != nil {
+		monitorWasActive := false
+		serviceRunner := selfUpdateServiceRunner(logs)
 		mgr.Progress = func(e deploy.Event) {
 			ev := e
 			logs.ch <- runMsg{event: &ev}
 		}
 		mgr.BeforeReplace = func(ctx context.Context, candidatePath, targetVersion string) error {
-			return upgradeSpokeAgentsBeforeHub(ctx, candidatePath, targetVersion, logs)
+			active, err := selfUpdateMonitorActive(ctx)
+			if err != nil {
+				// Do not make a read-only systemd probe a pre-commit blocker. A
+				// conservative try-restart after commit is safer when the state is
+				// unknown and still leaves non-systemd failures clearly visible.
+				monitorWasActive = true
+				fmt.Fprintf(logs, "warning: cannot determine monitor service state; will try to restart it after the update: %v\n", err)
+			} else {
+				monitorWasActive = active
+			}
+			return selfUpdateUpgradeSpokes(ctx, candidatePath, targetVersion, logs)
 		}
 		mgr.ReplaceFailed = func(_ context.Context, _ string) error {
 			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			return restoreSpokeAgentsToCurrentHub(rollbackCtx, logs)
+			return selfUpdateRestoreSpokes(rollbackCtx, logs)
+		}
+		mgr.AfterReplace = func(_ context.Context, _ string) error {
+			if !monitorWasActive {
+				return nil
+			}
+			fmt.Fprintln(logs, "restarting the active monitor service with the updated hub binary...")
+			if err := serviceRunner.Run(system.Systemctl("try-restart", system.MonitorService)); err != nil {
+				return fmt.Errorf("try-restart monitor service after self-update: %w", err)
+			}
+			return nil
 		}
 	}
 	return mgr
@@ -269,9 +323,10 @@ func restoreSpokeAgentsToCurrentHub(ctx context.Context, logs *logWriter) error 
 
 func restoreSelectedSpokeAgents(ctx context.Context, list []nodes.Node, logs *logWriter) error {
 	ctrl := &hubctl.Controller{
-		Layout:          paths.DefaultLayout(),
-		ExpectedVersion: toolVersion,
-		AgentBinary:     agentbin.Binary,
+		Layout:              paths.DefaultLayout(),
+		ExpectedVersion:     toolVersion,
+		AllowAgentDowngrade: true,
+		AgentBinary:         agentbin.Binary,
 	}
 	var errs []error
 	for _, node := range list {
@@ -309,6 +364,9 @@ func (sm *selfUpdateManager) View() string {
 		return commandRunningView(sm, "Self-update · Running")
 	case selfUpdatePhaseDone:
 		if sm.runErr != nil {
+			if sm.resultTag != "" {
+				return sm.committedErrorView()
+			}
 			return commandFailedView(sm, "Self-update failed")
 		}
 		return sm.doneView()
@@ -343,7 +401,7 @@ func (sm *selfUpdateManager) confirmView() string {
 		summaryRow("Current version", or(sm.currentVersion, "dev")),
 		summaryRow("Target version", sm.latestTag),
 		summaryBlank(),
-		summaryText("This will download the new release and replace the current binary. Please restart singbox-deploy after the update completes."),
+		summaryText("This will download the new release and replace the current binary. After a committed update, this TUI will exit so the new binary can be relaunched."),
 	}
 	return flowTitle.Render("Self-update · Confirm") + "\n\n" + renderSummary(rows)
 }
@@ -355,7 +413,23 @@ func (sm *selfUpdateManager) doneView() string {
 	}
 	return flowOK.Render("Self-update complete") + "\n\n" +
 		renderSummary(rows) + "\n\n" +
-		summaryInfo.Render("Please restart singbox-deploy to use the new version.") + "\n"
+		summaryInfo.Render("Press any key to exit, then relaunch singbox-deploy to use the new version.") + "\n"
+}
+
+func (sm *selfUpdateManager) committedErrorView() string {
+	rows := []summaryLine{
+		summaryRow("Previous version", or(sm.currentVersion, "dev")),
+		summaryRow("Installed version", sm.resultTag),
+	}
+	body := flowErr.Render("Self-update installed · Post-update action failed") + "\n\n" +
+		renderSummary(rows) + "\n\n" +
+		sm.runErr.Error()
+	if logs := sm.logView(sm.doneLogHeight()); logs != "" {
+		body += "\n\n" + logs
+	}
+	return body + "\n\n" + summaryInfo.Render(
+		"The new hub binary is installed. Resolve the error above, then exit and relaunch; if monitor activation failed, restart "+system.MonitorService+" manually.",
+	) + "\n"
 }
 
 func (sm *selfUpdateManager) footerHints() []operationHint {
@@ -372,6 +446,12 @@ func (sm *selfUpdateManager) footerHints() []operationHint {
 	case selfUpdatePhaseRunning:
 		return runningFooterHints(sm.runComplete)
 	case selfUpdatePhaseDone:
+		if sm.resultTag != "" {
+			if sm.runErr != nil {
+				return []operationHint{hint(keyMoveMouse, "Scroll log"), hint(keyAnyOther, "Exit")}
+			}
+			return []operationHint{hint(keyAny, "Exit")}
+		}
 		return doneFooterHints(sm.runErr != nil)
 	default:
 		return nil

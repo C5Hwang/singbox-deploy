@@ -37,9 +37,10 @@ const (
 )
 
 var (
-	protocolUILayout   = paths.DefaultLayout
-	detectProtocolHost = system.DetectHost
-	updateProtocolsRun = protocol.Update
+	protocolUILayout             = paths.DefaultLayout
+	detectProtocolHost           = system.DetectHost
+	updateProtocolsRun           = protocol.Update
+	refreshProtocolSubscriptions = refreshHubSubscriptions
 )
 
 type protocolActionItem = actionItem[protocolAction]
@@ -399,6 +400,9 @@ func (pm *protocolManager) startRun() tea.Cmd {
 	}
 	go func() {
 		_, err := updateProtocolsRun(context.Background(), opts)
+		if err == nil {
+			refreshProtocolSubscriptions(logs)
+		}
 		ch <- runMsg{done: true, err: err}
 	}()
 	return pm.waitForRun()

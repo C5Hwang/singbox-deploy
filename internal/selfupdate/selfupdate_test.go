@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,7 @@ func TestRunCallsReplaceFailureRollbackAfterSpokesPrepared(t *testing.T) {
 	}
 	prepared := false
 	rolledBack := false
+	activated := false
 	m := &Manager{
 		Download:   fakeDownload(bodies),
 		GOARCH:     "amd64",
@@ -118,11 +120,94 @@ func TestRunCallsReplaceFailureRollbackAfterSpokesPrepared(t *testing.T) {
 			}
 			return nil
 		},
+		AfterReplace: func(context.Context, string) error {
+			activated = true
+			return nil
+		},
 	}
 	if _, err := m.Run(context.Background(), "v2.0.0"); err == nil {
 		t.Fatal("expected hub replacement to fail")
 	}
 	if !prepared || !rolledBack {
 		t.Fatalf("prepared=%v rolledBack=%v", prepared, rolledBack)
+	}
+	if activated {
+		t.Fatal("post-replace activation must not run when replacement failed")
+	}
+}
+
+func TestRunCallsAfterReplaceForCommittedHub(t *testing.T) {
+	body := []byte("verified-candidate")
+	bodies := map[string][]byte{
+		"singbox-deploy-linux-amd64": body,
+		"SHA256SUMS":                 []byte(sha256Hex(body) + "  singbox-deploy-linux-amd64\n"),
+	}
+	root := t.TempDir()
+	installPath := filepath.Join(root, "singbox-deploy")
+	activated := false
+	m := &Manager{
+		Download:   fakeDownload(bodies),
+		GOARCH:     "amd64",
+		InstallBin: installPath,
+		AfterReplace: func(_ context.Context, targetVersion string) error {
+			activated = true
+			if targetVersion != "v2.0.0" {
+				t.Fatalf("activation target version = %q", targetVersion)
+			}
+			installed, err := os.ReadFile(installPath)
+			if err != nil {
+				t.Fatalf("read committed hub during activation: %v", err)
+			}
+			if string(installed) != string(body) {
+				t.Fatalf("installed hub = %q", installed)
+			}
+			return nil
+		},
+	}
+	if _, err := m.Run(context.Background(), "v2.0.0"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !activated {
+		t.Fatal("post-replace activation was not called")
+	}
+}
+
+func TestRunReturnsCommittedResultAndCleansUpWhenActivationFails(t *testing.T) {
+	body := []byte("verified-candidate")
+	bodies := map[string][]byte{
+		"singbox-deploy-linux-amd64": body,
+		"SHA256SUMS":                 []byte(sha256Hex(body) + "  singbox-deploy-linux-amd64\n"),
+	}
+	root := t.TempDir()
+	installPath := filepath.Join(root, "singbox-deploy")
+	m := &Manager{
+		Download:   fakeDownload(bodies),
+		GOARCH:     "amd64",
+		InstallBin: installPath,
+		AfterReplace: func(context.Context, string) error {
+			return errors.New("monitor restart failed")
+		},
+	}
+	result, err := m.Run(context.Background(), "v2.0.0")
+	if err == nil {
+		t.Fatal("expected committed activation error")
+	}
+	var committedErr *CommittedError
+	if !errors.As(err, &committedErr) {
+		t.Fatalf("error type = %T, want *CommittedError: %v", err, err)
+	}
+	if result.Tag != "v2.0.0" {
+		t.Fatalf("result tag = %q, want committed v2.0.0", result.Tag)
+	}
+	installed, readErr := os.ReadFile(installPath)
+	if readErr != nil {
+		t.Fatalf("read committed binary: %v", readErr)
+	}
+	if string(installed) != string(body) {
+		t.Fatalf("installed binary = %q", installed)
+	}
+	updateDir := filepath.Join(root, ".singbox-deploy-update")
+	if _, statErr := os.Stat(updateDir); !os.IsNotExist(statErr) {
+		t.Fatalf("temporary update directory remains after committed failure: %v", statErr)
 	}
 }

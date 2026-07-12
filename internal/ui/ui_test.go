@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/protocol"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
@@ -68,6 +70,107 @@ func TestSelfUpdateChecksLatestAsynchronously(t *testing.T) {
 	}
 	if sm.latestTag != "v2.0.0" {
 		t.Fatalf("latestTag = %q, want v2.0.0", sm.latestTag)
+	}
+}
+
+type selfUpdateRecordingRunner struct{ commands []string }
+
+func (r *selfUpdateRecordingRunner) Run(c system.Command) error {
+	r.commands = append(r.commands, c.String())
+	return nil
+}
+
+func withSelfUpdateBackendDeps(t *testing.T, active bool, runner system.Runner) {
+	t.Helper()
+	oldActive := selfUpdateMonitorActive
+	oldRunner := selfUpdateServiceRunner
+	oldUpgrade := selfUpdateUpgradeSpokes
+	oldRestore := selfUpdateRestoreSpokes
+	t.Cleanup(func() {
+		selfUpdateMonitorActive = oldActive
+		selfUpdateServiceRunner = oldRunner
+		selfUpdateUpgradeSpokes = oldUpgrade
+		selfUpdateRestoreSpokes = oldRestore
+	})
+	selfUpdateMonitorActive = func(context.Context) (bool, error) { return active, nil }
+	selfUpdateServiceRunner = func(*logWriter) system.Runner { return runner }
+	selfUpdateUpgradeSpokes = func(context.Context, string, string, *logWriter) error { return nil }
+	selfUpdateRestoreSpokes = func(context.Context, *logWriter) error { return nil }
+}
+
+func TestSelfUpdateTryRestartsPreviouslyActiveMonitorWithoutStoppingIt(t *testing.T) {
+	runner := &selfUpdateRecordingRunner{}
+	withSelfUpdateBackendDeps(t, true, runner)
+	logs := &logWriter{ch: make(chan runMsg, 16)}
+	mgr := (&selfUpdateManager{host: supportedTestHost(), currentVersion: "v1.0.0"}).backendManager(logs)
+	if err := mgr.BeforeReplace(context.Background(), "/tmp/candidate", "v2.0.0"); err != nil {
+		t.Fatalf("BeforeReplace: %v", err)
+	}
+	if err := mgr.AfterReplace(context.Background(), "v2.0.0"); err != nil {
+		t.Fatalf("AfterReplace: %v", err)
+	}
+	want := []string{
+		"systemctl try-restart " + system.MonitorService,
+	}
+	if strings.Join(runner.commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("monitor activation commands = %v, want %v", runner.commands, want)
+	}
+}
+
+func TestSelfUpdateLeavesPreviouslyInactiveMonitorStopped(t *testing.T) {
+	runner := &selfUpdateRecordingRunner{}
+	withSelfUpdateBackendDeps(t, false, runner)
+	logs := &logWriter{ch: make(chan runMsg, 16)}
+	mgr := (&selfUpdateManager{host: supportedTestHost(), currentVersion: "v1.0.0"}).backendManager(logs)
+	if err := mgr.BeforeReplace(context.Background(), "/tmp/candidate", "v2.0.0"); err != nil {
+		t.Fatalf("BeforeReplace: %v", err)
+	}
+	if err := mgr.AfterReplace(context.Background(), "v2.0.0"); err != nil {
+		t.Fatalf("AfterReplace: %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("inactive monitor service was mutated: %v", runner.commands)
+	}
+}
+
+func TestSelfUpdateCommittedRunForcesOldTUIToExit(t *testing.T) {
+	for _, runErr := range []error{nil, fmt.Errorf("post-update action failed")} {
+		sm := &selfUpdateManager{
+			phase:     selfUpdatePhaseDone,
+			resultTag: "v2.0.0",
+			commandRun: commandRun{
+				runErr: runErr,
+			},
+		}
+		cmd, done := sm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		if done {
+			t.Fatal("committed update returned the stale TUI to its menu")
+		}
+		if cmd == nil {
+			t.Fatal("committed update did not request process exit")
+		}
+		if msg := cmd(); msg == nil {
+			t.Fatal("expected tea.Quit message")
+		} else if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Fatalf("expected tea.QuitMsg, got %T", msg)
+		}
+	}
+}
+
+func TestSelfUpdateCommittedErrorViewDoesNotClaimRollback(t *testing.T) {
+	sm := &selfUpdateManager{
+		phase:          selfUpdatePhaseDone,
+		currentVersion: "v1.0.0",
+		resultTag:      "v2.0.0",
+		commandRun: commandRun{
+			runErr: fmt.Errorf("monitor restart failed"),
+		},
+	}
+	view := sm.View()
+	for _, want := range []string{"Installed version", "v2.0.0", "new hub binary is installed", "monitor restart failed"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("committed-error view missing %q:\n%s", want, view)
+		}
 	}
 }
 
@@ -219,6 +322,34 @@ func TestProtocolManagementMenuOpens(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "Protocol Management") || !strings.Contains(view, "Current:") || !strings.Contains(view, "vless-reality-vision") {
 		t.Fatalf("protocol manager view missing expected content:\n%s", view)
+	}
+}
+
+func TestProtocolUpdateRefreshesHubSubscriptions(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	withProtocolManagerDeps(t, layout)
+
+	updateProtocolsRun = func(context.Context, protocol.UpdateOptions) (deploy.Config, error) {
+		return deploy.LoadProtocolConfig(layout)
+	}
+	refreshed := make(chan struct{}, 1)
+	refreshProtocolSubscriptions = func(io.Writer) {
+		refreshed <- struct{}{}
+	}
+
+	pm := newProtocolManager()
+	if pm.loadErr != nil {
+		t.Fatalf("load protocol manager: %v", pm.loadErr)
+	}
+	wait := pm.startRun()
+	msg, ok := wait().(runMsg)
+	if !ok || !msg.done || msg.err != nil {
+		t.Fatalf("protocol update result = %#v", msg)
+	}
+	select {
+	case <-refreshed:
+	default:
+		t.Fatal("successful protocol update did not refresh Hub subscriptions")
 	}
 }
 
@@ -749,9 +880,13 @@ func withProtocolManagerDeps(t *testing.T, layout paths.Layout) {
 	t.Helper()
 	oldLayout := protocolUILayout
 	oldDetect := detectProtocolHost
+	oldUpdate := updateProtocolsRun
+	oldRefresh := refreshProtocolSubscriptions
 	t.Cleanup(func() {
 		protocolUILayout = oldLayout
 		detectProtocolHost = oldDetect
+		updateProtocolsRun = oldUpdate
+		refreshProtocolSubscriptions = oldRefresh
 	})
 	protocolUILayout = func() paths.Layout { return layout }
 	detectProtocolHost = func() (system.Host, error) { return supportedTestHost(), nil }
