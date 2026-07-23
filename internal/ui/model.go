@@ -92,19 +92,23 @@ func NewModel() *Model {
 
 func defaultGroups() []MenuGroup {
 	return []MenuGroup{
-		{Title: "Setup", Items: []MenuItem{{Label: "Install / Reinstall", Activate: activateInstall}}},
+		{Title: "Deployment", Items: []MenuItem{
+			{Label: "Install / Reinstall", Activate: activateInstall},
+			{Label: "Certificate management", Activate: activateCertificates},
+		}},
 		{Title: "Proxy", Items: []MenuItem{
 			{Label: "Protocol settings", Activate: activateProtocols},
-			{Label: "Subscription settings", Activate: activateSubscriptions},
-		}},
-		{Title: "Server", Items: []MenuItem{
-			{Label: "Certificate management", Activate: activateCertificates},
-			{Label: "Spoke nodes", Activate: activateNodes},
-			{Label: "Monitor & quota", Activate: activateMonitor},
 			{Label: "Routing rules", Activate: activatePlaceholder("Routing rules")},
-			{Label: "sing-box core", Activate: activateCore},
+		}},
+		{Title: "Services", Items: []MenuItem{
+			{Label: "Subscription settings", Activate: activateSubscriptions},
+			{Label: "Monitor & quota", Activate: activateMonitor},
+		}},
+		{Title: "Spoke", Items: []MenuItem{
+			{Label: "Spoke nodes", Activate: activateNodes},
 		}},
 		{Title: "System", Items: []MenuItem{
+			{Label: "sing-box core", Activate: activateCore},
 			{Label: "Self-update", Activate: activateSelfUpdate},
 			{Label: "Uninstall", Activate: activateUninstall},
 		}},

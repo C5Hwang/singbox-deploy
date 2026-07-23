@@ -19,7 +19,7 @@ import (
 func TestCertificateMenuEntryOpens(t *testing.T) {
 	m := NewModel()
 	m.SetSize(180, 40)
-	m.cursor = 3 // Server → Certificate management
+	setMenuCursor(t, m, "Certificate management")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.certificates == nil {
 		t.Fatalf("certificate manager was not opened")
@@ -35,7 +35,7 @@ func TestCertificateMenuEntryOpens(t *testing.T) {
 func TestNodesMenuEntryGatedBeforeHubInstall(t *testing.T) {
 	m := NewModel()
 	m.SetSize(180, 40)
-	m.cursor = 4 // Server → Spoke nodes
+	setMenuCursor(t, m, "Spoke nodes")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.nodes == nil {
 		t.Fatalf("node manager was not opened")

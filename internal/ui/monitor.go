@@ -300,7 +300,7 @@ func (tm *monitorManager) activateAction() tea.Cmd {
 		tm.startForm(tm.usageFields())
 	case monitorActionEditSpoke:
 		if len(tm.nodes) == 0 {
-			tm.fieldErr = "no spoke nodes are registered; add one under Server → Spoke nodes"
+			tm.fieldErr = "no spoke nodes are registered; add one under Spoke → Spoke nodes"
 			return nil
 		}
 		tm.startForm(tm.editSpokeMonitorSelectField())

@@ -187,12 +187,23 @@ func TestEveryMenuItemHasActivation(t *testing.T) {
 	}
 }
 
+func setMenuCursor(t *testing.T, m *Model, label string) {
+	t.Helper()
+	for i, item := range m.flatItems() {
+		if item.Label == label {
+			m.cursor = i
+			return
+		}
+	}
+	t.Fatalf("menu item %q not found", label)
+}
+
 func TestActivateOpensSubFlowByCursor(t *testing.T) {
 	m := NewModel()
 	m.SetSize(120, 40)
-	// Cursor 1 is "Protocol settings"; activation must open the protocol manager
-	// without any hardcoded index knowledge in activate().
-	m.cursor = 1
+	// Activation must open the selected item's manager without any hardcoded
+	// index knowledge in activate().
+	setMenuCursor(t, m, "Protocol settings")
 	m.activate()
 	if m.protocols == nil {
 		t.Fatal("activating the protocol menu item should open the protocol manager")
@@ -314,7 +325,7 @@ func TestProtocolManagementMenuOpens(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	withProtocolManagerDeps(t, layout)
 	m := NewModel()
-	m.cursor = 1
+	setMenuCursor(t, m, "Protocol settings")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.protocols == nil {
 		t.Fatalf("protocol manager was not opened")
@@ -358,7 +369,7 @@ func TestSubscriptionMenuEntryOpens(t *testing.T) {
 	withSubscriptionDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 2
+	setMenuCursor(t, m, "Subscription settings")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.subscribe == nil {
 		t.Fatalf("subscription manager was not opened")
@@ -386,7 +397,7 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 	withMonitorDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 5
+	setMenuCursor(t, m, "Monitor & quota")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.monitor == nil {
 		t.Fatalf("monitor manager was not opened")
@@ -404,7 +415,7 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 	withCoreDeps(t, layout)
 
 	m := NewModel()
-	m.cursor = 7
+	setMenuCursor(t, m, "sing-box core")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.core == nil {
 		t.Fatalf("core manager was not opened")
@@ -423,7 +434,7 @@ func TestUninstallMenuEntryOpens(t *testing.T) {
 
 	m := NewModel()
 	m.SetSize(180, 40)
-	m.cursor = 9
+	setMenuCursor(t, m, "Uninstall")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.uninstall == nil {
 		t.Fatalf("uninstall manager was not opened")
@@ -595,15 +606,34 @@ func TestSubscriptionHasNoPublicRemoteCRUD(t *testing.T) {
 	}
 }
 
-func TestMenuUsesSubscriptionGroup(t *testing.T) {
+func TestMenuUsesFunctionalGroups(t *testing.T) {
 	m := NewModel()
-	view := m.menuView(40)
-	if !strings.Contains(view, "Proxy") || !strings.Contains(view, "Subscription settings") {
-		t.Fatalf("menu should contain subscription group and manager:\n%s", view)
+	want := []struct {
+		title string
+		items []string
+	}{
+		{title: "Deployment", items: []string{"Install / Reinstall", "Certificate management"}},
+		{title: "Proxy", items: []string{"Protocol settings", "Routing rules"}},
+		{title: "Services", items: []string{"Subscription settings", "Monitor & quota"}},
+		{title: "Spoke", items: []string{"Spoke nodes"}},
+		{title: "System", items: []string{"sing-box core", "Self-update", "Uninstall"}},
 	}
-	for _, avoid := range []string{"User & Subscription", "Manage account", "Account & subscriptions", "Manage subscriptions"} {
-		if strings.Contains(view, avoid) {
-			t.Fatalf("old account/subscription wording %q should be removed:\n%s", avoid, view)
+
+	if len(m.groups) != len(want) {
+		t.Fatalf("menu group count = %d, want %d", len(m.groups), len(want))
+	}
+	for i, group := range m.groups {
+		if group.Title != want[i].title {
+			t.Errorf("menu group %d title = %q, want %q", i, group.Title, want[i].title)
+		}
+		if len(group.Items) != len(want[i].items) {
+			t.Errorf("menu group %q item count = %d, want %d", group.Title, len(group.Items), len(want[i].items))
+			continue
+		}
+		for j, item := range group.Items {
+			if item.Label != want[i].items[j] {
+				t.Errorf("menu group %q item %d = %q, want %q", group.Title, j, item.Label, want[i].items[j])
+			}
 		}
 	}
 }

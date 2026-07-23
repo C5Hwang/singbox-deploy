@@ -252,7 +252,7 @@ func (sm *subscriptionManager) activateAction() {
 		sm.startForm(sm.localFields())
 	case subscriptionActionEditSpoke:
 		if len(sm.nodes) == 0 {
-			sm.fieldErr = "no spoke nodes are registered; add one under Server → Spoke nodes"
+			sm.fieldErr = "no spoke nodes are registered; add one under Spoke → Spoke nodes"
 			return
 		}
 		sm.startForm(sm.editSpokeSelectField())
