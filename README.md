@@ -1,25 +1,26 @@
 # singbox-deploy
 
-`singbox-deploy` is an [sing-box](https://github.com/SagerNet/sing-box)
-deployment and management tool written in Go.
+`singbox-deploy` is a Go tool for deploying and managing
+[sing-box](https://github.com/SagerNet/sing-box) on Linux.
 
-It automates the setup of sing-box, Nginx, Let's Encrypt certificates, and
-subscription files on Linux servers, and manages a whole fleet from a single
-hub: additional servers join as spokes over a private WireGuard overlay and
-are controlled entirely from the hub's terminal UI.
+On a single server it installs sing-box, configures Nginx, obtains Let's Encrypt
+certificates, and generates subscription files. Across multiple servers it runs
+as a hub: additional servers join as spokes over a private WireGuard overlay and
+are managed from the hub's terminal UI.
 
 ## Core Features
 
-- Hub-and-spoke management: install the TUI once, then add, reconfigure,
-  monitor, and remove spoke servers from the hub.
-- One-time SSH bootstrap of spokes; all later control traffic runs over
-  WireGuard.
-- Centralized Let's Encrypt certificate management (DNS-01) with automatic
-  renewal and distribution to spokes.
-- Aggregated subscription output in share-link, Clash Meta, sing-box, and
-  Surge formats.
-- Resource monitor with a web dashboard and per-node quota enforcement.
-- Selectable [HTML5 UP](https://html5up.net) masquerade site templates served by Nginx.
+- Hub-and-spoke topology. The TUI runs on the hub, which handles adding,
+  configuring, monitoring, and removing spokes.
+- Spokes are bootstrapped once over SSH; control traffic then moves to the
+  WireGuard overlay.
+- The hub issues and renews Let's Encrypt certificates over ACME DNS-01 and
+  distributes them to the spokes.
+- Subscriptions aggregate every node in the fleet, served in share-link,
+  Clash Meta, sing-box, and Surge formats.
+- Resource monitoring through a web dashboard, with per-node quotas.
+- Nginx serves a masquerade site, chosen from bundled
+  [HTML5 UP](https://html5up.net) templates.
 
 ## Supported Protocols
 
