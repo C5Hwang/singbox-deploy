@@ -287,6 +287,11 @@ func (m *nodeManager) validateForm(f field, value string, _ map[string]string) e
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("alias is required")
 		}
+		// Reject a duplicate here rather than after SSH provisioning has already
+		// run: the alias names this spoke's nodes in every aggregated output.
+		if existing, clash := nodes.AliasConflict(m.list, value, ""); clash {
+			return fmt.Errorf("alias is already used by %s", existing.EffectiveAlias())
+		}
 	case "ssh_host":
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("SSH host is required")

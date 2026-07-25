@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
@@ -50,26 +51,30 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 	var sources []deploy.SubscriptionSource
 	var errs []error
 	aggregated := make(map[string]struct{}, len(list))
+	labels := newAliasLabeler(localCfg.DisplayName)
 	for _, n := range list {
 		if !n.Installed || !n.IncludeInSubscription {
 			continue
 		}
 		aggregated[n.ID] = struct{}{}
 		src, fetchErr := c.fetchNodeSubscription(ctx, n)
-		if fetchErr == nil {
-			if err := c.cacheNodeSubscription(n, src); err != nil {
-				errs = append(errs, err)
+		if fetchErr != nil {
+			cached, ok := c.cachedNodeSubscription(n)
+			if !ok {
+				errs = append(errs, fmt.Errorf("%w (no cached subscription to fall back on)", fetchErr))
+				continue
 			}
-			sources = append(sources, src)
-			continue
+			errs = append(errs, fmt.Errorf("%w (reused the last subscription cached for %s)", fetchErr, n.EffectiveAlias()))
+			src = cached
+		} else if err := c.cacheNodeSubscription(n, src); err != nil {
+			errs = append(errs, err)
 		}
-		cached, ok := c.cachedNodeSubscription(n)
-		if !ok {
-			errs = append(errs, fmt.Errorf("%w (no cached subscription to fall back on)", fetchErr))
-			continue
+		if distinct := labels.distinct(src.Alias); distinct != src.Alias {
+			errs = append(errs, fmt.Errorf("alias %q is already in use; publishing %s nodes as %q instead",
+				src.Alias, n.EffectiveAlias(), distinct))
+			src.Alias = distinct
 		}
-		errs = append(errs, fmt.Errorf("%w (reused the last subscription cached for %s)", fetchErr, n.EffectiveAlias()))
-		sources = append(sources, cached)
+		sources = append(sources, src)
 	}
 	pos := deploy.LoadLocalSubscriptionPosition(c.Layout)
 	if err := deploy.WriteSubscriptionsWithSources(c.Layout, localCfg, sources, pos); err != nil {
@@ -100,6 +105,53 @@ func (c *Controller) fetchNodeSubscription(ctx context.Context, n nodes.Node) (d
 		bodies[format] = body
 	}
 	return subscriptionSource(n, bodies), nil
+}
+
+// aliasLabeler keeps every aggregated source label distinct. Node names in all
+// four output formats are derived from the source alias, so a duplicate emits
+// duplicate Clash proxy names and duplicate sing-box outbound tags, which
+// clients reject outright. The registry already refuses duplicate spoke
+// aliases; this is the last line of defence, covering the hub's own display
+// name and registries written before that rule existed.
+type aliasLabeler struct{ taken map[string]struct{} }
+
+func newAliasLabeler(reserved ...string) *aliasLabeler {
+	l := &aliasLabeler{taken: make(map[string]struct{})}
+	for _, alias := range reserved {
+		if key := aliasLabelKey(alias); key != "" {
+			l.taken[key] = struct{}{}
+		}
+	}
+	return l
+}
+
+// distinct claims alias, returning a numbered variant when it is already taken.
+func (l *aliasLabeler) distinct(alias string) string {
+	key := aliasLabelKey(alias)
+	if key == "" {
+		key = aliasLabelKey("node")
+		alias = "node"
+	}
+	if _, clash := l.taken[key]; !clash {
+		l.taken[key] = struct{}{}
+		return alias
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", alias, n)
+		if key := aliasLabelKey(candidate); !l.claimed(key) {
+			l.taken[key] = struct{}{}
+			return candidate
+		}
+	}
+}
+
+func (l *aliasLabeler) claimed(key string) bool {
+	_, ok := l.taken[key]
+	return ok
+}
+
+func aliasLabelKey(alias string) string {
+	return strings.ToLower(strings.TrimSpace(alias))
 }
 
 func subscriptionSource(n nodes.Node, bodies map[string][]byte) deploy.SubscriptionSource {

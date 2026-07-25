@@ -185,6 +185,49 @@ func TestNodeHostKeyFingerprintRequiresExplicitConfirmation(t *testing.T) {
 	}
 }
 
+// A duplicate alias would collide in the aggregated subscription, so the form
+// must reject it before SSH provisioning starts rather than after.
+func TestAddSpokeFormRejectsDuplicateAlias(t *testing.T) {
+	m := newNodeManager()
+	m.list = []nodes.Node{
+		{ID: "11111111111111111111111111111111", Alias: "Tokyo", Domain: "a.example.com"},
+		{ID: "22222222222222222222222222222222", Domain: "b.example.com"},
+	}
+	aliasField := field{key: "alias"}
+	for _, duplicate := range []string{"tokyo", " TOKYO ", "b.example.com"} {
+		if err := m.validateForm(aliasField, duplicate, nil); err == nil {
+			t.Fatalf("alias %q was accepted despite colliding with an existing spoke", duplicate)
+		} else if !strings.Contains(err.Error(), "already used by") {
+			t.Fatalf("alias %q error = %v", duplicate, err)
+		}
+	}
+	if err := m.validateForm(aliasField, "Osaka", nil); err != nil {
+		t.Fatalf("distinct alias rejected: %v", err)
+	}
+}
+
+// Editing a spoke must not report the node's own alias as a conflict.
+func TestSpokeSubscriptionFormAliasUniqueness(t *testing.T) {
+	sm := &subscriptionManager{
+		nodes: []nodes.Node{
+			{ID: "11111111111111111111111111111111", Alias: "Tokyo", Domain: "a.example.com"},
+			{ID: "22222222222222222222222222222222", Alias: "Osaka", Domain: "b.example.com"},
+		},
+		editNodeIndex: 1,
+	}
+	aliasField := field{key: "spoke_alias"}
+	if err := sm.validateSpokeField(aliasField, "Osaka", nil); err != nil {
+		t.Fatalf("keeping the node's own alias was rejected: %v", err)
+	}
+	if err := sm.validateSpokeField(aliasField, "tokyo", nil); err == nil ||
+		!strings.Contains(err.Error(), "already used by") {
+		t.Fatalf("renaming onto another spoke's alias = %v", err)
+	}
+	if err := sm.validateSpokeField(aliasField, "Kyoto", nil); err != nil {
+		t.Fatalf("distinct alias rejected: %v", err)
+	}
+}
+
 func TestForceDetachRequiresExplicitYConfirmation(t *testing.T) {
 	m := newNodeManager()
 	m.hubReady = true

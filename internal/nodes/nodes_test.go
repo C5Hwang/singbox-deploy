@@ -118,6 +118,112 @@ func TestUpdateAndRemovePreferStableID(t *testing.T) {
 	}
 }
 
+func TestAliasesMustBeDistinctAcrossNodes(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := Add(layout, Node{
+		ID: "11111111111111111111111111111111", Alias: "Tokyo",
+		SSHHost: "a.example.com", Domain: "a.example.com", WGIP: "10.90.0.2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Case-insensitive: aggregated node names would be identical either way.
+	if err := Add(layout, Node{
+		ID: "22222222222222222222222222222222", Alias: " tokyo ",
+		SSHHost: "b.example.com", Domain: "b.example.com", WGIP: "10.90.0.3",
+	}); err == nil || !strings.Contains(err.Error(), "already used by") {
+		t.Fatalf("duplicate alias error = %v", err)
+	}
+	// An empty alias falls back to the domain, so it must not collide with a
+	// node that names that domain explicitly.
+	if err := Add(layout, Node{
+		ID: "33333333333333333333333333333333", Alias: "a.example.com",
+		SSHHost: "c.example.com", Domain: "c.example.com", WGIP: "10.90.0.4",
+	}); err != nil {
+		t.Fatalf("distinct alias rejected: %v", err)
+	}
+	if err := Add(layout, Node{
+		ID: "44444444444444444444444444444444",
+		// Alias omitted: effective alias is the domain, which the node above took.
+		SSHHost: "d.example.com", Domain: "A.EXAMPLE.COM", WGIP: "10.90.0.5",
+	}); err == nil {
+		t.Fatal("domain-derived alias collision was accepted")
+	}
+
+	// Renaming into an existing alias is refused; renaming to a free one works.
+	if err := Mutate(layout, "33333333333333333333333333333333", func(n *Node) error {
+		n.Alias = "Tokyo"
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "already used by") {
+		t.Fatalf("rename into a duplicate error = %v", err)
+	}
+	if err := Mutate(layout, "33333333333333333333333333333333", func(n *Node) error {
+		n.Alias = "Osaka"
+		return nil
+	}); err != nil {
+		t.Fatalf("rename to a free alias: %v", err)
+	}
+}
+
+// Registries written before aliases had to be distinct must stay editable:
+// only an operation that introduces or changes the alias is rejected.
+func TestLegacyDuplicateAliasStillAllowsUnrelatedEdits(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	legacy := []Node{
+		{ID: "11111111111111111111111111111111", Alias: "tokyo", Domain: "a.example.com", WGIP: "10.90.0.2"},
+		{ID: "22222222222222222222222222222222", Alias: "tokyo", Domain: "b.example.com", WGIP: "10.90.0.3"},
+		{ID: "33333333333333333333333333333333", Alias: "osaka", Domain: "c.example.com", WGIP: "10.90.0.4"},
+	}
+	if err := Save(layout, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := Mutate(layout, "22222222222222222222222222222222", func(n *Node) error {
+		n.PendingCertificate = true
+		return nil
+	}); err != nil {
+		t.Fatalf("unrelated edit on a legacy duplicate: %v", err)
+	}
+	// Restating the same effective alias is a no-op and stays allowed; moving
+	// onto a third node's alias is a new collision and must be refused.
+	if err := Mutate(layout, "22222222222222222222222222222222", func(n *Node) error {
+		n.Alias = " Tokyo "
+		return nil
+	}); err != nil {
+		t.Fatalf("restating the existing alias was rejected: %v", err)
+	}
+	if err := Mutate(layout, "22222222222222222222222222222222", func(n *Node) error {
+		n.Alias = "osaka"
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "already used by") {
+		t.Fatalf("renaming a legacy duplicate onto a third alias = %v", err)
+	}
+	list, err := Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !list[1].PendingCertificate {
+		t.Fatalf("unrelated edit was lost: %+v", list[1])
+	}
+}
+
+func TestAliasConflictExemptsTheEditedNode(t *testing.T) {
+	list := []Node{
+		{ID: "11111111111111111111111111111111", Alias: "tokyo"},
+		{ID: "22222222222222222222222222222222", Alias: "osaka"},
+	}
+	if existing, clash := AliasConflict(list, "TOKYO", ""); !clash || existing.Alias != "tokyo" {
+		t.Fatalf("AliasConflict(new) = %+v, %v", existing, clash)
+	}
+	if _, clash := AliasConflict(list, "tokyo", "11111111111111111111111111111111"); clash {
+		t.Fatal("a node must not conflict with its own alias")
+	}
+	if _, clash := AliasConflict(list, "kyoto", ""); clash {
+		t.Fatal("free alias reported as a conflict")
+	}
+	if _, clash := AliasConflict(list, "  ", ""); clash {
+		t.Fatal("blank alias reported as a conflict")
+	}
+}
+
 func TestMutateStatusUpdatesInPlaceAndRefusesConfigurationEdits(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	const id = "22222222222222222222222222222222"

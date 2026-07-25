@@ -328,7 +328,7 @@ func (sm *subscriptionManager) startEditSpokeForm() {
 		"hysteria2_port":       strconv.Itoa(node.Hysteria2Port),
 		"tuic_port":            strconv.Itoa(node.TUICPort),
 		"anytls_port":          strconv.Itoa(node.AnyTLSPort),
-	}, validateSubscriptionField) {
+	}, sm.validateSpokeField) {
 		sm.phase = subscriptionPhaseConfirm
 	}
 }
@@ -364,6 +364,23 @@ func (sm *subscriptionManager) targetLocalPosition() int {
 		}
 	}
 	return sm.localPosition
+}
+
+// validateSpokeField adds registry-wide alias uniqueness to the shared
+// subscription validation. The alias names this spoke's nodes in every
+// aggregated output, so a duplicate has to be caught in the form rather than
+// after the reconfigure has already been pushed over WireGuard.
+func (sm *subscriptionManager) validateSpokeField(f field, val string, vals map[string]string) error {
+	if f.key == "spoke_alias" && strings.TrimSpace(val) != "" {
+		exempt := ""
+		if sm.editNodeIndex >= 0 && sm.editNodeIndex < len(sm.nodes) {
+			exempt = sm.nodes[sm.editNodeIndex].ID
+		}
+		if existing, clash := nodes.AliasConflict(sm.nodes, val, exempt); clash {
+			return fmt.Errorf("alias is already used by %s", existing.EffectiveAlias())
+		}
+	}
+	return validateSubscriptionField(f, val, vals)
 }
 
 func validateSubscriptionField(f field, val string, vals map[string]string) error {

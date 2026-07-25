@@ -435,12 +435,24 @@ func ValidateNew(list []Node, n Node) error {
 }
 
 func validateUnique(list []Node, candidate Node, skip int) error {
+	// Every aggregated node name is derived from the display alias, so two
+	// spokes sharing one produce duplicate Clash proxy names and duplicate
+	// sing-box outbound tags, which clients reject outright.
+	candidateAlias := aliasKey(candidate)
+	// A registry written before this rule existed may already hold a collision.
+	// Only an operation that introduces or changes the alias is rejected, so
+	// status and configuration updates to a legacy entry keep working.
+	checkAlias := skip < 0 || skip >= len(list) || aliasKey(list[skip]) != candidateAlias
 	for i, existing := range list {
 		if i == skip {
 			continue
 		}
 		if candidate.ID != "" && strings.EqualFold(strings.TrimSpace(candidate.ID), strings.TrimSpace(existing.ID)) {
 			return fmt.Errorf("node ID %q is already registered", candidate.ID)
+		}
+		if checkAlias && candidateAlias != "" && candidateAlias == aliasKey(existing) {
+			return fmt.Errorf("node alias %q is already used by %s; aggregated subscriptions need distinct aliases",
+				candidate.effectiveAlias(), existing.EffectiveAlias())
 		}
 		if sameName(candidate.SSHHost, existing.SSHHost) {
 			return fmt.Errorf("SSH host %q is already registered", strings.TrimSpace(candidate.SSHHost))
@@ -456,6 +468,33 @@ func validateUnique(list []Node, candidate Node, skip int) error {
 		}
 	}
 	return nil
+}
+
+// aliasKey normalizes a node's display alias for comparison. It uses the
+// effective alias so a node that falls back to its domain cannot collide with
+// another node that names that domain explicitly.
+func aliasKey(n Node) string {
+	return strings.ToLower(strings.TrimSpace(n.effectiveAlias()))
+}
+
+// AliasConflict reports the node already using alias, ignoring the entry whose
+// stable ID is exemptID. UI forms use it to reject a duplicate while the
+// operator is still typing instead of failing after provisioning has started.
+func AliasConflict(list []Node, alias, exemptID string) (Node, bool) {
+	key := strings.ToLower(strings.TrimSpace(alias))
+	if key == "" {
+		return Node{}, false
+	}
+	exemptID = strings.ToLower(strings.TrimSpace(exemptID))
+	for _, existing := range list {
+		if exemptID != "" && strings.ToLower(strings.TrimSpace(existing.ID)) == exemptID {
+			continue
+		}
+		if aliasKey(existing) == key {
+			return existing, true
+		}
+	}
+	return Node{}, false
 }
 
 func sameName(a, b string) bool {

@@ -203,6 +203,69 @@ func TestRefreshSubscriptionsReusesCachedSpokeAndPrunesRemoved(t *testing.T) {
 	}
 }
 
+// The registry refuses duplicate spoke aliases, but it cannot see the hub's own
+// display name and cannot retroactively fix a registry written before that
+// rule. Aggregation must still emit distinct node names, because duplicate
+// Clash proxy names and duplicate sing-box outbound tags break clients.
+func TestRefreshSubscriptionsDisambiguatesCollidingSourceAliases(t *testing.T) {
+	hubLayout := paths.LayoutForRoot(t.TempDir())
+	hubCfg := hysteriaConfig(t, "hub.example.com", "tokyo", "hubsalt", 9443)
+	if err := deploy.WriteInstallState(hubLayout.StateDir, hubCfg); err != nil {
+		t.Fatalf("hub WriteInstallState: %v", err)
+	}
+	if err := deploy.WriteSubscriptions(hubLayout, hubCfg); err != nil {
+		t.Fatalf("hub WriteSubscriptions: %v", err)
+	}
+	spokeLayout := paths.LayoutForRoot(t.TempDir())
+	spokeCfg := hysteriaConfig(t, "spoke.example.com", "SPOKE", "spokesalt", 8443)
+	if err := deploy.WriteSubscriptions(spokeLayout, spokeCfg); err != nil {
+		t.Fatalf("spoke WriteSubscriptions: %v", err)
+	}
+	srv := httptest.NewServer((&nodeapi.Server{
+		Token:   "tok",
+		Handler: &subHandler{layout: spokeLayout, salt: spokeCfg.Salt},
+	}).Mux())
+	defer srv.Close()
+
+	// The spoke alias collides with the hub's display name, which no registry
+	// constraint can prevent.
+	if err := nodes.Add(hubLayout, nodes.Node{
+		Alias: "Tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "tok", AgentPort: 19091, Installed: true,
+	}); err != nil {
+		t.Fatalf("register node: %v", err)
+	}
+	ctrl := &Controller{
+		Layout: hubLayout,
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	err := ctrl.RefreshSubscriptions(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("collision should be reported: %v", err)
+	}
+
+	decoded := combinedDefault(t, hubLayout, hubCfg.Salt)
+	if n := strings.Count(decoded, "hysteria2://"); n != 2 {
+		t.Fatalf("expected hub + spoke, got %d links:\n%s", n, decoded)
+	}
+	names := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(decoded), "\n") {
+		_, name, found := strings.Cut(line, "#")
+		if !found {
+			t.Fatalf("share link has no name fragment: %s", line)
+		}
+		if names[name] {
+			t.Fatalf("duplicate node name %q in combined output:\n%s", name, decoded)
+		}
+		names[name] = true
+	}
+	if !strings.Contains(decoded, "Tokyo-2") {
+		t.Fatalf("colliding spoke was not renumbered:\n%s", decoded)
+	}
+}
+
 func combinedDefault(t *testing.T, layout paths.Layout, salt string) string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "default", deploy.SubscriptionToken(salt)))
