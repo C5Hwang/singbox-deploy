@@ -94,5 +94,4 @@ Inspired by [`mack-a/v2ray-agent`](https://github.com/mack-a/v2ray-agent).
 
 ## License
 
-Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-only).
-See [`LICENSE`](LICENSE) for details.
+Licensed under the MIT License. See [`LICENSE`](LICENSE) for details.
