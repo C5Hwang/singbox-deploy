@@ -665,6 +665,7 @@ func TestLegacyHubArtifactsAreRemovedWhenConvertingToSpoke(t *testing.T) {
 		filepath.Join(layout.StateDir, "dns_credential"),
 		filepath.Join(layout.StateDir, "remotes"),
 		filepath.Join(layout.StateDir, "monitor_sources"),
+		filepath.Join(layout.StateDir, "spoke_subscriptions"),
 	} {
 		if !pathsToRemove[want] {
 			t.Errorf("spoke migration does not remove %s", want)

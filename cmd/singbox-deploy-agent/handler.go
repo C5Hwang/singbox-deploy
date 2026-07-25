@@ -185,6 +185,7 @@ func legacyHubArtifactPaths(layout paths.Layout) []string {
 		filepath.Join(layout.StateDir, "certmgr_schema_version"),
 		filepath.Join(layout.StateDir, "remotes"),
 		filepath.Join(layout.StateDir, "monitor_sources"),
+		filepath.Join(layout.StateDir, "spoke_subscriptions"),
 		filepath.Join(layout.StateDir, "remote_monitor.json"),
 		filepath.Join(layout.StateDir, "nodes"),
 		filepath.Join(layout.StateDir, "nodes.lock"),

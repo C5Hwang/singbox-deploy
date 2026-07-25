@@ -116,6 +116,111 @@ func TestRefreshSubscriptionsAggregatesOverWG(t *testing.T) {
 	}
 }
 
+// A spoke that answered once keeps contributing its nodes while it is offline;
+// otherwise a transient outage would silently shrink every published
+// subscription. Once the node leaves aggregation the cache must go with it.
+func TestRefreshSubscriptionsReusesCachedSpokeAndPrunesRemoved(t *testing.T) {
+	hubLayout := paths.LayoutForRoot(t.TempDir())
+	hubCfg := hysteriaConfig(t, "hub.example.com", "HUB", "hubsalt", 9443)
+	if err := deploy.WriteInstallState(hubLayout.StateDir, hubCfg); err != nil {
+		t.Fatalf("hub WriteInstallState: %v", err)
+	}
+	if err := deploy.WriteSubscriptions(hubLayout, hubCfg); err != nil {
+		t.Fatalf("hub WriteSubscriptions: %v", err)
+	}
+	spokeLayout := paths.LayoutForRoot(t.TempDir())
+	spokeCfg := hysteriaConfig(t, "spoke.example.com", "SPOKE", "spokesalt", 8443)
+	if err := deploy.WriteSubscriptions(spokeLayout, spokeCfg); err != nil {
+		t.Fatalf("spoke WriteSubscriptions: %v", err)
+	}
+	srv := httptest.NewServer((&nodeapi.Server{
+		Token:   "tok",
+		Handler: &subHandler{layout: spokeLayout, salt: spokeCfg.Salt},
+	}).Mux())
+	defer srv.Close()
+	if err := nodes.Add(hubLayout, nodes.Node{
+		Alias: "tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "tok", AgentPort: 19091, Installed: true,
+	}); err != nil {
+		t.Fatalf("register node: %v", err)
+	}
+
+	reachable := true
+	ctrl := &Controller{
+		Layout: hubLayout,
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			if !reachable {
+				return &nodeapi.Client{BaseURL: "http://127.0.0.1:1", Token: n.Token}
+			}
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	if err := ctrl.RefreshSubscriptions(context.Background()); err != nil {
+		t.Fatalf("RefreshSubscriptions: %v", err)
+	}
+	if got := combinedNodeCount(t, hubLayout, hubCfg.Salt); got != 2 {
+		t.Fatalf("expected hub + spoke while reachable, got %d links", got)
+	}
+
+	// The spoke goes offline: its nodes must survive, relabeled with the alias
+	// the operator changed in the meantime.
+	list, _ := nodes.Load(hubLayout)
+	nodeID := list[0].ID
+	if err := nodes.Mutate(hubLayout, nodeID, func(current *nodes.Node) error {
+		current.Alias = "osaka"
+		return nil
+	}); err != nil {
+		t.Fatalf("rename node: %v", err)
+	}
+	reachable = false
+	err := ctrl.RefreshSubscriptions(context.Background())
+	if err == nil {
+		t.Fatal("expected a soft error while the spoke is unreachable")
+	}
+	if !strings.Contains(err.Error(), "reused the last subscription cached") {
+		t.Fatalf("error should report the fallback: %v", err)
+	}
+	decoded := combinedDefault(t, hubLayout, hubCfg.Salt)
+	if n := strings.Count(decoded, "hysteria2://"); n != 2 {
+		t.Fatalf("cached spoke nodes were dropped, got %d links:\n%s", n, decoded)
+	}
+	if !strings.Contains(decoded, "osaka") || strings.Contains(decoded, "tokyo") {
+		t.Fatalf("cached bodies were not relabeled with the current alias:\n%s", decoded)
+	}
+
+	// Removing the node must drop its cache so it cannot reappear later.
+	if err := nodes.Remove(hubLayout, nodeID); err != nil {
+		t.Fatalf("remove node: %v", err)
+	}
+	if err := ctrl.RefreshSubscriptions(context.Background()); err != nil {
+		t.Fatalf("RefreshSubscriptions after removal: %v", err)
+	}
+	if got := combinedNodeCount(t, hubLayout, hubCfg.Salt); got != 1 {
+		t.Fatalf("expected hub-only after removal, got %d links", got)
+	}
+	if _, err := os.Stat(filepath.Join(hubLayout.StateDir, spokeSubscriptionCacheDir, nodeID)); !os.IsNotExist(err) {
+		t.Fatalf("cache for the removed node survived: %v", err)
+	}
+}
+
+func combinedDefault(t *testing.T, layout paths.Layout, salt string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "default", deploy.SubscriptionToken(salt)))
+	if err != nil {
+		t.Fatalf("read combined default: %v", err)
+	}
+	decoded, err := subscription.DecodeBase64(string(body))
+	if err != nil {
+		t.Fatalf("decode combined default: %v", err)
+	}
+	return decoded
+}
+
+func combinedNodeCount(t *testing.T, layout paths.Layout, salt string) int {
+	t.Helper()
+	return strings.Count(combinedDefault(t, layout, salt), "hysteria2://")
+}
+
 func TestRefreshSubscriptionsSkipsUnreachableSpoke(t *testing.T) {
 	hubLayout := paths.LayoutForRoot(t.TempDir())
 	hubCfg := hysteriaConfig(t, "hub.example.com", "HUB", "hubsalt", 9443)
