@@ -93,6 +93,7 @@ func TestBuildInstallRequestIncludesCert(t *testing.T) {
 	certPEM, keyPEM := writeCertificatePair(t, layout, "spoke.example.com")
 
 	node := nodes.Node{
+		ID:               "0123456789abcdef0123456789abcdef",
 		Alias:            "tokyo",
 		Domain:           "spoke.example.com",
 		EnabledProtocols: []string{"hysteria2"},
@@ -106,6 +107,9 @@ func TestBuildInstallRequestIncludesCert(t *testing.T) {
 	}
 	if req.Domain != "spoke.example.com" || req.DisplayName != "tokyo" {
 		t.Fatalf("unexpected request identity: %+v", req)
+	}
+	if req.InstallTransactionID != node.ID {
+		t.Fatalf("install transaction ID = %q, want %q", req.InstallTransactionID, node.ID)
 	}
 	if req.CertificatePEM != string(certPEM) || req.PrivateKeyPEM != string(keyPEM) {
 		t.Fatalf("certificate not embedded: %+v", req)
@@ -425,6 +429,159 @@ func TestAddNodeRollsBackRegistryPeerAndConfigOnFailure(t *testing.T) {
 	}
 }
 
+func TestAddNodeRefusesExistingStandaloneWithoutInstallOrUninstall(t *testing.T) {
+	dir := t.TempDir()
+	layout := paths.LayoutForRoot(dir)
+	hubKeyPair, err := wgnet.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := nodes.HubIdentity{
+		PrivateKey: hubKeyPair.PrivateKey, PublicKey: hubKeyPair.PublicKey, EndpointHost: "hub.example.com",
+		ListenPort: wgnet.DefaultListenPort, Subnet: wgnet.DefaultSubnet,
+	}
+	if err := nodes.SaveHubIdentity(layout, identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes.SetHubInstalled(layout, true); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the rest of the install path viable so the test would observe an
+	// Install call if the existing-deployment guard were removed.
+	writeCertificatePair(t, layout, "new.example.com")
+
+	agent := &lifecycleHandler{health: nodeapi.HealthResponse{
+		OK: true, Version: "v-test", Installed: true, SingBoxActive: true, Domain: "old.example.com",
+	}}
+	srv := httptest.NewServer((&nodeapi.Server{Token: "api-token", Handler: agent}).Mux())
+	defer srv.Close()
+
+	hubRunner := &hubCommandRunner{}
+	sshRunner := &bootstrapTestRunner{}
+	var dialCount int
+	wgDir := filepath.Join(dir, "wireguard")
+	ctrl := &Controller{
+		Layout:          layout,
+		Runner:          hubRunner,
+		WGConfDir:       wgDir,
+		ExpectedVersion: "v-test",
+		Bootstrapper: &bootstrap.Bootstrapper{Dial: func(_ context.Context, _ bootstrap.Target) (bootstrap.Runner, error) {
+			dialCount++
+			return sshRunner, nil
+		}},
+		AgentBinary: func(string) ([]byte, error) { return []byte("agent"), nil },
+		NewClient: func(nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: "api-token", HTTP: srv.Client()}
+		},
+	}
+
+	_, err = ctrl.AddNode(context.Background(), AddNodeParams{
+		Node: bootstrap.Target{
+			Host: "203.0.113.21", Port: 22, User: "root", HostKeyFingerprint: "SHA256:test",
+		},
+		Registry: nodes.Node{Alias: "existing", Domain: "new.example.com"},
+	}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "automatic standalone-to-spoke migration is disabled") {
+		t.Fatalf("expected safe migration refusal, got %v", err)
+	}
+	agent.mu.Lock()
+	healthCount, installCount, uninstallCount := agent.healthCount, agent.installCount, agent.uninstallCount
+	agent.mu.Unlock()
+	if healthCount < 2 {
+		t.Fatalf("health probes = %d, want initial readiness plus pre-install check", healthCount)
+	}
+	if installCount != 0 || uninstallCount != 0 {
+		t.Fatalf("existing runtime was mutated: install=%d uninstall=%d", installCount, uninstallCount)
+	}
+	list, loadErr := nodes.Load(layout)
+	if loadErr != nil || len(list) != 0 {
+		t.Fatalf("temporary registry entry was not rolled back: %+v err=%v", list, loadErr)
+	}
+	conf, readErr := os.ReadFile(filepath.Join(wgDir, wgnet.InterfaceName+".conf"))
+	if readErr != nil {
+		t.Fatalf("read restored hub config: %v", readErr)
+	}
+	if strings.Contains(string(conf), "[Peer]") {
+		t.Fatalf("temporary peer remained in durable config:\n%s", conf)
+	}
+	if !hubRunner.sawPeerAdd || !hubRunner.sawPeerRemove {
+		t.Fatalf("temporary live peer was not rolled back: add=%v remove=%v", hubRunner.sawPeerAdd, hubRunner.sawPeerRemove)
+	}
+	if dialCount != 3 {
+		t.Fatalf("SSH dial count = %d, want DetectArch, Provision, and bootstrap Cleanup", dialCount)
+	}
+}
+
+func TestAddNodeRollbackUsesMatchingInstallTransaction(t *testing.T) {
+	dir := t.TempDir()
+	layout := paths.LayoutForRoot(dir)
+	hubKeyPair, err := wgnet.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := nodes.HubIdentity{
+		PrivateKey: hubKeyPair.PrivateKey, PublicKey: hubKeyPair.PublicKey, EndpointHost: "hub.example.com",
+		ListenPort: wgnet.DefaultListenPort, Subnet: wgnet.DefaultSubnet,
+	}
+	if err := nodes.SaveHubIdentity(layout, identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes.SetHubInstalled(layout, true); err != nil {
+		t.Fatal(err)
+	}
+	writeCertificatePair(t, layout, "failed.example.com")
+
+	agent := &lifecycleHandler{
+		health:     nodeapi.HealthResponse{OK: true, Version: "v-test"},
+		installErr: errors.New("injected install failure"),
+	}
+	srv := httptest.NewServer((&nodeapi.Server{Token: "api-token", Handler: agent}).Mux())
+	defer srv.Close()
+	var dialCount int
+	ctrl := &Controller{
+		Layout:          layout,
+		Runner:          &hubCommandRunner{},
+		WGConfDir:       filepath.Join(dir, "wireguard"),
+		ExpectedVersion: "v-test",
+		Bootstrapper: &bootstrap.Bootstrapper{Dial: func(_ context.Context, _ bootstrap.Target) (bootstrap.Runner, error) {
+			dialCount++
+			return &bootstrapTestRunner{}, nil
+		}},
+		AgentBinary: func(string) ([]byte, error) { return []byte("agent"), nil },
+		NewClient: func(nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: "api-token", HTTP: srv.Client()}
+		},
+	}
+	_, err = ctrl.AddNode(context.Background(), AddNodeParams{
+		Node: bootstrap.Target{
+			Host: "203.0.113.22", Port: 22, User: "root", HostKeyFingerprint: "SHA256:test",
+		},
+		Registry: nodes.Node{Alias: "failed", Domain: "failed.example.com"},
+	}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "injected install failure") {
+		t.Fatalf("AddNode error = %v", err)
+	}
+	agent.mu.Lock()
+	installReq, uninstallReq := agent.installReq, agent.uninstallReq
+	installCount, uninstallCount := agent.installCount, agent.uninstallCount
+	agent.mu.Unlock()
+	if installCount != 1 || uninstallCount != 1 {
+		t.Fatalf("install=%d uninstall=%d, want one owned rollback", installCount, uninstallCount)
+	}
+	if validateErr := nodeapi.ValidateInstallTransactionID(installReq.InstallTransactionID); validateErr != nil {
+		t.Fatalf("invalid install transaction: %q: %v", installReq.InstallTransactionID, validateErr)
+	}
+	if !uninstallReq.KeepOverlay || uninstallReq.RollbackTransactionID != installReq.InstallTransactionID {
+		t.Fatalf("rollback ownership mismatch: install=%+v uninstall=%+v", installReq, uninstallReq)
+	}
+	if list, loadErr := nodes.Load(layout); loadErr != nil || len(list) != 0 {
+		t.Fatalf("failed node registry not rolled back: %+v err=%v", list, loadErr)
+	}
+	if dialCount != 3 {
+		t.Fatalf("SSH dial count = %d, want DetectArch, Provision, Cleanup", dialCount)
+	}
+}
+
 func TestForceDetachNodeDoesNotContactUnreachableAgent(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
@@ -469,6 +626,123 @@ func TestForceDetachNodeDoesNotContactUnreachableAgent(t *testing.T) {
 	}
 }
 
+func TestForceDetachRetainsRegistryWhenDurableConfigWriteFails(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	hubKey, err := wgnet.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes.SaveHubIdentity(layout, nodes.HubIdentity{
+		PrivateKey: hubKey.PrivateKey, PublicKey: hubKey.PublicKey,
+		EndpointHost: "hub.example.com", ListenPort: wgnet.DefaultListenPort, Subnet: wgnet.DefaultSubnet,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	peerKey, err := wgnet.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "write-failure", SSHHost: "write-failure.example.com", Domain: "write-failure.example.com",
+		WGIP: "10.90.0.2", WGPublicKey: peerKey.PublicKey, Installed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := nodes.Load(layout)
+
+	// Make the configured WireGuard directory impossible to create by placing a
+	// regular file at one of its parent path components.
+	blocker := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &hubCommandRunner{}
+	ctrl := &Controller{
+		Layout: layout, Runner: runner, WGConfDir: filepath.Join(blocker, "wireguard"),
+		NewClient: func(nodes.Node) *nodeapi.Client {
+			t.Fatal("force detach must not contact the agent")
+			return nil
+		},
+	}
+	err = ctrl.ForceDetachNode(context.Background(), list[0], io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "persist overlay config") || !strings.Contains(err.Error(), "registry retained") {
+		t.Fatalf("expected durable-config failure, got %v", err)
+	}
+	remaining, loadErr := nodes.Load(layout)
+	if loadErr != nil || len(remaining) != 1 {
+		t.Fatalf("registry was lost after config failure: %+v err=%v", remaining, loadErr)
+	}
+	if runner.sawPeerRemove {
+		t.Fatalf("live peer was removed despite durable-config failure: %+v", runner.commands)
+	}
+}
+
+func TestRemoveNodeRetainsRegistryWhenLivePeerRemovalFails(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	hubKey, err := wgnet.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes.SaveHubIdentity(layout, nodes.HubIdentity{
+		PrivateKey: hubKey.PrivateKey, PublicKey: hubKey.PublicKey,
+		EndpointHost: "hub.example.com", ListenPort: wgnet.DefaultListenPort, Subnet: wgnet.DefaultSubnet,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	peerKey, err := wgnet.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "peer-failure", SSHHost: "peer-failure.example.com", Domain: "peer-failure.example.com",
+		WGIP: "10.90.0.2", WGPublicKey: peerKey.PublicKey, Token: "node-token", Installed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := nodes.Load(layout)
+
+	agent := &lifecycleHandler{health: nodeapi.HealthResponse{OK: true, Version: "v-test", Installed: true}}
+	srv := httptest.NewServer((&nodeapi.Server{Token: "api-token", Handler: agent}).Mux())
+	defer srv.Close()
+	runner := &hubCommandRunner{peerRemoveErr: errors.New("wg remove failed")}
+	wgDir := filepath.Join(root, "wireguard")
+	ctrl := &Controller{
+		Layout: layout, Runner: runner, WGConfDir: wgDir,
+		NewClient: func(nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: "api-token", HTTP: srv.Client()}
+		},
+	}
+	err = ctrl.RemoveNode(context.Background(), list[0], io.Discard)
+	if err == nil ||
+		!strings.Contains(err.Error(), "spoke teardown was acknowledged") ||
+		!strings.Contains(err.Error(), "force-detach retry") ||
+		!strings.Contains(err.Error(), "remove live overlay peer") {
+		t.Fatalf("expected acknowledged teardown/local detach error, got %v", err)
+	}
+	agent.mu.Lock()
+	uninstallCount := agent.uninstallCount
+	agent.mu.Unlock()
+	if uninstallCount != 1 {
+		t.Fatalf("remote uninstall calls = %d, want 1", uninstallCount)
+	}
+	remaining, loadErr := nodes.Load(layout)
+	if loadErr != nil || len(remaining) != 1 {
+		t.Fatalf("registry was lost after peer failure: %+v err=%v", remaining, loadErr)
+	}
+	if !runner.sawPeerRemove {
+		t.Fatal("live peer removal was not attempted")
+	}
+	conf, readErr := os.ReadFile(filepath.Join(wgDir, wgnet.InterfaceName+".conf"))
+	if readErr != nil {
+		t.Fatalf("read fail-closed hub config: %v", readErr)
+	}
+	if strings.Contains(string(conf), peerKey.PublicKey) {
+		t.Fatalf("failed peer remained in durable config:\n%s", conf)
+	}
+}
+
 func TestTeardownAllRetainsOverlayWhenSpokeDoesNotAcknowledge(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	if err := nodes.Add(layout, nodes.Node{
@@ -504,6 +778,46 @@ func TestTeardownAllRetainsOverlayWhenSpokeDoesNotAcknowledge(t *testing.T) {
 		}
 	}
 }
+
+type lifecycleHandler struct {
+	mu             sync.Mutex
+	health         nodeapi.HealthResponse
+	healthCount    int
+	installCount   int
+	installReq     nodeapi.InstallRequest
+	installErr     error
+	uninstallCount int
+	uninstallReq   nodeapi.UninstallRequest
+}
+
+func (h *lifecycleHandler) Health() nodeapi.HealthResponse {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.healthCount++
+	return h.health
+}
+
+func (h *lifecycleHandler) Install(_ context.Context, req nodeapi.InstallRequest, _ io.Writer) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.installCount++
+	h.installReq = req
+	return h.installErr
+}
+
+func (h *lifecycleHandler) ApplyCert(context.Context, nodeapi.CertRequest, io.Writer) error {
+	return nil
+}
+
+func (h *lifecycleHandler) Uninstall(_ context.Context, req nodeapi.UninstallRequest, _ io.Writer) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.uninstallCount++
+	h.uninstallReq = req
+	return nil
+}
+
+func (h *lifecycleHandler) Subscription(string) ([]byte, error) { return nil, nil }
 
 type upgradeHealthHandler struct {
 	mu         sync.Mutex
@@ -550,6 +864,7 @@ type hubCommandRunner struct {
 	commands      []system.Command
 	sawPeerAdd    bool
 	sawPeerRemove bool
+	peerRemoveErr error
 }
 
 func (r *hubCommandRunner) Run(cmd system.Command) error {
@@ -558,6 +873,9 @@ func (r *hubCommandRunner) Run(cmd system.Command) error {
 		joined := strings.Join(cmd.Args, " ")
 		r.sawPeerAdd = r.sawPeerAdd || strings.Contains(joined, "allowed-ips")
 		r.sawPeerRemove = r.sawPeerRemove || strings.HasSuffix(joined, " remove")
+		if strings.HasSuffix(joined, " remove") && r.peerRemoveErr != nil {
+			return r.peerRemoveErr
+		}
 	}
 	return nil
 }
@@ -602,7 +920,7 @@ func writeCertificatePair(t *testing.T, layout paths.Layout, domain string) ([]b
 		Subject:      pkix.Name{CommonName: domain},
 		DNSNames:     []string{domain},
 		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     now.Add(24 * time.Hour),
+		NotAfter:     now.Add(90 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}

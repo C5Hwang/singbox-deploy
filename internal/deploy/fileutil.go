@@ -59,6 +59,9 @@ type Step struct {
 func RunSteps(ctx context.Context, progress func(Event), steps []Step) error {
 	total := len(steps)
 	for i, s := range steps {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		EmitProgress(progress, Event{Index: i + 1, Total: total, Label: s.Label, Detail: s.Detail, Status: "running"})
 		if err := s.Run(ctx); err != nil {
 			EmitProgress(progress, Event{Index: i + 1, Total: total, Label: s.Label, Detail: s.Detail, Status: "fail", Err: err})

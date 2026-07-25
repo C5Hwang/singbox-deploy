@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,22 +33,36 @@ import (
 
 // agentHandler implements nodeapi.Handler by driving the local deploy flow in
 // spoke mode.
+const installTransactionFile = "install_transaction_id"
+
 type agentHandler struct {
 	layout  paths.Layout
 	monitor *monitorSupervisor
 
-	upgradeMu      sync.Mutex
-	restartPending bool
+	mutationOnce    sync.Once
+	mutationGate    chan struct{}
+	restartPending  bool
+	shutdownPending bool
+	newRunner       func(context.Context, io.Writer) system.Runner
+	runUninstall    func(context.Context, uninstall.Options) error
 	// Injectable seams keep the on-disk replacement and delayed restart
 	// independently testable without touching the running test executable.
 	agentExecutable func() (string, error)
 	inspectAgent    func(context.Context, string, string) error
 	scheduleRestart func()
+	scheduleStop    func()
 }
 
 func (h *agentHandler) Health() nodeapi.HealthResponse {
 	store := state.NewStore(h.layout.StateDir)
-	domain, _ := store.ReadValue("domain", false)
+	domain, err := store.ReadValue("domain", false)
+	if err != nil {
+		return nodeapi.HealthResponse{
+			OK:      false,
+			Version: version,
+			Error:   fmt.Sprintf("read deployment state: %v", err),
+		}
+	}
 	return nodeapi.HealthResponse{
 		OK:            true,
 		Version:       version,
@@ -58,17 +73,28 @@ func (h *agentHandler) Health() nodeapi.HealthResponse {
 }
 
 func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, log io.Writer) error {
+	ctx = nonNilContext(ctx)
+	if err := h.beginMutation(ctx); err != nil {
+		return err
+	}
+	defer h.endMutation()
+
 	if children, err := nodes.Load(h.layout); err != nil {
 		return fmt.Errorf("inspect existing Hub registry before spoke conversion: %w", err)
 	} else if len(children) > 0 {
 		return fmt.Errorf("cannot convert a Hub managing %d spoke node(s) into a spoke; remove or force-detach its children first", len(children))
 	}
-	// A spoke may be an existing standalone deployment being enrolled into the
-	// new Hub. Stop its old Hub-only daemons before applying config so it cannot
-	// renew certificates or serve a second monitor concurrently.
-	disableLegacyHubServices(system.NewExecRunner(log))
-	if err := h.writePushedCertificate(req.Domain, req.CertificatePEM, req.PrivateKeyPEM); err != nil {
-		return fmt.Errorf("write certificate: %w", err)
+	if !req.ConfigOnly {
+		domain, err := state.NewStore(h.layout.StateDir).ReadValue("domain", false)
+		if err != nil {
+			return fmt.Errorf("inspect existing deployment before spoke install: %w", err)
+		}
+		if domain != "" {
+			return fmt.Errorf("this server already has a managed deployment for %s; automatic standalone-to-spoke conversion is disabled because it cannot be rolled back safely", domain)
+		}
+		if err := nodeapi.ValidateInstallTransactionID(req.InstallTransactionID); err != nil {
+			return err
+		}
 	}
 	cfg, err := h.buildSpokeConfig(req)
 	if err != nil {
@@ -78,8 +104,24 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	if err != nil {
 		return fmt.Errorf("detect host: %w", err)
 	}
+	if !req.ConfigOnly {
+		if err := state.NewStore(agentConfigDir(h.layout)).WriteString(installTransactionFile, req.InstallTransactionID+"\n", 0o600); err != nil {
+			return fmt.Errorf("record full-install transaction ownership: %w", err)
+		}
+	}
+	runner := h.commandRunner(ctx, log)
+	// Remove stale Hub-only services left by an interrupted older deployment
+	// before activating the spoke. A full standalone deployment was rejected
+	// above, so this cleanup cannot destroy a live migration source.
+	disableLegacyHubServices(runner)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := h.writePushedCertificate(req.Domain, req.CertificatePEM, req.PrivateKeyPEM); err != nil {
+		return fmt.Errorf("write certificate: %w", err)
+	}
 	orch := &deploy.Orchestrator{
-		Runner:   system.NewExecRunner(log),
+		Runner:   runner,
 		Layout:   h.layout,
 		Releases: release.NewClient("", nil),
 		GOOS:     "linux",
@@ -103,10 +145,12 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	if err := removeLegacyHubArtifacts(h.layout); err != nil {
 		return fmt.Errorf("remove legacy standalone management artifacts: %w", err)
 	}
-	if err := system.NewExecRunner(log).Run(system.Command{Name: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
-		return fmt.Errorf("reload systemd after spoke migration: %w", err)
+	if err := runner.Run(system.Command{Name: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
+		return fmt.Errorf("reload systemd after spoke activation: %w", err)
 	}
-	h.monitor.reload()
+	if h.monitor != nil {
+		h.monitor.reload()
+	}
 	return nil
 }
 
@@ -153,7 +197,13 @@ func legacyHubArtifactPaths(layout paths.Layout) []string {
 	}
 }
 
-func (h *agentHandler) ApplyCert(_ context.Context, req nodeapi.CertRequest, log io.Writer) error {
+func (h *agentHandler) ApplyCert(ctx context.Context, req nodeapi.CertRequest, log io.Writer) error {
+	ctx = nonNilContext(ctx)
+	if err := h.beginMutation(ctx); err != nil {
+		return err
+	}
+	defer h.endMutation()
+
 	certPath, keyPath := certmgr.CertPaths(h.layout, req.Domain)
 	oldCert, certErr := os.ReadFile(certPath)
 	oldKey, keyErr := os.ReadFile(keyPath)
@@ -161,7 +211,7 @@ func (h *agentHandler) ApplyCert(_ context.Context, req nodeapi.CertRequest, log
 		return err
 	}
 	fmt.Fprintf(log, "installed refreshed certificate for %s\n", req.Domain)
-	runner := system.NewExecRunner(log)
+	runner := h.commandRunner(ctx, log)
 	if err := deploy.RunCommands(runner,
 		system.Systemctl("restart", system.SingBoxService),
 		system.Systemctl("restart", "nginx"),
@@ -180,11 +230,19 @@ func (h *agentHandler) ApplyCert(_ context.Context, req nodeapi.CertRequest, log
 	return nil
 }
 
-func (h *agentHandler) Uninstall(ctx context.Context, req nodeapi.UninstallRequest, log io.Writer) error {
-	if h.monitor != nil {
-		h.monitor.stop()
+func (h *agentHandler) Uninstall(ctx context.Context, req nodeapi.UninstallRequest, log io.Writer) (retErr error) {
+	ctx = nonNilContext(ctx)
+	if err := h.beginMutation(ctx); err != nil {
+		return err
 	}
+	defer h.endMutation()
+
 	agentStateDir := filepath.Join(h.layout.StateDir, "agent")
+	if req.KeepOverlay {
+		if err := authorizeRollbackUninstall(h.layout, req.RollbackTransactionID); err != nil {
+			return err
+		}
+	}
 	var firewallRule agentfirewall.Rule
 	var hasFirewallRule bool
 	if !req.KeepOverlay {
@@ -194,8 +252,20 @@ func (h *agentHandler) Uninstall(ctx context.Context, req nodeapi.UninstallReque
 			return fmt.Errorf("load Agent firewall state: %w", err)
 		}
 	}
-	runner := system.NewExecRunner(log)
-	if err := uninstall.Run(ctx, uninstall.Options{
+	if h.monitor != nil {
+		h.monitor.stop()
+		defer func() {
+			if retErr != nil {
+				h.monitor.reload()
+			}
+		}()
+	}
+	runner := h.commandRunner(ctx, log)
+	runUninstall := h.runUninstall
+	if runUninstall == nil {
+		runUninstall = uninstall.Run
+	}
+	if err := runUninstall(ctx, uninstall.Options{
 		Runner:              runner,
 		Layout:              h.layout,
 		DeleteRuntime:       true,
@@ -203,6 +273,7 @@ func (h *agentHandler) Uninstall(ctx context.Context, req nodeapi.UninstallReque
 		DeleteMonitorDB:     true,
 		DeleteSite:          true,
 		DeleteSubscriptions: true,
+		PreserveAgentState:  true,
 		Progress: func(e deploy.Event) {
 			fmt.Fprintf(log, "[%d/%d] %s: %s\n", e.Index, e.Total, e.Label, e.Detail)
 		},
@@ -210,38 +281,341 @@ func (h *agentHandler) Uninstall(ctx context.Context, req nodeapi.UninstallReque
 		return err
 	}
 	if !req.KeepOverlay {
-		if hasFirewallRule {
-			removeCommands, err := firewallRule.RemoveCommands()
-			if err == nil {
-				err = deploy.RunCommands(runner, removeCommands...)
-			}
-			if err != nil {
-				// uninstall.Run may already have removed StateDir. Restore the
-				// exact rule metadata so a retained Agent/overlay can retry.
-				if saveErr := agentfirewall.Save(agentStateDir, firewallRule); saveErr != nil {
-					err = errors.Join(err, fmt.Errorf("restore Agent firewall cleanup state: %w", saveErr))
-				}
-				return fmt.Errorf("remove Agent firewall rule: %w", err)
-			}
+		recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelRecovery()
+		recoveryRunner := h.commandRunner(recoveryCtx, log)
+		if err := prepareAgentAndOverlayTeardown(h.layout, runner, recoveryRunner, firewallRule, hasFirewallRule, agentTeardownPaths()); err != nil {
+			return err
 		}
-		fmt.Fprintln(log, "spoke runtime removed; agent and WireGuard teardown scheduled")
-		time.AfterFunc(750*time.Millisecond, func() { teardownAgentAndOverlay(h.layout) })
+		fmt.Fprintln(log, "spoke runtime, agent, and WireGuard state removed; service stop scheduled")
+		if h.scheduleStop != nil {
+			h.scheduleStop()
+		} else {
+			time.AfterFunc(750*time.Millisecond, stopAgentAndOverlay)
+		}
+	}
+	h.shutdownPending = true
+	return nil
+}
+
+func authorizeRollbackUninstall(layout paths.Layout, transactionID string) error {
+	if err := nodeapi.ValidateInstallTransactionID(transactionID); err != nil {
+		return fmt.Errorf("authorize rollback uninstall: %w", err)
+	}
+	owner, err := state.NewStore(agentConfigDir(layout)).ReadValue(installTransactionFile, true)
+	if err != nil {
+		return fmt.Errorf("authorize rollback uninstall: %w", err)
+	}
+	if owner != transactionID {
+		return fmt.Errorf("refusing rollback uninstall: transaction %s does not own this deployment", transactionID)
 	}
 	return nil
 }
 
-func teardownAgentAndOverlay(layout paths.Layout) {
-	// Remove durable material first while this process and tunnel are still
-	// alive, then queue service stops without blocking on our own termination.
+func prepareAgentAndOverlayTeardown(layout paths.Layout, runner, recoveryRunner system.Runner, firewallRule agentfirewall.Rule, hasFirewallRule bool, teardownPaths []string) error {
 	agentDir := filepath.Join(layout.StateDir, "agent")
-	for _, path := range agentTeardownPaths() {
-		_ = os.Remove(path)
+	const (
+		unitsDisabledMarker      = "teardown_units_disabled"
+		firewallCleanupNextFile  = "firewall_cleanup_next"
+		maxAgentStateSnapshotLen = 4 << 20
+		maxTeardownFilesSnapshot = nodeapi.MaxAgentBinarySize + (8 << 20)
+	)
+	cleanRoot := filepath.Clean(layout.Root)
+	cleanAgentDir := filepath.Clean(agentDir)
+	rel, err := filepath.Rel(cleanRoot, cleanAgentDir)
+	if err != nil || cleanRoot == "." || cleanRoot == string(os.PathSeparator) || rel == "." || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("refusing to remove unsafe Agent state path %q", agentDir)
 	}
-	_ = os.RemoveAll(agentDir)
-	_ = exec.Command("systemctl", "disable", "singbox-deploy-agent.service").Run()
-	_ = exec.Command("systemctl", "disable", "wg-quick@sbwg0.service").Run()
-	_ = exec.Command("systemctl", "daemon-reload").Run()
-	_ = exec.Command("systemctl", "--no-block", "stop", "wg-quick@sbwg0.service").Run()
+	if info, statErr := os.Lstat(agentDir); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to tear down symlinked Agent state path %q", agentDir)
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect Agent state path: %w", statErr)
+	}
+
+	var firewallCommands, firewallRestoreCommands []system.Command
+	if hasFirewallRule {
+		firewallCommands, err = firewallRule.RemoveCommands()
+		if err != nil {
+			return fmt.Errorf("build Agent firewall cleanup: %w", err)
+		}
+		firewallRestoreCommands, err = firewallRule.OpenCommands()
+		if err != nil {
+			return fmt.Errorf("build Agent firewall recovery: %w", err)
+		}
+	}
+	firewallStart := 0
+	if raw, readErr := state.NewStore(agentDir).ReadValue(firewallCleanupNextFile, false); readErr != nil {
+		return fmt.Errorf("read Agent firewall cleanup progress: %w", readErr)
+	} else if raw != "" {
+		firewallStart, err = strconv.Atoi(raw)
+		if err != nil || firewallStart < 0 || firewallStart > len(firewallCommands) {
+			return fmt.Errorf("invalid Agent firewall cleanup progress %q", raw)
+		}
+	}
+	stateSnapshot, err := snapshotAgentState(agentDir, maxAgentStateSnapshotLen)
+	if err != nil {
+		return err
+	}
+	teardownSnapshot, err := snapshotTeardownFiles(teardownPaths, maxTeardownFilesSnapshot)
+	if err != nil {
+		return err
+	}
+	if recoveryRunner == nil {
+		recoveryRunner = runner
+	}
+	markerPath := filepath.Join(agentDir, unitsDisabledMarker)
+	rollback := func(cause error, restoreFirewall bool) error {
+		restoreErr := restoreAgentControlPlane(
+			agentDir,
+			stateSnapshot,
+			teardownSnapshot,
+			recoveryRunner,
+			markerPath,
+			firewallCleanupNextFile,
+			restoreFirewall,
+			firewallRestoreCommands,
+		)
+		return errors.Join(cause, wrapOptionalError("restore Agent control plane", restoreErr))
+	}
+	if _, statErr := os.Stat(markerPath); os.IsNotExist(statErr) {
+		for _, unit := range []string{"singbox-deploy-agent.service", "wg-quick@sbwg0.service"} {
+			cmd := system.Command{Name: "systemctl", Args: []string{"disable", unit}}
+			if err := runner.Run(cmd); err != nil {
+				return rollback(fmt.Errorf("%s: %w", cmd.String(), err), false)
+			}
+		}
+		if err := state.NewStore(agentDir).WriteString(unitsDisabledMarker, "yes\n", 0o600); err != nil {
+			return rollback(fmt.Errorf("record disabled Agent control-plane units: %w", err), false)
+		}
+	} else if statErr != nil {
+		return fmt.Errorf("inspect Agent teardown progress: %w", statErr)
+	}
+	for _, path := range teardownPaths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return rollback(fmt.Errorf("remove %s: %w", path, err), false)
+		}
+	}
+	reload := system.Command{Name: "systemctl", Args: []string{"daemon-reload"}}
+	if err := runner.Run(reload); err != nil {
+		return rollback(fmt.Errorf("%s: %w", reload.String(), err), false)
+	}
+	// The firewall rule is intentionally last: until every other durable
+	// cleanup step succeeds, the Hub must remain able to retry this request.
+	if err := os.RemoveAll(agentDir); err != nil {
+		return rollback(fmt.Errorf("remove Agent state: %w", err), false)
+	}
+	for i := firewallStart; i < len(firewallCommands); i++ {
+		command := firewallCommands[i]
+		if runErr := runner.Run(command); runErr != nil {
+			return fmt.Errorf("remove Agent firewall rule: %w", rollback(
+				fmt.Errorf("command %q: %w", command.String(), runErr),
+				true,
+			))
+		}
+	}
+	return nil
+}
+
+type agentStateFile struct {
+	name string
+	data []byte
+	mode os.FileMode
+}
+
+func snapshotAgentState(dir string, maxBytes int64) ([]agentStateFile, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read Agent state snapshot: %w", err)
+	}
+	var total int64
+	files := make([]agentStateFile, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("inspect Agent state %s: %w", entry.Name(), err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("refusing to snapshot non-regular Agent state entry %s", entry.Name())
+		}
+		total += info.Size()
+		if total > maxBytes {
+			return nil, fmt.Errorf("Agent state snapshot exceeds %d bytes", maxBytes)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("snapshot Agent state %s: %w", entry.Name(), err)
+		}
+		if int64(len(data)) != info.Size() {
+			return nil, fmt.Errorf("Agent state %s changed while being snapshotted", entry.Name())
+		}
+		files = append(files, agentStateFile{name: entry.Name(), data: data, mode: info.Mode().Perm()})
+	}
+	return files, nil
+}
+
+func restoreAgentState(dir string, files []agentStateFile) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	for _, file := range files {
+		if err := state.WriteFileAtomic(filepath.Join(dir, file.name), file.data, file.mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type teardownFile struct {
+	path          string
+	data          []byte
+	mode          os.FileMode
+	symlinkTarget string
+	exists        bool
+	symlink       bool
+}
+
+func snapshotTeardownFiles(paths []string, maxBytes int64) ([]teardownFile, error) {
+	var total int64
+	files := make([]teardownFile, 0, len(paths))
+	for _, path := range paths {
+		cleanPath := filepath.Clean(path)
+		if !filepath.IsAbs(cleanPath) || cleanPath == string(os.PathSeparator) {
+			return nil, fmt.Errorf("refusing to snapshot unsafe teardown path %q", path)
+		}
+		file := teardownFile{path: cleanPath}
+		info, err := os.Lstat(cleanPath)
+		if os.IsNotExist(err) {
+			files = append(files, file)
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect teardown path %s: %w", cleanPath, err)
+		}
+		file.exists = true
+		if info.Mode()&os.ModeSymlink != 0 {
+			file.symlink = true
+			file.symlinkTarget, err = os.Readlink(cleanPath)
+			if err != nil {
+				return nil, fmt.Errorf("read teardown symlink %s: %w", cleanPath, err)
+			}
+			files = append(files, file)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("refusing to snapshot non-regular teardown path %s", cleanPath)
+		}
+		total += info.Size()
+		if total > maxBytes {
+			return nil, fmt.Errorf("control-plane teardown snapshot exceeds %d bytes", maxBytes)
+		}
+		file.data, err = os.ReadFile(cleanPath)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot teardown path %s: %w", cleanPath, err)
+		}
+		if int64(len(file.data)) != info.Size() {
+			return nil, fmt.Errorf("teardown path %s changed while being snapshotted", cleanPath)
+		}
+		file.mode = info.Mode().Perm()
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+func restoreTeardownFiles(files []teardownFile) error {
+	var errs []error
+	for _, file := range files {
+		if !file.exists {
+			if err := os.Remove(file.path); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("remove newly-created teardown path %s: %w", file.path, err))
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(file.path), 0o755); err != nil {
+			errs = append(errs, fmt.Errorf("create parent for %s: %w", file.path, err))
+			continue
+		}
+		if file.symlink {
+			if err := os.Remove(file.path); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("replace teardown symlink %s: %w", file.path, err))
+				continue
+			}
+			if err := os.Symlink(file.symlinkTarget, file.path); err != nil {
+				errs = append(errs, fmt.Errorf("restore teardown symlink %s: %w", file.path, err))
+			}
+			continue
+		}
+		if err := state.WriteFileAtomic(file.path, file.data, file.mode); err != nil {
+			errs = append(errs, fmt.Errorf("restore teardown file %s: %w", file.path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func restoreAgentControlPlane(
+	agentDir string,
+	stateFiles []agentStateFile,
+	teardownFiles []teardownFile,
+	runner system.Runner,
+	unitsDisabledMarkerPath string,
+	firewallCleanupNextFile string,
+	restoreFirewall bool,
+	firewallRestoreCommands []system.Command,
+) error {
+	var errs []error
+	if restoreFirewall {
+		if err := deploy.RunCommands(runner, firewallRestoreCommands...); err != nil {
+			errs = append(errs, fmt.Errorf("re-open Agent firewall rule: %w", err))
+		}
+	}
+	if err := restoreAgentState(agentDir, stateFiles); err != nil {
+		errs = append(errs, fmt.Errorf("restore Agent state: %w", err))
+	}
+	if err := restoreTeardownFiles(teardownFiles); err != nil {
+		errs = append(errs, err)
+	}
+	reload := system.Command{Name: "systemctl", Args: []string{"daemon-reload"}}
+	if err := runner.Run(reload); err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", reload.String(), err))
+	}
+	for _, unit := range []string{"wg-quick@sbwg0.service", "singbox-deploy-agent.service"} {
+		cmd := system.Command{Name: "systemctl", Args: []string{"enable", unit}}
+		if err := runner.Run(cmd); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", cmd.String(), err))
+		}
+	}
+	if err := os.Remove(unitsDisabledMarkerPath); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, fmt.Errorf("clear disabled-unit teardown marker: %w", err))
+	}
+	if restoreFirewall {
+		stagePath := filepath.Join(agentDir, firewallCleanupNextFile)
+		if err := os.Remove(stagePath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("reset firewall cleanup progress: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func wrapOptionalError(action string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", action, err)
+}
+
+func stopAgentAndOverlay() {
+	// The durable wg-quick config is already gone, so tear down the simple
+	// managed interface directly instead of asking wg-quick to re-read a
+	// missing file. Queueing our own stop avoids waiting on this process.
+	_ = exec.Command("ip", "link", "delete", "dev", "sbwg0").Run()
 	_ = exec.Command("systemctl", "--no-block", "stop", "singbox-deploy-agent.service").Run()
 }
 
@@ -261,11 +635,11 @@ func agentTeardownPaths() []string {
 // after this handler has returned so the streamed acknowledgement reaches the
 // hub before the process is stopped.
 func (h *agentHandler) Upgrade(ctx context.Context, req nodeapi.UpgradeRequest, log io.Writer) error {
-	h.upgradeMu.Lock()
-	defer h.upgradeMu.Unlock()
-	if h.restartPending {
-		return fmt.Errorf("an agent upgrade has already committed; restart is pending")
+	ctx = nonNilContext(ctx)
+	if err := h.beginMutation(ctx); err != nil {
+		return err
 	}
+	defer h.endMutation()
 
 	if err := nodeapi.ValidateUpgradeRequest(req); err != nil {
 		return err
@@ -304,6 +678,56 @@ func (h *agentHandler) Upgrade(ctx context.Context, req nodeapi.UpgradeRequest, 
 		})
 	}
 	return nil
+}
+
+func (h *agentHandler) beginMutation(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.mutationOnce.Do(func() {
+		h.mutationGate = make(chan struct{}, 1)
+		h.mutationGate <- struct{}{}
+	})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-h.mutationGate:
+	}
+	if err := ctx.Err(); err != nil {
+		h.endMutation()
+		return err
+	}
+	switch {
+	case h.restartPending:
+		h.endMutation()
+		return fmt.Errorf("an agent upgrade has already committed; restart is pending")
+	case h.shutdownPending:
+		h.endMutation()
+		return fmt.Errorf("agent uninstall has already committed; shutdown is pending")
+	default:
+		return nil
+	}
+}
+
+func (h *agentHandler) endMutation() {
+	h.mutationGate <- struct{}{}
+}
+
+func (h *agentHandler) commandRunner(ctx context.Context, out io.Writer) system.Runner {
+	if h.newRunner != nil {
+		return h.newRunner(ctx, out)
+	}
+	return system.NewExecRunnerContext(ctx, out)
+}
+
+func nonNilContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 func validateAgentELF(binary []byte) error {

@@ -278,6 +278,31 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 	}
 	node = healthyNode
 
+	// A successful bootstrap can expose an agent on a server that already has a
+	// standalone singbox-deploy runtime. Do not start a destructive conversion:
+	// the current install flow has no complete snapshot of packages, firewall,
+	// service, certificate, and runtime state to restore if migration fails.
+	// Keeping installAttempted false is intentional—the deferred rollback then
+	// removes only this transaction's agent/overlay bootstrap and never asks the
+	// agent to uninstall the pre-existing runtime.
+	health, err := c.NewClient(node).Health(ctx)
+	if err != nil {
+		return nodes.Node{}, fmt.Errorf("confirm spoke has no existing deployment: %w", err)
+	}
+	if !health.OK {
+		return nodes.Node{}, fmt.Errorf("agent %s reported unhealthy before install%s", node.EffectiveAlias(), healthErrorSuffix(health))
+	}
+	if health.Installed {
+		existing := strings.TrimSpace(health.Domain)
+		if existing == "" {
+			existing = "unknown domain"
+		}
+		return nodes.Node{}, fmt.Errorf(
+			"server already has a singbox-deploy installation for %s; automatic standalone-to-spoke migration is disabled to preserve the existing deployment",
+			existing,
+		)
+	}
+
 	installAttempted = true
 	if err := c.installNode(ctx, node, log, false); err != nil {
 		return nodes.Node{}, err
@@ -384,7 +409,10 @@ func (c *Controller) RemoveNode(ctx context.Context, node nodes.Node, log io.Wri
 	if err := c.NewClient(node).Uninstall(ctx, nodeapi.UninstallRequest{}, log); err != nil {
 		return fmt.Errorf("spoke did not acknowledge uninstall; registry retained: %w", err)
 	}
-	return c.detachNode(ctx, node, log)
+	if err := c.detachNode(ctx, node, log); err != nil {
+		return fmt.Errorf("spoke teardown was acknowledged, but local detach did not complete; registry retained for force-detach retry: %w", err)
+	}
+	return nil
 }
 
 // ForceDetachNode removes an unreachable spoke from the Hub registry and
@@ -401,9 +429,45 @@ func (c *Controller) ForceDetachNode(ctx context.Context, node nodes.Node, log i
 }
 
 func (c *Controller) detachNode(ctx context.Context, node nodes.Node, log io.Writer) error {
+	identity, ok, err := nodes.LoadHubIdentity(c.Layout)
+	if err != nil {
+		return fmt.Errorf("load hub overlay identity; registry retained: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("hub overlay identity is missing; registry retained")
+	}
+
+	list, err := nodes.Load(c.Layout)
+	if err != nil {
+		return fmt.Errorf("load node registry for detach: %w", err)
+	}
+	remaining := make([]nodes.Node, 0, len(list))
+	found := false
+	for _, current := range list {
+		matches := node.ID != "" && strings.EqualFold(current.ID, node.ID)
+		if node.ID == "" {
+			matches = node.WGIP != "" && current.WGIP == node.WGIP
+		}
+		if matches {
+			found = true
+			continue
+		}
+		remaining = append(remaining, current)
+	}
+	if !found {
+		return fmt.Errorf("node %s is not present in the registry; no overlay state changed", node.EffectiveAlias())
+	}
+
+	// Revoke the peer from the durable configuration first. If this write
+	// fails, neither the live interface nor the registry has changed. If a
+	// later step fails, the durable config remains fail-closed while the
+	// registry retains the key/token metadata required for an explicit retry.
+	if err := c.writeHubConfig(identity, remaining); err != nil {
+		return fmt.Errorf("persist overlay config without %s; registry retained: %w", node.EffectiveAlias(), err)
+	}
 	if node.WGPublicKey != "" {
 		if err := c.wgManager().RemovePeer(wgnet.InterfaceName, node.WGPublicKey); err != nil {
-			fmt.Fprintf(log, "warning: remove overlay peer failed: %v\n", err)
+			return fmt.Errorf("remove live overlay peer for %s; registry retained: %w", node.EffectiveAlias(), err)
 		}
 	}
 	identifier := node.ID
@@ -411,14 +475,7 @@ func (c *Controller) detachNode(ctx context.Context, node nodes.Node, log io.Wri
 		identifier = node.WGIP
 	}
 	if err := nodes.Remove(c.Layout, identifier); err != nil {
-		return err
-	}
-	// Rewrite the hub config so the removed peer does not return on reboot.
-	if identity, ok, err := nodes.LoadHubIdentity(c.Layout); err == nil && ok {
-		list, _ := nodes.Load(c.Layout)
-		if err := c.writeHubConfig(identity, list); err != nil {
-			fmt.Fprintf(log, "warning: rewrite overlay config failed: %v\n", err)
-		}
+		return fmt.Errorf("remove %s from node registry after overlay revocation: %w", node.EffectiveAlias(), err)
 	}
 	// Drop the removed spoke's nodes from the hub's published subscription.
 	if err := c.RefreshSubscriptions(ctx); err != nil {
@@ -450,7 +507,10 @@ func (c *Controller) rollbackAdd(target bootstrap.Target, identity nodes.HubIden
 	// runtime while the authenticated overlay path is still present.
 	if installAttempted {
 		overlayCleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := c.NewClient(node).Uninstall(overlayCleanupCtx, nodeapi.UninstallRequest{KeepOverlay: true}, log); err != nil {
+		if err := c.NewClient(node).Uninstall(overlayCleanupCtx, nodeapi.UninstallRequest{
+			KeepOverlay:           true,
+			RollbackTransactionID: node.ID,
+		}, log); err != nil {
 			errs = append(errs, fmt.Errorf("remove partial spoke runtime over WireGuard: %w", err))
 		}
 		cancel()
@@ -517,7 +577,7 @@ func (c *Controller) CheckHealth(ctx context.Context, node nodes.Node, log io.Wr
 		return node, err
 	}
 	if !health.OK {
-		return node, fmt.Errorf("agent %s reported unhealthy", node.EffectiveAlias())
+		return node, fmt.Errorf("agent %s reported unhealthy%s", node.EffectiveAlias(), healthErrorSuffix(health))
 	}
 	if err := c.persistAgentHealth(&node, health.Version); err != nil {
 		return node, fmt.Errorf("persist agent health: %w", err)
@@ -554,6 +614,8 @@ func (c *Controller) CheckHealth(ctx context.Context, node nodes.Node, log io.Wr
 				}
 				if err != nil {
 					lastErr = err
+				} else if !health.OK {
+					lastErr = fmt.Errorf("agent reported unhealthy%s", healthErrorSuffix(health))
 				} else {
 					lastErr = fmt.Errorf("agent still reports version %q", health.Version)
 				}
@@ -672,6 +734,7 @@ func (c *Controller) buildInstallRequest(node nodes.Node) (nodeapi.InstallReques
 		return nodeapi.InstallRequest{}, err
 	}
 	return nodeapi.InstallRequest{
+		InstallTransactionID: node.ID,
 		Domain:               node.Domain,
 		DisplayName:          node.EffectiveAlias(),
 		RealityServerName:    node.RealityServerName,
@@ -697,6 +760,14 @@ func (c *Controller) buildInstallRequest(node nodes.Node) (nodeapi.InstallReques
 		CertificatePEM:         string(certPEM),
 		PrivateKeyPEM:          string(keyPEM),
 	}, nil
+}
+
+func healthErrorSuffix(health nodeapi.HealthResponse) string {
+	detail := strings.TrimSpace(health.Error)
+	if detail == "" {
+		return ""
+	}
+	return ": " + detail
 }
 
 func (c *Controller) readCertPair(domain string) (certPEM, keyPEM []byte, err error) {

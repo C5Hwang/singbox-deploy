@@ -5,6 +5,7 @@ import (
 	"context"
 	"debug/elf"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,12 +16,372 @@ import (
 	"testing"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/agentfirewall"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
 )
+
+const testInstallTransactionID = "0123456789abcdef0123456789abcdef"
+
+type handlerRecordingRunner struct {
+	commands     []string
+	failContains string
+}
+
+func (r *handlerRecordingRunner) Run(cmd system.Command) error {
+	rendered := cmd.String()
+	r.commands = append(r.commands, rendered)
+	if r.failContains != "" && strings.Contains(rendered, r.failContains) {
+		return errors.New("injected command failure")
+	}
+	return nil
+}
+
+func TestAgentMutationsSerializeAndWaitHonorsContext(t *testing.T) {
+	h := &agentHandler{}
+	if err := h.beginMutation(context.Background()); err != nil {
+		t.Fatalf("acquire first mutation: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- h.beginMutation(ctx)
+	}()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting mutation error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiting mutation ignored context cancellation")
+	}
+
+	h.endMutation()
+	if err := h.beginMutation(context.Background()); err != nil {
+		t.Fatalf("gate was not released after cancelled waiter: %v", err)
+	}
+	h.endMutation()
+}
+
+func TestAgentMutationsRejectCommittedRestartAndShutdown(t *testing.T) {
+	t.Run("restart", func(t *testing.T) {
+		h := &agentHandler{restartPending: true}
+		err := h.beginMutation(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "restart is pending") {
+			t.Fatalf("beginMutation error = %v", err)
+		}
+	})
+	t.Run("shutdown", func(t *testing.T) {
+		h := &agentHandler{shutdownPending: true}
+		err := h.beginMutation(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "shutdown is pending") {
+			t.Fatalf("beginMutation error = %v", err)
+		}
+	})
+}
+
+func TestAgentFullInstallRejectsExistingStandaloneBeforeMutation(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := state.NewStore(layout.StateDir).WriteString("domain", "standalone.example.com\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runnerCreated := false
+	h := &agentHandler{
+		layout: layout,
+		newRunner: func(context.Context, io.Writer) system.Runner {
+			runnerCreated = true
+			return &handlerRecordingRunner{}
+		},
+	}
+	err := h.Install(context.Background(), nodeapi.InstallRequest{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "automatic standalone-to-spoke conversion is disabled") {
+		t.Fatalf("Install error = %v", err)
+	}
+	if runnerCreated {
+		t.Fatal("Install created a command runner before rejecting existing deployment")
+	}
+	domain, readErr := state.NewStore(layout.StateDir).ReadValue("domain", true)
+	if readErr != nil || domain != "standalone.example.com" {
+		t.Fatalf("existing domain changed: domain=%q err=%v", domain, readErr)
+	}
+}
+
+func TestAgentFullInstallRequiresRollbackOwnershipBeforeMutation(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	runnerCreated := false
+	h := &agentHandler{
+		layout: layout,
+		newRunner: func(context.Context, io.Writer) system.Runner {
+			runnerCreated = true
+			return &handlerRecordingRunner{}
+		},
+	}
+	err := h.Install(context.Background(), nodeapi.InstallRequest{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "invalid install transaction ID") {
+		t.Fatalf("Install error = %v", err)
+	}
+	if runnerCreated {
+		t.Fatal("Install created a command runner without rollback ownership")
+	}
+	if _, err := os.Stat(agentConfigDir(layout)); !os.IsNotExist(err) {
+		t.Fatalf("Install wrote Agent state before validating ownership: %v", err)
+	}
+}
+
+func TestAgentHealthReportsStateReadFailure(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(layout.StateDir, "domain"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	health := (&agentHandler{layout: layout}).Health()
+	if health.OK || !strings.Contains(health.Error, "read deployment state") {
+		t.Fatalf("Health = %+v, want explicit state read failure", health)
+	}
+}
+
+func TestRollbackUninstallRequiresMatchingInstallOwner(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	store := state.NewStore(layout.StateDir)
+	agentStore := state.NewStore(agentConfigDir(layout))
+	if err := store.WriteString("domain", "standalone.example.com\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorizeRollbackUninstall(layout, testInstallTransactionID); err == nil {
+		t.Fatal("rollback without an ownership marker was authorized")
+	}
+	if err := agentStore.WriteString(installTransactionFile, strings.Repeat("a", 32)+"\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorizeRollbackUninstall(layout, testInstallTransactionID); err == nil || !strings.Contains(err.Error(), "does not own") {
+		t.Fatalf("mismatched rollback error = %v", err)
+	}
+	if err := agentStore.WriteString(installTransactionFile, testInstallTransactionID+"\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorizeRollbackUninstall(layout, testInstallTransactionID); err != nil {
+		t.Fatalf("matching rollback owner rejected: %v", err)
+	}
+	domain, err := store.ReadValue("domain", true)
+	if err != nil || domain != "standalone.example.com" {
+		t.Fatalf("authorization checks mutated existing deployment: domain=%q err=%v", domain, err)
+	}
+}
+
+func TestKeepOverlayUninstallBecomesTerminalAfterOwnedCleanup(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := state.NewStore(agentConfigDir(layout)).WriteString(installTransactionFile, testInstallTransactionID+"\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cleanupCalled := false
+	h := &agentHandler{
+		layout: layout,
+		newRunner: func(context.Context, io.Writer) system.Runner {
+			return &handlerRecordingRunner{}
+		},
+		runUninstall: func(_ context.Context, opts uninstall.Options) error {
+			cleanupCalled = true
+			if !opts.PreserveAgentState {
+				t.Fatal("rollback cleanup did not preserve Agent state")
+			}
+			return nil
+		},
+	}
+	if err := h.Uninstall(context.Background(), nodeapi.UninstallRequest{
+		KeepOverlay:           true,
+		RollbackTransactionID: testInstallTransactionID,
+	}, io.Discard); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if !cleanupCalled || !h.shutdownPending {
+		t.Fatalf("cleanupCalled=%v shutdownPending=%v", cleanupCalled, h.shutdownPending)
+	}
+	if err := h.beginMutation(context.Background()); err == nil || !strings.Contains(err.Error(), "shutdown is pending") {
+		t.Fatalf("post-rollback mutation error = %v", err)
+	}
+}
+
+func TestPrepareAgentTeardownCompletesDurableWorkBeforeFirewall(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	agentDir := filepath.Join(layout.StateDir, "agent")
+	rule := agentfirewall.Rule{
+		Backend:   system.FirewallUFW,
+		Interface: "sbwg0",
+		HubIP:     "10.90.0.1",
+		ListenIP:  "10.90.0.2",
+		Port:      19091,
+	}
+	if err := agentfirewall.Save(agentDir, rule); err != nil {
+		t.Fatal(err)
+	}
+	teardownPaths := []string{
+		filepath.Join(t.TempDir(), "singbox-deploy-agent.service"),
+		filepath.Join(t.TempDir(), "sbwg0.conf"),
+	}
+	for _, path := range teardownPaths {
+		if err := os.WriteFile(path, []byte("managed"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &handlerRecordingRunner{}
+	if err := prepareAgentAndOverlayTeardown(layout, runner, runner, rule, true, teardownPaths); err != nil {
+		t.Fatalf("prepareAgentAndOverlayTeardown: %v", err)
+	}
+	for _, path := range teardownPaths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("teardown path %s still exists: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(agentDir); !os.IsNotExist(err) {
+		t.Fatalf("Agent state still exists: %v", err)
+	}
+	if len(runner.commands) != 4 {
+		t.Fatalf("commands = %#v", runner.commands)
+	}
+	if !strings.HasPrefix(runner.commands[len(runner.commands)-1], "ufw ") {
+		t.Fatalf("firewall was not the final command: %#v", runner.commands)
+	}
+}
+
+func TestPrepareAgentTeardownRestoresFirewallStateOnFailure(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	agentDir := filepath.Join(layout.StateDir, "agent")
+	rule := agentfirewall.Rule{
+		Backend:   system.FirewallUFW,
+		Interface: "sbwg0",
+		HubIP:     "10.90.0.1",
+		ListenIP:  "10.90.0.2",
+		Port:      19091,
+	}
+	if err := agentfirewall.Save(agentDir, rule); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.NewStore(agentDir).WriteString("token", "still-authenticated\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	teardownPaths := []string{
+		filepath.Join(t.TempDir(), "singbox-deploy-agent.service"),
+		filepath.Join(t.TempDir(), "sbwg0.conf"),
+	}
+	wantData := [][]byte{[]byte("agent-unit"), []byte("wireguard-config")}
+	wantModes := []os.FileMode{0o644, 0o600}
+	for i, path := range teardownPaths {
+		if err := os.WriteFile(path, wantData[i], wantModes[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &handlerRecordingRunner{failContains: "ufw "}
+	recovery := &handlerRecordingRunner{}
+	err := prepareAgentAndOverlayTeardown(layout, runner, recovery, rule, true, teardownPaths)
+	if err == nil || !strings.Contains(err.Error(), "remove Agent firewall rule") {
+		t.Fatalf("teardown error = %v", err)
+	}
+	restored, ok, loadErr := agentfirewall.Load(agentDir)
+	if loadErr != nil || !ok {
+		t.Fatalf("firewall cleanup state not restored: ok=%v err=%v", ok, loadErr)
+	}
+	if restored != rule {
+		t.Fatalf("restored rule = %#v, want %#v", restored, rule)
+	}
+	token, tokenErr := state.NewStore(agentDir).ReadValue("token", true)
+	if tokenErr != nil || token != "still-authenticated" {
+		t.Fatalf("Agent token not restored: token=%q err=%v", token, tokenErr)
+	}
+	for i, path := range teardownPaths {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil || !bytes.Equal(got, wantData[i]) {
+			t.Fatalf("control-plane file %s not restored: data=%q err=%v", path, got, readErr)
+		}
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("stat restored control-plane file %s: %v", path, statErr)
+		}
+		if info.Mode().Perm() != wantModes[i] {
+			t.Fatalf("control-plane file %s mode=%v, want %v", path, info.Mode().Perm(), wantModes[i])
+		}
+	}
+	recoveryLog := strings.Join(recovery.commands, "\n")
+	for _, want := range []string{
+		"systemctl daemon-reload",
+		"systemctl enable wg-quick@sbwg0.service",
+		"systemctl enable singbox-deploy-agent.service",
+		"ufw allow in on sbwg0",
+	} {
+		if !strings.Contains(recoveryLog, want) {
+			t.Fatalf("recovery commands missing %q:\n%s", want, recoveryLog)
+		}
+	}
+
+	retryRunner := &handlerRecordingRunner{}
+	if err := prepareAgentAndOverlayTeardown(layout, retryRunner, &handlerRecordingRunner{}, restored, true, teardownPaths); err != nil {
+		t.Fatalf("retry teardown: %v", err)
+	}
+	for _, unit := range []string{"singbox-deploy-agent.service", "wg-quick@sbwg0.service"} {
+		if !strings.Contains(strings.Join(retryRunner.commands, "\n"), "systemctl disable "+unit) {
+			t.Fatalf("retry did not disable restored unit %s: %#v", unit, retryRunner.commands)
+		}
+	}
+	if _, err := os.Stat(agentDir); !os.IsNotExist(err) {
+		t.Fatalf("Agent state still exists after retry: %v", err)
+	}
+	for _, path := range teardownPaths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("restored teardown path %s survived successful retry: %v", path, err)
+		}
+	}
+}
+
+func TestPrepareAgentTeardownRestoresFirewalldBeforeRetry(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	agentDir := filepath.Join(layout.StateDir, "agent")
+	rule := agentfirewall.Rule{
+		Backend:   system.FirewallFirewalld,
+		Zone:      "public",
+		Interface: "sbwg0",
+		HubIP:     "10.90.0.1",
+		ListenIP:  "10.90.0.2",
+		Port:      19091,
+	}
+	if err := agentfirewall.Save(agentDir, rule); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.NewStore(agentDir).WriteString("token", "retry-token\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := &handlerRecordingRunner{failContains: "firewall-cmd --reload"}
+	recovery := &handlerRecordingRunner{}
+	err := prepareAgentAndOverlayTeardown(layout, first, recovery, rule, true, nil)
+	if err == nil {
+		t.Fatal("expected injected firewalld reload failure")
+	}
+	if token, readErr := state.NewStore(agentDir).ReadValue("token", true); readErr != nil || token != "retry-token" {
+		t.Fatalf("full Agent state not restored: token=%q err=%v", token, readErr)
+	}
+	recoveryLog := strings.Join(recovery.commands, "\n")
+	if !strings.Contains(recoveryLog, "--add-rich-rule") || !strings.Contains(recoveryLog, "firewall-cmd --reload") {
+		t.Fatalf("firewalld rule was not reopened after ambiguous failure:\n%s", recoveryLog)
+	}
+	if _, statErr := os.Stat(filepath.Join(agentDir, "firewall_cleanup_next")); !os.IsNotExist(statErr) {
+		t.Fatalf("firewall cleanup progress was not reset after reopening rule: %v", statErr)
+	}
+
+	retry := &handlerRecordingRunner{}
+	if err := prepareAgentAndOverlayTeardown(layout, retry, &handlerRecordingRunner{}, rule, true, nil); err != nil {
+		t.Fatalf("retry teardown: %v", err)
+	}
+	joined := strings.Join(retry.commands, "\n")
+	if !strings.Contains(joined, "--remove-rich-rule") {
+		t.Fatalf("retry did not restart firewall cleanup after reopening the rule:\n%s", joined)
+	}
+	if !strings.Contains(joined, "firewall-cmd --reload") {
+		t.Fatalf("retry did not resume at reload:\n%s", joined)
+	}
+}
 
 func TestAgentUpgradeAtomicallyReplacesAndSchedulesRestart(t *testing.T) {
 	payload := readHostELF(t)

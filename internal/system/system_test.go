@@ -2,6 +2,7 @@ package system
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -146,6 +147,15 @@ func TestExecRunnerStreamsOutput(t *testing.T) {
 	}
 	if buf.String() != "hello" {
 		t.Fatalf("output = %q", buf.String())
+	}
+}
+
+func TestExecRunnerHonorsCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := NewExecRunnerContext(ctx, nil).Run(Command{Name: "sh", Args: []string{"-c", "exit 0"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
 }
 

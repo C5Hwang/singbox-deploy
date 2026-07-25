@@ -27,6 +27,11 @@ type PortSet struct {
 // reconfigure a spoke. The certificate is issued by the hub (DNS-01) and shipped
 // inline so the agent never runs ACME itself.
 type InstallRequest struct {
+	// InstallTransactionID identifies the Hub add-node transaction that owns a
+	// full install. The Agent persists it before the first mutation so rollback
+	// can prove it is deleting only runtime created by that transaction.
+	InstallTransactionID string `json:"installTransactionID,omitempty"`
+
 	Domain               string   `json:"domain"`
 	DisplayName          string   `json:"displayName"`
 	RealityServerName    string   `json:"realityServerName"`
@@ -68,6 +73,23 @@ type UninstallRequest struct {
 	// KeepOverlay leaves the WireGuard interface up so the hub can still reach
 	// the agent to confirm teardown; the hub removes the overlay afterwards.
 	KeepOverlay bool `json:"keepOverlay"`
+	// RollbackTransactionID is required with KeepOverlay and must match the
+	// full-install owner persisted by the Agent. This prevents a failed add-node
+	// attempt from uninstalling an unrelated standalone deployment.
+	RollbackTransactionID string `json:"rollbackTransactionID,omitempty"`
+}
+
+// ValidateInstallTransactionID accepts the random 128-bit lowercase hex IDs
+// generated for new Hub registry entries.
+func ValidateInstallTransactionID(value string) error {
+	if len(value) != 32 || strings.ToLower(value) != value {
+		return fmt.Errorf("invalid install transaction ID")
+	}
+	raw, err := hex.DecodeString(value)
+	if err != nil || len(raw) != 16 {
+		return fmt.Errorf("invalid install transaction ID")
+	}
+	return nil
 }
 
 // MaxAgentBinarySize bounds an authenticated upgrade request. The limit is
@@ -140,6 +162,7 @@ type HealthResponse struct {
 	Installed     bool   `json:"installed"`
 	SingBoxActive bool   `json:"singBoxActive"`
 	Domain        string `json:"domain,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // Subscription formats the agent can return over the overlay. These mirror the

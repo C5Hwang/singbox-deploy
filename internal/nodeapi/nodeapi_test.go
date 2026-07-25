@@ -78,6 +78,17 @@ func TestHealthRoundTrip(t *testing.T) {
 	}
 }
 
+func TestValidateInstallTransactionID(t *testing.T) {
+	if err := ValidateInstallTransactionID("0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("valid transaction ID rejected: %v", err)
+	}
+	for _, value := range []string{"", "short", "0123456789ABCDEF0123456789ABCDEF", strings.Repeat("z", 32)} {
+		if err := ValidateInstallTransactionID(value); err == nil {
+			t.Fatalf("invalid transaction ID %q accepted", value)
+		}
+	}
+}
+
 func TestInstallStreamsLogAndSucceeds(t *testing.T) {
 	h := &fakeHandler{}
 	client, closeFn := newTestServer(t, h, "secret")

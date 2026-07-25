@@ -123,7 +123,10 @@ func (r Rule) RemoveCommands() ([]system.Command, error) {
 func Load(agentStateDir string) (Rule, bool, error) {
 	store := state.NewStore(agentStateDir)
 	backend, err := store.ReadValue(BackendFile, false)
-	if err != nil || strings.TrimSpace(backend) == "" {
+	if err != nil {
+		return Rule{}, false, fmt.Errorf("read Agent firewall backend: %w", err)
+	}
+	if strings.TrimSpace(backend) == "" {
 		return Rule{}, false, nil
 	}
 	if strings.TrimSpace(backend) == "none" {

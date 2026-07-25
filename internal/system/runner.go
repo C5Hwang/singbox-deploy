@@ -41,7 +41,18 @@ type ExecRunner struct {
 
 // NewExecRunner returns an ExecRunner writing command output to out.
 func NewExecRunner(out io.Writer) *ExecRunner {
-	return &ExecRunner{Output: out, ctx: context.Background()}
+	return NewExecRunnerContext(context.Background(), out)
+}
+
+// NewExecRunnerContext returns an ExecRunner whose child processes are killed
+// when ctx is cancelled. Long-running Agent mutations use the HTTP request
+// context so a disconnected Hub cannot leave package/systemd work continuing
+// concurrently with rollback.
+func NewExecRunnerContext(ctx context.Context, out io.Writer) *ExecRunner {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &ExecRunner{Output: out, ctx: ctx}
 }
 
 // Run executes the command, streaming its output.

@@ -28,6 +28,9 @@ type Options struct {
 	DeleteMonitorDB     bool
 	DeleteSite          bool
 	DeleteSubscriptions bool
+	// PreserveAgentState keeps state/agent until the running spoke Agent has
+	// synchronously disabled and removed its own control-plane artifacts.
+	PreserveAgentState bool
 
 	Progress func(deploy.Event)
 }
@@ -154,8 +157,14 @@ func (o Options) stepNginxConfig(context.Context) error {
 func (o Options) stepSelectedData(context.Context) error {
 	root := o.Layout.Root
 	if o.DeleteRuntime {
-		if err := removeManagedDir(root, o.Layout.StateDir); err != nil {
-			return err
+		if o.PreserveAgentState {
+			if err := removeManagedDirContentsExcept(root, o.Layout.StateDir, "agent"); err != nil {
+				return err
+			}
+		} else {
+			if err := removeManagedDir(root, o.Layout.StateDir); err != nil {
+				return err
+			}
 		}
 		if err := removeManagedDir(root, filepath.Dir(o.Layout.SingBoxBin)); err != nil {
 			return err
@@ -185,6 +194,35 @@ func (o Options) stepSelectedData(context.Context) error {
 		}
 	}
 	return removeEmptyLayoutRoot(o.Layout.Root)
+}
+
+func removeManagedDirContentsExcept(root, target, keepName string) error {
+	if err := validateManagedPath(root, target); err != nil {
+		return err
+	}
+	info, err := os.Lstat(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to remove contents of non-directory managed path: %s", target)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == keepName {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(target, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func fileExists(path string) bool {

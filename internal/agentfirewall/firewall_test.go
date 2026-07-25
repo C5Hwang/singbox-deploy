@@ -1,6 +1,8 @@
 package agentfirewall
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -75,6 +77,16 @@ func TestRuleStateRoundTrip(t *testing.T) {
 	}
 	if !ok || got != want {
 		t.Fatalf("loaded rule = %+v, %v; want %+v, true", got, ok, want)
+	}
+}
+
+func TestLoadDoesNotHideUnreadableFirewallState(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, BackendFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := Load(dir); err == nil || ok {
+		t.Fatalf("Load = ok %v, err %v; want explicit read error", ok, err)
 	}
 }
 
