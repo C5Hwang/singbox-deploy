@@ -34,6 +34,20 @@ func (r *recordingRunner) Run(c system.Command) error {
 	return nil
 }
 
+type selectiveFailRunner struct {
+	commands     []string
+	failContains string
+}
+
+func (r *selectiveFailRunner) Run(c system.Command) error {
+	command := c.String()
+	r.commands = append(r.commands, command)
+	if strings.Contains(command, r.failContains) {
+		return errBoom
+	}
+	return nil
+}
+
 type fakeIssuer struct{}
 
 func (fakeIssuer) Issue(_ context.Context, request acme.Request) (acme.Certificate, error) {
@@ -514,6 +528,12 @@ func TestReconfigureSkipsDependenciesCoreAndCertificateIssuance(t *testing.T) {
 	runner := &recordingRunner{}
 	cfg := testConfig(t)
 	cfg.SpokeMode = true
+	if err := WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("seed install state: %v", err)
+	}
+	if err := WriteFile(layout.ConfigJSON, []byte(`{"previous":true}`), 0o600); err != nil {
+		t.Fatalf("seed current config: %v", err)
+	}
 	latestCalls := 0
 	downloadCalls := 0
 	issuer := &countingIssuer{}
@@ -548,12 +568,105 @@ func TestReconfigureSkipsDependenciesCoreAndCertificateIssuance(t *testing.T) {
 			t.Fatalf("reconfigure ran install-only command %q:\n%s", forbidden, joined)
 		}
 	}
-	if !strings.Contains(joined, "check -c "+layout.ConfigJSON) || !strings.Contains(joined, "systemctl restart sing-box.service") {
+	if !strings.Contains(joined, "check -c "+ProtocolConfigCandidate(layout)) || !strings.Contains(joined, "systemctl restart sing-box.service") {
 		t.Fatalf("reconfigure did not validate and activate config:\n%s", joined)
 	}
 	mustNotExist(t, layout.SingBoxBin)
 	mustExist(t, layout.ConfigJSON)
 	mustExist(t, filepath.Join(o.SystemdDir, system.SingBoxService))
+}
+
+func TestReconfigureReconcilesFirewallAfterValidatedActivation(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	runner := &recordingRunner{}
+	old := testConfig(t)
+	old.SpokeMode = true
+	old.Enabled = []config.Protocol{config.ProtocolRealityVision}
+	if err := WriteInstallState(layout.StateDir, old); err != nil {
+		t.Fatalf("seed install state: %v", err)
+	}
+	if err := WriteFile(layout.ConfigJSON, []byte(`{"previous":true}`), 0o600); err != nil {
+		t.Fatalf("seed current config: %v", err)
+	}
+
+	next := old
+	next.Enabled = []config.Protocol{config.ProtocolHysteria2}
+	var checked []system.Port
+	o := &Orchestrator{
+		Runner:        runner,
+		Layout:        layout,
+		SystemdDir:    filepath.Join(root, "systemd"),
+		NginxConfPath: filepath.Join(root, "nginx", "singbox-deploy.conf"),
+		CheckReconfigurePorts: func(_ context.Context, _ Config, added []system.Port) error {
+			checked = append(checked, added...)
+			return nil
+		},
+	}
+	if err := o.Reconfigure(context.Background(), next); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	if len(checked) != 1 || checked[0].Number != next.Ports.Hysteria2 || checked[0].Proto != "udp" {
+		t.Fatalf("checked ports = %+v, want new Hysteria2 UDP port", checked)
+	}
+
+	joined := strings.Join(runner.commands, "\n")
+	open := strings.Index(joined, "ufw allow 9443/udp")
+	validate := strings.Index(joined, "check -c "+ProtocolConfigCandidate(layout))
+	restart := strings.Index(joined, "systemctl restart sing-box.service")
+	closeOld := strings.Index(joined, "ufw delete allow 7443/tcp")
+	if open < 0 || validate < 0 || restart < 0 || closeOld < 0 || !(open < validate && validate < restart && restart < closeOld) {
+		t.Fatalf("unexpected reconfigure firewall ordering:\n%s", joined)
+	}
+	stateEnabled, err := os.ReadFile(filepath.Join(layout.StateDir, "enabled_protocols"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(stateEnabled)) != string(config.ProtocolHysteria2) {
+		t.Fatalf("enabled state = %q", stateEnabled)
+	}
+}
+
+func TestReconfigureValidationFailureRollsBackNewFirewallOnly(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	old := testConfig(t)
+	old.SpokeMode = true
+	old.Enabled = []config.Protocol{config.ProtocolRealityVision}
+	if err := WriteInstallState(layout.StateDir, old); err != nil {
+		t.Fatalf("seed install state: %v", err)
+	}
+	const oldConfig = `{"previous":true}`
+	if err := WriteFile(layout.ConfigJSON, []byte(oldConfig), 0o600); err != nil {
+		t.Fatalf("seed current config: %v", err)
+	}
+	next := old
+	next.Enabled = []config.Protocol{config.ProtocolHysteria2}
+	runner := &selectiveFailRunner{failContains: ".candidate"}
+	o := &Orchestrator{
+		Runner:                runner,
+		Layout:                layout,
+		SystemdDir:            filepath.Join(root, "systemd"),
+		NginxConfPath:         filepath.Join(root, "nginx", "singbox-deploy.conf"),
+		CheckReconfigurePorts: func(context.Context, Config, []system.Port) error { return nil },
+	}
+	if err := o.Reconfigure(context.Background(), next); err == nil {
+		t.Fatal("expected candidate validation failure")
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "ufw allow 9443/udp") || !strings.Contains(joined, "ufw delete allow 9443/udp") {
+		t.Fatalf("new firewall rule was not rolled back:\n%s", joined)
+	}
+	if strings.Contains(joined, "ufw delete allow 7443/tcp") {
+		t.Fatalf("old firewall rule was closed before activation:\n%s", joined)
+	}
+	current, err := os.ReadFile(layout.ConfigJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(current) != oldConfig {
+		t.Fatalf("current config changed on validation failure: %s", current)
+	}
 }
 
 func mustExist(t *testing.T, path string) {

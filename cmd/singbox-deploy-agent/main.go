@@ -48,8 +48,8 @@ func run() error {
 
 	// The monitor sampler runs in-process and can be restarted after a
 	// reconfigure that changes its settings.
-	sup := newMonitorSupervisor(layout)
-	sup.reload(ctx)
+	sup := newMonitorSupervisor(ctx, layout)
+	sup.reload()
 	defer sup.stop()
 
 	handler := &agentHandler{layout: layout, monitor: sup}

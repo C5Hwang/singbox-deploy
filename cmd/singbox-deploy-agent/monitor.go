@@ -22,6 +22,16 @@ import (
 // spoke does not aggregate remote sources, so no remote refresh is wired.
 type monitorSupervisor struct {
 	layout paths.Layout
+	// parent is the agent process lifetime. Reloads must never inherit an HTTP
+	// request context: net/http cancels that context as soon as the install or
+	// reconfigure handler returns, which would immediately stop sampling.
+	parent context.Context
+	// now is injectable so lifecycle tests do not need a network-time lookup.
+	// Production leaves it nil and uses the network-backed clock below.
+	now func() time.Time
+	// newMonitor is a lifecycle seam for tests that cannot bind sockets. It
+	// returns the mounted handler and the blocking sampler/server function.
+	newMonitor func(*monitor.Store, monitor.Config) (http.Handler, func(context.Context) error)
 
 	mu      sync.RWMutex
 	cancel  context.CancelFunc
@@ -29,13 +39,16 @@ type monitorSupervisor struct {
 	handler http.Handler
 }
 
-func newMonitorSupervisor(layout paths.Layout) *monitorSupervisor {
-	return &monitorSupervisor{layout: layout}
+func newMonitorSupervisor(parent context.Context, layout paths.Layout) *monitorSupervisor {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return &monitorSupervisor{layout: layout, parent: parent}
 }
 
 // reload (re)starts the monitor from current install state. It is a no-op when
 // monitoring is disabled or the install is incomplete.
-func (s *monitorSupervisor) reload(parent context.Context) {
+func (s *monitorSupervisor) reload() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopLocked()
@@ -58,15 +71,26 @@ func (s *monitorSupervisor) reload(parent context.Context) {
 		log.Printf("agent monitor: open store: %v", err)
 		return
 	}
+	parent := s.parent
+	if parent == nil {
+		parent = context.Background()
+	}
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
 	s.done = make(chan struct{})
-	m := monitor.New(dbStore, cfg, systemdSingBox{})
-	s.handler = m.Handler()
+	newMonitor := s.newMonitor
+	if newMonitor == nil {
+		newMonitor = func(store *monitor.Store, cfg monitor.Config) (http.Handler, func(context.Context) error) {
+			m := monitor.New(store, cfg, systemdSingBox{})
+			return m.Handler(), m.Run
+		}
+	}
+	handler, run := newMonitor(dbStore, cfg)
+	s.handler = handler
 	go func(done chan struct{}) {
 		defer close(done)
 		defer dbStore.Close()
-		err := m.Run(ctx)
+		err := run(ctx)
 		if ctx.Err() == nil {
 			if err != nil {
 				log.Printf("agent monitor exited: %v", err)
@@ -96,9 +120,13 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 		iface = detected
 	}
 	interval := readInt(store, "monitor_interval_seconds", deploy.DefaultMonitorIntervalSeconds)
-	clock, err := monitor.NewNetworkClock(context.Background())
-	if err != nil {
-		return monitor.Config{}, err
+	now := s.now
+	if now == nil {
+		clock, err := monitor.NewNetworkClock(context.Background())
+		if err != nil {
+			return monitor.Config{}, err
+		}
+		now = clock.Now
 	}
 	return monitor.Config{
 		// Monitor reads are mounted behind the bearer-authenticated agent API.
@@ -114,7 +142,7 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 		ResetHour:         readInt(store, "reset_hour", deploy.DefaultResetHour),
 		Alias:             readString(store, "monitor_alias", deploy.DefaultMonitorAlias),
 		LocalPositionPath: s.layout.StateDir + "/local_monitor_position",
-		Now:               clock.Now,
+		Now:               now,
 	}, nil
 }
 

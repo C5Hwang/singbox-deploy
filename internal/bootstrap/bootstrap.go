@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/agentfirewall"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/wgnet"
 )
@@ -51,6 +52,7 @@ type Plan struct {
 	AgentBinary  []byte // arch-matched agent binary bytes
 	AgentVersion string // exact version the installed binary must report
 	WGAddress    string // spoke overlay address with prefix
+	HubIP        string // hub overlay address allowed to reach the agent
 	HubPublicKey string
 	HubEndpoint  string
 	Subnet       string
@@ -158,6 +160,22 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 	if strings.TrimSpace(plan.AgentVersion) == "" {
 		return Result{}, fmt.Errorf("expected agent version is required")
 	}
+	if plan.AgentPort <= 0 || plan.AgentPort > 65535 {
+		return Result{}, fmt.Errorf("agent port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(plan.HubIP) == "" {
+		plan.HubIP = wgnet.HubAddress
+	}
+	iface := plan.Interface
+	if iface == "" {
+		iface = wgnet.InterfaceName
+	}
+	if err := (agentfirewall.Rule{
+		Backend: system.FirewallUFW, Interface: iface, HubIP: plan.HubIP,
+		ListenIP: plan.ListenIP, Port: plan.AgentPort,
+	}).Validate(); err != nil {
+		return Result{}, err
+	}
 	runner, err := b.dial(ctx, target)
 	if err != nil {
 		return Result{}, err
@@ -172,10 +190,6 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 		return Result{}, fmt.Errorf("refuse to convert an active hub into a spoke: %w: %s", err, out)
 	}
 
-	iface := plan.Interface
-	if iface == "" {
-		iface = wgnet.InterfaceName
-	}
 	// Any error after the SSH session is established may have left a key,
 	// uploaded binary, config, or running unit behind. Clean those artifacts on
 	// the same pinned connection before returning the provisioning error.
@@ -239,9 +253,11 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 		content string
 		mode    string
 	}{
-		agentDir + "/token":      {plan.Token + "\n", "0600"},
-		agentDir + "/listen_ip":  {plan.ListenIP + "\n", "0600"},
-		agentDir + "/agent_port": {fmt.Sprintf("%d\n", plan.AgentPort), "0600"},
+		agentDir + "/token":                          {plan.Token + "\n", "0600"},
+		agentDir + "/" + agentfirewall.ListenIPFile:  {plan.ListenIP + "\n", "0600"},
+		agentDir + "/" + agentfirewall.AgentPortFile: {fmt.Sprintf("%d\n", plan.AgentPort), "0600"},
+		agentDir + "/" + agentfirewall.HubIPFile:     {plan.HubIP + "\n", "0600"},
+		agentDir + "/" + agentfirewall.InterfaceFile: {iface + "\n", "0600"},
 	}
 	for path, f := range files {
 		if err := uploadFile(ctx, runner, path, []byte(f.content), f.mode); err != nil {
@@ -255,17 +271,29 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 		return Result{}, fmt.Errorf("upload agent unit: %w", err)
 	}
 
-	// 6. Bring up the overlay and start the agent.
+	// 6. Bring up the overlay, admit the Hub to the Agent API through an active
+	// host firewall, then start the agent. The firewall rule is scoped to the
+	// managed interface, Hub source address, spoke destination address, and
+	// Agent TCP port; the API is never opened globally.
 	b.logf("starting overlay and agent...\n")
-	start := strings.Join([]string{
+	startOverlay := strings.Join([]string{
 		"systemctl daemon-reload",
 		"systemctl enable wg-quick@" + iface + ".service",
 		"systemctl restart wg-quick@" + iface + ".service",
+	}, " && ")
+	if out, err := runner.Run(ctx, startOverlay, nil); err != nil {
+		return Result{}, fmt.Errorf("start overlay: %w: %s", err, out)
+	}
+	if err := configureAgentFirewall(ctx, runner, iface, plan.HubIP, plan.ListenIP, plan.AgentPort); err != nil {
+		return Result{}, err
+	}
+	startAgent := strings.Join([]string{
+		"systemctl daemon-reload",
 		"systemctl enable singbox-deploy-agent.service",
 		"systemctl restart singbox-deploy-agent.service",
 	}, " && ")
-	if out, err := runner.Run(ctx, start, nil); err != nil {
-		return Result{}, fmt.Errorf("start services: %w: %s", err, out)
+	if out, err := runner.Run(ctx, startAgent, nil); err != nil {
+		return Result{}, fmt.Errorf("start agent: %w: %s", err, out)
 	}
 	versionOut, err := runner.Run(ctx, shellQuote(AgentBinaryPath)+" --version", nil)
 	if err != nil {
@@ -318,6 +346,7 @@ func cleanupProvisionedArtifacts(ctx context.Context, runner Runner, iface strin
 	cmd := strings.Join([]string{
 		"systemctl disable --now singbox-deploy-agent.service >/dev/null 2>&1 || true",
 		"systemctl disable --now " + unit + " >/dev/null 2>&1 || true",
+		AgentFirewallCleanupShell(spokeAgentConfigDir),
 		"rm -f " + strings.Join(quotedPaths, " "),
 		"rm -rf '/etc/singbox-deploy/state/agent'",
 		"systemctl daemon-reload",
@@ -326,6 +355,65 @@ func cleanupProvisionedArtifacts(ctx context.Context, runner Runner, iface strin
 		return fmt.Errorf("clean failed spoke bootstrap: %w: %s", err, out)
 	}
 	return nil
+}
+
+// configureAgentFirewall opens the authenticated Agent API only on the
+// WireGuard control-plane path. It records the selected backend/zone beside the
+// Agent config so both failed-bootstrap cleanup and a later Agent uninstall can
+// remove the exact rule.
+func configureAgentFirewall(ctx context.Context, runner Runner, iface, hubIP, listenIP string, port int) error {
+	rule := agentfirewall.Rule{Interface: iface, HubIP: hubIP, ListenIP: listenIP, Port: port}
+	richRule := rule.RichRule()
+	backendPath := spokeAgentConfigDir + "/" + agentfirewall.BackendFile
+	zonePath := spokeAgentConfigDir + "/" + agentfirewall.ZoneFile
+	cmd := strings.Join([]string{
+		"if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -qi '^running$'; then",
+		"zone=$(firewall-cmd --get-zone-of-interface=" + shellQuote(iface) + " 2>/dev/null || true)",
+		"[ \"$zone\" = 'no zone' ] && zone=''",
+		"[ -n \"$zone\" ] || zone=$(firewall-cmd --get-default-zone)",
+		"printf '%s\\n' 'firewalld' > " + shellQuote(backendPath),
+		"printf '%s\\n' \"$zone\" > " + shellQuote(zonePath),
+		"firewall-cmd --permanent --zone=\"$zone\" --add-rich-rule=" + shellQuote(richRule),
+		"firewall-cmd --reload",
+		"elif command -v ufw >/dev/null 2>&1; then",
+		"printf '%s\\n' 'ufw' > " + shellQuote(backendPath),
+		"ufw allow in on " + shellQuote(iface) + " from " + shellQuote(hubIP) + " to " + shellQuote(listenIP) +
+			" port " + fmt.Sprintf("%d", port) + " proto tcp comment 'singbox-deploy-agent'",
+		"else",
+		"printf '%s\\n' 'none' > " + shellQuote(backendPath),
+		"fi",
+	}, "\n")
+	if out, err := runner.Run(ctx, cmd, nil); err != nil {
+		return fmt.Errorf("open scoped agent firewall rule: %w: %s", err, out)
+	}
+	return nil
+}
+
+// AgentFirewallCleanupShell returns an idempotent shell fragment that removes
+// the exact scoped rule described by the root-only Agent state files.
+func AgentFirewallCleanupShell(agentDir string) string {
+	statePath := func(name string) string { return agentDir + "/" + name }
+	return strings.Join([]string{
+		"if [ -r " + shellQuote(statePath(agentfirewall.BackendFile)) + " ]; then",
+		"backend=$(cat " + shellQuote(statePath(agentfirewall.BackendFile)) + ")",
+		"hub_ip=$(cat " + shellQuote(statePath(agentfirewall.HubIPFile)) + " 2>/dev/null || true)",
+		"listen_ip=$(cat " + shellQuote(statePath(agentfirewall.ListenIPFile)) + " 2>/dev/null || true)",
+		"agent_port=$(cat " + shellQuote(statePath(agentfirewall.AgentPortFile)) + " 2>/dev/null || true)",
+		"iface=$(cat " + shellQuote(statePath(agentfirewall.InterfaceFile)) + " 2>/dev/null || true)",
+		"if [ \"$backend\" = 'ufw' ] && [ -n \"$hub_ip\" ] && [ -n \"$listen_ip\" ] && [ -n \"$agent_port\" ] && [ -n \"$iface\" ]; then",
+		"ufw --force delete allow in on \"$iface\" from \"$hub_ip\" to \"$listen_ip\" port \"$agent_port\" proto tcp >/dev/null 2>&1 || true",
+		"elif [ \"$backend\" = 'firewalld' ] && [ -n \"$hub_ip\" ] && [ -n \"$listen_ip\" ] && [ -n \"$agent_port\" ]; then",
+		"zone=$(cat " + shellQuote(statePath(agentfirewall.ZoneFile)) + " 2>/dev/null || true)",
+		"[ -n \"$zone\" ] || zone=$(firewall-cmd --get-default-zone 2>/dev/null || true)",
+		"family=ipv4",
+		"prefix=32",
+		"case \"$hub_ip\" in *:*) family=ipv6; prefix=128 ;; esac",
+		`rule="rule family=\"$family\" source address=\"$hub_ip/$prefix\" destination address=\"$listen_ip/$prefix\" port port=\"$agent_port\" protocol=\"tcp\" accept"`,
+		"firewall-cmd --permanent --zone=\"$zone\" --remove-rich-rule=\"$rule\" >/dev/null 2>&1 || true",
+		"firewall-cmd --reload >/dev/null 2>&1 || true",
+		"fi",
+		"fi",
+	}, "\n")
 }
 
 func requireConfirmedHostKey(target Target) error {

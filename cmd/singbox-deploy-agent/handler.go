@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"debug/elf"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/agentfirewall"
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
@@ -104,7 +106,7 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	if err := system.NewExecRunner(log).Run(system.Command{Name: "systemctl", Args: []string{"daemon-reload"}}); err != nil {
 		return fmt.Errorf("reload systemd after spoke migration: %w", err)
 	}
-	h.monitor.reload(ctx)
+	h.monitor.reload()
 	return nil
 }
 
@@ -182,8 +184,19 @@ func (h *agentHandler) Uninstall(ctx context.Context, req nodeapi.UninstallReque
 	if h.monitor != nil {
 		h.monitor.stop()
 	}
+	agentStateDir := filepath.Join(h.layout.StateDir, "agent")
+	var firewallRule agentfirewall.Rule
+	var hasFirewallRule bool
+	if !req.KeepOverlay {
+		var err error
+		firewallRule, hasFirewallRule, err = agentfirewall.Load(agentStateDir)
+		if err != nil {
+			return fmt.Errorf("load Agent firewall state: %w", err)
+		}
+	}
+	runner := system.NewExecRunner(log)
 	if err := uninstall.Run(ctx, uninstall.Options{
-		Runner:              system.NewExecRunner(log),
+		Runner:              runner,
 		Layout:              h.layout,
 		DeleteRuntime:       true,
 		DeleteCertificates:  true,
@@ -197,19 +210,34 @@ func (h *agentHandler) Uninstall(ctx context.Context, req nodeapi.UninstallReque
 		return err
 	}
 	if !req.KeepOverlay {
+		if hasFirewallRule {
+			removeCommands, err := firewallRule.RemoveCommands()
+			if err == nil {
+				err = deploy.RunCommands(runner, removeCommands...)
+			}
+			if err != nil {
+				// uninstall.Run may already have removed StateDir. Restore the
+				// exact rule metadata so a retained Agent/overlay can retry.
+				if saveErr := agentfirewall.Save(agentStateDir, firewallRule); saveErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore Agent firewall cleanup state: %w", saveErr))
+				}
+				return fmt.Errorf("remove Agent firewall rule: %w", err)
+			}
+		}
 		fmt.Fprintln(log, "spoke runtime removed; agent and WireGuard teardown scheduled")
-		time.AfterFunc(750*time.Millisecond, teardownAgentAndOverlay)
+		time.AfterFunc(750*time.Millisecond, func() { teardownAgentAndOverlay(h.layout) })
 	}
 	return nil
 }
 
-func teardownAgentAndOverlay() {
+func teardownAgentAndOverlay(layout paths.Layout) {
 	// Remove durable material first while this process and tunnel are still
 	// alive, then queue service stops without blocking on our own termination.
+	agentDir := filepath.Join(layout.StateDir, "agent")
 	for _, path := range agentTeardownPaths() {
 		_ = os.Remove(path)
 	}
-	_ = os.RemoveAll("/etc/singbox-deploy/state/agent")
+	_ = os.RemoveAll(agentDir)
 	_ = exec.Command("systemctl", "disable", "singbox-deploy-agent.service").Run()
 	_ = exec.Command("systemctl", "disable", "wg-quick@sbwg0.service").Run()
 	_ = exec.Command("systemctl", "daemon-reload").Run()

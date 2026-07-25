@@ -654,6 +654,7 @@ func (c *Controller) buildPlan(identity nodes.HubIdentity, node nodes.Node, agen
 		AgentBinary:  agentBin,
 		AgentVersion: expectedVersion,
 		WGAddress:    spokeAddr,
+		HubIP:        wgnet.HubAddress,
 		HubPublicKey: identity.PublicKey,
 		HubEndpoint:  identity.Endpoint(),
 		Subnet:       identity.Subnet,

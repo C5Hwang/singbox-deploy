@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,7 +43,10 @@ type Orchestrator struct {
 	LatestSingBox  func(ctx context.Context) (string, error)
 	CheckConflicts func(ctx context.Context, cfg Config) error
 	CheckPorts     func(ctx context.Context, cfg Config) error
-	Progress       func(Event)
+	// CheckReconfigurePorts validates only newly-added listen sockets while the
+	// currently-managed sockets remain active.
+	CheckReconfigurePorts func(ctx context.Context, cfg Config, added []system.Port) error
+	Progress              func(Event)
 
 	GOOS, GOARCH  string
 	DeployBin     string // path to the singbox-deploy binary (for the monitor unit)
@@ -95,6 +99,14 @@ func (o *Orchestrator) defaults() {
 	if o.CheckPorts == nil {
 		o.CheckPorts = o.checkPorts
 	}
+	if o.CheckReconfigurePorts == nil {
+		o.CheckReconfigurePorts = func(ctx context.Context, cfg Config, added []system.Port) error {
+			if err := cfg.ValidatePorts(); err != nil {
+				return err
+			}
+			return system.CheckPorts(ctx, "", added)
+		}
+	}
 	if o.CertManager == nil {
 		o.CertManager = &certmgr.Manager{Layout: o.Layout}
 	}
@@ -140,20 +152,118 @@ func (o *Orchestrator) Run(ctx context.Context, cfg Config) error {
 // Reconfigure applies an already-installed node's desired configuration
 // without reinstalling packages, Nginx, or the sing-box core. Certificates are
 // validated and written by the spoke agent before this method is called.
-func (o *Orchestrator) Reconfigure(ctx context.Context, cfg Config) error {
+func (o *Orchestrator) Reconfigure(ctx context.Context, cfg Config) (retErr error) {
 	o.defaults()
+	old, err := LoadProtocolConfig(o.Layout)
+	if err != nil {
+		return fmt.Errorf("load current configuration before reconfigure: %w", err)
+	}
+	// These runtime-only fields are intentionally not persisted by
+	// LoadProtocolConfig but affect the managed firewall port set.
+	old.SpokeMode = cfg.SpokeMode
+	old.Firewall = cfg.Firewall
+	added, stale := firewallPortChanges(old, cfg)
+	candidate := ProtocolConfigCandidate(o.Layout)
+	firewallTouched := false
+	activated := false
+	defer func() {
+		_ = os.Remove(candidate)
+		if retErr == nil || !firewallTouched || activated || cfg.Firewall == system.FirewallNone {
+			return
+		}
+		// A failure before the new config was activated must not leave newly
+		// opened ports behind. Cleanup errors are joined so operators can see
+		// that manual firewall repair may be required.
+		if cleanupErr := o.run(system.FirewallRemoveCommands(cfg.Firewall, added)...); cleanupErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("roll back newly-opened firewall ports: %w", cleanupErr))
+		}
+	}()
+
+	oldConfig, err := os.ReadFile(o.Layout.ConfigJSON)
+	if err != nil {
+		return fmt.Errorf("read current sing-box config before reconfigure: %w", err)
+	}
 	local := []step{
-		{"Config", "regenerate and validate config.json", o.stepConfig},
-		{"Services", "reload sing-box with the new configuration", o.stepServices},
+		{"Port check", "check new or changed protocol ports", func(ctx context.Context, cfg Config) error {
+			return o.CheckReconfigurePorts(ctx, cfg, added)
+		}},
+		{"Firewall", "open new or changed protocol ports", func(context.Context, Config) error {
+			if cfg.Firewall == system.FirewallNone || len(added) == 0 {
+				return nil
+			}
+			firewallTouched = true
+			return o.run(system.FirewallCommands(cfg.Firewall, added)...)
+		}},
+		{"Config", "render and validate candidate config.json", o.stepReconfigureConfig},
+		{"Services", "activate the validated config and reload sing-box", func(ctx context.Context, cfg Config) error {
+			if err := os.Rename(candidate, o.Layout.ConfigJSON); err != nil {
+				return err
+			}
+			if err := o.stepServices(ctx, cfg); err != nil {
+				// If an old config existed, restore it and restart the old
+				// service. Retain the new firewall rule only when restoration
+				// itself fails and the active service state is uncertain.
+				restoreErr := WriteFile(o.Layout.ConfigJSON, oldConfig, 0o600)
+				if restoreErr == nil {
+					restoreErr = o.Runner.Run(system.Systemctl("restart", system.SingBoxService))
+				}
+				if restoreErr != nil {
+					activated = true
+					return errors.Join(err, fmt.Errorf("restore previous sing-box config: %w", restoreErr))
+				}
+				return err
+			}
+			activated = true
+			return nil
+		}},
+		{"Finalize", "persist desired node state", o.stepFinalize},
+		{"Firewall cleanup", "close removed or superseded protocol ports", func(context.Context, Config) error {
+			if cfg.Firewall == system.FirewallNone || len(stale) == 0 {
+				return nil
+			}
+			return o.run(system.FirewallRemoveCommands(cfg.Firewall, stale)...)
+		}},
 		{"Subscriptions", "regenerate private node subscription data", o.stepSubscriptions},
 		{"Nginx config", "rewrite managed config and reload", o.stepNginxConfig},
-		{"Finalize", "persist desired node state", o.stepFinalize},
 	}
 	steps := make([]Step, len(local))
 	for i, s := range local {
 		steps[i] = Step{Label: s.label, Detail: s.detail, Run: func(ctx context.Context) error { return s.run(ctx, cfg) }}
 	}
 	return RunSteps(ctx, o.Progress, steps)
+}
+
+func (o *Orchestrator) stepReconfigureConfig(_ context.Context, cfg Config) error {
+	if err := WriteProtocolConfigCandidate(o.Layout, cfg); err != nil {
+		return err
+	}
+	return o.run(system.Command{Name: o.Layout.SingBoxBin, Args: []string{"check", "-c", ProtocolConfigCandidate(o.Layout)}})
+}
+
+func firewallPortChanges(old, next Config) (added, stale []system.Port) {
+	oldPorts := old.firewallPorts()
+	nextPorts := next.firewallPorts()
+	oldSet := make(map[string]bool, len(oldPorts))
+	nextSet := make(map[string]bool, len(nextPorts))
+	for _, port := range oldPorts {
+		oldSet[firewallPortKey(port)] = true
+	}
+	for _, port := range nextPorts {
+		nextSet[firewallPortKey(port)] = true
+		if !oldSet[firewallPortKey(port)] {
+			added = append(added, port)
+		}
+	}
+	for _, port := range oldPorts {
+		if !nextSet[firewallPortKey(port)] {
+			stale = append(stale, port)
+		}
+	}
+	return added, stale
+}
+
+func firewallPortKey(port system.Port) string {
+	return fmt.Sprintf("%s/%d", strings.ToLower(port.Proto), port.Number)
 }
 
 func (o *Orchestrator) run(cmds ...system.Command) error {

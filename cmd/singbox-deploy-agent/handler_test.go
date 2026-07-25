@@ -13,9 +13,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -158,6 +161,69 @@ func TestAgentMonitorHandlerUsesSupervisor(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("inactive status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
+}
+
+func TestMonitorSupervisorUsesAgentProcessContext(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(layout.MonitorDB), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(layout.StateDir)
+	for name, value := range map[string]string{
+		"domain":                   "spoke.example.com\n",
+		"monitor":                  "yes\n",
+		"monitor_interface":        "lo\n",
+		"monitor_interval_seconds": "3600\n",
+	} {
+		if err := store.WriteString(name, value, 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	processCtx, stopProcess := context.WithCancel(context.Background())
+	supervisor := newMonitorSupervisor(processCtx, layout)
+	supervisor.now = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	supervisor.newMonitor = func(_ *monitor.Store, _ monitor.Config) (http.Handler, func(context.Context) error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}), func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			}
+	}
+	supervisor.reload()
+
+	supervisor.mu.RLock()
+	done := supervisor.done
+	handler := supervisor.handler
+	supervisor.mu.RUnlock()
+	if done == nil || handler == nil {
+		t.Fatal("monitor did not start from installed spoke state")
+	}
+
+	// A completed/cancelled HTTP request must have no effect on the process-owned
+	// monitor lifecycle.
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+	req := httptest.NewRequest(http.MethodGet, "/api/summary", nil).WithContext(requestCtx)
+	rec := httptest.NewRecorder()
+	supervisor.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary after request cancellation = %d, want 200", rec.Code)
+	}
+	select {
+	case <-done:
+		t.Fatal("monitor stopped with an unrelated request context")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	stopProcess()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitor did not stop with the agent process context")
+	}
+	supervisor.stop()
 }
 
 func TestAgentTeardownRemovesAllWireGuardSecretsAndTemplates(t *testing.T) {

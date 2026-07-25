@@ -85,6 +85,7 @@ func TestProvisionSequence(t *testing.T) {
 		AgentBinary:  []byte("BINARY-CONTENT"),
 		AgentVersion: "v1.2.3",
 		WGAddress:    "10.90.0.2/24",
+		HubIP:        "10.90.0.1",
 		HubPublicKey: keyPair.PublicKey,
 		HubEndpoint:  "hub.example.com:51820",
 		Subnet:       wgnet.DefaultSubnet,
@@ -112,8 +113,11 @@ func TestProvisionSequence(t *testing.T) {
 		"sha256sum --check --status",
 		"/etc/wireguard/sbwg0.conf",
 		"/etc/singbox-deploy/state/agent/token",
+		"/etc/singbox-deploy/state/agent/firewall_backend",
 		"/etc/systemd/system/singbox-deploy-agent.service",
 		"systemctl restart wg-quick@sbwg0.service",
+		"ufw allow in on 'sbwg0' from '10.90.0.1' to '10.90.0.2' port 19091 proto tcp",
+		`source address="10.90.0.1/32" destination address="10.90.0.2/32"`,
 		"systemctl restart singbox-deploy-agent.service",
 	} {
 		if !strings.Contains(joined, want) {
@@ -156,6 +160,20 @@ func TestProvisionSequence(t *testing.T) {
 	if !foundTemplate {
 		t.Fatal("wireguard config template was not uploaded")
 	}
+
+	firewallIndex, agentIndex := -1, -1
+	for i, command := range runner.commands {
+		if strings.Contains(command, "firewall_backend") && strings.Contains(command, "ufw allow in") {
+			firewallIndex = i
+		}
+		if strings.Contains(command, "systemctl restart singbox-deploy-agent.service") {
+			agentIndex = i
+		}
+	}
+	if firewallIndex < 0 || agentIndex < 0 || firewallIndex >= agentIndex {
+		t.Fatalf("scoped firewall must be configured before Agent startup: firewall=%d agent=%d", firewallIndex, agentIndex)
+	}
+	checkShellSyntax(t, runner.commands[firewallIndex])
 }
 
 func TestProvisionRejectsChecksumAndVersionMismatch(t *testing.T) {
@@ -193,6 +211,7 @@ func TestProvisionRefusesServerThatAlreadyManagesSpokesBeforeMutation(t *testing
 	b := &Bootstrapper{Dial: func(context.Context, Target) (Runner, error) { return runner, nil }}
 	_, err := b.Provision(context.Background(), Target{HostKeyFingerprint: "SHA256:test"}, Plan{
 		AgentBinary: []byte("agent"), AgentVersion: "v1",
+		ListenIP: "10.90.0.2", AgentPort: 19091,
 	})
 	if err == nil || !strings.Contains(err.Error(), "active hub") {
 		t.Fatalf("expected active-Hub refusal, got %v", err)
@@ -232,11 +251,23 @@ func TestCleanupRemovesProvisionedAgentAndWireGuardSecrets(t *testing.T) {
 		"/etc/wireguard/sbwg0.conf",
 		"/etc/wireguard/sbwg0.key",
 		"/etc/singbox-deploy/state/agent",
+		"ufw --force delete allow in",
+		"--remove-rich-rule",
 		"systemctl daemon-reload",
 	} {
 		if !strings.Contains(command, want) {
 			t.Fatalf("cleanup command missing %q:\n%s", want, command)
 		}
+	}
+	checkShellSyntax(t, command)
+}
+
+func checkShellSyntax(t *testing.T, script string) {
+	t.Helper()
+	cmd := exec.Command("sh", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("invalid generated shell: %v: %s\n%s", err, out, script)
 	}
 }
 
