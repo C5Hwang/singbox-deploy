@@ -118,6 +118,64 @@ func TestUpdateAndRemovePreferStableID(t *testing.T) {
 	}
 }
 
+func TestMutateStatusUpdatesInPlaceAndRefusesConfigurationEdits(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	const id = "22222222222222222222222222222222"
+	if err := Add(layout, Node{
+		ID: id, Alias: "tokyo", WGIP: "10.90.0.2", Domain: "spoke.example.com",
+		SSHHost: "tokyo.example.com", Hysteria2Port: 8443,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A whole-registry restage would discard this marker.
+	marker := filepath.Join(layout.StateDir, "nodes", "001", "marker")
+	if err := os.WriteFile(marker, []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := time.Date(2026, 7, 25, 8, 30, 0, 0, time.UTC)
+	updated, err := MutateStatus(layout, id, func(n *Node) error {
+		n.AgentVersion = "v2.0.0"
+		n.LastSeen = seen
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("MutateStatus: %v", err)
+	}
+	if updated.AgentVersion != "v2.0.0" || !updated.LastSeen.Equal(seen) || updated.Alias != "tokyo" {
+		t.Fatalf("returned node = %+v", updated)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("registry was restaged instead of updated in place: %v", err)
+	}
+	list, err := Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].AgentVersion != "v2.0.0" || !list[0].LastSeen.Equal(seen) || list[0].Hysteria2Port != 8443 {
+		t.Fatalf("persisted node = %+v", list)
+	}
+
+	if _, err := MutateStatus(layout, id, func(n *Node) error {
+		n.Hysteria2Port = 9443
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "hysteria2_port") {
+		t.Fatalf("configuration edit error = %v, want a rejection naming the field", err)
+	}
+	if _, err := MutateStatus(layout, "33333333333333333333333333333333", func(*Node) error {
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unknown node error = %v", err)
+	}
+	after, err := Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after[0].Hysteria2Port != 8443 {
+		t.Fatalf("rejected edit still landed: %+v", after[0])
+	}
+}
+
 func TestMutatePreservesConcurrentIndependentFieldUpdates(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	const id = "11111111111111111111111111111111"

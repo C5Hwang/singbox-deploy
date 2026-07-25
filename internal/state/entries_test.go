@@ -58,6 +58,97 @@ func TestSaveEntryDirsReplacesWholeTree(t *testing.T) {
 	assertNoEntryDirArtifacts(t, dir)
 }
 
+func TestUpdateEntryFieldsWritesOnlyTheChangedFieldsInPlace(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "entries")
+	initial := []testEntry{{Name: "one", Value: "old"}, {Name: "two", Value: "keep"}}
+	if err := SaveEntryDirs(dir, initial, encodeTestEntry); err != nil {
+		t.Fatalf("initial SaveEntryDirs error: %v", err)
+	}
+	// A whole-tree restage discards anything it did not write, so surviving
+	// markers prove the update stayed in place.
+	markers := map[string]string{
+		filepath.Join(dir, "001", "marker"): "first",
+		filepath.Join(dir, "002", "marker"): "second",
+	}
+	for path, contents := range markers {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatalf("write marker %s: %v", path, err)
+		}
+	}
+	nameBefore, err := os.Stat(filepath.Join(dir, "001", "name"))
+	if err != nil {
+		t.Fatalf("stat unchanged field: %v", err)
+	}
+
+	updated, err := UpdateEntryFields(dir, decodeTestEntry, encodeTestEntry,
+		func(entry testEntry) bool { return entry.Name == "one" },
+		func(entry *testEntry) error {
+			entry.Value = "new"
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("UpdateEntryFields error: %v", err)
+	}
+	if updated != (testEntry{Name: "one", Value: "new"}) {
+		t.Fatalf("returned entry = %#v", updated)
+	}
+
+	got, err := LoadEntryDirs(dir, decodeTestEntry)
+	if err != nil {
+		t.Fatalf("LoadEntryDirs error: %v", err)
+	}
+	want := []testEntry{{Name: "one", Value: "new"}, {Name: "two", Value: "keep"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loaded entries = %#v, want %#v", got, want)
+	}
+	for path, contents := range markers {
+		body, err := os.ReadFile(path)
+		if err != nil || string(body) != contents {
+			t.Fatalf("entry tree was restaged; marker %s = %q, err %v", path, body, err)
+		}
+	}
+	nameAfter, err := os.Stat(filepath.Join(dir, "001", "name"))
+	if err != nil {
+		t.Fatalf("stat unchanged field after update: %v", err)
+	}
+	if !os.SameFile(nameBefore, nameAfter) {
+		t.Fatal("unchanged field file was rewritten")
+	}
+}
+
+func TestUpdateEntryFieldsReportsMissingEntryAndPropagatesMutationError(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "entries")
+	if err := SaveEntryDirs(dir, []testEntry{{Name: "one", Value: "old"}}, encodeTestEntry); err != nil {
+		t.Fatalf("SaveEntryDirs error: %v", err)
+	}
+	noMutation := func(*testEntry) error { t.Fatal("mutate must not run without a match"); return nil }
+	if _, err := UpdateEntryFields(dir, decodeTestEntry, encodeTestEntry,
+		func(entry testEntry) bool { return entry.Name == "missing" }, noMutation); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatalf("missing entry error = %v, want ErrEntryNotFound", err)
+	}
+	if _, err := UpdateEntryFields(filepath.Join(t.TempDir(), "absent"), decodeTestEntry, encodeTestEntry,
+		func(testEntry) bool { return true }, noMutation); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatalf("missing tree error = %v, want ErrEntryNotFound", err)
+	}
+
+	sentinel := errors.New("rejected")
+	if _, err := UpdateEntryFields(dir, decodeTestEntry, encodeTestEntry,
+		func(entry testEntry) bool { return entry.Name == "one" },
+		func(entry *testEntry) error {
+			entry.Value = "new"
+			return sentinel
+		}); !errors.Is(err, sentinel) {
+		t.Fatalf("mutation error = %v, want %v", err, sentinel)
+	}
+	got, err := LoadEntryDirs(dir, decodeTestEntry)
+	if err != nil {
+		t.Fatalf("LoadEntryDirs error: %v", err)
+	}
+	if len(got) != 1 || got[0].Value != "old" {
+		t.Fatalf("failed mutation changed the tree: %#v", got)
+	}
+}
+
 func TestSaveEntryDirsBuildFailurePreservesPreviousTree(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "entries")
 	want := []testEntry{{Name: "preserved", Value: "old"}}

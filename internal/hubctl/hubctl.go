@@ -742,15 +742,21 @@ func canonicalAgentSemver(version string) string {
 
 // persistAgentHealth patches only hub-observed status fields into the current
 // registry value. It intentionally reloads the node under the registry lock so
-// a concurrent TUI edit cannot be overwritten by a stale health-check copy.
+// a concurrent TUI edit cannot be overwritten by a stale health-check copy, and
+// uses the status-only writer so a fleet-wide probe does not restage the whole
+// registry once per node.
 func (c *Controller) persistAgentHealth(node *nodes.Node, version string) error {
 	seen := time.Now().UTC()
-	return nodes.Mutate(c.Layout, node.ID, func(current *nodes.Node) error {
+	updated, err := nodes.MutateStatus(c.Layout, node.ID, func(current *nodes.Node) error {
 		current.AgentVersion = version
 		current.LastSeen = seen
-		*node = *current
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	*node = updated
+	return nil
 }
 
 func (c *Controller) buildPlan(identity nodes.HubIdentity, node nodes.Node, agentBin []byte) (bootstrap.Plan, error) {

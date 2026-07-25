@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -258,6 +259,65 @@ func Mutate(layout paths.Layout, id string, mutate func(*Node) error) error {
 		return list, nil
 	})
 	return err
+}
+
+// statusFields are the hub-observed fields MutateStatus is allowed to rewrite.
+// Each is an independent observation of the agent, so an interrupted update can
+// leave one stale but never leaves the registry internally inconsistent.
+var statusFields = map[string]struct{}{
+	"agent_version": {},
+	"last_seen":     {},
+}
+
+// MutateStatus updates only the hub-observed status fields of one node, writing
+// the changed field files in place instead of restaging the whole registry.
+// Liveness is probed for every spoke on a timer, and a full Mutate rewrites
+// (and fsyncs) every field of every node, so using it here would turn routine
+// monitoring into continuous disk churn that grows with the fleet.
+//
+// The callback is rejected if it changes anything outside statusFields; those
+// edits need Mutate and its whole-tree atomicity. The stored value after the
+// update is returned.
+func MutateStatus(layout paths.Layout, id string, mutate func(*Node) error) (Node, error) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return Node{}, fmt.Errorf("node ID is required")
+	}
+	if mutate == nil {
+		return Node{}, fmt.Errorf("node mutation callback is required")
+	}
+	updated, err := state.UpdateEntryFields(nodesPath(layout), decodeNode, encodeNode,
+		func(candidate Node) bool {
+			return strings.ToLower(strings.TrimSpace(candidate.ID)) == id
+		},
+		func(candidate *Node) error {
+			original := *candidate
+			original.EnabledProtocols = append([]string(nil), original.EnabledProtocols...)
+			candidate.EnabledProtocols = append([]string(nil), candidate.EnabledProtocols...)
+			if err := mutate(candidate); err != nil {
+				return err
+			}
+			if strings.ToLower(strings.TrimSpace(candidate.ID)) != id {
+				return fmt.Errorf("node status update cannot change stable ID %q", id)
+			}
+			before, after := encodeNode(original), encodeNode(*candidate)
+			for name, value := range after {
+				if before[name] == value {
+					continue
+				}
+				if _, allowed := statusFields[name]; !allowed {
+					return fmt.Errorf("node status update cannot change %q; use Mutate", name)
+				}
+			}
+			return nil
+		})
+	if errors.Is(err, state.ErrEntryNotFound) {
+		return Node{}, fmt.Errorf("node %s not found", id)
+	}
+	if err != nil {
+		return Node{}, err
+	}
+	return updated, nil
 }
 
 // Remove deletes a node by stable ID, falling back to WGIP for legacy callers.

@@ -120,6 +120,75 @@ func TransactEntryDirs[T any](
 	return next, nil
 }
 
+// ErrEntryNotFound reports that no entry in the tree satisfied the selector.
+var ErrEntryNotFound = errors.New("entry not found")
+
+// UpdateEntryFields rewrites only the changed field files of the single entry
+// selected by match, in place, without restaging the tree. It takes the same
+// exclusive locks as TransactEntryDirs, so it cannot interleave with a full
+// replacement.
+//
+// This trades the whole-tree atomicity of TransactEntryDirs for a bounded
+// amount of disk work, and is therefore appropriate only for independent
+// observational fields where a crash between two field writes leaves no
+// inconsistent state. Anything the entry's other fields depend on must go
+// through TransactEntryDirs instead.
+func UpdateEntryFields[T any](
+	dir string,
+	decode func(root string) T,
+	encode func(T) map[string]string,
+	match func(T) bool,
+	mutate func(*T) error,
+) (T, error) {
+	var zero T
+	lock := entryDirLock(dir)
+	lock.Lock()
+	defer lock.Unlock()
+
+	fileLock, err := lockEntryTreeForWrite(dir)
+	if err != nil {
+		return zero, err
+	}
+	defer unlockEntryTree(fileLock)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return zero, ErrEntryNotFound
+		}
+		return zero, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		root := filepath.Join(dir, entry.Name())
+		current := decode(root)
+		if !match(current) {
+			continue
+		}
+		next := current
+		if err := mutate(&next); err != nil {
+			return zero, err
+		}
+		before, after := encode(current), encode(next)
+		for name, value := range after {
+			if !validEntryFieldName(name) {
+				return zero, fmt.Errorf("update entry %s: invalid field name %q", entry.Name(), name)
+			}
+			if previous, ok := before[name]; ok && previous == value {
+				continue
+			}
+			if err := WriteFileAtomic(filepath.Join(root, name), []byte(value+"\n"), 0o600); err != nil {
+				return zero, fmt.Errorf("update entry %s field %q: %w", entry.Name(), name, err)
+			}
+		}
+		return next, nil
+	}
+	return zero, ErrEntryNotFound
+}
+
 func lockEntryTreeForWrite(dir string) (*os.File, error) {
 	dir = filepath.Clean(dir)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
