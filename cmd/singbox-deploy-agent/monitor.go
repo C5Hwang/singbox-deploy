@@ -33,6 +33,11 @@ type monitorSupervisor struct {
 	// returns the mounted handler and the blocking sampler/server function.
 	newMonitor func(*monitor.Store, monitor.Config) (http.Handler, func(context.Context) error)
 
+	// lifecycle serializes reload/stop so two callers cannot interleave one
+	// caller's teardown with another's startup. It is deliberately separate from
+	// mu, which only guards the fields below and is also taken by ServeHTTP.
+	lifecycle sync.Mutex
+
 	mu      sync.RWMutex
 	cancel  context.CancelFunc
 	done    chan struct{}
@@ -49,9 +54,9 @@ func newMonitorSupervisor(parent context.Context, layout paths.Layout) *monitorS
 // reload (re)starts the monitor from current install state. It is a no-op when
 // monitoring is disabled or the install is incomplete.
 func (s *monitorSupervisor) reload() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.stopLocked()
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	s.stopRunning()
 
 	store := state.NewStore(s.layout.StateDir)
 	if v, _ := store.ReadValue("monitor", false); v == "no" {
@@ -76,8 +81,6 @@ func (s *monitorSupervisor) reload() {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	s.cancel = cancel
-	s.done = make(chan struct{})
 	newMonitor := s.newMonitor
 	if newMonitor == nil {
 		newMonitor = func(store *monitor.Store, cfg monitor.Config) (http.Handler, func(context.Context) error) {
@@ -86,8 +89,16 @@ func (s *monitorSupervisor) reload() {
 		}
 	}
 	handler, run := newMonitor(dbStore, cfg)
+	done := make(chan struct{})
+	// Publish before starting the sampler so a monitor that exits immediately
+	// still recognizes itself as the current one and retires cleanly.
+	s.mu.Lock()
+	s.cancel = cancel
+	s.done = done
 	s.handler = handler
-	go func(done chan struct{}) {
+	s.mu.Unlock()
+
+	go func() {
 		defer close(done)
 		defer dbStore.Close()
 		err := run(ctx)
@@ -96,9 +107,9 @@ func (s *monitorSupervisor) reload() {
 				log.Printf("agent monitor exited: %v", err)
 			}
 			// Unexpected exit: wait for any in-flight API read, then make the
-			// closed monitor unavailable. During an intentional stop ctx is
-			// cancelled, so this branch never contends with stopLocked waiting
-			// for done while holding the write lock.
+			// closed monitor unavailable. stopRunning never holds mu while it
+			// waits on done, so taking the write lock here cannot deadlock an
+			// intentional stop that raced past the cancellation check above.
 			s.mu.Lock()
 			if s.done == done {
 				s.handler = nil
@@ -107,7 +118,7 @@ func (s *monitorSupervisor) reload() {
 			}
 			s.mu.Unlock()
 		}
-	}(s.done)
+	}()
 }
 
 func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, error) {
@@ -147,19 +158,29 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 }
 
 func (s *monitorSupervisor) stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.stopLocked()
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	s.stopRunning()
 }
 
-func (s *monitorSupervisor) stopLocked() {
-	if s.cancel != nil {
-		s.cancel()
-		<-s.done
-		s.cancel = nil
-		s.done = nil
-	}
+// stopRunning retires the active monitor and waits for it to release its
+// database. The registry fields are cleared under mu, but the wait itself
+// happens with mu released: a monitor that exits on its own also needs the
+// write lock to retire itself, so waiting while holding it would deadlock
+// whenever an intentional stop raced a spontaneous exit. Callers hold
+// lifecycle, which is what actually serializes teardown against startup.
+func (s *monitorSupervisor) stopRunning() {
+	s.mu.Lock()
+	cancel, done := s.cancel, s.done
+	s.cancel = nil
+	s.done = nil
 	s.handler = nil
+	s.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	<-done
 }
 
 // ServeHTTP dispatches to the currently active in-process monitor. Holding a

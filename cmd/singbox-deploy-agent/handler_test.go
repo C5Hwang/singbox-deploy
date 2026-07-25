@@ -524,7 +524,49 @@ func TestAgentMonitorHandlerUsesSupervisor(t *testing.T) {
 	}
 }
 
-func TestMonitorSupervisorUsesAgentProcessContext(t *testing.T) {
+// A monitor that exits on its own retires itself under the write lock, so an
+// intentional stop must not hold that lock while waiting for the sampler to
+// finish. This asserts the property directly: the run function only returns
+// once it has proved a reader can still enter while stop is waiting.
+func TestMonitorSupervisorStopDoesNotHoldLockWhileWaiting(t *testing.T) {
+	supervisor := newMonitorSupervisor(context.Background(), installedSpokeLayout(t))
+	supervisor.now = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	supervisor.newMonitor = func(_ *monitor.Store, _ monitor.Config) (http.Handler, func(context.Context) error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}), func(ctx context.Context) error {
+				<-ctx.Done()
+				// stop is now blocked on done. Taking the read lock deadlocks if it
+				// is waiting while holding the write lock.
+				supervisor.mu.RLock()
+				supervisor.mu.RUnlock()
+				return nil
+			}
+	}
+	supervisor.reload()
+	supervisor.mu.RLock()
+	started := supervisor.done != nil
+	supervisor.mu.RUnlock()
+	if !started {
+		t.Fatal("monitor did not start from installed spoke state")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		supervisor.stop()
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop deadlocked waiting for the monitor to exit")
+	}
+}
+
+// installedSpokeLayout returns a temporary layout whose state files describe an
+// installed, monitored spoke.
+func installedSpokeLayout(t *testing.T) paths.Layout {
+	t.Helper()
 	layout := paths.LayoutForRoot(t.TempDir())
 	if err := os.MkdirAll(filepath.Dir(layout.MonitorDB), 0o755); err != nil {
 		t.Fatal(err)
@@ -540,9 +582,12 @@ func TestMonitorSupervisorUsesAgentProcessContext(t *testing.T) {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
+	return layout
+}
 
+func TestMonitorSupervisorUsesAgentProcessContext(t *testing.T) {
 	processCtx, stopProcess := context.WithCancel(context.Background())
-	supervisor := newMonitorSupervisor(processCtx, layout)
+	supervisor := newMonitorSupervisor(processCtx, installedSpokeLayout(t))
 	supervisor.now = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
 	supervisor.newMonitor = func(_ *monitor.Store, _ monitor.Config) (http.Handler, func(context.Context) error) {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
