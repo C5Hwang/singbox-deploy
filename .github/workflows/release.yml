@@ -6,7 +6,29 @@ on:
       - "v*"
 
 jobs:
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.12"
+
+      - name: Prepare generated embed inputs
+        run: |
+          mkdir -p assets/monitor-ui
+          touch assets/monitor-ui/index.html
+          touch assets/agentbin/singbox-deploy-agent-linux-amd64
+          touch assets/agentbin/singbox-deploy-agent-linux-arm64
+
+      - name: Run vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
   build:
+    needs: security
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,7 +40,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "1.25.12"
 
       - uses: pnpm/action-setup@v4
         with:
