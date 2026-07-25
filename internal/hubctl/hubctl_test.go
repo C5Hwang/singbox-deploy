@@ -163,6 +163,54 @@ func TestCheckHealthUpgradesMismatchedAgentAndPersistsStatus(t *testing.T) {
 	}
 }
 
+func TestProbeHealthRecordsStatusWithoutMutatingSpoke(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "tokyo", SSHHost: "tokyo.example", Domain: "spoke.example.com",
+		WGIP: "10.90.0.2", Token: "tok", Arch: "arm64", Installed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := nodes.Load(layout)
+	node := list[0]
+	node.PendingCertificate = true
+	if err := nodes.Update(layout, node); err != nil {
+		t.Fatal(err)
+	}
+	writeCertificatePair(t, layout, node.Domain)
+	h := &upgradeHealthHandler{version: "v1.0.0"}
+	srv := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: h}).Mux())
+	defer srv.Close()
+	ctrl := &Controller{
+		Layout:          layout,
+		ExpectedVersion: "v2.0.0",
+		AgentBinary: func(string) ([]byte, error) {
+			t.Fatal("a read-only probe must not load an agent binary")
+			return nil, nil
+		},
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	updated, err := ctrl.ProbeHealth(context.Background(), node)
+	if err != nil {
+		t.Fatalf("ProbeHealth: %v", err)
+	}
+	if updated.AgentVersion != "v1.0.0" || updated.LastSeen.IsZero() {
+		t.Fatalf("observed status not returned: %+v", updated)
+	}
+	h.mu.Lock()
+	upgradeVersion, applyCount := h.upgradeReq.Version, h.applyCount
+	h.mu.Unlock()
+	if upgradeVersion != "" || applyCount != 0 {
+		t.Fatalf("probe mutated the spoke: upgrade=%q applyCert=%d", upgradeVersion, applyCount)
+	}
+	persisted, _ := nodes.Load(layout)
+	if persisted[0].AgentVersion != "v1.0.0" || !persisted[0].PendingCertificate {
+		t.Fatalf("probe changed more than the observed status: %+v", persisted[0])
+	}
+}
+
 func TestCheckHealthDoesNotDowngradeNewerAgent(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	if err := nodes.Add(layout, nodes.Node{

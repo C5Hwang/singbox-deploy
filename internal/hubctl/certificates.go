@@ -79,7 +79,7 @@ func (c *Controller) DistributeCertificate(ctx context.Context, domain string, l
 
 	for _, node := range matched {
 		fmt.Fprintf(log, "delivering certificate to %s over WireGuard...\n", node.EffectiveAlias())
-		if _, err := c.CheckHealth(ctx, node, log); err != nil {
+		if _, err := c.syncCertificate(ctx, node, log); err != nil {
 			errs = append(errs, fmt.Errorf("deliver certificate to %s: %w", node.EffectiveAlias(), err))
 		}
 	}
@@ -117,8 +117,7 @@ func (c *Controller) RetryPendingCertificates(ctx context.Context, log io.Writer
 		if !node.PendingCertificate || !node.Installed {
 			continue
 		}
-		fmt.Fprintf(log, "retrying pending certificate delivery to %s...\n", node.EffectiveAlias())
-		if _, err := c.CheckHealth(ctx, node, log); err != nil {
+		if _, err := c.syncCertificate(ctx, node, log); err != nil {
 			errs = append(errs, fmt.Errorf("retry %s: %w", node.EffectiveAlias(), err))
 		}
 	}

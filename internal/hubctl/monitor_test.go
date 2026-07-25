@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -84,5 +85,63 @@ func TestRefreshMonitorAndDrillDownUseAuthenticatedAgentAPI(t *testing.T) {
 	wantPaths := []string{"/api/health", "/api/monitor/summary", "/api/monitor/traffic-trend"}
 	if strings.Join(requested, ",") != strings.Join(wantPaths, ",") {
 		t.Fatalf("agent paths = %v, want %v", requested, wantPaths)
+	}
+}
+
+// The hub's monitor service refreshes on a short timer. A spoke that is behind
+// on agent version or still owed a certificate must not turn every tick into a
+// binary push or a remote service restart.
+func TestRefreshMonitorNeverMutatesTheSpoke(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "Tokyo", SSHHost: "tokyo.example.com", Domain: "spoke.example.com",
+		WGIP: "10.90.0.2", Token: "node-secret", Arch: "amd64", Installed: true, Monitor: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := nodes.Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := list[0]
+	node.PendingCertificate = true
+	if err := nodes.Update(layout, node); err != nil {
+		t.Fatal(err)
+	}
+	writeCertificatePair(t, layout, node.Domain)
+
+	h := &upgradeHealthHandler{version: "v1.0.0"}
+	srv := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: h}).Mux())
+	defer srv.Close()
+	ctrl := &Controller{
+		Layout:          layout,
+		ExpectedVersion: "v2.0.0",
+		AgentBinary: func(string) ([]byte, error) {
+			t.Fatal("monitor aggregation must not load an agent binary")
+			return nil, nil
+		},
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	if err := ctrl.RefreshMonitor(context.Background()); err != nil {
+		t.Fatalf("RefreshMonitor: %v", err)
+	}
+
+	h.mu.Lock()
+	upgradeVersion, applyCount := h.upgradeReq.Version, h.applyCount
+	h.mu.Unlock()
+	if upgradeVersion != "" || applyCount != 0 {
+		t.Fatalf("aggregation mutated the spoke: upgrade=%q applyCert=%d", upgradeVersion, applyCount)
+	}
+	persisted, err := nodes.Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted[0].AgentVersion != "v1.0.0" || persisted[0].LastSeen.IsZero() {
+		t.Fatalf("observed status not recorded: %+v", persisted[0])
+	}
+	if !persisted[0].PendingCertificate {
+		t.Fatal("aggregation cleared the pending certificate marker")
 	}
 }

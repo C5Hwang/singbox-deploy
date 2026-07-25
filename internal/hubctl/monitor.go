@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
@@ -20,6 +19,10 @@ import (
 // address, so monitor data never leaves the encrypted tunnel. A node that fails
 // to answer keeps its previous snapshot entry (a stale FetchedAt makes that
 // visible) rather than vanishing from the dashboard.
+//
+// The hub's monitor service calls this on a short timer, so it deliberately
+// uses the read-only ProbeHealth: agent version reconciliation and certificate
+// delivery belong to operator-driven operations, not to data collection.
 func (c *Controller) RefreshMonitor(ctx context.Context) error {
 	c.defaults()
 	list, err := nodes.Load(c.Layout)
@@ -39,7 +42,7 @@ func (c *Controller) RefreshMonitor(ctx context.Context) error {
 			continue
 		}
 		name := subscription.AddNodePrefixFlag(n.EffectiveAlias())
-		checked, healthErr := c.CheckHealth(ctx, n, io.Discard)
+		checked, healthErr := c.ProbeHealth(ctx, n)
 		if healthErr != nil {
 			if prev, ok := previous[n.ID]; ok {
 				out = append(out, prev)

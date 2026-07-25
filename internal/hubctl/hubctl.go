@@ -566,81 +566,138 @@ func (c *Controller) waitHealthy(ctx context.Context, node nodes.Node, log io.Wr
 	}
 }
 
-// CheckHealth records authenticated liveness, advances an older agent to the
-// hub's expected version, and retries any certificate delivery left pending by
-// renewal. The returned node contains the freshly observed status fields.
+// ProbeHealth records authenticated liveness and nothing else. It is the read
+// path for timer-driven aggregation (subscriptions, monitor): collecting data
+// must never replace a remote binary or restart remote services as a side
+// effect, because a persistently failing reconciliation would otherwise be
+// retried on every refresh tick forever. The returned node carries the freshly
+// observed status fields.
+func (c *Controller) ProbeHealth(ctx context.Context, node nodes.Node) (nodes.Node, error) {
+	c.defaults()
+	_, err := c.probeAgent(ctx, &node)
+	return node, err
+}
+
+// CheckHealth probes the agent, advances an older agent to the hub's expected
+// version, and retries any certificate delivery left pending by renewal. It
+// mutates the spoke, so it is reserved for operator-driven operations: adding a
+// node, reconfiguring one, and coordinated self-update. The returned node
+// contains the freshly observed status fields.
 func (c *Controller) CheckHealth(ctx context.Context, node nodes.Node, log io.Writer) (nodes.Node, error) {
 	c.defaults()
-	client := c.NewClient(node)
-	health, err := client.Health(ctx)
+	if log == nil {
+		log = io.Discard
+	}
+	health, err := c.probeAgent(ctx, &node)
 	if err != nil {
 		return node, err
 	}
+	if err := c.reconcileAgentVersion(ctx, &node, health, log); err != nil {
+		return node, err
+	}
+	return c.deliverPendingCertificate(ctx, node, log)
+}
+
+// syncCertificate probes the agent and completes a certificate delivery left
+// pending by an earlier failure. Certificate work is driven by the renewal
+// timer rather than the operator, so it deliberately skips agent version
+// reconciliation.
+func (c *Controller) syncCertificate(ctx context.Context, node nodes.Node, log io.Writer) (nodes.Node, error) {
+	c.defaults()
+	if log == nil {
+		log = io.Discard
+	}
+	if _, err := c.probeAgent(ctx, &node); err != nil {
+		return node, err
+	}
+	return c.deliverPendingCertificate(ctx, node, log)
+}
+
+// probeAgent performs the authenticated liveness check shared by every health
+// path and folds the observed status back into both the registry and node.
+func (c *Controller) probeAgent(ctx context.Context, node *nodes.Node) (nodeapi.HealthResponse, error) {
+	health, err := c.NewClient(*node).Health(ctx)
+	if err != nil {
+		return nodeapi.HealthResponse{}, err
+	}
 	if !health.OK {
-		return node, fmt.Errorf("agent %s reported unhealthy%s", node.EffectiveAlias(), healthErrorSuffix(health))
+		return health, fmt.Errorf("agent %s reported unhealthy%s", node.EffectiveAlias(), healthErrorSuffix(health))
 	}
-	if err := c.persistAgentHealth(&node, health.Version); err != nil {
-		return node, fmt.Errorf("persist agent health: %w", err)
+	if err := c.persistAgentHealth(node, health.Version); err != nil {
+		return health, fmt.Errorf("persist agent health: %w", err)
 	}
+	return health, nil
+}
 
+// reconcileAgentVersion advances an agent that is older than the hub to the
+// embedded binary and waits for it to come back on the expected version.
+func (c *Controller) reconcileAgentVersion(ctx context.Context, node *nodes.Node, health nodeapi.HealthResponse, log io.Writer) error {
 	expected := strings.TrimSpace(c.ExpectedVersion)
-	if expected != "" && health.Version != expected {
-		if shouldReplaceAgentVersion(health.Version, expected, c.AllowAgentDowngrade) {
-			if node.Arch == "" {
-				return node, fmt.Errorf("cannot reconcile agent %s: node architecture is unknown", node.EffectiveAlias())
+	if expected == "" || health.Version == expected {
+		return nil
+	}
+	if !shouldReplaceAgentVersion(health.Version, expected, c.AllowAgentDowngrade) {
+		fmt.Fprintf(log, "agent %s reports %s, newer or unordered relative to hub version %s; leaving it unchanged\n",
+			node.EffectiveAlias(), health.Version, expected)
+		return nil
+	}
+	if node.Arch == "" {
+		return fmt.Errorf("cannot reconcile agent %s: node architecture is unknown", node.EffectiveAlias())
+	}
+	binary, err := c.AgentBinary(node.Arch)
+	if err != nil {
+		return fmt.Errorf("load %s agent binary: %w", node.Arch, err)
+	}
+	client := c.NewClient(*node)
+	fmt.Fprintf(log, "agent %s reports %s; reconciling to hub version %s...\n", node.EffectiveAlias(), health.Version, expected)
+	if err := client.Upgrade(ctx, nodeapi.NewUpgradeRequest(expected, binary), log); err != nil {
+		return fmt.Errorf("reconcile agent %s: %w", node.EffectiveAlias(), err)
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	var lastErr error
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+		health, err = client.Health(ctx)
+		if err == nil && health.OK && health.Version == expected {
+			if err := c.persistAgentHealth(node, health.Version); err != nil {
+				return fmt.Errorf("persist reconciled agent health: %w", err)
 			}
-			binary, err := c.AgentBinary(node.Arch)
-			if err != nil {
-				return node, fmt.Errorf("load %s agent binary: %w", node.Arch, err)
-			}
-			fmt.Fprintf(log, "agent %s reports %s; reconciling to hub version %s...\n", node.EffectiveAlias(), health.Version, expected)
-			if err := client.Upgrade(ctx, nodeapi.NewUpgradeRequest(expected, binary), log); err != nil {
-				return node, fmt.Errorf("reconcile agent %s: %w", node.EffectiveAlias(), err)
-			}
-			deadline := time.Now().Add(60 * time.Second)
-			var lastErr error
-			for {
-				select {
-				case <-ctx.Done():
-					return node, ctx.Err()
-				case <-time.After(time.Second):
-				}
-				health, err = client.Health(ctx)
-				if err == nil && health.OK && health.Version == expected {
-					if err := c.persistAgentHealth(&node, health.Version); err != nil {
-						return node, fmt.Errorf("persist reconciled agent health: %w", err)
-					}
-					break
-				}
-				if err != nil {
-					lastErr = err
-				} else if !health.OK {
-					lastErr = fmt.Errorf("agent reported unhealthy%s", healthErrorSuffix(health))
-				} else {
-					lastErr = fmt.Errorf("agent still reports version %q", health.Version)
-				}
-				if !time.Now().Before(deadline) {
-					return node, fmt.Errorf("agent %s did not return on version %s: %w", node.EffectiveAlias(), expected, lastErr)
-				}
-			}
-		} else {
-			fmt.Fprintf(log, "agent %s reports %s, newer or unordered relative to hub version %s; leaving it unchanged\n",
-				node.EffectiveAlias(), health.Version, expected)
+			return nil
+		}
+		switch {
+		case err != nil:
+			lastErr = err
+		case !health.OK:
+			lastErr = fmt.Errorf("agent reported unhealthy%s", healthErrorSuffix(health))
+		default:
+			lastErr = fmt.Errorf("agent still reports version %q", health.Version)
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("agent %s did not return on version %s: %w", node.EffectiveAlias(), expected, lastErr)
 		}
 	}
+}
 
-	if node.PendingCertificate {
-		fmt.Fprintf(log, "retrying pending certificate delivery to %s...\n", node.EffectiveAlias())
-		if err := c.pushCert(ctx, node, log); err != nil {
-			return node, fmt.Errorf("retry pending certificate: %w", err)
-		}
-		if err := nodes.Mutate(c.Layout, node.ID, func(current *nodes.Node) error {
-			current.PendingCertificate = false
-			node = *current
-			return nil
-		}); err != nil {
-			return node, fmt.Errorf("clear pending certificate state: %w", err)
-		}
+// deliverPendingCertificate retries a certificate push the hub could not
+// complete earlier and clears the pending marker once the spoke accepts it.
+func (c *Controller) deliverPendingCertificate(ctx context.Context, node nodes.Node, log io.Writer) (nodes.Node, error) {
+	if !node.PendingCertificate {
+		return node, nil
+	}
+	fmt.Fprintf(log, "retrying pending certificate delivery to %s...\n", node.EffectiveAlias())
+	if err := c.pushCert(ctx, node, log); err != nil {
+		return node, fmt.Errorf("retry pending certificate: %w", err)
+	}
+	if err := nodes.Mutate(c.Layout, node.ID, func(current *nodes.Node) error {
+		current.PendingCertificate = false
+		node = *current
+		return nil
+	}); err != nil {
+		return node, fmt.Errorf("clear pending certificate state: %w", err)
 	}
 	return node, nil
 }

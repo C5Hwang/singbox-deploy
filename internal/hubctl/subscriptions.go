@@ -3,7 +3,6 @@ package hubctl
 import (
 	"context"
 	"fmt"
-	"io"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
@@ -36,7 +35,7 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 		if !n.Installed || !n.IncludeInSubscription {
 			continue
 		}
-		checked, err := c.CheckHealth(ctx, n, io.Discard)
+		checked, err := c.ProbeHealth(ctx, n)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("check agent %s before subscription fetch: %w", n.EffectiveAlias(), err))
 			continue
