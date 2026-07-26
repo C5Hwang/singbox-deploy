@@ -339,6 +339,9 @@ func mergeSourceParts(local subscriptionSourceParts, remotes []subscriptionSourc
 }
 
 func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionOutputs) error {
+	if err := ensurePublicLayoutRoot(layout); err != nil {
+		return err
+	}
 	token := SubscriptionToken(cfg.Salt)
 	pathsByDir := map[string]string{
 		"default":           out.DefaultBase64,

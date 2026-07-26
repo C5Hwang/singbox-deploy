@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -23,6 +24,19 @@ func WriteFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Chmod(path, perm)
+}
+
+// ensurePublicLayoutRoot lets the unprivileged Nginx worker traverse into the
+// managed web and subscription directories. State remains protected by its
+// own enforced 0700 mode.
+func ensurePublicLayoutRoot(layout paths.Layout) error {
+	if layout.Root == "" {
+		return fmt.Errorf("managed layout root is required")
+	}
+	if err := os.MkdirAll(layout.Root, 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(layout.Root, 0o755)
 }
 
 func writeStateFile(stateDir, name, value string) error {
