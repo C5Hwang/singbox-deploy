@@ -24,7 +24,7 @@ func TestRefreshMonitorAndDrillDownUseAuthenticatedAgentAPI(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	if err := nodes.Add(layout, nodes.Node{
 		Alias: "Tokyo", SSHHost: "tokyo.example.com", Domain: "spoke.example.com",
-		WGIP: "10.90.0.2", Token: "node-secret", Installed: true, Monitor: true,
+		WGIP: "10.90.0.2", Token: "node-secret", Installed: true, Monitor: true, MonitorAlias: "JP-monitor",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestRefreshMonitorAndDrillDownUseAuthenticatedAgentAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot) != 1 || snapshot[0].ID != nodeID || snapshot[0].Name != "Tokyo" || snapshot[0].TotalUsedBytes != 30 {
+	if len(snapshot) != 1 || snapshot[0].ID != nodeID || snapshot[0].Name != "🇯🇵 JP-monitor" || snapshot[0].TotalUsedBytes != 30 {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 	if snapshot[0].MonitorURL != "" {

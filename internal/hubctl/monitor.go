@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
@@ -43,7 +44,11 @@ func (c *Controller) RefreshMonitor(ctx context.Context) error {
 		if !n.Installed || !n.Monitor {
 			continue
 		}
-		name := subscription.AddNodePrefixFlag(n.EffectiveAlias())
+		monitorAlias := strings.TrimSpace(n.MonitorAlias)
+		if monitorAlias == "" {
+			monitorAlias = n.EffectiveAlias()
+		}
+		name := subscription.AddNodePrefixFlag(monitorAlias)
 		checked, healthErr := c.ProbeHealth(ctx, n)
 		if healthErr != nil {
 			if prev, ok := previous[n.ID]; ok {
