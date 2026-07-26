@@ -550,6 +550,11 @@ func TestMonitorSupervisorStopDoesNotHoldLockWhileWaiting(t *testing.T) {
 	if !started {
 		t.Fatal("monitor did not start from installed spoke state")
 	}
+	if info, err := os.Stat(filepath.Dir(supervisor.layout.MonitorDB)); err != nil {
+		t.Fatalf("monitor store directory was not created: %v", err)
+	} else if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("monitor store directory mode = %#o, want 0755", got)
+	}
 
 	stopped := make(chan struct{})
 	go func() {
@@ -568,9 +573,6 @@ func TestMonitorSupervisorStopDoesNotHoldLockWhileWaiting(t *testing.T) {
 func installedSpokeLayout(t *testing.T) paths.Layout {
 	t.Helper()
 	layout := paths.LayoutForRoot(t.TempDir())
-	if err := os.MkdirAll(filepath.Dir(layout.MonitorDB), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	store := state.NewStore(layout.StateDir)
 	for name, value := range map[string]string{
 		"domain":                   "spoke.example.com\n",

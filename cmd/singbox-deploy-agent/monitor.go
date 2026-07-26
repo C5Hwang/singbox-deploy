@@ -5,7 +5,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -69,6 +71,10 @@ func (s *monitorSupervisor) reload() {
 	cfg, err := s.buildConfig(store)
 	if err != nil {
 		log.Printf("agent monitor: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.layout.MonitorDB), 0o755); err != nil {
+		log.Printf("agent monitor: create store directory: %v", err)
 		return
 	}
 	dbStore, err := monitor.OpenStore(s.layout.MonitorDB)
