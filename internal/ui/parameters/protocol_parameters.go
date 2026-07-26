@@ -24,12 +24,14 @@ type Field struct {
 	BadgeFunc func(vals map[string]string) string
 }
 
+const DefaultRealityServerName = "www.google.com"
+
 func RealitySNIField() Field {
 	return Field{
 		Key:   "reality_sni",
 		Label: "Reality URL/SNI (camouflage server)",
-		Def:   "www.microsoft.com",
-		Note:  "You may enter a URL or host; the host is used for the Reality handshake.",
+		Def:   DefaultRealityServerName,
+		Note:  "You may enter a URL or host; the host is used for the Reality handshake. Target TLS compatibility can vary by server and network path.",
 	}
 }
 
@@ -38,7 +40,7 @@ func RealitySNIEditField(current string) Field {
 	f.Label = "Reality URL/SNI (camouflage server)"
 	f.Def = current
 	if f.Def == "" {
-		f.Def = "www.microsoft.com"
+		f.Def = DefaultRealityServerName
 	}
 	f.Note = "Updates the shared Reality handshake SNI for VLESS Reality Vision and VLESS Reality gRPC."
 	return f

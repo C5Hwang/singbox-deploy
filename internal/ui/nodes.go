@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	defaultRealityServerName = "www.microsoft.com"
+	defaultRealityServerName = uiparams.DefaultRealityServerName
 )
 
 // defaultSpokePorts are the fixed protocol listen ports assigned to a new spoke.
