@@ -548,7 +548,10 @@ func (m *nodeManager) startRemove(node nodes.Node) {
 	ch := make(chan runMsg, 64)
 	m.run.resetRun(ch)
 	logs := &logWriter{ch: ch}
-	ctrl := &hubctl.Controller{Layout: m.layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion}
+	ctrl := &hubctl.Controller{
+		Layout: m.layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion,
+		Progress: runProgressSender(ch),
+	}
 	go func() {
 		err := ctrl.RemoveNode(context.Background(), node, logs)
 		ch <- runMsg{done: true, err: err}
@@ -562,7 +565,10 @@ func (m *nodeManager) startForceDetach(node nodes.Node) {
 	ch := make(chan runMsg, 64)
 	m.run.resetRun(ch)
 	logs := &logWriter{ch: ch}
-	ctrl := &hubctl.Controller{Layout: m.layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion}
+	ctrl := &hubctl.Controller{
+		Layout: m.layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion,
+		Progress: runProgressSender(ch),
+	}
 	go func() {
 		err := ctrl.ForceDetachNode(context.Background(), node, logs)
 		ch <- runMsg{done: true, err: err}

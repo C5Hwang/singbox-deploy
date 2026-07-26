@@ -473,14 +473,29 @@ func (c *Controller) RemoveNode(ctx context.Context, node nodes.Node, log io.Wri
 	if log == nil {
 		log = io.Discard
 	}
-	fmt.Fprintf(log, "uninstalling %s...\n", node.EffectiveAlias())
-	if err := c.NewClient(node).Uninstall(ctx, nodeapi.UninstallRequest{}, log); err != nil {
-		return fmt.Errorf("spoke did not acknowledge uninstall; registry retained: %w", err)
-	}
-	if err := c.detachNode(ctx, node, log); err != nil {
-		return fmt.Errorf("spoke teardown was acknowledged, but local detach did not complete; registry retained for force-detach retry: %w", err)
-	}
-	return nil
+	return deploy.RunSteps(ctx, c.Progress, []deploy.Step{
+		{
+			Label:  "Remote uninstall",
+			Detail: "remove the managed runtime and agent from the spoke",
+			Run: func(ctx context.Context) error {
+				fmt.Fprintf(log, "uninstalling %s...\n", node.EffectiveAlias())
+				if err := c.NewClient(node).Uninstall(ctx, nodeapi.UninstallRequest{}, log); err != nil {
+					return fmt.Errorf("spoke did not acknowledge uninstall; registry retained: %w", err)
+				}
+				return nil
+			},
+		},
+		{
+			Label:  "Hub detach",
+			Detail: "revoke the WireGuard peer and remove the registry entry",
+			Run: func(ctx context.Context) error {
+				if err := c.detachNode(ctx, node, log); err != nil {
+					return fmt.Errorf("spoke teardown was acknowledged, but local detach did not complete; registry retained for force-detach retry: %w", err)
+				}
+				return nil
+			},
+		},
+	})
 }
 
 // ForceDetachNode removes an unreachable spoke from the Hub registry and
@@ -492,8 +507,14 @@ func (c *Controller) ForceDetachNode(ctx context.Context, node nodes.Node, log i
 	if log == nil {
 		log = io.Discard
 	}
-	fmt.Fprintf(log, "warning: force-detaching %s without remote uninstall acknowledgement\n", node.EffectiveAlias())
-	return c.detachNode(ctx, node, log)
+	return deploy.RunSteps(ctx, c.Progress, []deploy.Step{{
+		Label:  "Hub detach",
+		Detail: "revoke the unreachable spoke without remote acknowledgement",
+		Run: func(ctx context.Context) error {
+			fmt.Fprintf(log, "warning: force-detaching %s without remote uninstall acknowledgement\n", node.EffectiveAlias())
+			return c.detachNode(ctx, node, log)
+		},
+	}})
 }
 
 func (c *Controller) detachNode(ctx context.Context, node nodes.Node, log io.Writer) error {

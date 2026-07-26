@@ -822,9 +822,11 @@ func TestRemoveNodeRetainsRegistryWhenLivePeerRemovalFails(t *testing.T) {
 	srv := httptest.NewServer((&nodeapi.Server{Token: "api-token", Handler: agent}).Mux())
 	defer srv.Close()
 	runner := &hubCommandRunner{peerRemoveErr: errors.New("wg remove failed")}
+	var progressEvents []deploy.Event
 	wgDir := filepath.Join(root, "wireguard")
 	ctrl := &Controller{
 		Layout: layout, Runner: runner, WGConfDir: wgDir,
+		Progress: func(event deploy.Event) { progressEvents = append(progressEvents, event) },
 		NewClient: func(nodes.Node) *nodeapi.Client {
 			return &nodeapi.Client{BaseURL: srv.URL, Token: "api-token", HTTP: srv.Client()}
 		},
@@ -835,6 +837,13 @@ func TestRemoveNodeRetainsRegistryWhenLivePeerRemovalFails(t *testing.T) {
 		!strings.Contains(err.Error(), "force-detach retry") ||
 		!strings.Contains(err.Error(), "remove live overlay peer") {
 		t.Fatalf("expected acknowledged teardown/local detach error, got %v", err)
+	}
+	if len(progressEvents) != 4 ||
+		progressEvents[0].Label != "Remote uninstall" || progressEvents[0].Status != "running" ||
+		progressEvents[1].Label != "Remote uninstall" || progressEvents[1].Status != "ok" ||
+		progressEvents[2].Label != "Hub detach" || progressEvents[2].Status != "running" ||
+		progressEvents[3].Label != "Hub detach" || progressEvents[3].Status != "fail" {
+		t.Fatalf("remove progress events = %+v", progressEvents)
 	}
 	agent.mu.Lock()
 	uninstallCount := agent.uninstallCount
