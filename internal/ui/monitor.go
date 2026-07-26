@@ -54,6 +54,7 @@ var (
 	monitorUILayout        = paths.DefaultLayout
 	detectMonitorHost      = system.DetectHost
 	updateMonitorRun       = monitor.UpdateSettings
+	applySpokeMonitorRun   = (*monitorManager).applySpokeMonitor
 	monitorServiceSnapshot = func() string { return serviceState(system.MonitorService) }
 	monitorLogOutput       = defaultMonitorLogOutput
 )
@@ -410,9 +411,10 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	tm.resetRun(make(chan runMsg, 64))
 	ch := tm.ch
 	logs := &logWriter{ch: ch}
+	progress := runProgressSender(ch)
 	if tm.action == monitorActionEditSpoke {
 		go func() {
-			err := tm.applySpokeMonitor(context.Background(), logs)
+			err := applySpokeMonitorRun(tm, context.Background(), logs, progress)
 			ch <- runMsg{done: true, err: err}
 		}()
 		return tm.waitForRun()
@@ -432,7 +434,7 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	return tm.waitForRun()
 }
 
-func (tm *monitorManager) applySpokeMonitor(ctx context.Context, logs *logWriter) error {
+func (tm *monitorManager) applySpokeMonitor(ctx context.Context, logs *logWriter, progress func(deploy.Event)) error {
 	if tm.editNodeIndex < 0 || tm.editNodeIndex >= len(tm.nodes) {
 		return fmt.Errorf("selected spoke no longer exists")
 	}
@@ -453,6 +455,11 @@ func (tm *monitorManager) applySpokeMonitor(ctx context.Context, logs *logWriter
 
 	layout := monitorUILayout()
 	var original nodes.Node
+	registryEvent := deploy.Event{
+		Index: 1, Total: 6, Label: "Registry settings",
+		Detail: "save the requested spoke monitor settings", Status: "running",
+	}
+	deploy.EmitProgress(progress, registryEvent)
 	if err := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
 		original = *current
 		current.Monitor = updated.Monitor
@@ -467,9 +474,17 @@ func (tm *monitorManager) applySpokeMonitor(ctx context.Context, logs *logWriter
 		updated = *current
 		return nil
 	}); err != nil {
+		registryEvent.Status = "fail"
+		registryEvent.Err = err
+		deploy.EmitProgress(progress, registryEvent)
 		return err
 	}
-	ctrl := &hubctl.Controller{Layout: layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion}
+	registryEvent.Status = "ok"
+	deploy.EmitProgress(progress, registryEvent)
+	ctrl := &hubctl.Controller{
+		Layout: layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion,
+		Progress: offsetRunProgress(progress, 1, 6),
+	}
 	if err := ctrl.Reconfigure(ctx, updated, logs); err != nil {
 		rollbackStateErr := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
 			current.Monitor = original.Monitor
@@ -484,16 +499,28 @@ func (tm *monitorManager) applySpokeMonitor(ctx context.Context, logs *logWriter
 			return nil
 		})
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		rollbackRemoteErr := ctrl.Reconfigure(rollbackCtx, original, logs)
+		rollbackCtrl := *ctrl
+		rollbackCtrl.Progress = nil
+		rollbackRemoteErr := rollbackCtrl.Reconfigure(rollbackCtx, original, logs)
 		cancel()
 		if rollbackStateErr != nil || rollbackRemoteErr != nil {
 			return fmt.Errorf("apply spoke monitor settings over WireGuard: %w (rollback state: %v; rollback spoke: %v)", err, rollbackStateErr, rollbackRemoteErr)
 		}
 		return fmt.Errorf("apply spoke monitor settings over WireGuard: %w (previous settings restored)", err)
 	}
+	monitorEvent := deploy.Event{
+		Index: 6, Total: 6, Label: "Monitor snapshot",
+		Detail: "refresh the hub dashboard from the spoke", Status: "running",
+	}
+	deploy.EmitProgress(progress, monitorEvent)
 	if err := ctrl.RefreshMonitor(ctx); err != nil {
 		fmt.Fprintf(logs, "warning: refresh monitor snapshot: %v\n", err)
+		monitorEvent.Status = "warn"
+		monitorEvent.Err = err
+	} else {
+		monitorEvent.Status = "ok"
 	}
+	deploy.EmitProgress(progress, monitorEvent)
 	return nil
 }
 

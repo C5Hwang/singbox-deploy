@@ -228,6 +228,56 @@ func TestSpokeSubscriptionFormAliasUniqueness(t *testing.T) {
 	}
 }
 
+func TestSpokeSubscriptionRunForwardsProgressEvents(t *testing.T) {
+	original := applySpokeSubscriptionRun
+	t.Cleanup(func() { applySpokeSubscriptionRun = original })
+	applySpokeSubscriptionRun = func(_ *subscriptionManager, _ context.Context, _ *logWriter, progress func(deploy.Event)) error {
+		deploy.EmitProgress(progress, deploy.Event{
+			Index: 1, Total: 2, Label: "Spoke configuration", Status: "running",
+		})
+		return nil
+	}
+	sm := &subscriptionManager{
+		phase:      subscriptionPhaseConfirm,
+		action:     subscriptionActionEditSpoke,
+		host:       supportedTestHost(),
+		commandRun: newCommandRun(),
+	}
+	wait := sm.startRun()
+	if wait == nil {
+		t.Fatal("spoke subscription run did not start")
+	}
+	msg, ok := wait().(runMsg)
+	if !ok || msg.event == nil || msg.event.Label != "Spoke configuration" {
+		t.Fatalf("first run message = %#v, want forwarded progress event", msg)
+	}
+}
+
+func TestSpokeMonitorRunForwardsProgressEvents(t *testing.T) {
+	original := applySpokeMonitorRun
+	t.Cleanup(func() { applySpokeMonitorRun = original })
+	applySpokeMonitorRun = func(_ *monitorManager, _ context.Context, _ *logWriter, progress func(deploy.Event)) error {
+		deploy.EmitProgress(progress, deploy.Event{
+			Index: 1, Total: 2, Label: "Monitor snapshot", Status: "running",
+		})
+		return nil
+	}
+	tm := &monitorManager{
+		phase:      monitorPhaseConfirm,
+		action:     monitorActionEditSpoke,
+		host:       supportedTestHost(),
+		commandRun: newCommandRun(),
+	}
+	wait := tm.startRun()
+	if wait == nil {
+		t.Fatal("spoke monitor run did not start")
+	}
+	msg, ok := wait().(runMsg)
+	if !ok || msg.event == nil || msg.event.Label != "Monitor snapshot" {
+		t.Fatalf("first run message = %#v, want forwarded progress event", msg)
+	}
+}
+
 func TestForceDetachRequiresExplicitYConfirmation(t *testing.T) {
 	m := newNodeManager()
 	m.hubReady = true

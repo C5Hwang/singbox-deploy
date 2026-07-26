@@ -42,10 +42,11 @@ const (
 )
 
 var (
-	subscriptionUILayout   = paths.DefaultLayout
-	detectSubscriptionHost = system.DetectHost
-	updateSubscriptionsRun = subscription.Update
-	updateDisplayNameRun   = account.Update
+	subscriptionUILayout      = paths.DefaultLayout
+	detectSubscriptionHost    = system.DetectHost
+	updateSubscriptionsRun    = subscription.Update
+	updateDisplayNameRun      = account.Update
+	applySpokeSubscriptionRun = (*subscriptionManager).applySpokeSubscription
 )
 
 type subscriptionActionItem = actionItem[subscriptionAction]
@@ -422,6 +423,7 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 	sm.resetRun(make(chan runMsg, 64))
 	ch := sm.ch
 	logs := &logWriter{ch: ch}
+	progress := runProgressSender(ch)
 	if sm.action == subscriptionActionDisplayName {
 		opts := account.UpdateOptions{
 			Layout:      subscriptionUILayout(),
@@ -443,7 +445,7 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 	}
 	if sm.action == subscriptionActionEditSpoke {
 		go func() {
-			err := sm.applySpokeSubscription(context.Background(), logs)
+			err := applySpokeSubscriptionRun(sm, context.Background(), logs, progress)
 			ch <- runMsg{done: true, err: err}
 		}()
 		return sm.waitForRun()
@@ -484,7 +486,7 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 	return sm.waitForRun()
 }
 
-func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs *logWriter) error {
+func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs *logWriter, progress func(deploy.Event)) error {
 	if sm.editNodeIndex < 0 || sm.editNodeIndex >= len(sm.nodes) {
 		return fmt.Errorf("selected spoke no longer exists")
 	}
@@ -504,6 +506,11 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 
 	layout := subscriptionUILayout()
 	var original nodes.Node
+	registryEvent := deploy.Event{
+		Index: 1, Total: 5, Label: "Registry settings",
+		Detail: "save the requested spoke subscription settings", Status: "running",
+	}
+	deploy.EmitProgress(progress, registryEvent)
 	if err := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
 		original = *current
 		current.Alias = updated.Alias
@@ -518,9 +525,17 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 		updated = *current
 		return nil
 	}); err != nil {
+		registryEvent.Status = "fail"
+		registryEvent.Err = err
+		deploy.EmitProgress(progress, registryEvent)
 		return err
 	}
-	ctrl := &hubctl.Controller{Layout: layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion}
+	registryEvent.Status = "ok"
+	deploy.EmitProgress(progress, registryEvent)
+	ctrl := &hubctl.Controller{
+		Layout: layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion,
+		Progress: offsetRunProgress(progress, 1, 5),
+	}
 	if err := ctrl.Reconfigure(ctx, updated, logs); err != nil {
 		rollbackStateErr := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
 			current.Alias = original.Alias
@@ -535,7 +550,9 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 			return nil
 		})
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		rollbackRemoteErr := ctrl.Reconfigure(rollbackCtx, original, logs)
+		rollbackCtrl := *ctrl
+		rollbackCtrl.Progress = nil
+		rollbackRemoteErr := rollbackCtrl.Reconfigure(rollbackCtx, original, logs)
 		cancel()
 		if rollbackStateErr != nil || rollbackRemoteErr != nil {
 			return fmt.Errorf("apply spoke settings over WireGuard: %w (rollback state: %v; rollback spoke: %v)", err, rollbackStateErr, rollbackRemoteErr)

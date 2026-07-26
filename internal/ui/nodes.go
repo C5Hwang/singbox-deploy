@@ -418,7 +418,10 @@ func (m *nodeManager) startAdd(target bootstrap.Target, registry nodes.Node) {
 	ch := make(chan runMsg, 64)
 	m.run.resetRun(ch)
 	logs := &logWriter{ch: ch}
-	ctrl := &hubctl.Controller{Layout: m.layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion}
+	ctrl := &hubctl.Controller{
+		Layout: m.layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion,
+		Progress: runProgressSender(ch),
+	}
 	go func() {
 		defer wipeBootstrapAuth(&target.Auth)
 		_, err := ctrl.AddNode(context.Background(), hubctl.AddNodeParams{Node: target, Registry: registry}, logs)

@@ -17,6 +17,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/assets/agentbin"
 	"github.com/C5Hwang/singbox-deploy/internal/bootstrap"
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -39,6 +40,9 @@ type Controller struct {
 	// expected version is older or cannot be ordered. It is reserved for an
 	// explicit recovery path after a failed coordinated self-update.
 	AllowAgentDowngrade bool
+	// Progress receives the high-level phases of operator-driven spoke
+	// operations. Agent-side deployment logs remain on the supplied log writer.
+	Progress func(deploy.Event)
 
 	// WGConfDir overrides the WireGuard config directory (defaults to
 	// wgnet.DefaultConfDir); tests point it at a temp directory.
@@ -175,6 +179,33 @@ type AddNodeParams struct {
 // install. Progress is streamed to log. The certificate step requires a DNS
 // credential covering the node's domain to already exist.
 func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.Writer) (result nodes.Node, retErr error) {
+	const progressTotal = 7
+	var activeProgress *deploy.Event
+	beginProgress := func(index int, label, detail string) {
+		event := deploy.Event{Index: index, Total: progressTotal, Label: label, Detail: detail, Status: "running"}
+		activeProgress = &event
+		deploy.EmitProgress(c.Progress, event)
+	}
+	completeProgress := func() {
+		if activeProgress == nil {
+			return
+		}
+		event := *activeProgress
+		event.Status = "ok"
+		deploy.EmitProgress(c.Progress, event)
+		activeProgress = nil
+	}
+	defer func() {
+		if retErr == nil || activeProgress == nil {
+			return
+		}
+		event := *activeProgress
+		event.Status = "fail"
+		event.Err = retErr
+		deploy.EmitProgress(c.Progress, event)
+	}()
+
+	beginProgress(1, "Hub validation", "validate the registry and allocate an overlay address")
 	c.defaults()
 	if !nodes.HubInstalled(c.Layout) {
 		return nodes.Node{}, fmt.Errorf("install the hub before adding spoke nodes")
@@ -222,7 +253,9 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 		return nodes.Node{}, err
 	}
 	node.Token = token
+	completeProgress()
 
+	beginProgress(2, "Spoke architecture", "detect the target and select its embedded agent")
 	fmt.Fprintf(log, "detecting architecture of %s...\n", node.SSHHost)
 	arch, err := c.Bootstrapper.DetectArch(ctx, params.Node)
 	if err != nil {
@@ -238,6 +271,9 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 	if err != nil {
 		return nodes.Node{}, err
 	}
+	completeProgress()
+
+	beginProgress(3, "SSH bootstrap", "install the agent and WireGuard configuration")
 	fmt.Fprintf(log, "bootstrapping agent on %s...\n", node.SSHHost)
 	provisioned, err := c.Bootstrapper.Provision(ctx, params.Node, plan)
 	if err != nil {
@@ -245,6 +281,7 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 	}
 	node.WGPublicKey = provisioned.WGPublicKey
 	node.AgentVersion = provisioned.AgentVersion
+	completeProgress()
 
 	// Persist the node and join it to the overlay before talking to the agent.
 	// Every subsequent step is transactional with respect to the hub registry,
@@ -263,6 +300,7 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 		}
 	}()
 	transactionStarted = true
+	beginProgress(4, "WireGuard overlay", "register the spoke and activate its encrypted peer")
 	if err := nodes.Add(c.Layout, node); err != nil {
 		return nodes.Node{}, err
 	}
@@ -270,7 +308,9 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 	if err := c.joinOverlay(identity, node); err != nil {
 		return nodes.Node{}, err
 	}
+	completeProgress()
 
+	beginProgress(5, "Agent health", "wait for the authenticated agent over WireGuard")
 	fmt.Fprintf(log, "waiting for agent to come online over the overlay...\n")
 	healthyNode, err := c.waitHealthy(ctx, node, log)
 	if err != nil {
@@ -302,7 +342,9 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 			existing,
 		)
 	}
+	completeProgress()
 
+	beginProgress(6, "Spoke installation", "issue the certificate and install the proxy runtime")
 	installAttempted = true
 	if err := c.installNode(ctx, node, log, false); err != nil {
 		return nodes.Node{}, err
@@ -317,10 +359,14 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 		return nodes.Node{}, err
 	}
 	committed = true
+	completeProgress()
+
 	// Fold the new spoke's nodes into the hub's published subscription.
+	beginProgress(7, "Subscriptions", "publish the new spoke in the aggregated outputs")
 	if err := c.RefreshSubscriptions(ctx); err != nil {
 		fmt.Fprintf(log, "warning: subscription refresh had issues: %v\n", err)
 	}
+	completeProgress()
 	fmt.Fprintf(log, "node %s is online\n", node.EffectiveAlias())
 	return node, nil
 }
@@ -347,28 +393,50 @@ func (c *Controller) installNode(ctx context.Context, node nodes.Node, log io.Wr
 // refreshes the hub's combined subscription to reflect the change.
 func (c *Controller) Reconfigure(ctx context.Context, node nodes.Node, log io.Writer) error {
 	c.defaults()
-	checked, err := c.CheckHealth(ctx, node, log)
-	if err != nil {
-		return err
-	}
-	node.AgentVersion = checked.AgentVersion
-	node.LastSeen = checked.LastSeen
-	if err := c.installNode(ctx, node, log, true); err != nil {
-		return err
-	}
-	if err := nodes.Mutate(c.Layout, node.ID, func(current *nodes.Node) error {
-		current.Installed = true
-		current.AgentVersion = checked.AgentVersion
-		current.LastSeen = checked.LastSeen
-		current.PendingCertificate = false
-		return nil
-	}); err != nil {
-		return err
-	}
-	if err := c.RefreshSubscriptions(ctx); err != nil {
-		fmt.Fprintf(log, "warning: subscription refresh had issues: %v\n", err)
-	}
-	return nil
+	var checked nodes.Node
+	return deploy.RunSteps(ctx, c.Progress, []deploy.Step{
+		{
+			Label:  "Agent health",
+			Detail: "authenticate the spoke and reconcile its agent version",
+			Run: func(ctx context.Context) error {
+				var err error
+				checked, err = c.CheckHealth(ctx, node, log)
+				return err
+			},
+		},
+		{
+			Label:  "Spoke configuration",
+			Detail: "apply the requested settings over WireGuard",
+			Run: func(ctx context.Context) error {
+				node.AgentVersion = checked.AgentVersion
+				node.LastSeen = checked.LastSeen
+				return c.installNode(ctx, node, log, true)
+			},
+		},
+		{
+			Label:  "Registry status",
+			Detail: "record the applied spoke state",
+			Run: func(context.Context) error {
+				return nodes.Mutate(c.Layout, node.ID, func(current *nodes.Node) error {
+					current.Installed = true
+					current.AgentVersion = checked.AgentVersion
+					current.LastSeen = checked.LastSeen
+					current.PendingCertificate = false
+					return nil
+				})
+			},
+		},
+		{
+			Label:  "Subscriptions",
+			Detail: "republish the aggregated subscription",
+			Run: func(ctx context.Context) error {
+				if err := c.RefreshSubscriptions(ctx); err != nil {
+					fmt.Fprintf(log, "warning: subscription refresh had issues: %v\n", err)
+				}
+				return nil
+			},
+		},
+	})
 }
 
 // PushCert ships the node's current certificate pair to its agent, used after

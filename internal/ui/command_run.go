@@ -37,6 +37,21 @@ func newCommandRun() commandRun {
 	return commandRun{bar: progress.New(progress.WithDefaultGradient())}
 }
 
+func runProgressSender(ch chan<- runMsg) func(deploy.Event) {
+	return func(event deploy.Event) {
+		ev := event
+		ch <- runMsg{event: &ev}
+	}
+}
+
+func offsetRunProgress(progress func(deploy.Event), offset, total int) func(deploy.Event) {
+	return func(event deploy.Event) {
+		event.Index += offset
+		event.Total = total
+		deploy.EmitProgress(progress, event)
+	}
+}
+
 func (r *commandRun) setSize(width, height int) {
 	r.width = width
 	r.height = height

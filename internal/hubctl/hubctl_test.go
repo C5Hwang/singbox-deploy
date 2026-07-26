@@ -22,6 +22,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/bootstrap"
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -350,6 +351,63 @@ func TestCheckHealthRetriesPendingCertificate(t *testing.T) {
 	}
 }
 
+func TestReconfigureReportsEveryHighLevelPhase(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	hubCfg := hysteriaConfig(t, "hub.example.com", "HUB", "hub-salt", 9443)
+	if err := deploy.WriteInstallState(layout.StateDir, hubCfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := deploy.WriteSubscriptions(layout, hubCfg); err != nil {
+		t.Fatal(err)
+	}
+	node := nodes.Node{
+		Alias: "tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "tok", AgentPort: 19091, Arch: "amd64", Installed: true,
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 8443,
+		Monitor: true, MonitorAlias: "tokyo", MonitorIntervalSeconds: 60, ResetDay: 1,
+	}
+	if err := nodes.Add(layout, node); err != nil {
+		t.Fatal(err)
+	}
+	list, err := nodes.Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node = list[0]
+	writeCertificatePair(t, layout, node.Domain)
+
+	handler := &lifecycleHandler{health: nodeapi.HealthResponse{
+		OK: true, Version: "v1.0.0", Installed: true, SingBoxActive: true, Domain: node.Domain,
+	}}
+	server := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: handler}).Mux())
+	defer server.Close()
+
+	var events []deploy.Event
+	ctrl := &Controller{
+		Layout: layout,
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: server.URL, Token: n.Token, HTTP: server.Client()}
+		},
+		Progress: func(event deploy.Event) { events = append(events, event) },
+	}
+	if err := ctrl.Reconfigure(context.Background(), node, io.Discard); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	wantLabels := []string{"Agent health", "Spoke configuration", "Registry status", "Subscriptions"}
+	if len(events) != 2*len(wantLabels) {
+		t.Fatalf("progress event count = %d, want %d: %+v", len(events), 2*len(wantLabels), events)
+	}
+	for i, label := range wantLabels {
+		running, complete := events[2*i], events[2*i+1]
+		if running.Index != i+1 || running.Total != len(wantLabels) || running.Label != label || running.Status != "running" {
+			t.Errorf("running event %d = %+v", i, running)
+		}
+		if complete.Index != i+1 || complete.Total != len(wantLabels) || complete.Label != label || complete.Status != "ok" {
+			t.Errorf("complete event %d = %+v", i, complete)
+		}
+	}
+}
+
 func TestDistributeCertificateLeavesFailurePendingAndRetryClearsIt(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	const domain = "spoke.example.com"
@@ -427,6 +485,7 @@ func TestAddNodeRollsBackRegistryPeerAndConfigOnFailure(t *testing.T) {
 	hubRunner := &hubCommandRunner{}
 	sshRunner := &bootstrapTestRunner{}
 	var dialFingerprints []string
+	var progressEvents []deploy.Event
 	wgDir := filepath.Join(dir, "wireguard")
 	ctrl := &Controller{
 		Layout:          layout,
@@ -438,6 +497,7 @@ func TestAddNodeRollsBackRegistryPeerAndConfigOnFailure(t *testing.T) {
 			return sshRunner, nil
 		}},
 		AgentBinary: func(string) ([]byte, error) { return []byte("agent"), nil },
+		Progress:    func(event deploy.Event) { progressEvents = append(progressEvents, event) },
 		NewClient: func(n nodes.Node) *nodeapi.Client {
 			return &nodeapi.Client{BaseURL: "http://127.0.0.1:1", Token: n.Token}
 		},
@@ -452,6 +512,13 @@ func TestAddNodeRollsBackRegistryPeerAndConfigOnFailure(t *testing.T) {
 	}, io.Discard)
 	if err == nil {
 		t.Fatal("expected canceled health check to fail AddNode")
+	}
+	if len(progressEvents) == 0 {
+		t.Fatal("AddNode emitted no progress")
+	}
+	lastProgress := progressEvents[len(progressEvents)-1]
+	if lastProgress.Label != "Agent health" || lastProgress.Status != "fail" || !errors.Is(lastProgress.Err, context.Canceled) {
+		t.Fatalf("last AddNode progress = %+v, want failed agent health step", lastProgress)
 	}
 	list, loadErr := nodes.Load(layout)
 	if loadErr != nil || len(list) != 0 {
