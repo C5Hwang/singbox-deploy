@@ -206,6 +206,101 @@ func TestAddSpokeFormRejectsDuplicateAlias(t *testing.T) {
 	}
 }
 
+func TestAddSpokeFormCollectsProtocolAndMonitorSettings(t *testing.T) {
+	m := &nodeManager{form: newParameterForm(nil)}
+	m.beginForm()
+	fieldKeys := make(map[string]bool, len(m.form.fields))
+	for _, field := range m.form.fields {
+		fieldKeys[field.key] = true
+	}
+	for _, key := range []string{
+		"protocols", "reality_sni", "reality_vision_port", "reality_grpc_port",
+		"hysteria2_port", "tuic_port", "anytls_port", "monitor", "monitor_alias",
+		"monitor_interface", "monitor_interval_seconds", "traffic_in_limit",
+		"traffic_out_limit", "traffic_total_limit", "reset_day", "reset_hour",
+	} {
+		if !fieldKeys[key] {
+			t.Errorf("add-spoke form is missing %q", key)
+		}
+	}
+
+	m.form.values = map[string]string{
+		"alias":                    "UK",
+		"ssh_host":                 "192.0.2.20",
+		"ssh_port":                 "36169",
+		"ssh_user":                 "root",
+		"ssh_auth":                 "password",
+		"ssh_password":             "memory-only",
+		"domain":                   "uk.example.com",
+		"protocols":                "vless-reality-vision,hysteria2",
+		"reality_sni":              "https://www.cloudflare.com/path",
+		"reality_vision_port":      "18001",
+		"reality_grpc_port":        "18002",
+		"hysteria2_port":           "18003",
+		"tuic_port":                "18004",
+		"anytls_port":              "18005",
+		"monitor":                  "yes",
+		"monitor_alias":            "UK-monitor",
+		"monitor_interface":        "auto",
+		"monitor_interval_seconds": "30",
+		"traffic_in_limit":         "5GB",
+		"traffic_out_limit":        "6GB",
+		"traffic_total_limit":      "10GB",
+		"reset_day":                "12",
+		"reset_hour":               "3",
+	}
+	m.completeForm()
+
+	node := m.pendingRegistry
+	if got := strings.Join(node.EnabledProtocols, ","); got != "vless-reality-vision,hysteria2" {
+		t.Errorf("enabled protocols = %q", got)
+	}
+	if node.RealityServerName != "www.cloudflare.com" ||
+		node.RealityVisionPort != 18001 || node.Hysteria2Port != 18003 {
+		t.Errorf("protocol settings were not preserved: %+v", node)
+	}
+	if !node.Monitor || node.MonitorAlias != "UK-monitor" || node.MonitorInterface != "" ||
+		node.MonitorIntervalSeconds != 30 || node.ResetDay != 12 || node.ResetHour != 3 {
+		t.Errorf("monitor settings were not preserved: %+v", node)
+	}
+	if node.TrafficInLimitBytes != uint64(5)<<30 ||
+		node.TrafficOutLimitBytes != uint64(6)<<30 ||
+		node.TrafficTotalLimitBytes != uint64(10)<<30 {
+		t.Errorf("traffic limits were not preserved: %+v", node)
+	}
+	if m.pendingTarget.Auth.Password == "" || m.form.values["ssh_password"] != "" {
+		t.Fatal("SSH password was not moved out of form state")
+	}
+}
+
+func TestAddSpokeFormValidatesActivePortSet(t *testing.T) {
+	m := &nodeManager{}
+	portField := field{key: "hysteria2_port"}
+	values := map[string]string{
+		"protocols":                "hysteria2",
+		"hysteria2_port":           "12000",
+		"anytls_port":              "12000",
+		"monitor":                  "no",
+		"monitor_interval_seconds": "60",
+	}
+	if err := m.validateForm(portField, "12000", values); err != nil {
+		t.Fatalf("inactive AnyTLS port caused a false conflict: %v", err)
+	}
+	values["protocols"] = "hysteria2,anytls"
+	if err := m.validateForm(portField, "12000", values); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("active duplicate protocol port = %v", err)
+	}
+	values["protocols"] = "hysteria2"
+	values["monitor"] = "yes"
+	values["hysteria2_port"] = "19090"
+	if err := m.validateForm(portField, "19090", values); err == nil || !strings.Contains(err.Error(), "monitor service") {
+		t.Fatalf("monitor port collision = %v", err)
+	}
+	if err := m.validateForm(field{key: "monitor_alias"}, "", values); err != nil {
+		t.Fatalf("blank monitor alias should fall back to node alias: %v", err)
+	}
+}
+
 // Editing a spoke must not report the node's own alias as a conflict.
 func TestSpokeSubscriptionFormAliasUniqueness(t *testing.T) {
 	sm := &subscriptionManager{

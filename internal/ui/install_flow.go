@@ -276,6 +276,13 @@ var (
 		"reality_vision_port": true, "reality_grpc_port": true,
 		"hysteria2_port": true, "tuic_port": true, "anytls_port": true,
 	}
+	installProtocolPortFields = map[string]config.Protocol{
+		"reality_vision_port": config.ProtocolRealityVision,
+		"reality_grpc_port":   config.ProtocolRealityGRPC,
+		"hysteria2_port":      config.ProtocolHysteria2,
+		"tuic_port":           config.ProtocolTUIC,
+		"anytls_port":         config.ProtocolAnyTLS,
+	}
 	installWebPortFieldKeys = map[string]bool{
 		"subscribe_port": true, "monitor_public_port": true,
 	}
@@ -301,6 +308,9 @@ func validateInstallPortConflict(key, val string, vals map[string]string) error 
 	if !isInstallPortField(key) {
 		return nil
 	}
+	if !installPortFieldActive(key, vals) {
+		return nil
+	}
 	val = strings.TrimSpace(val)
 	if val == "" {
 		return nil // empty means default/random; the backstop check covers it
@@ -313,7 +323,7 @@ func validateInstallPortConflict(key, val string, vals map[string]string) error 
 		return fmt.Errorf("port %d is reserved by Nginx; choose another", port)
 	}
 	for otherKey, otherVal := range vals {
-		if otherKey == key || !isInstallPortField(otherKey) {
+		if otherKey == key || !isInstallPortField(otherKey) || !installPortFieldActive(otherKey, vals) {
 			continue
 		}
 		other, err := strconv.Atoi(strings.TrimSpace(otherVal))
@@ -326,6 +336,18 @@ func validateInstallPortConflict(key, val string, vals map[string]string) error 
 		return fmt.Errorf("port %d already used by the %s port", port, installPortFieldLabels[otherKey])
 	}
 	return nil
+}
+
+func installPortFieldActive(key string, vals map[string]string) bool {
+	if protocol, ok := installProtocolPortFields[key]; ok {
+		return protocolSelected(vals, protocol)
+	}
+	switch key {
+	case "monitor_public_port", "monitor_port":
+		return monitorEnabled(vals)
+	default:
+		return true
+	}
 }
 
 // Update handles install flow messages. The bool return reports whether the flow is

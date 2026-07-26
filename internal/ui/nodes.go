@@ -12,10 +12,12 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/bootstrap"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
 const (
@@ -266,7 +268,15 @@ func (m *nodeManager) updateForm(key tea.KeyMsg) (tea.Cmd, bool) {
 func (m *nodeManager) beginForm() {
 	isKey := func(v map[string]string) bool { return v["ssh_auth"] != "key" }
 	isPass := func(v map[string]string) bool { return v["ssh_auth"] != "password" }
-	m.form.begin([]field{
+	missingProtocol := func(protocol config.Protocol) func(map[string]string) bool {
+		return func(values map[string]string) bool { return !protocolSelected(values, protocol) }
+	}
+	noReality := func(values map[string]string) bool {
+		return !protocolSelected(values, config.ProtocolRealityVision) &&
+			!protocolSelected(values, config.ProtocolRealityGRPC)
+	}
+	monitorDisabled := func(values map[string]string) bool { return !monitorEnabled(values) }
+	fields := []field{
 		{key: "alias", label: "Node alias", note: "Shown in the aggregated subscription and monitor views."},
 		{key: "ssh_host", label: "SSH host (public IP or hostname)"},
 		{key: "ssh_port", label: "SSH port", def: "22"},
@@ -276,12 +286,41 @@ func (m *nodeManager) beginForm() {
 		{key: "ssh_key_path", label: "SSH private key path", skip: isKey, note: "Path on this hub to the private key file used to authenticate."},
 		{key: "ssh_key_passphrase", label: "SSH private key passphrase (optional)", secret: true, skip: isKey},
 		{key: "domain", label: "Node domain", note: "The spoke's proxy domain. Must be covered by a DNS credential in Certificate management."},
-		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true},
-	}, nil, m.validateForm)
+		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Credentials are generated on the spoke and retained across later edits."},
+	}
+	realitySNI := fieldFromParameter(uiparams.RealitySNIField())
+	realitySNI.skip = noReality
+	realitySNI.badgeFunc = protocolParameterBadge(config.ProtocolRealityVision, config.ProtocolRealityGRPC)
+	fields = append(fields, realitySNI)
+	for _, protocol := range config.AllProtocols {
+		for _, parameter := range uiparams.ProtocolInstallFieldsForProtocol(protocol) {
+			if !strings.HasSuffix(parameter.Key, "_port") {
+				continue // credentials are generated and kept only on the spoke
+			}
+			portField := fieldFromParameter(parameter)
+			portField.def = strconv.Itoa(defaultSpokePort(protocol))
+			portField.note = "Public listen port on this spoke. Credentials are generated locally on first install."
+			portField.skip = missingProtocol(protocol)
+			portField.badgeFunc = protocolParameterBadge(protocol)
+			fields = append(fields, portField)
+		}
+	}
+	fields = append(fields,
+		field{key: "monitor", label: "Enable monitor on spoke", def: "yes", options: []string{"yes", "no"}, note: "Monitor data is available only to the hub through the authenticated Agent API over WireGuard."},
+		field{key: "monitor_alias", label: "Spoke monitor alias (optional)", note: "Blank uses the node alias.", skip: monitorDisabled},
+		field{key: "monitor_interface", label: "Monitored network interface", def: "auto", note: "Use auto to detect the spoke's default egress interface.", skip: monitorDisabled},
+		field{key: "monitor_interval_seconds", label: "Sampling interval (seconds)", def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), skip: monitorDisabled},
+		field{key: "traffic_in_limit", label: "Inbound traffic limit", def: "0", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: monitorDisabled},
+		field{key: "traffic_out_limit", label: "Outbound traffic limit", def: "0", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: monitorDisabled},
+		field{key: "traffic_total_limit", label: "Total traffic limit", def: "0", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: monitorDisabled},
+		field{key: "reset_day", label: "Monthly reset day (1-28)", def: strconv.Itoa(deploy.DefaultResetDay), skip: monitorDisabled},
+		field{key: "reset_hour", label: "Monthly reset hour GMT (0-23)", def: strconv.Itoa(deploy.DefaultResetHour), skip: monitorDisabled},
+	)
+	m.form.begin(fields, nil, m.validateForm)
 	m.phase = nodePhaseForm
 }
 
-func (m *nodeManager) validateForm(f field, value string, _ map[string]string) error {
+func (m *nodeManager) validateForm(f field, value string, values map[string]string) error {
 	switch f.key {
 	case "alias":
 		if strings.TrimSpace(value) == "" {
@@ -309,8 +348,30 @@ func (m *nodeManager) validateForm(f field, value string, _ map[string]string) e
 			return fmt.Errorf("enter a valid domain")
 		}
 		return ensureDomainManaged(m.layout, value)
+	case "protocols":
+		if len(protocolsFromValue(value)) == 0 {
+			return fmt.Errorf("select at least one protocol")
+		}
+	case "monitor_alias":
+		if strings.TrimSpace(value) == "" {
+			return nil // completeForm falls back to the node alias
+		}
 	}
-	return nil
+	if err := uiparams.ValidateSharedParameterValue(f.key, value); err != nil {
+		return err
+	}
+	if err := uiparams.ValidateMonitorParameterValue(f.key, value); err != nil {
+		return err
+	}
+	portValues := values
+	if monitorEnabled(values) && values["monitor_port"] == "" {
+		portValues = make(map[string]string, len(values)+1)
+		for key, current := range values {
+			portValues[key] = current
+		}
+		portValues["monitor_port"] = strconv.Itoa(deploy.DefaultMonitorPort)
+	}
+	return validateInstallPortConflict(f.key, value, portValues)
 }
 
 func (m *nodeManager) completeForm() {
@@ -344,20 +405,46 @@ func (m *nodeManager) completeForm() {
 	if len(enabled) == 0 {
 		enabled = config.AllProtocols
 	}
+	realityServerName := defaultRealityServerName
+	if value := strings.TrimSpace(vals["reality_sni"]); value != "" {
+		if normalized, err := uiparams.NormalizeRealityServerName(value); err == nil {
+			realityServerName = normalized
+		}
+	}
+	monitorOn := monitorEnabled(vals)
+	monitorAlias := strings.TrimSpace(vals["monitor_alias"])
+	if monitorAlias == "" {
+		monitorAlias = strings.TrimSpace(vals["alias"])
+	}
+	monitorInterface := strings.TrimSpace(vals["monitor_interface"])
+	if monitorInterface == "auto" {
+		monitorInterface = ""
+	}
+	monitorInterval := intValueOr(vals["monitor_interval_seconds"], deploy.DefaultMonitorIntervalSeconds)
+	inLimit, _ := uiparams.ParseTrafficSize(vals["traffic_in_limit"])
+	outLimit, _ := uiparams.ParseTrafficSize(vals["traffic_out_limit"])
+	totalLimit, _ := uiparams.ParseTrafficSize(vals["traffic_total_limit"])
 	registry := nodes.Node{
 		Alias:                  strings.TrimSpace(vals["alias"]),
 		Domain:                 strings.TrimSpace(vals["domain"]),
-		RealityServerName:      defaultRealityServerName,
+		RealityServerName:      realityServerName,
+		RealityHandshakePort:   config.DefaultRealityHandshakePort,
 		EnabledProtocols:       protocolNames(enabled),
-		RealityVisionPort:      defaultSpokePorts.RealityVisionPort,
-		RealityGRPCPort:        defaultSpokePorts.RealityGRPCPort,
-		Hysteria2Port:          defaultSpokePorts.Hysteria2Port,
-		TUICPort:               defaultSpokePorts.TUICPort,
-		AnyTLSPort:             defaultSpokePorts.AnyTLSPort,
-		Monitor:                true,
-		MonitorAlias:           strings.TrimSpace(vals["alias"]),
-		MonitorIntervalSeconds: 60,
-		ResetDay:               1,
+		RealityVisionPort:      intValueOr(vals["reality_vision_port"], defaultSpokePorts.RealityVisionPort),
+		RealityGRPCPort:        intValueOr(vals["reality_grpc_port"], defaultSpokePorts.RealityGRPCPort),
+		Hysteria2Port:          intValueOr(vals["hysteria2_port"], defaultSpokePorts.Hysteria2Port),
+		TUICPort:               intValueOr(vals["tuic_port"], defaultSpokePorts.TUICPort),
+		AnyTLSPort:             intValueOr(vals["anytls_port"], defaultSpokePorts.AnyTLSPort),
+		Monitor:                monitorOn,
+		MonitorAlias:           monitorAlias,
+		MonitorInterface:       monitorInterface,
+		MonitorPort:            deploy.DefaultMonitorPort,
+		MonitorIntervalSeconds: monitorInterval,
+		TrafficInLimitBytes:    inLimit,
+		TrafficOutLimitBytes:   outLimit,
+		TrafficTotalLimitBytes: totalLimit,
+		ResetDay:               intValueOr(vals["reset_day"], deploy.DefaultResetDay),
+		ResetHour:              intValueOr(vals["reset_hour"], deploy.DefaultResetHour),
 	}
 	m.pendingTarget = target
 	m.pendingRegistry = registry
@@ -369,6 +456,31 @@ func (m *nodeManager) completeForm() {
 		info, err := scanSpokeHostKey(context.Background(), scanTarget)
 		return nodeHostKeyScanMsg{info: info, err: err}
 	}
+}
+
+func defaultSpokePort(protocol config.Protocol) int {
+	switch protocol {
+	case config.ProtocolRealityVision:
+		return defaultSpokePorts.RealityVisionPort
+	case config.ProtocolRealityGRPC:
+		return defaultSpokePorts.RealityGRPCPort
+	case config.ProtocolHysteria2:
+		return defaultSpokePorts.Hysteria2Port
+	case config.ProtocolTUIC:
+		return defaultSpokePorts.TUICPort
+	case config.ProtocolAnyTLS:
+		return defaultSpokePorts.AnyTLSPort
+	default:
+		return 0
+	}
+}
+
+func intValueOr(value string, fallback int) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func (m *nodeManager) updateHostKeyConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
