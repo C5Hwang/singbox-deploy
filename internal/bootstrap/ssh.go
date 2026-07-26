@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -17,6 +18,25 @@ import (
 // session per command (SSH sessions are single-use).
 type sshRunner struct {
 	client *ssh.Client
+}
+
+// synchronizedBuffer lets x/crypto/ssh drain stdout and stderr concurrently
+// into one combined stream without racing bytes.Buffer.
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 const sshDialTimeout = 20 * time.Second
@@ -189,7 +209,7 @@ func (r *sshRunner) Run(ctx context.Context, cmd string, stdin []byte) (string, 
 	}
 	defer session.Close()
 
-	var out bytes.Buffer
+	var out synchronizedBuffer
 	session.Stdout = &out
 	session.Stderr = &out
 	if len(stdin) > 0 {
