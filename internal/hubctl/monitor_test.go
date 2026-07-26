@@ -2,6 +2,7 @@ package hubctl
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -124,8 +125,8 @@ func TestRefreshMonitorNeverMutatesTheSpoke(t *testing.T) {
 			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
 		},
 	}
-	if err := ctrl.RefreshMonitor(context.Background()); err != nil {
-		t.Fatalf("RefreshMonitor: %v", err)
+	if err := ctrl.RefreshMonitor(context.Background()); err == nil || !strings.Contains(err.Error(), "monitor") {
+		t.Fatalf("RefreshMonitor should report the unsupported monitor without mutating it: %v", err)
 	}
 
 	h.mu.Lock()
@@ -143,5 +144,47 @@ func TestRefreshMonitorNeverMutatesTheSpoke(t *testing.T) {
 	}
 	if !persisted[0].PendingCertificate {
 		t.Fatal("aggregation cleared the pending certificate marker")
+	}
+}
+
+func TestRefreshMonitorReportsFailureAndKeepsPreviousSnapshot(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "Tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "node-secret", Installed: true, Monitor: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := nodes.Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := monitor.SourceSummary{
+		ID: list[0].ID, Name: "Tokyo", FetchedAt: "2026-07-01T00:00:00Z", TotalUsedBytes: 123,
+	}
+	if err := monitor.WriteRemoteSources(deploy.RemoteMonitorPath(layout), []monitor.SourceSummary{previous}); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := &Controller{
+		Layout: layout,
+		NewClient: func(node nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{
+				BaseURL: "http://offline.invalid", Token: node.Token,
+				HTTP: &http.Client{Transport: monitorRoundTripper(func(*http.Request) (*http.Response, error) {
+					return nil, fmt.Errorf("overlay unreachable")
+				})},
+			}
+		},
+	}
+	err = ctrl.RefreshMonitor(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Tokyo") || !strings.Contains(err.Error(), "kept previous snapshot") {
+		t.Fatalf("RefreshMonitor error = %v", err)
+	}
+	snapshot, readErr := monitor.ReadRemoteSources(deploy.RemoteMonitorPath(layout))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(snapshot) != 1 || snapshot[0].ID != previous.ID || snapshot[0].TotalUsedBytes != previous.TotalUsedBytes {
+		t.Fatalf("previous snapshot was not retained: %+v", snapshot)
 	}
 }

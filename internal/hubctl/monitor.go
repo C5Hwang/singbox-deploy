@@ -3,6 +3,7 @@ package hubctl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -37,6 +38,7 @@ func (c *Controller) RefreshMonitor(ctx context.Context) error {
 		}
 	}
 	out := make([]monitor.SourceSummary, 0, len(list))
+	var refreshErrs []error
 	for _, n := range list {
 		if !n.Installed || !n.Monitor {
 			continue
@@ -46,6 +48,9 @@ func (c *Controller) RefreshMonitor(ctx context.Context) error {
 		if healthErr != nil {
 			if prev, ok := previous[n.ID]; ok {
 				out = append(out, prev)
+				refreshErrs = append(refreshErrs, fmt.Errorf("refresh monitor for %s: %w (kept previous snapshot)", n.EffectiveAlias(), healthErr))
+			} else {
+				refreshErrs = append(refreshErrs, fmt.Errorf("refresh monitor for %s: %w (no previous snapshot)", n.EffectiveAlias(), healthErr))
 			}
 			continue
 		}
@@ -54,12 +59,18 @@ func (c *Controller) RefreshMonitor(ctx context.Context) error {
 		if err != nil {
 			if prev, ok := previous[n.ID]; ok {
 				out = append(out, prev)
+				refreshErrs = append(refreshErrs, fmt.Errorf("refresh monitor for %s: %w (kept previous snapshot)", n.EffectiveAlias(), err))
+			} else {
+				refreshErrs = append(refreshErrs, fmt.Errorf("refresh monitor for %s: %w (no previous snapshot)", n.EffectiveAlias(), err))
 			}
 			continue
 		}
 		out = append(out, summary)
 	}
-	return monitor.WriteRemoteSources(path, out)
+	if err := monitor.WriteRemoteSources(path, out); err != nil {
+		return err
+	}
+	return errors.Join(refreshErrs...)
 }
 
 // fetchNodeSummary retrieves a spoke summary through the authenticated agent
