@@ -705,6 +705,37 @@ func TestLegacyHubArtifactsAreRemovedWhenConvertingToSpoke(t *testing.T) {
 	}
 }
 
+func TestDisableLegacyHubServicesSkipsMissingUnits(t *testing.T) {
+	systemdDir := t.TempDir()
+	runner := &handlerRecordingRunner{}
+
+	disableLegacyHubServices(runner, systemdDir)
+
+	if len(runner.commands) != 0 {
+		t.Fatalf("commands for missing legacy units = %v, want none", runner.commands)
+	}
+}
+
+func TestDisableLegacyHubServicesDisablesInstalledUnits(t *testing.T) {
+	systemdDir := t.TempDir()
+	for _, unit := range []string{system.CertRenewTimer, system.MonitorService} {
+		if err := os.WriteFile(filepath.Join(systemdDir, unit), []byte("[Unit]\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", unit, err)
+		}
+	}
+	runner := &handlerRecordingRunner{}
+
+	disableLegacyHubServices(runner, systemdDir)
+
+	want := []string{
+		"systemctl disable --now " + system.CertRenewTimer,
+		"systemctl disable --now " + system.MonitorService,
+	}
+	if strings.Join(runner.commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands = %v, want %v", runner.commands, want)
+	}
+}
+
 func readHostELF(t *testing.T) []byte {
 	t.Helper()
 	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {

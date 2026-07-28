@@ -113,7 +113,7 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	// Remove stale Hub-only services left by an interrupted older deployment
 	// before activating the spoke. A full standalone deployment was rejected
 	// above, so this cleanup cannot destroy a live migration source.
-	disableLegacyHubServices(runner)
+	disableLegacyHubServices(runner, "/etc/systemd/system")
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -152,8 +152,11 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	return nil
 }
 
-func disableLegacyHubServices(runner system.Runner) {
+func disableLegacyHubServices(runner system.Runner, systemdDir string) {
 	for _, unit := range []string{system.CertRenewTimer, system.CertRenewService, system.MonitorService} {
+		if _, err := os.Stat(filepath.Join(systemdDir, unit)); err != nil {
+			continue
+		}
 		_ = runner.Run(system.Command{Name: "systemctl", Args: []string{"disable", "--now", unit}})
 	}
 }
