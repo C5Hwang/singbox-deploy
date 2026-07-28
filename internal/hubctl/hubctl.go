@@ -888,7 +888,7 @@ func (c *Controller) buildInstallRequest(node nodes.Node) (nodeapi.InstallReques
 	return nodeapi.InstallRequest{
 		InstallTransactionID: node.ID,
 		Domain:               node.Domain,
-		DisplayName:          node.EffectiveAlias(),
+		DisplayName:          node.EffectiveSubscriptionAlias(),
 		RealityServerName:    node.RealityServerName,
 		RealityHandshakePort: node.RealityHandshakePort,
 		EnabledProtocols:     node.EnabledProtocols,

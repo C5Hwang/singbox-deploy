@@ -94,13 +94,14 @@ func TestBuildInstallRequestIncludesCert(t *testing.T) {
 	certPEM, keyPEM := writeCertificatePair(t, layout, "spoke.example.com")
 
 	node := nodes.Node{
-		ID:               "0123456789abcdef0123456789abcdef",
-		Alias:            "tokyo",
-		Domain:           "spoke.example.com",
-		EnabledProtocols: []string{"hysteria2"},
-		Hysteria2Port:    9443,
-		Monitor:          true,
-		MonitorAlias:     "Tokyo",
+		ID:                "0123456789abcdef0123456789abcdef",
+		Alias:             "tokyo-server",
+		SubscriptionAlias: "tokyo",
+		Domain:            "spoke.example.com",
+		EnabledProtocols:  []string{"hysteria2"},
+		Hysteria2Port:     9443,
+		Monitor:           true,
+		MonitorAlias:      "Tokyo",
 	}
 	req, err := c.buildInstallRequest(node)
 	if err != nil {

@@ -304,7 +304,7 @@ func (sm *subscriptionManager) startEditSpokeForm() {
 		protocols = defaultProtocolValue()
 	}
 	fields := []field{
-		{key: "spoke_alias", label: "Spoke display alias", note: "Used to name this node in the hub's combined subscription."},
+		{key: "spoke_alias", label: "Spoke subscription alias (optional)", note: "Names this spoke's client nodes. Blank uses its management alias."},
 		{key: "include_subscription", label: "Include in hub subscription", options: []string{"yes", "no"}, note: "No subscription endpoint is exposed on the spoke; the hub fetches node data over WireGuard."},
 		{key: "protocols", label: "Enabled protocols", options: protocolOptions(), multi: true},
 		{key: "reality_sni", label: "Reality URL/SNI", skip: func(v map[string]string) bool {
@@ -320,7 +320,7 @@ func (sm *subscriptionManager) startEditSpokeForm() {
 	}
 	sm.phase = subscriptionPhaseForm
 	if sm.parameterForm.begin(fields, map[string]string{
-		"spoke_alias":          node.EffectiveAlias(),
+		"spoke_alias":          node.SubscriptionAlias,
 		"include_subscription": yesNoString(node.IncludeInSubscription),
 		"protocols":            protocols,
 		"reality_sni":          or(node.RealityServerName, defaultRealityServerName),
@@ -367,18 +367,23 @@ func (sm *subscriptionManager) targetLocalPosition() int {
 	return sm.localPosition
 }
 
-// validateSpokeField adds registry-wide alias uniqueness to the shared
-// subscription validation. The alias names this spoke's nodes in every
-// aggregated output, so a duplicate has to be caught in the form rather than
-// after the reconfigure has already been pushed over WireGuard.
+// validateSpokeField adds registry-wide subscription-alias uniqueness to the
+// shared validation. A duplicate has to be caught before the reconfigure is
+// pushed over WireGuard.
 func (sm *subscriptionManager) validateSpokeField(f field, val string, vals map[string]string) error {
-	if f.key == "spoke_alias" && strings.TrimSpace(val) != "" {
+	if f.key == "spoke_alias" {
 		exempt := ""
+		fallback := ""
 		if sm.editNodeIndex >= 0 && sm.editNodeIndex < len(sm.nodes) {
 			exempt = sm.nodes[sm.editNodeIndex].ID
+			fallback = sm.nodes[sm.editNodeIndex].EffectiveAlias()
 		}
-		if existing, clash := nodes.AliasConflict(sm.nodes, val, exempt); clash {
-			return fmt.Errorf("alias is already used by %s", existing.EffectiveAlias())
+		alias := strings.TrimSpace(val)
+		if alias == "" {
+			alias = fallback
+		}
+		if existing, clash := nodes.SubscriptionAliasConflict(sm.nodes, alias, exempt); clash {
+			return fmt.Errorf("subscription alias is already used by %s", existing.EffectiveAlias())
 		}
 	}
 	return validateSubscriptionField(f, val, vals)
@@ -386,10 +391,6 @@ func (sm *subscriptionManager) validateSpokeField(f field, val string, vals map[
 
 func validateSubscriptionField(f field, val string, vals map[string]string) error {
 	switch f.key {
-	case "spoke_alias":
-		if strings.TrimSpace(val) == "" {
-			return fmt.Errorf("spoke alias is required")
-		}
 	case "protocols":
 		if len(protocolsFromValue(val)) == 0 {
 			return fmt.Errorf("select at least one protocol")
@@ -492,7 +493,7 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 	}
 	selected := sm.nodes[sm.editNodeIndex]
 	updated := selected
-	updated.Alias = strings.TrimSpace(sm.values["spoke_alias"])
+	updated.SubscriptionAlias = strings.TrimSpace(sm.values["spoke_alias"])
 	updated.IncludeInSubscription = sm.values["include_subscription"] != "no"
 	updated.EnabledProtocols = protocolStringSlice(protocolsFromValue(sm.values["protocols"]))
 	if sni, err := uiparams.NormalizeRealityServerName(sm.values["reality_sni"]); err == nil {
@@ -513,7 +514,7 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 	deploy.EmitProgress(progress, registryEvent)
 	if err := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
 		original = *current
-		current.Alias = updated.Alias
+		current.SubscriptionAlias = updated.SubscriptionAlias
 		current.IncludeInSubscription = updated.IncludeInSubscription
 		current.EnabledProtocols = append([]string(nil), updated.EnabledProtocols...)
 		current.RealityServerName = updated.RealityServerName
@@ -538,7 +539,7 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 	}
 	if err := ctrl.Reconfigure(ctx, updated, logs); err != nil {
 		rollbackStateErr := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
-			current.Alias = original.Alias
+			current.SubscriptionAlias = original.SubscriptionAlias
 			current.IncludeInSubscription = original.IncludeInSubscription
 			current.EnabledProtocols = append([]string(nil), original.EnabledProtocols...)
 			current.RealityServerName = original.RealityServerName
@@ -763,8 +764,9 @@ func (sm *subscriptionManager) confirmView() string {
 			old := sm.nodes[sm.editNodeIndex]
 			rows = append(rows,
 				summaryRow("Spoke", spokeOptionLabel(old)),
-				summaryRow("Current alias", old.EffectiveAlias()),
-				summaryRow("New alias", sm.values["spoke_alias"]),
+				summaryRow("Management alias", old.EffectiveAlias()),
+				summaryRow("Current subscription alias", old.EffectiveSubscriptionAlias()),
+				summaryRow("New subscription alias", or(sm.values["spoke_alias"], old.EffectiveAlias())),
 				summaryRow("Include in hub subscription", sm.values["include_subscription"]),
 				summaryRow("Enabled protocols", sm.values["protocols"]),
 				summaryRow("Reality Vision port", sm.values["reality_vision_port"]),

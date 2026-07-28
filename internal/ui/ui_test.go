@@ -554,7 +554,7 @@ func TestCoreChangeStableListsEightReleases(t *testing.T) {
 func TestSubscriptionSpokeEditingUsesRegisteredNodes(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	list := []nodes.Node{
-		{ID: "node-one", Alias: "JP-01", Domain: "one.example.com", WGIP: "10.90.0.2", Installed: true, IncludeInSubscription: true, EnabledProtocols: []string{"vless-reality-vision"}, RealityVisionPort: 8443},
+		{ID: "node-one", Alias: "JP-01", SubscriptionAlias: "Japan clients", Domain: "one.example.com", WGIP: "10.90.0.2", Installed: true, IncludeInSubscription: true, EnabledProtocols: []string{"vless-reality-vision"}, RealityVisionPort: 8443},
 		{ID: "node-two", Alias: "US-01", Domain: "two.example.com", WGIP: "10.90.0.3", Installed: true, IncludeInSubscription: true, EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 9443},
 	}
 	if err := nodes.Save(layout, list); err != nil {
@@ -583,7 +583,7 @@ func TestSubscriptionSpokeEditingUsesRegisteredNodes(t *testing.T) {
 		t.Fatalf("enter should open selected spoke form, phase=%v index=%d done=%v", sm.phase, sm.editNodeIndex, done)
 	}
 	view = sm.View()
-	for _, want := range []string{"Spoke display alias", "JP-01"} {
+	for _, want := range []string{"Spoke subscription alias", "Japan clients"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("spoke form missing %q:\n%s", want, view)
 		}

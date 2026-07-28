@@ -156,7 +156,7 @@ func aliasLabelKey(alias string) string {
 
 func subscriptionSource(n nodes.Node, bodies map[string][]byte) deploy.SubscriptionSource {
 	return deploy.SubscriptionSource{
-		Alias:       n.EffectiveAlias(),
+		Alias:       n.EffectiveSubscriptionAlias(),
 		DefaultBody: bodies[nodeapi.FormatDefault],
 		ClashBody:   bodies[nodeapi.FormatClashMeta],
 		SingBoxBody: bodies[nodeapi.FormatSingBoxProfiles],
@@ -189,7 +189,7 @@ func (c *Controller) cacheNodeSubscription(n nodes.Node, src deploy.Subscription
 }
 
 // cachedNodeSubscription returns the last successfully fetched bodies for a
-// spoke, relabeled with its current alias. A cache missing any format is
+// spoke, relabeled with its current subscription alias. A cache missing any format is
 // rejected: a partial source would publish an inconsistent set of formats.
 func (c *Controller) cachedNodeSubscription(n nodes.Node) (deploy.SubscriptionSource, bool) {
 	dir, ok := c.subscriptionCachePath(n.ID)

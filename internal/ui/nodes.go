@@ -298,7 +298,8 @@ func (m *nodeManager) beginForm() {
 	}
 	monitorDisabled := func(values map[string]string) bool { return !monitorEnabled(values) }
 	fields := []field{
-		{key: "alias", label: "Node alias", note: "Shown in the aggregated subscription and monitor views."},
+		{key: "alias", label: "Node alias", note: "Used in Hub management screens and operational messages."},
+		{key: "subscription_alias", label: "Subscription alias (optional)", note: "Names this spoke's client nodes. Blank uses the node alias."},
 		{key: "ssh_host", label: "SSH host (public IP or hostname)"},
 		{key: "ssh_port", label: "SSH port", def: "22"},
 		{key: "ssh_user", label: "SSH user", def: "root"},
@@ -347,10 +348,16 @@ func (m *nodeManager) validateForm(f field, value string, values map[string]stri
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("alias is required")
 		}
-		// Reject a duplicate here rather than after SSH provisioning has already
-		// run: the alias names this spoke's nodes in every aggregated output.
 		if existing, clash := nodes.AliasConflict(m.list, value, ""); clash {
 			return fmt.Errorf("alias is already used by %s", existing.EffectiveAlias())
+		}
+	case "subscription_alias":
+		alias := strings.TrimSpace(value)
+		if alias == "" {
+			alias = strings.TrimSpace(values["alias"])
+		}
+		if existing, clash := nodes.SubscriptionAliasConflict(m.list, alias, ""); clash {
+			return fmt.Errorf("subscription alias is already used by %s", existing.EffectiveAlias())
 		}
 	case "ssh_host":
 		if strings.TrimSpace(value) == "" {
@@ -447,6 +454,7 @@ func (m *nodeManager) completeForm() {
 	totalLimit, _ := uiparams.ParseTrafficSize(vals["traffic_total_limit"])
 	registry := nodes.Node{
 		Alias:                  strings.TrimSpace(vals["alias"]),
+		SubscriptionAlias:      strings.TrimSpace(vals["subscription_alias"]),
 		Domain:                 strings.TrimSpace(vals["domain"]),
 		RealityServerName:      realityServerName,
 		RealityHandshakePort:   config.DefaultRealityHandshakePort,

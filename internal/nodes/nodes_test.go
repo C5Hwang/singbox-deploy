@@ -17,7 +17,8 @@ import (
 func TestNodeRoundTrip(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	n := Node{
-		Alias:              "tokyo",
+		Alias:              "tokyo-server",
+		SubscriptionAlias:  "tokyo-clients",
 		SSHHost:            "203.0.113.9",
 		SSHPort:            22,
 		SSHUser:            "root",
@@ -47,7 +48,8 @@ func TestNodeRoundTrip(t *testing.T) {
 		t.Fatalf("expected 1 node, got %d", len(list))
 	}
 	got := list[0]
-	if got.ID == "" || got.Alias != "tokyo" || got.WGIP != "10.90.0.2" || !got.Installed {
+	if got.ID == "" || got.Alias != "tokyo-server" || got.SubscriptionAlias != "tokyo-clients" ||
+		got.EffectiveSubscriptionAlias() != "tokyo-clients" || got.WGIP != "10.90.0.2" || !got.Installed {
 		t.Fatalf("node round-trip mismatch: %+v", got)
 	}
 	if !got.IncludeInSubscription || got.AgentVersion != "v2.0.0" || !got.LastSeen.Equal(n.LastSeen) || !got.PendingCertificate {
@@ -221,6 +223,45 @@ func TestAliasConflictExemptsTheEditedNode(t *testing.T) {
 	}
 	if _, clash := AliasConflict(list, "  ", ""); clash {
 		t.Fatal("blank alias reported as a conflict")
+	}
+}
+
+func TestSubscriptionAliasesAreIndependentAndDistinct(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	first := Node{
+		ID: "11111111111111111111111111111111", Alias: "tokyo-server", SubscriptionAlias: "Japan",
+		SSHHost: "a.example.com", Domain: "a.example.com", WGIP: "10.90.0.2",
+	}
+	if err := Add(layout, first); err != nil {
+		t.Fatal(err)
+	}
+	if got := (Node{Alias: "legacy"}).EffectiveSubscriptionAlias(); got != "legacy" {
+		t.Fatalf("legacy subscription alias fallback = %q", got)
+	}
+	// A management alias may equal another spoke's subscription alias; only
+	// names used in the same namespace need to be unique.
+	if err := Add(layout, Node{
+		ID: "22222222222222222222222222222222", Alias: "Japan", SubscriptionAlias: "UK",
+		SSHHost: "b.example.com", Domain: "b.example.com", WGIP: "10.90.0.3",
+	}); err != nil {
+		t.Fatalf("independent management/subscription aliases were rejected: %v", err)
+	}
+	if err := Add(layout, Node{
+		ID: "33333333333333333333333333333333", Alias: "london", SubscriptionAlias: " japan ",
+		SSHHost: "c.example.com", Domain: "c.example.com", WGIP: "10.90.0.4",
+	}); err == nil || !strings.Contains(err.Error(), "subscription alias") {
+		t.Fatalf("duplicate subscription alias error = %v", err)
+	}
+	list, err := Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existing, clash := SubscriptionAliasConflict(list, "uk", list[1].ID); clash {
+		t.Fatalf("edited node conflicted with itself: %+v", existing)
+	}
+	if existing, clash := SubscriptionAliasConflict(list, "JAPAN", list[1].ID); !clash ||
+		existing.ID != first.ID {
+		t.Fatalf("subscription alias conflict = %+v, %v", existing, clash)
 	}
 }
 

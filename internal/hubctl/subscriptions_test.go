@@ -83,7 +83,7 @@ func TestRefreshSubscriptionsAggregatesOverWG(t *testing.T) {
 	defer srv.Close()
 
 	if err := nodes.Add(hubLayout, nodes.Node{
-		Alias: "tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Alias: "tokyo-server", SubscriptionAlias: "tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
 		Token: "tok", AgentPort: 19091, Installed: true,
 	}); err != nil {
 		t.Fatalf("register node: %v", err)
@@ -162,15 +162,15 @@ func TestRefreshSubscriptionsReusesCachedSpokeAndPrunesRemoved(t *testing.T) {
 		t.Fatalf("expected hub + spoke while reachable, got %d links", got)
 	}
 
-	// The spoke goes offline: its nodes must survive, relabeled with the alias
-	// the operator changed in the meantime.
+	// The spoke goes offline: its nodes must survive, relabeled with the
+	// subscription alias the operator changed in the meantime.
 	list, _ := nodes.Load(hubLayout)
 	nodeID := list[0].ID
 	if err := nodes.Mutate(hubLayout, nodeID, func(current *nodes.Node) error {
-		current.Alias = "osaka"
+		current.SubscriptionAlias = "osaka"
 		return nil
 	}); err != nil {
-		t.Fatalf("rename node: %v", err)
+		t.Fatalf("rename subscription source: %v", err)
 	}
 	reachable = false
 	err := ctrl.RefreshSubscriptions(context.Background())
