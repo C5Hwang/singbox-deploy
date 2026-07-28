@@ -217,7 +217,7 @@ func (m *certManager) updateCertPick(key tea.KeyMsg) (tea.Cmd, bool) {
 				if err != nil {
 					m.result = "delete failed: " + err.Error()
 				} else if len(consumers) > 0 {
-					m.result = fmt.Sprintf("cannot delete %s: certificate is used by %s", domain, strings.Join(consumers, ", "))
+					m.result = fmt.Sprintf("cannot delete %s: certificate is used by %s", domain, strings.Join(consumers.Labels(), ", "))
 				} else if err := certmgr.Deregister(m.layout, domain); err != nil {
 					m.result = "delete failed: " + err.Error()
 				} else {

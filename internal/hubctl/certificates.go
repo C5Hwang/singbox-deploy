@@ -124,9 +124,31 @@ func (c *Controller) RetryPendingCertificates(ctx context.Context, log io.Writer
 	return errors.Join(errs...)
 }
 
-// CertificateConsumers reports the stable IDs of installed spokes using a
-// domain. It is used by certificate deletion safeguards and the TUI.
-func (c *Controller) CertificateConsumers(domain string) ([]string, error) {
+// CertificateConsumer identifies one installed Hub/Spoke that uses a
+// certificate. ID is the stable identity used by deletion safeguards; Label is
+// deliberately presentation-only so renaming a spoke cannot change whether the
+// certificate is considered in use.
+type CertificateConsumer struct {
+	ID    string
+	Label string
+}
+
+// CertificateConsumerList retains stable consumer identities while providing
+// the presentation labels needed by interactive callers.
+type CertificateConsumerList []CertificateConsumer
+
+// Labels returns a copy of the operator-facing labels.
+func (consumers CertificateConsumerList) Labels() []string {
+	labels := make([]string, len(consumers))
+	for i := range consumers {
+		labels[i] = consumers[i].Label
+	}
+	return labels
+}
+
+// CertificateConsumers reports installed Hub/Spoke consumers of domain. The
+// returned stable IDs are kept separate from their operator-facing labels.
+func (c *Controller) CertificateConsumers(domain string) (CertificateConsumerList, error) {
 	normalized, err := certmgr.NormalizeDomain(domain)
 	if err != nil {
 		return nil, err
@@ -135,16 +157,22 @@ func (c *Controller) CertificateConsumers(domain string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
+	var consumers CertificateConsumerList
 	hubDomain, _ := state.NewStore(c.Layout.StateDir).ReadValue("domain", false)
 	if hd, err := certmgr.NormalizeDomain(hubDomain); err == nil && hd == normalized {
-		ids = append(ids, "hub")
+		consumers = append(consumers, CertificateConsumer{
+			ID:    "hub",
+			Label: fmt.Sprintf("Hub (%s)", normalized),
+		})
 	}
 	for _, node := range list {
 		nd, err := certmgr.NormalizeDomain(node.Domain)
 		if err == nil && nd == normalized && node.Installed {
-			ids = append(ids, node.ID)
+			consumers = append(consumers, CertificateConsumer{
+				ID:    node.ID,
+				Label: fmt.Sprintf("%s (%s)", node.EffectiveAlias(), normalized),
+			})
 		}
 	}
-	return ids, nil
+	return consumers, nil
 }
