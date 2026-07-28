@@ -36,8 +36,25 @@ func AddNodePrefixFlag(name string) string {
 // RewriteRemoteNodeName replaces a remote node name's prefix with the local
 // alias while preserving the numbering/suffix, then re-applies the flag.
 func RewriteRemoteNodeName(currentName, alias string) string {
-	current := stripFlag(currentName)
-	alias = stripFlag(alias)
+	current := strings.TrimSpace(stripFlag(currentName))
+	alias = strings.TrimSpace(stripFlag(alias))
+	if current == alias || hasAliasPrefix(current, alias) {
+		return AddNodePrefixFlag(current)
+	}
+	// Spoke-generated names have stable protocol suffixes. Find that boundary
+	// instead of treating the first word as the old alias, so multi-word aliases
+	// can be replaced without producing names such as "UK Sub Sub-Hysteria2".
+	for _, suffix := range []string{
+		"-VLESS-Reality-Vision",
+		"-VLESS-Reality-gRPC",
+		"-Hysteria2",
+		"-TUIC",
+		"-AnyTLS",
+	} {
+		if strings.HasSuffix(current, suffix) {
+			return AddNodePrefixFlag(alias + suffix)
+		}
+	}
 	prefix := nodePrefix(current)
 	suffix := ""
 	if prefix != "" && len(current) > len(prefix) {
@@ -47,6 +64,18 @@ func RewriteRemoteNodeName(currentName, alias string) string {
 		return AddNodePrefixFlag(alias)
 	}
 	return AddNodePrefixFlag(alias + suffix)
+}
+
+func hasAliasPrefix(name, alias string) bool {
+	if alias == "" || !strings.HasPrefix(name, alias) || len(name) == len(alias) {
+		return false
+	}
+	switch name[len(alias)] {
+	case '-', '_', ' ':
+		return true
+	default:
+		return false
+	}
 }
 
 // stripFlag removes a leading known flag emoji and its separating space.

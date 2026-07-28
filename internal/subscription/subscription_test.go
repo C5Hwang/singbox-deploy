@@ -22,6 +22,42 @@ func TestRewriteRemoteNodeName(t *testing.T) {
 	}
 }
 
+func TestRewriteRemoteNodeNameHandlesMultiwordSpokeAliases(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		alias   string
+		want    string
+	}{
+		{
+			name:    "already labeled",
+			current: "🇬🇧 UK Sub-Hysteria2",
+			alias:   "UK Sub",
+			want:    "🇬🇧 UK Sub-Hysteria2",
+		},
+		{
+			name:    "replace previous multiword alias",
+			current: "🇬🇧 UK UI-VLESS-Reality-gRPC",
+			alias:   "UK Sub",
+			want:    "🇬🇧 UK Sub-VLESS-Reality-gRPC",
+		},
+		{
+			name:    "avoid partial alias prefix",
+			current: "UK Subscription-AnyTLS",
+			alias:   "UK Sub",
+			want:    "🇬🇧 UK Sub-AnyTLS",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RewriteRemoteNodeName(tt.current, tt.alias); got != tt.want {
+				t.Fatalf("RewriteRemoteNodeName(%q, %q) = %q, want %q",
+					tt.current, tt.alias, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAddNodePrefixFlagLeavesExistingFlag(t *testing.T) {
 	got := AddNodePrefixFlag("🇯🇵 JP-01")
 	if got != "🇯🇵 JP-01" {
