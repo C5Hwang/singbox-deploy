@@ -128,7 +128,7 @@ func (c Config) buildNodes() []node {
 				}),
 				ClashYAML: clashBlock(map[string]any{
 					"name": n, "type": "anytls", "server": addr, "port": c.Ports.AnyTLS,
-					"password": c.Creds.AnyTLSPassword, "sni": c.Domain,
+					"password": c.Creds.AnyTLSPassword, "sni": c.Domain, "udp": true,
 				}),
 				SingBoxOutbound: map[string]any{
 					"type": "anytls", "tag": n, "server": addr, "server_port": c.Ports.AnyTLS,

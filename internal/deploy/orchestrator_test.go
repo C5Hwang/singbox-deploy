@@ -283,6 +283,17 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	if strings.Contains(clashText, "  - {") || strings.Contains(clashText, "reality-opts: {") {
 		t.Fatalf("clash fragment should not use inline mappings:\n%s", clashText)
 	}
+	anyTLSStart := strings.Index(clashText, `  - name: "🇺🇸 US-vps1-AnyTLS"`)
+	if anyTLSStart < 0 {
+		t.Fatalf("clash fragment missing AnyTLS proxy:\n%s", clashText)
+	}
+	anyTLSBlock := clashText[anyTLSStart:]
+	if next := strings.Index(anyTLSBlock[1:], "\n  - name: "); next >= 0 {
+		anyTLSBlock = anyTLSBlock[:next+1]
+	}
+	if !strings.Contains(anyTLSBlock, "\n    udp: true\n") {
+		t.Fatalf("Clash AnyTLS proxy must explicitly enable UDP forwarding:\n%s", anyTLSBlock)
+	}
 	clashProfile, err := os.ReadFile(filepath.Join(layout.SubscribeDir, "clashMetaProfiles", token))
 	if err != nil {
 		t.Fatalf("read clash profile: %v", err)
