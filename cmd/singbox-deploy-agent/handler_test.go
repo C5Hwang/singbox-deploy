@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/agentfirewall"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -84,6 +85,35 @@ func TestAgentMutationsRejectCommittedRestartAndShutdown(t *testing.T) {
 			t.Fatalf("beginMutation error = %v", err)
 		}
 	})
+}
+
+func TestAgentProgressLoggerEmitsOnlyTerminalEvents(t *testing.T) {
+	var log bytes.Buffer
+	progress := agentProgressLogger(&log)
+	progress(deploy.Event{
+		Index: 1, Total: 2, Label: "Packages", Detail: "install dependencies", Status: "running",
+	})
+	progress(deploy.Event{
+		Index: 1, Total: 2, Label: "Packages", Detail: "install dependencies", Status: "ok",
+	})
+	progress(deploy.Event{
+		Index: 2, Total: 2, Label: "Services", Detail: "restart services", Status: "running",
+	})
+	progress(deploy.Event{
+		Index:  2,
+		Total:  2,
+		Label:  "Services",
+		Detail: "restart services",
+		Status: "fail",
+		Err:    errors.New("injected activation failure"),
+	})
+
+	const want = "" +
+		"[1/2] Packages: complete - install dependencies\n" +
+		"[2/2] Services: failed - restart services: injected activation failure\n"
+	if got := log.String(); got != want {
+		t.Fatalf("progress log = %q, want %q", got, want)
+	}
 }
 
 func TestAgentFullInstallRejectsExistingStandaloneBeforeMutation(t *testing.T) {

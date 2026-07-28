@@ -129,9 +129,7 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 		// The hub decides when to (re)install; skip host-side conflict/port gating.
 		CheckConflicts: func(context.Context, deploy.Config) error { return nil },
 		CheckPorts:     func(context.Context, deploy.Config) error { return nil },
-		Progress: func(e deploy.Event) {
-			fmt.Fprintf(log, "[%d/%d] %s: %s\n", e.Index, e.Total, e.Label, e.Detail)
-		},
+		Progress:       agentProgressLogger(log),
 	}
 	var applyErr error
 	if req.ConfigOnly {
@@ -275,9 +273,7 @@ func (h *agentHandler) Uninstall(ctx context.Context, req nodeapi.UninstallReque
 		DeleteSite:          true,
 		DeleteSubscriptions: true,
 		PreserveAgentState:  true,
-		Progress: func(e deploy.Event) {
-			fmt.Fprintf(log, "[%d/%d] %s: %s\n", e.Index, e.Total, e.Label, e.Detail)
-		},
+		Progress:            agentProgressLogger(log),
 	}); err != nil {
 		return err
 	}
@@ -729,6 +725,31 @@ func nonNilContext(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+// agentProgressLogger emits one line per completed step. RunSteps reports both
+// a running and a terminal event; streaming both without the status made every
+// successful Agent install/uninstall step appear twice. Failed terminal events
+// retain the underlying error so the streamed log remains diagnostic.
+func agentProgressLogger(log io.Writer) func(deploy.Event) {
+	return func(e deploy.Event) {
+		var outcome string
+		switch e.Status {
+		case "ok":
+			outcome = "complete"
+		case "fail":
+			outcome = "failed"
+		default:
+			return
+		}
+		if e.Detail != "" {
+			outcome += " - " + e.Detail
+		}
+		if e.Status == "fail" && e.Err != nil {
+			outcome += ": " + e.Err.Error()
+		}
+		fmt.Fprintf(log, "[%d/%d] %s: %s\n", e.Index, e.Total, e.Label, outcome)
+	}
 }
 
 func validateAgentELF(binary []byte) error {
