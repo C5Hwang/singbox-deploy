@@ -81,3 +81,41 @@ func TestFillProfilesProducesValidOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestFillProfilesRoutesAddressQueriesToFakeIP(t *testing.T) {
+	outbounds := []map[string]any{
+		{"type": "vless", "tag": "test-node"},
+	}
+	var out subscriptionOutputs
+	if err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"}, outbounds); err != nil {
+		t.Fatalf("fillProfiles error: %v", err)
+	}
+
+	var profile struct {
+		DNS struct {
+			Final string `json:"final"`
+			Rules []struct {
+				QueryType []string `json:"query_type"`
+				Server    string   `json:"server"`
+			} `json:"rules"`
+		} `json:"dns"`
+	}
+	if err := json.Unmarshal([]byte(out.SingBoxProfile), &profile); err != nil {
+		t.Fatalf("sing-box profile not valid JSON: %v\n%s", err, out.SingBoxProfile)
+	}
+	if profile.DNS.Final == "fakeip" {
+		t.Fatal("fakeip DNS server cannot be used as the default server")
+	}
+	if profile.DNS.Final != "cloudflare" {
+		t.Fatalf("dns.final = %q, want cloudflare", profile.DNS.Final)
+	}
+	for _, rule := range profile.DNS.Rules {
+		if rule.Server == "fakeip" &&
+			len(rule.QueryType) == 2 &&
+			rule.QueryType[0] == "A" &&
+			rule.QueryType[1] == "AAAA" {
+			return
+		}
+	}
+	t.Fatal("sing-box profile missing A/AAAA rule routed to fakeip")
+}

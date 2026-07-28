@@ -71,9 +71,17 @@
         "rule_set": "CN",
         "action": "route",
         "server": "alidns"
+      },
+      {
+        "query_type": [
+          "A",
+          "AAAA"
+        ],
+        "action": "route",
+        "server": "fakeip"
       }
     ],
-    "final": "fakeip",
+    "final": "cloudflare",
     "strategy": "prefer_ipv4",
     "reverse_mapping": true
   },
