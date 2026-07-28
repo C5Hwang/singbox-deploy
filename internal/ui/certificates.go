@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -21,17 +23,27 @@ const (
 	certPhaseForm
 	certPhaseCredList
 	certPhaseCredForm
+	certPhaseRenewPick
+	certPhaseRenewConfirm
 	certPhaseCertPick
 	certPhaseCredPick
 	certPhaseRunning
 	certPhaseDone
 )
 
+type certOperation int
+
+const (
+	certOperationAdd certOperation = iota
+	certOperationRenew
+)
+
 // certManager is the Certificate & DNS-credential management page. It exposes
-// the certmgr inventory: issue/renew a certificate (DNS-01), delete one, and
-// manage the DNS credentials whose base domains authorize issuance by suffix
-// match. Entering a domain not covered by any credential redirects to the
-// credential form and resumes issuance once a covering credential is added.
+// the certmgr inventory: add a new certificate, force-renew an existing one,
+// delete one, and manage the DNS credentials whose base domains authorize
+// issuance by suffix match. Entering a new domain not covered by any credential
+// redirects to the credential form and resumes issuance once a covering
+// credential is added.
 type certManager struct {
 	run  commandRun
 	form parameterForm
@@ -44,6 +56,8 @@ type certManager struct {
 	actionCursor     int
 	credActionCursor int
 	pickCursor       int
+	operation        certOperation
+	pendingRenew     certmgr.CertInfo
 
 	// Issuance continuation after adding a credential mid-flow.
 	pendingDomain        string
@@ -57,9 +71,14 @@ type certManager struct {
 	result   string
 	loadErr  error
 	startCmd tea.Cmd // waitForRun command produced when a run starts inside a callback
+
+	// Per-instance hooks keep certificate-flow tests deterministic while the
+	// production defaults below remain the concrete certmgr/hubctl operations.
+	issueCertificate      func(context.Context, string, string, io.Writer) error
+	distributeCertificate func(context.Context, string, io.Writer) error
 }
 
-var certActions = []string{"Add / force renew certificate now", "Delete certificate", "Manage DNS credentials"}
+var certActions = []string{"Add certificate", "Renew certificate", "Delete certificate", "Manage DNS credentials"}
 var credActions = []string{"Add DNS credential", "Delete DNS credential"}
 
 func newCertManager() *certManager {
@@ -130,6 +149,14 @@ func (m *certManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updateCredList(key)
 		}
+	case certPhaseRenewPick:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return m.updateRenewPick(key)
+		}
+	case certPhaseRenewConfirm:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return m.updateRenewConfirm(key)
+		}
 	case certPhaseCertPick:
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updateCertPick(key)
@@ -147,7 +174,11 @@ func (m *certManager) updateRunning(msg tea.Msg) (tea.Cmd, bool) {
 		cmd := handleCommandRun(m, rm)
 		if rm.done {
 			if rm.err == nil {
-				m.result = "certificate issued"
+				if m.operation == certOperationRenew {
+					m.result = "certificate renewed"
+				} else {
+					m.result = "certificate added"
+				}
 			}
 			m.phase = certPhaseDone
 			m.reload()
@@ -169,12 +200,20 @@ func (m *certManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 				m.beginCertForm()
 			case 1:
 				if len(m.inventory) == 0 {
+					m.result = "no certificates to renew"
+					return nil, false
+				}
+				m.pickCursor = 0
+				m.pendingRenew = certmgr.CertInfo{}
+				m.phase = certPhaseRenewPick
+			case 2:
+				if len(m.inventory) == 0 {
 					m.result = "no certificates to delete"
 					return nil, false
 				}
 				m.pickCursor = 0
 				m.phase = certPhaseCertPick
-			case 2:
+			case 3:
 				m.credActionCursor = 0
 				m.phase = certPhaseCredList
 			}
@@ -204,6 +243,39 @@ func (m *certManager) updateCredList(key tea.KeyMsg) (tea.Cmd, bool) {
 		},
 		Cancel: func() (tea.Cmd, bool) { m.phase = certPhaseList; return nil, false },
 	})
+	return nil, false
+}
+
+func (m *certManager) updateRenewPick(key tea.KeyMsg) (tea.Cmd, bool) {
+	handleSelectionKey(key, selectionKeyHandlers{
+		Move: func(d int) { m.pickCursor = moveSelection(m.pickCursor, len(m.inventory), d) },
+		Confirm: func() (tea.Cmd, bool) {
+			if idx, ok := selectedIndex(m.pickCursor, len(m.inventory)); ok {
+				m.pendingRenew = m.inventory[idx]
+				m.phase = certPhaseRenewConfirm
+			}
+			return nil, false
+		},
+		Cancel: func() (tea.Cmd, bool) {
+			m.pendingRenew = certmgr.CertInfo{}
+			m.phase = certPhaseList
+			return nil, false
+		},
+	})
+	return nil, false
+}
+
+func (m *certManager) updateRenewConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
+	switch strings.ToLower(key.String()) {
+	case "y":
+		target := m.pendingRenew
+		m.pendingRenew = certmgr.CertInfo{}
+		m.startCertificateRun(certOperationRenew, target.Domain, target.Email)
+		return m.startCmd, false
+	case "n", "esc":
+		m.pendingRenew = certmgr.CertInfo{}
+		m.phase = certPhaseList
+	}
 	return nil, false
 }
 
@@ -283,6 +355,7 @@ func (m *certManager) beginCertForm() {
 }
 
 func (m *certManager) beginCertFormWithSeed(domain, email string) {
+	m.operation = certOperationAdd
 	seed := map[string]string{}
 	if domain != "" {
 		seed["domain"] = domain
@@ -291,7 +364,7 @@ func (m *certManager) beginCertFormWithSeed(domain, email string) {
 		seed["email"] = email
 	}
 	m.form.begin([]field{
-		{key: "domain", label: "Certificate domain", note: "Must be covered by a DNS credential (longest suffix match). Continuing forces a fresh DNS-01 issuance now; repeated issuance is subject to Let's Encrypt rate limits. If no credential covers it, you'll be sent to add one."},
+		{key: "domain", label: "Certificate domain", note: "Adds a new managed certificate using DNS-01. The domain must be covered by a DNS credential (longest suffix match). Existing managed domains must be renewed from Renew certificate."},
 		{key: "email", label: "ACME account email (optional)", note: "Let's Encrypt contact for expiry notices."},
 	}, seed, validateCertField)
 	m.phase = certPhaseForm
@@ -318,6 +391,22 @@ func (m *certManager) completeForm() {
 	}
 	domain := strings.TrimSpace(m.form.values["domain"])
 	email := strings.TrimSpace(m.form.values["email"])
+	m.continueAdd(domain, email)
+}
+
+func (m *certManager) continueAdd(domain, email string) {
+	managed, err := certmgr.IsManaged(m.layout, domain)
+	if managed {
+		m.result = fmt.Sprintf("%s is already managed; use Renew certificate instead", domain)
+		m.phase = certPhaseList
+		return
+	}
+	var unmanaged *certmgr.UnmanagedDomainError
+	if err != nil && !errors.As(err, &unmanaged) {
+		m.result = "cannot add certificate: " + err.Error()
+		m.phase = certPhaseList
+		return
+	}
 	if !certmgr.CredentialCovers(m.creds, domain) {
 		// Redirect to add a covering credential, then resume issuance.
 		m.pendingDomain = domain
@@ -327,7 +416,7 @@ func (m *certManager) completeForm() {
 		m.beginCredForm(domain)
 		return
 	}
-	m.startIssue(domain, email)
+	m.startCertificateRun(certOperationAdd, domain, email)
 }
 
 func (m *certManager) completeCredForm() {
@@ -347,7 +436,7 @@ func (m *certManager) completeCredForm() {
 	if m.resumeIssueAfterCred {
 		m.resumeIssueAfterCred = false
 		if certmgr.CredentialCovers(m.creds, m.pendingDomain) {
-			m.startIssue(m.pendingDomain, m.pendingEmail)
+			m.continueAdd(m.pendingDomain, m.pendingEmail)
 			return
 		}
 	}
@@ -355,41 +444,75 @@ func (m *certManager) completeCredForm() {
 	m.phase = certPhaseCredList
 }
 
-func (m *certManager) startIssue(domain, email string) {
+func (m *certManager) startCertificateRun(operation certOperation, domain, email string) {
+	m.operation = operation
+	m.result = ""
 	m.phase = certPhaseRunning
 	ch := make(chan runMsg, 64)
 	m.run.resetRun(ch)
 	logs := &logWriter{ch: ch}
-	mgr := &certmgr.Manager{Layout: m.layout, Output: logs}
 	go func() {
-		fmt.Fprintf(logs, "issuing certificate for %s via DNS-01...\n", domain)
-		_, err := mgr.Issue(context.Background(), domain, email)
+		if operation == certOperationRenew {
+			fmt.Fprintf(logs, "force renewing certificate for %s via DNS-01...\n", domain)
+		} else {
+			fmt.Fprintf(logs, "adding certificate for %s via DNS-01...\n", domain)
+		}
+		err := m.issue(context.Background(), domain, email, logs)
 		if err == nil {
-			ctrl := &hubctl.Controller{Layout: m.layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion}
-			err = ctrl.DistributeCertificate(context.Background(), domain, logs)
+			err = m.distribute(context.Background(), domain, logs)
 		}
 		ch <- runMsg{done: true, err: err}
 	}()
 	m.startCmd = m.run.waitForRun()
 }
 
+func (m *certManager) issue(ctx context.Context, domain, email string, log io.Writer) error {
+	if m.issueCertificate != nil {
+		return m.issueCertificate(ctx, domain, email, log)
+	}
+	mgr := &certmgr.Manager{Layout: m.layout, Output: log}
+	_, err := mgr.Issue(ctx, domain, email)
+	return err
+}
+
+func (m *certManager) distribute(ctx context.Context, domain string, log io.Writer) error {
+	if m.distributeCertificate != nil {
+		return m.distributeCertificate(ctx, domain, log)
+	}
+	ctrl := &hubctl.Controller{Layout: m.layout, Runner: system.NewExecRunner(log), ExpectedVersion: toolVersion}
+	return ctrl.DistributeCertificate(ctx, domain, log)
+}
+
 func (m *certManager) View() string {
 	switch m.phase {
 	case certPhaseRunning:
-		return commandRunningView(m, "Issuing certificate")
+		if m.operation == certOperationRenew {
+			return commandRunningView(m, "Renewing certificate")
+		}
+		return commandRunningView(m, "Adding certificate")
 	case certPhaseDone:
 		if m.run.runErr != nil {
-			return commandFailedView(m, "Certificate issuance failed")
+			if m.operation == certOperationRenew {
+				return commandFailedView(m, "Certificate renewal failed")
+			}
+			return commandFailedView(m, "Certificate addition failed")
 		}
-		return flowTitle.Render("Certificate issued") + "\n\n" + flowOK.Render("Press any key to return")
+		if m.operation == certOperationRenew {
+			return flowTitle.Render("Certificate renewed") + "\n\n" + flowOK.Render("Press any key to return")
+		}
+		return flowTitle.Render("Certificate added") + "\n\n" + flowOK.Render("Press any key to return")
 	case certPhaseForm, certPhaseCredForm:
-		title := "Add / force renew certificate now"
+		title := "Add certificate"
 		if m.phase == certPhaseCredForm {
 			title = "Add DNS credential"
 		}
 		return m.form.View(title)
 	case certPhaseCredList:
 		return m.credListView()
+	case certPhaseRenewPick:
+		return m.pickView("Renew certificate", certInfoLabels(m.inventory))
+	case certPhaseRenewConfirm:
+		return m.renewConfirmView()
 	case certPhaseCertPick:
 		return m.pickView("Delete certificate", certInfoLabels(m.inventory))
 	case certPhaseCredPick:
@@ -448,6 +571,20 @@ func (m *certManager) pickView(title string, labels []string) string {
 	return b.String()
 }
 
+func (m *certManager) renewConfirmView() string {
+	email := m.pendingRenew.Email
+	if email == "" {
+		email = "DNS credential default"
+	}
+	return flowTitle.Render("Renew certificate · Confirm") + "\n\n" +
+		statusWarn.Render("This forces a new ACME DNS-01 order now, even if the current certificate is still valid.") + "\n" +
+		"Repeated renewal is subject to Let's Encrypt rate limits.\n\n" +
+		"Domain:     " + m.pendingRenew.Domain + "\n" +
+		"ACME email: " + email + "\n\n" +
+		"On success, the renewed certificate will be distributed to its Hub/Spoke consumers.\n\n" +
+		"Press y to force renew, or n/Esc to cancel."
+}
+
 func (m *certManager) footerHints() []operationHint {
 	switch m.phase {
 	case certPhaseRunning:
@@ -456,6 +593,10 @@ func (m *certManager) footerHints() []operationHint {
 		return doneFooterHints(m.run.runErr != nil)
 	case certPhaseForm, certPhaseCredForm:
 		return m.form.footerHints()
+	case certPhaseRenewPick:
+		return actionFooterHints("Choose")
+	case certPhaseRenewConfirm:
+		return []operationHint{{key: "Y", action: "Force renew"}, {key: "N/Esc", action: "Cancel"}}
 	case certPhaseCertPick, certPhaseCredPick:
 		return actionFooterHints("Delete")
 	case certPhaseCredList:
