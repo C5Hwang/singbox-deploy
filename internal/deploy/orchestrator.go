@@ -553,6 +553,12 @@ func WriteInstallState(stateDir string, cfg Config) error {
 	for name, value := range certificateRenewalState(cfg) {
 		state[name] = value
 	}
+	// PublicIP is captured by the interactive domain validation. Agent-driven
+	// spoke installs do not have that value, so avoid replacing an existing
+	// address with an empty file during a reconfigure.
+	if publicIP := strings.TrimSpace(cfg.PublicIP); publicIP != "" {
+		state["public_ip"] = publicIP
+	}
 	for name, value := range state {
 		if err := writeStateFile(stateDir, name, value+"\n"); err != nil {
 			return err

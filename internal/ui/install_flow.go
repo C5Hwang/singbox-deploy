@@ -98,11 +98,12 @@ type runMsg struct {
 type installForm struct {
 	parameterForm
 
-	validateDomain func(context.Context, string) error
+	validateDomain func(context.Context, string) (string, error)
 	// validateDomainCovered rejects a domain not covered by any DNS credential
 	// in Certificate management, so the hub can issue its certificate via DNS-01.
 	// Tests set it nil to skip the check.
 	validateDomainCovered func(string) error
+	publicIP              string
 	confirmScroll         int
 }
 
@@ -251,9 +252,16 @@ func (f *installForm) validateField(field field, val string, vals map[string]str
 			}
 		}
 		if f.validateDomain == nil {
+			f.publicIP = ""
 			return nil
 		}
-		return f.validateDomain(context.Background(), val)
+		publicIP, err := f.validateDomain(context.Background(), val)
+		if err != nil {
+			f.publicIP = ""
+			return err
+		}
+		f.publicIP = strings.TrimSpace(publicIP)
+		return nil
 	case "protocols":
 		if len(protocolsFromValue(val)) == 0 {
 			return fmt.Errorf("select at least one protocol")
@@ -601,6 +609,7 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 	return deploy.Config{
 		Domain:                 vals["domain"],
 		Email:                  vals["email"],
+		PublicIP:               w.form.publicIP,
 		Ports:                  ports,
 		Enabled:                enabled,
 		DisplayName:            vals["display_name"],

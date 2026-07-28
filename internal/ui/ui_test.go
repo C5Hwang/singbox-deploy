@@ -1253,11 +1253,11 @@ func TestInstallFormCanGoBackToPreviousField(t *testing.T) {
 
 func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 	w := installFormForTest()
-	w.validateDomain = func(_ context.Context, domain string) error {
+	w.validateDomain = func(_ context.Context, domain string) (string, error) {
 		if domain != "bad.example" {
 			t.Fatalf("validator domain = %q", domain)
 		}
-		return fmt.Errorf("domain resolves elsewhere")
+		return "", fmt.Errorf("domain resolves elsewhere")
 	}
 	w.startForm()
 	w.input.SetValue("bad.example")
@@ -1271,6 +1271,26 @@ func TestDomainValidationBlocksInvalidDomain(t *testing.T) {
 	}
 	if !strings.Contains(w.View(), "domain resolves elsewhere") {
 		t.Fatalf("validation error missing from view:\n%s", w.View())
+	}
+}
+
+func TestDomainValidationCapturesPublicIP(t *testing.T) {
+	w := installFormForTest()
+	w.validateDomain = func(_ context.Context, domain string) (string, error) {
+		if domain != "vpn.example.com" {
+			t.Fatalf("validator domain = %q", domain)
+		}
+		return "203.0.113.10", nil
+	}
+	w.startForm()
+	w.input.SetValue("vpn.example.com")
+	w.commitField()
+
+	if w.publicIP != "203.0.113.10" {
+		t.Fatalf("captured public IP = %q", w.publicIP)
+	}
+	if w.values["domain"] != "vpn.example.com" {
+		t.Fatalf("validated domain was not committed: %#v", w.values)
 	}
 }
 
@@ -1446,6 +1466,7 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 		}),
 		host: supportedTestHost(),
 	}
+	w.form.publicIP = "203.0.113.10"
 	cfg, err := w.buildConfig()
 	if err != nil {
 		t.Fatalf("buildConfig error: %v", err)
@@ -1465,6 +1486,9 @@ func TestBuildConfigUsesSelectedProtocolParameters(t *testing.T) {
 	}
 	if cfg.Salt != "abc" {
 		t.Fatalf("Salt = %q", cfg.Salt)
+	}
+	if cfg.PublicIP != "203.0.113.10" {
+		t.Fatalf("PublicIP = %q", cfg.PublicIP)
 	}
 	if cfg.SiteTemplate != "forty" {
 		t.Fatalf("SiteTemplate = %q", cfg.SiteTemplate)

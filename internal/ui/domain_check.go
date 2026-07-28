@@ -16,31 +16,42 @@ var publicIPEndpoints = []string{
 	"https://icanhazip.com",
 }
 
-func validateDomainResolvesToCurrentIP(ctx context.Context, domain string) error {
+var (
+	lookupDomainIPs = func(ctx context.Context, domain string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip", domain)
+	}
+	lookupCurrentPublicIPs = currentPublicIPs
+)
+
+// validateDomainResolvesToCurrentIP verifies the configured name and returns
+// the public address already discovered as part of that check. The install flow
+// persists this result instead of throwing it away and probing the internet
+// again when the status page is rendered.
+func validateDomainResolvesToCurrentIP(ctx context.Context, domain string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	domain = strings.TrimSpace(domain)
 	if domain == "" {
-		return fmt.Errorf("domain is required")
+		return "", fmt.Errorf("domain is required")
 	}
 
-	domainIPs, err := net.DefaultResolver.LookupIP(ctx, "ip", domain)
+	domainIPs, err := lookupDomainIPs(ctx, domain)
 	if err != nil {
-		return fmt.Errorf("resolve domain: %w", err)
+		return "", fmt.Errorf("resolve domain: %w", err)
 	}
 	if len(domainIPs) == 0 {
-		return fmt.Errorf("domain does not resolve to any IP")
+		return "", fmt.Errorf("domain does not resolve to any IP")
 	}
 
-	currentIPs, err := currentPublicIPs(ctx)
+	currentIPs, err := lookupCurrentPublicIPs(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if anyIPMatches(domainIPs, currentIPs) {
-		return nil
+	if matched := matchingIPs(domainIPs, currentIPs); len(matched) > 0 {
+		return formatIPs(matched), nil
 	}
-	return fmt.Errorf("domain resolves to %s, current public IP is %s", formatIPs(domainIPs), formatIPs(currentIPs))
+	return "", fmt.Errorf("domain resolves to %s, current public IP is %s", formatIPs(domainIPs), formatIPs(currentIPs))
 }
 
 func currentPublicIPs(ctx context.Context) ([]net.IP, error) {
@@ -92,13 +103,14 @@ func currentPublicIPs(ctx context.Context) ([]net.IP, error) {
 	return ips, nil
 }
 
-func anyIPMatches(left, right []net.IP) bool {
+func matchingIPs(left, right []net.IP) []net.IP {
+	var matched []net.IP
 	for _, a := range left {
-		if containsIP(right, a) {
-			return true
+		if containsIP(right, a) && !containsIP(matched, a) {
+			matched = append(matched, a)
 		}
 	}
-	return false
+	return matched
 }
 
 func containsIP(ips []net.IP, ip net.IP) bool {

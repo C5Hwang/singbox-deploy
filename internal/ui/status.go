@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,9 @@ var (
 	defaultStatusLayout = paths.DefaultLayout
 	detectStatusHost    = system.DetectHost
 	statusNow           = time.Now
+	resolveStatusIPs    = func(ctx context.Context, domain string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip", domain)
+	}
 	statusCommandOutput = func(name string, args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -64,7 +68,7 @@ func loadStatus() Status {
 	return Status{
 		ToolVersion:  toolVersion,
 		Domain:       domain,
-		PublicIP:     readStatusState(store, "public_ip"),
+		PublicIP:     loadStatusPublicIP(store, domain),
 		OSArch:       osArchStatus(),
 		SingBoxVer:   singBoxVer,
 		SingBoxState: singBoxState,
@@ -80,6 +84,61 @@ func loadStatus() Status {
 		TrafficQuota: trafficQuotaStatus(store),
 		Salt:         readStatusState(store, "subscribe_salt"),
 	}
+}
+
+// loadStatusPublicIP is normally a state-only read. New installations persist
+// the address captured by domain validation. For an older installation, resolve
+// its already-configured domain once with a short deadline and cache the result;
+// this avoids putting the status page on the much slower external-IP probe path.
+func loadStatusPublicIP(store state.Store, domain string) string {
+	if publicIP := readStatusState(store, "public_ip"); publicIP != "" {
+		return publicIP
+	}
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return ""
+	}
+	if literal := net.ParseIP(strings.Trim(domain, "[]")); isPublicStatusIP(literal) {
+		publicIP := literal.String()
+		_ = store.WriteString("public_ip", publicIP+"\n", 0o600)
+		return publicIP
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel()
+	ips, err := resolveStatusIPs(ctx, domain)
+	if err != nil {
+		return ""
+	}
+	ip := preferredPublicStatusIP(ips)
+	if ip == nil {
+		return ""
+	}
+	publicIP := ip.String()
+	// Status display must remain useful even on a read-only or damaged state
+	// directory, so a cache write failure does not discard the resolved value.
+	_ = store.WriteString("public_ip", publicIP+"\n", 0o600)
+	return publicIP
+}
+
+func preferredPublicStatusIP(ips []net.IP) net.IP {
+	var ipv6 net.IP
+	for _, ip := range ips {
+		if !isPublicStatusIP(ip) {
+			continue
+		}
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return ipv4
+		}
+		if ipv6 == nil {
+			ipv6 = ip
+		}
+	}
+	return ipv6
+}
+
+func isPublicStatusIP(ip net.IP) bool {
+	return ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate()
 }
 
 func readStatusState(store state.Store, name string) string {

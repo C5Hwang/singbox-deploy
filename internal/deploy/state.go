@@ -54,6 +54,7 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 	cfg := Config{
 		Domain:                 domain,
 		Email:                  readProtocolStateDefault(store, "email", ""),
+		PublicIP:               readProtocolStateDefault(store, "public_ip", ""),
 		Enabled:                enabled,
 		DisplayName:            readProtocolStateDefault(store, "display_name", DefaultDisplayName),
 		Salt:                   salt,

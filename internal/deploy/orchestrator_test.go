@@ -539,9 +539,13 @@ func TestReconfigureSkipsDependenciesCoreAndCertificateIssuance(t *testing.T) {
 	runner := &recordingRunner{}
 	cfg := testConfig(t)
 	cfg.SpokeMode = true
+	cfg.PublicIP = "203.0.113.10"
 	if err := WriteInstallState(layout.StateDir, cfg); err != nil {
 		t.Fatalf("seed install state: %v", err)
 	}
+	// Agent-driven reconfigures do not carry the UI-only public address. The
+	// blank value must not erase state captured by the original Hub install.
+	cfg.PublicIP = ""
 	if err := WriteFile(layout.ConfigJSON, []byte(`{"previous":true}`), 0o600); err != nil {
 		t.Fatalf("seed current config: %v", err)
 	}
@@ -585,6 +589,37 @@ func TestReconfigureSkipsDependenciesCoreAndCertificateIssuance(t *testing.T) {
 	mustNotExist(t, layout.SingBoxBin)
 	mustExist(t, layout.ConfigJSON)
 	mustExist(t, filepath.Join(o.SystemdDir, system.SingBoxService))
+	publicIP, err := os.ReadFile(filepath.Join(layout.StateDir, "public_ip"))
+	if err != nil {
+		t.Fatalf("read public IP after reconfigure: %v", err)
+	}
+	if got := strings.TrimSpace(string(publicIP)); got != "203.0.113.10" {
+		t.Fatalf("public IP after blank reconfigure = %q", got)
+	}
+}
+
+func TestInstallStatePersistsPublicIP(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	cfg := testConfig(t)
+	cfg.PublicIP = "203.0.113.10"
+	if err := WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(layout.StateDir, "public_ip"))
+	if err != nil {
+		t.Fatalf("read public IP state: %v", err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != cfg.PublicIP {
+		t.Fatalf("public IP state = %q, want %q", got, cfg.PublicIP)
+	}
+	loaded, err := LoadProtocolConfig(layout)
+	if err != nil {
+		t.Fatalf("LoadProtocolConfig: %v", err)
+	}
+	if loaded.PublicIP != cfg.PublicIP {
+		t.Fatalf("loaded PublicIP = %q, want %q", loaded.PublicIP, cfg.PublicIP)
+	}
 }
 
 func TestReconfigureReconcilesFirewallAfterValidatedActivation(t *testing.T) {
