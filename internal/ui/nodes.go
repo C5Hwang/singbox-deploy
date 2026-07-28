@@ -42,6 +42,7 @@ const (
 	nodePhaseHostKeyScan
 	nodePhaseHostKeyConfirm
 	nodePhaseDeletePick
+	nodePhaseRemoveConfirm
 	nodePhaseForceConfirm
 	nodePhaseRunning
 	nodePhaseDone
@@ -154,6 +155,10 @@ func (m *nodeManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updatePick(key)
 		}
+	case nodePhaseRemoveConfirm:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return m.updateRemoveConfirm(key)
+		}
 	case nodePhaseForceConfirm:
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updateForceConfirm(key)
@@ -222,7 +227,8 @@ func (m *nodeManager) updatePick(key tea.KeyMsg) (tea.Cmd, bool) {
 					m.pendingRemove = m.list[idx]
 					m.phase = nodePhaseForceConfirm
 				} else {
-					m.startRemove(m.list[idx])
+					m.pendingRemove = m.list[idx]
+					m.phase = nodePhaseRemoveConfirm
 				}
 			}
 			return nil, false
@@ -231,6 +237,21 @@ func (m *nodeManager) updatePick(key tea.KeyMsg) (tea.Cmd, bool) {
 	})
 	if m.startCmd != nil {
 		return m.startCmd, false
+	}
+	return nil, false
+}
+
+func (m *nodeManager) updateRemoveConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
+	switch strings.ToLower(key.String()) {
+	case "y":
+		node := m.pendingRemove
+		m.pendingRemove = nodes.Node{}
+		m.startRemove(node)
+		return m.startCmd, false
+	case "n", "esc":
+		m.pendingRemove = nodes.Node{}
+		m.action = ""
+		m.phase = nodePhaseList
 	}
 	return nil, false
 }
@@ -594,11 +615,21 @@ func (m *nodeManager) View() string {
 		return m.hostKeyConfirmView()
 	case nodePhaseDeletePick:
 		return m.pickView()
+	case nodePhaseRemoveConfirm:
+		return m.removeConfirmView()
 	case nodePhaseForceConfirm:
 		return m.forceConfirmView()
 	default:
 		return m.listView()
 	}
+}
+
+func (m *nodeManager) removeConfirmView() string {
+	return flowTitle.Render("Remove spoke node") + "\n\n" +
+		statusWarn.Render("This will contact the spoke and remotely uninstall its proxy runtime, Agent, and WireGuard configuration.") + "\n" +
+		"The Hub will then revoke the peer and remove the spoke from its registry.\n\n" +
+		"Spoke: " + nodeLabel(m.pendingRemove) + "\n\n" +
+		"Press y to remove, or n/Esc to cancel."
 }
 
 func (m *nodeManager) forceConfirmView() string {
@@ -688,6 +719,8 @@ func (m *nodeManager) footerHints() []operationHint {
 			return actionFooterHints("Choose")
 		}
 		return actionFooterHints("Remove")
+	case nodePhaseRemoveConfirm:
+		return []operationHint{{key: "Y", action: "Remove"}, {key: "N/Esc", action: "Cancel"}}
 	case nodePhaseForceConfirm:
 		return []operationHint{{key: "Y", action: "Force detach"}, {key: "N/Esc", action: "Cancel"}}
 	default:
