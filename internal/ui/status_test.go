@@ -42,7 +42,7 @@ func TestLoadStatusPublicIPBackfillsLegacyStateOnce(t *testing.T) {
 			t.Fatalf("lookup domain = %q", domain)
 		}
 		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) > time.Second {
+		if !ok || time.Until(deadline) > statusPublicIPLookupTimeout+250*time.Millisecond {
 			t.Fatalf("status DNS lookup is not tightly bounded: deadline=%v ok=%v", deadline, ok)
 		}
 		return []net.IP{
@@ -72,6 +72,26 @@ func TestLoadStatusPublicIPBackfillsLegacyStateOnce(t *testing.T) {
 		t.Fatalf("stat cached public IP: %v", err)
 	} else if info.Mode().Perm() != 0o600 {
 		t.Fatalf("cached public IP mode = %#o", info.Mode().Perm())
+	}
+}
+
+func TestLoadStatusPublicIPAllowsColdDNSLookup(t *testing.T) {
+	store := state.NewStore(t.TempDir())
+	oldResolve := resolveStatusIPs
+	t.Cleanup(func() { resolveStatusIPs = oldResolve })
+	resolveStatusIPs = func(ctx context.Context, _ string) ([]net.IP, error) {
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		}
+	}
+
+	if got := loadStatusPublicIP(store, "vpn.example.com"); got != "203.0.113.10" {
+		t.Fatalf("cold DNS lookup public IP = %q", got)
 	}
 }
 

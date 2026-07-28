@@ -26,6 +26,8 @@ var toolVersion = "dev"
 // SetVersion records the build-time version string for display in the UI.
 func SetVersion(v string) { toolVersion = v }
 
+const statusPublicIPLookupTimeout = 2 * time.Second
+
 var (
 	defaultStatusLayout = paths.DefaultLayout
 	detectStatusHost    = system.DetectHost
@@ -104,7 +106,7 @@ func loadStatusPublicIP(store state.Store, domain string) string {
 		return publicIP
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), statusPublicIPLookupTimeout)
 	defer cancel()
 	ips, err := resolveStatusIPs(ctx, domain)
 	if err != nil {
