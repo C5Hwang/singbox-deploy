@@ -671,7 +671,7 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 	withProtocolManagerDeps(t, layout)
 	pm := newProtocolManager()
 	pm.setSize(100, 30)
-	pm.cursor = 1
+	pm.cursor = pm.actionCursor(protocolActionEdit)
 	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || pm.phase != protocolPhaseEditPick {
 		t.Fatalf("enter should open edit picker, phase=%v done=%v", pm.phase, done)
@@ -751,7 +751,7 @@ func TestProtocolManagementRealitySNIEntryOnlyForRealityProtocols(t *testing.T) 
 	if !strings.Contains(view, "Edit Reality SNI") {
 		t.Fatalf("Reality SNI entry missing for Reality protocols:\n%s", view)
 	}
-	pm.cursor = 2
+	pm.cursor = pm.actionCursor(protocolActionRealitySNI)
 	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || pm.phase != protocolPhaseForm {
 		t.Fatalf("enter should open Reality SNI form, phase=%v done=%v", pm.phase, done)

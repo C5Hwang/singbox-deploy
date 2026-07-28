@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/account"
-	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
@@ -299,36 +297,14 @@ func (sm *subscriptionManager) startEditSpokeForm() {
 		return
 	}
 	node := sm.nodes[sm.editNodeIndex]
-	protocols := strings.Join(node.EnabledProtocols, ",")
-	if protocols == "" {
-		protocols = defaultProtocolValue()
-	}
 	fields := []field{
 		{key: "spoke_alias", label: "Spoke subscription alias (optional)", note: "Names this spoke's client nodes. Blank uses its management alias."},
 		{key: "include_subscription", label: "Include in hub subscription", options: []string{"yes", "no"}, note: "No subscription endpoint is exposed on the spoke; the hub fetches node data over WireGuard."},
-		{key: "protocols", label: "Enabled protocols", options: protocolOptions(), multi: true},
-		{key: "reality_sni", label: "Reality URL/SNI", skip: func(v map[string]string) bool {
-			return !protocolSelected(v, config.ProtocolRealityVision) && !protocolSelected(v, config.ProtocolRealityGRPC)
-		}},
-	}
-	for _, proto := range config.AllProtocols {
-		p := proto
-		fields = append(fields, field{
-			key: portFieldKey(p), label: string(p) + " listen port",
-			skip: func(v map[string]string) bool { return !protocolSelected(v, p) },
-		})
 	}
 	sm.phase = subscriptionPhaseForm
 	if sm.parameterForm.begin(fields, map[string]string{
 		"spoke_alias":          node.SubscriptionAlias,
 		"include_subscription": yesNoString(node.IncludeInSubscription),
-		"protocols":            protocols,
-		"reality_sni":          or(node.RealityServerName, defaultRealityServerName),
-		"reality_vision_port":  strconv.Itoa(node.RealityVisionPort),
-		"reality_grpc_port":    strconv.Itoa(node.RealityGRPCPort),
-		"hysteria2_port":       strconv.Itoa(node.Hysteria2Port),
-		"tuic_port":            strconv.Itoa(node.TUICPort),
-		"anytls_port":          strconv.Itoa(node.AnyTLSPort),
 	}, sm.validateSpokeField) {
 		sm.phase = subscriptionPhaseConfirm
 	}
@@ -390,12 +366,6 @@ func (sm *subscriptionManager) validateSpokeField(f field, val string, vals map[
 }
 
 func validateSubscriptionField(f field, val string, vals map[string]string) error {
-	switch f.key {
-	case "protocols":
-		if len(protocolsFromValue(val)) == 0 {
-			return fmt.Errorf("select at least one protocol")
-		}
-	}
 	if err := uiparams.ValidateSubscriptionParameterValue(f.key, val); err != nil {
 		return err
 	}
@@ -492,75 +462,30 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 		return fmt.Errorf("selected spoke no longer exists")
 	}
 	selected := sm.nodes[sm.editNodeIndex]
-	updated := selected
-	updated.SubscriptionAlias = strings.TrimSpace(sm.values["spoke_alias"])
-	updated.IncludeInSubscription = sm.values["include_subscription"] != "no"
-	updated.EnabledProtocols = protocolStringSlice(protocolsFromValue(sm.values["protocols"]))
-	if sni, err := uiparams.NormalizeRealityServerName(sm.values["reality_sni"]); err == nil {
-		updated.RealityServerName = sni
-	}
-	updated.RealityVisionPort, _ = strconv.Atoi(sm.values["reality_vision_port"])
-	updated.RealityGRPCPort, _ = strconv.Atoi(sm.values["reality_grpc_port"])
-	updated.Hysteria2Port, _ = strconv.Atoi(sm.values["hysteria2_port"])
-	updated.TUICPort, _ = strconv.Atoi(sm.values["tuic_port"])
-	updated.AnyTLSPort, _ = strconv.Atoi(sm.values["anytls_port"])
-
 	layout := subscriptionUILayout()
-	var original nodes.Node
-	registryEvent := deploy.Event{
-		Index: 1, Total: 5, Label: "Registry settings",
-		Detail: "save the requested spoke subscription settings", Status: "running",
-	}
-	deploy.EmitProgress(progress, registryEvent)
-	if err := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
-		original = *current
-		current.SubscriptionAlias = updated.SubscriptionAlias
-		current.IncludeInSubscription = updated.IncludeInSubscription
-		current.EnabledProtocols = append([]string(nil), updated.EnabledProtocols...)
-		current.RealityServerName = updated.RealityServerName
-		current.RealityVisionPort = updated.RealityVisionPort
-		current.RealityGRPCPort = updated.RealityGRPCPort
-		current.Hysteria2Port = updated.Hysteria2Port
-		current.TUICPort = updated.TUICPort
-		current.AnyTLSPort = updated.AnyTLSPort
-		updated = *current
-		return nil
-	}); err != nil {
-		registryEvent.Status = "fail"
-		registryEvent.Err = err
-		deploy.EmitProgress(progress, registryEvent)
-		return err
-	}
-	registryEvent.Status = "ok"
-	deploy.EmitProgress(progress, registryEvent)
 	ctrl := &hubctl.Controller{
 		Layout: layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion,
 		Progress: offsetRunProgress(progress, 1, 5),
 	}
-	if err := ctrl.Reconfigure(ctx, updated, logs); err != nil {
-		rollbackStateErr := nodes.Mutate(layout, selected.ID, func(current *nodes.Node) error {
-			current.SubscriptionAlias = original.SubscriptionAlias
-			current.IncludeInSubscription = original.IncludeInSubscription
-			current.EnabledProtocols = append([]string(nil), original.EnabledProtocols...)
-			current.RealityServerName = original.RealityServerName
-			current.RealityVisionPort = original.RealityVisionPort
-			current.RealityGRPCPort = original.RealityGRPCPort
-			current.Hysteria2Port = original.Hysteria2Port
-			current.TUICPort = original.TUICPort
-			current.AnyTLSPort = original.AnyTLSPort
-			return nil
-		})
-		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		rollbackCtrl := *ctrl
-		rollbackCtrl.Progress = nil
-		rollbackRemoteErr := rollbackCtrl.Reconfigure(rollbackCtx, original, logs)
-		cancel()
-		if rollbackStateErr != nil || rollbackRemoteErr != nil {
-			return fmt.Errorf("apply spoke settings over WireGuard: %w (rollback state: %v; rollback spoke: %v)", err, rollbackStateErr, rollbackRemoteErr)
-		}
-		return fmt.Errorf("apply spoke settings over WireGuard: %w (previous settings restored)", err)
-	}
-	return nil
+	rollbackCtrl := *ctrl
+	rollbackCtrl.Progress = nil
+	return applySpokeRegistryReconfigure(
+		ctx, layout, selected.ID, logs, progress,
+		spokeRegistryChange{
+			Detail: "save the requested spoke subscription settings",
+			Apply: func(current *nodes.Node) error {
+				current.SubscriptionAlias = strings.TrimSpace(sm.values["spoke_alias"])
+				current.IncludeInSubscription = sm.values["include_subscription"] != "no"
+				return nil
+			},
+			Restore: func(current *nodes.Node, original nodes.Node) {
+				current.SubscriptionAlias = original.SubscriptionAlias
+				current.IncludeInSubscription = original.IncludeInSubscription
+			},
+		},
+		ctrl.Reconfigure,
+		rollbackCtrl.Reconfigure,
+	)
 }
 
 func (sm *subscriptionManager) applySourceOrder(ctx context.Context, logs *logWriter) error {
@@ -768,12 +693,6 @@ func (sm *subscriptionManager) confirmView() string {
 				summaryRow("Current subscription alias", old.EffectiveSubscriptionAlias()),
 				summaryRow("New subscription alias", or(sm.values["spoke_alias"], old.EffectiveAlias())),
 				summaryRow("Include in hub subscription", sm.values["include_subscription"]),
-				summaryRow("Enabled protocols", sm.values["protocols"]),
-				summaryRow("Reality Vision port", sm.values["reality_vision_port"]),
-				summaryRow("Reality gRPC port", sm.values["reality_grpc_port"]),
-				summaryRow("Hysteria2 port", sm.values["hysteria2_port"]),
-				summaryRow("TUIC port", sm.values["tuic_port"]),
-				summaryRow("AnyTLS port", sm.values["anytls_port"]),
 			)
 		}
 	case subscriptionActionReorder:
