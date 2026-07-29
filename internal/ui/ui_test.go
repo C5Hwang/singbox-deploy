@@ -20,6 +20,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/protocol"
@@ -681,12 +682,35 @@ func TestProtocolManagementEditProtocolShowsCredentialAndPortFields(t *testing.T
 		t.Fatalf("enter should open edit form, phase=%v done=%v", pm.phase, done)
 	}
 	view := pm.View()
-	if !strings.Contains(view, "Hysteria2 password") || !strings.Contains(view, "default: hypass") {
+	if !strings.Contains(view, "Hysteria2 password") || !strings.Contains(view, "default: •••••••• (set)") {
 		t.Fatalf("missing password edit field:\n%s", view)
+	}
+	if strings.Contains(view, "hypass") {
+		t.Fatalf("Hub credential leaked in edit form:\n%s", view)
 	}
 	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || !strings.Contains(pm.View(), "Hysteria2 port") || !strings.Contains(pm.View(), "default: 9443") {
 		t.Fatalf("missing port edit field:\n%s", pm.View())
+	}
+}
+
+func TestProtocolInstallConfirmationMasksNewCredential(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	withProtocolManagerDeps(t, layout)
+	pm := newProtocolManager()
+	pm.action = protocolActionChange
+	pm.selected = selectedOptions("hysteria2,anytls")
+	pm.prepareChangeConfirm()
+	if pm.phase != protocolPhaseForm {
+		t.Fatalf("prepare add protocol: phase=%v err=%q", pm.phase, pm.fieldErr)
+	}
+	const secret = "new-anytls-confirmation-secret"
+	pm.values["anytls_password"] = secret
+	pm.values["anytls_port"] = "11443"
+	pm.phase = protocolPhaseConfirm
+	view := pm.View()
+	if strings.Contains(view, secret) || !strings.Contains(view, "•••••••• (set)") {
+		t.Fatalf("new protocol credential was not masked in confirmation:\n%s", view)
 	}
 }
 
@@ -912,14 +936,56 @@ func withProtocolManagerDeps(t *testing.T, layout paths.Layout) {
 	oldDetect := detectProtocolHost
 	oldUpdate := updateProtocolsRun
 	oldRefresh := refreshProtocolSubscriptions
+	oldFetchSpokeState := fetchSpokeProtocolState
+	creds, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatalf("generate spoke protocol credentials: %v", err)
+	}
 	t.Cleanup(func() {
 		protocolUILayout = oldLayout
 		detectProtocolHost = oldDetect
 		updateProtocolsRun = oldUpdate
 		refreshProtocolSubscriptions = oldRefresh
+		fetchSpokeProtocolState = oldFetchSpokeState
 	})
 	protocolUILayout = func() paths.Layout { return layout }
 	detectProtocolHost = func() (system.Host, error) { return supportedTestHost(), nil }
+	fetchSpokeProtocolState = func(_ context.Context, node nodes.Node) (nodeapi.ProtocolStateResponse, error) {
+		realityHandshakePort := node.RealityHandshakePort
+		if realityHandshakePort <= 0 {
+			realityHandshakePort = config.DefaultRealityHandshakePort
+		}
+		response := nodeapi.ProtocolStateResponse{
+			Domain:               node.Domain,
+			RealityServerName:    node.RealityServerName,
+			RealityHandshakePort: realityHandshakePort,
+			EnabledProtocols:     append([]string(nil), node.EnabledProtocols...),
+			Ports: nodeapi.PortSet{
+				RealityVision: node.RealityVisionPort,
+				RealityGRPC:   node.RealityGRPCPort,
+				Hysteria2:     node.Hysteria2Port,
+				TUIC:          node.TUICPort,
+				AnyTLS:        node.AnyTLSPort,
+			},
+			Credentials: nodeapi.ProtocolCredentials{
+				RealityVisionUUID: creds.RealityVisionUUID,
+				RealityGRPCUUID:   creds.RealityGRPCUUID,
+				HysteriaPassword:  creds.HysteriaPassword,
+				TUICUUID:          creds.TUICUUID,
+				TUICPassword:      creds.TUICPassword,
+				AnyTLSPassword:    creds.AnyTLSPassword,
+				RealityPrivateKey: creds.RealityPrivateKey,
+				RealityPublicKey:  creds.RealityPublicKey,
+				RealityShortID:    creds.RealityShortID,
+			},
+		}
+		revision, err := nodeapi.ProtocolStateRevision(response)
+		if err != nil {
+			return nodeapi.ProtocolStateResponse{}, err
+		}
+		response.Revision = revision
+		return response, nil
+	}
 }
 
 func withSubscriptionDeps(t *testing.T, layout paths.Layout) {

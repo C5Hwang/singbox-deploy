@@ -15,10 +15,22 @@ import (
 // screen. Restore must only replace those fields so unrelated status updates
 // recorded while the Agent request is in flight are retained.
 type spokeRegistryChange struct {
-	Detail  string
-	Apply   func(*nodes.Node) error
-	Restore func(*nodes.Node, nodes.Node)
+	Detail     string
+	Generation spokeRegistryGeneration
+	Apply      func(*nodes.Node) error
+	// Restore reverts only fields that still equal applied. If another Hub
+	// process changed an owned field after this transaction's registry commit,
+	// that concurrent winner must not be overwritten during rollback.
+	Restore func(current *nodes.Node, original, applied nodes.Node)
 }
+
+type spokeRegistryGeneration int
+
+const (
+	spokeRegistryGenerationNone spokeRegistryGeneration = iota
+	spokeRegistryGenerationProtocol
+	spokeRegistryGenerationSubscription
+)
 
 type spokeReconfigureFunc func(context.Context, nodes.Node, io.Writer) error
 
@@ -39,6 +51,9 @@ func applySpokeRegistryReconfigure(
 	if change.Apply == nil || change.Restore == nil {
 		return fmt.Errorf("spoke registry change is incomplete")
 	}
+	if !validSpokeRegistryGeneration(change.Generation) {
+		return fmt.Errorf("spoke registry change generation is required")
+	}
 	if applyRemote == nil || rollbackRemote == nil {
 		return fmt.Errorf("spoke reconfigure callback is required")
 	}
@@ -54,6 +69,11 @@ func applySpokeRegistryReconfigure(
 		if err := change.Apply(current); err != nil {
 			return err
 		}
+		generation := spokeChangeGeneration(*current, change.Generation)
+		if generation == ^uint64(0) {
+			return fmt.Errorf("spoke settings generation is exhausted")
+		}
+		setSpokeChangeGeneration(current, change.Generation, generation+1)
 		updated = cloneSpokeNode(*current)
 		return nil
 	}); err != nil {
@@ -66,12 +86,21 @@ func applySpokeRegistryReconfigure(
 	deploy.EmitProgress(progress, registryEvent)
 
 	if err := applyRemote(ctx, updated, logs); err != nil {
+		restored := cloneSpokeNode(original)
 		rollbackStateErr := nodes.Mutate(layout, nodeID, func(current *nodes.Node) error {
-			change.Restore(current, original)
+			if spokeChangeGeneration(*current, change.Generation) ==
+				spokeChangeGeneration(updated, change.Generation) {
+				change.Restore(current, original, updated)
+			}
+			// Preserve fields owned by concurrent settings/status operations in
+			// the remote rollback request as well as in the Hub registry. Using
+			// the stale pre-apply snapshot here would otherwise make the two
+			// sides diverge after an otherwise successful rollback.
+			restored = cloneSpokeNode(*current)
 			return nil
 		})
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		rollbackRemoteErr := rollbackRemote(rollbackCtx, original, logs)
+		rollbackRemoteErr := rollbackRemote(rollbackCtx, restored, logs)
 		cancel()
 		if rollbackStateErr != nil || rollbackRemoteErr != nil {
 			return fmt.Errorf("apply spoke settings over WireGuard: %w (rollback state: %v; rollback spoke: %v)", err, rollbackStateErr, rollbackRemoteErr)
@@ -79,6 +108,35 @@ func applySpokeRegistryReconfigure(
 		return fmt.Errorf("apply spoke settings over WireGuard: %w (previous settings restored)", err)
 	}
 	return nil
+}
+
+func spokeChangeGeneration(node nodes.Node, generation spokeRegistryGeneration) uint64 {
+	switch generation {
+	case spokeRegistryGenerationProtocol:
+		return node.ProtocolSettingsGeneration
+	case spokeRegistryGenerationSubscription:
+		return node.SubscriptionSettingsGeneration
+	default:
+		return 0
+	}
+}
+
+func validSpokeRegistryGeneration(generation spokeRegistryGeneration) bool {
+	switch generation {
+	case spokeRegistryGenerationProtocol, spokeRegistryGenerationSubscription:
+		return true
+	default:
+		return false
+	}
+}
+
+func setSpokeChangeGeneration(node *nodes.Node, generation spokeRegistryGeneration, value uint64) {
+	switch generation {
+	case spokeRegistryGenerationProtocol:
+		node.ProtocolSettingsGeneration = value
+	case spokeRegistryGenerationSubscription:
+		node.SubscriptionSettingsGeneration = value
+	}
 }
 
 func cloneSpokeNode(node nodes.Node) nodes.Node {

@@ -472,15 +472,20 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 	return applySpokeRegistryReconfigure(
 		ctx, layout, selected.ID, logs, progress,
 		spokeRegistryChange{
-			Detail: "save the requested spoke subscription settings",
+			Detail:     "save the requested spoke subscription settings",
+			Generation: spokeRegistryGenerationSubscription,
 			Apply: func(current *nodes.Node) error {
 				current.SubscriptionAlias = strings.TrimSpace(sm.values["spoke_alias"])
 				current.IncludeInSubscription = sm.values["include_subscription"] != "no"
 				return nil
 			},
-			Restore: func(current *nodes.Node, original nodes.Node) {
-				current.SubscriptionAlias = original.SubscriptionAlias
-				current.IncludeInSubscription = original.IncludeInSubscription
+			Restore: func(current *nodes.Node, original, applied nodes.Node) {
+				if current.SubscriptionAlias == applied.SubscriptionAlias {
+					current.SubscriptionAlias = original.SubscriptionAlias
+				}
+				if current.IncludeInSubscription == applied.IncludeInSubscription {
+					current.IncludeInSubscription = original.IncludeInSubscription
+				}
 			},
 		},
 		ctrl.Reconfigure,

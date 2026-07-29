@@ -38,6 +38,7 @@ func fieldFromParameter(f uiparams.Field) field {
 		note:      f.Note,
 		options:   append([]string(nil), f.Options...),
 		multi:     f.Multi,
+		secret:    f.Secret,
 		skip:      f.Skip,
 		noteFunc:  f.NoteFunc,
 		badgeFunc: f.BadgeFunc,
@@ -60,6 +61,7 @@ func parameterFromField(f field) uiparams.Field {
 		Note:      f.note,
 		Options:   append([]string(nil), f.options...),
 		Multi:     f.multi,
+		Secret:    f.secret,
 		Skip:      f.skip,
 		NoteFunc:  f.noteFunc,
 		BadgeFunc: f.badgeFunc,
@@ -150,6 +152,9 @@ func (f *parameterForm) setField(index int) {
 	f.optionSelected = nil
 	f.input.SetValue(f.values[field.key])
 	f.input.Placeholder = field.def
+	if field.secret && field.def != "" {
+		f.input.Placeholder = "••••••••"
+	}
 	f.input.Focus()
 }
 
@@ -375,7 +380,11 @@ func (f *parameterForm) View(title string) string {
 		}
 	}
 	if field.def != "" {
-		b.WriteString(dimStyle.Render("default: "+field.def) + "\n")
+		value := field.def
+		if field.secret {
+			value = "•••••••• (set)"
+		}
+		b.WriteString(dimStyle.Render("default: "+value) + "\n")
 	}
 	if f.fieldErr != "" {
 		b.WriteString(flowErr.Render(f.fieldErr) + "\n")

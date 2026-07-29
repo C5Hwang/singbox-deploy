@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/agentfirewall"
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/core"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
@@ -377,6 +379,447 @@ func TestConfigOnlyInstallSelectsReconfigureWithoutFullInstall(t *testing.T) {
 	)
 	if err != nil || full || !reconfigure {
 		t.Fatalf("runSpokeDeployment error=%v full=%v reconfigure=%v", err, full, reconfigure)
+	}
+}
+
+func TestProtocolPatchChangesOnlyTargetProtocolAndStateRoundTrips(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	original, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := deploy.Config{
+		Domain: "spoke.example.com", SpokeMode: true,
+		DisplayName:            "Tokyo untouched",
+		Salt:                   "protocol-patch-salt",
+		SiteTemplate:           deploy.DefaultSiteTemplate,
+		Enabled:                []config.Protocol{config.ProtocolHysteria2, config.ProtocolTUIC},
+		RealityServerName:      "www.example.com",
+		RealityHandshakePort:   443,
+		DeployMonitor:          true,
+		MonitorAlias:           "monitor untouched",
+		MonitorInterface:       "eth9",
+		MonitorPort:            19090,
+		MonitorIntervalSeconds: 75,
+		TrafficTotalLimitBytes: 123456,
+		ResetDay:               7,
+		ResetHour:              8,
+		Ports:                  config.Ports{RealityVision: 8443, RealityGRPC: 8444, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
+		Creds:                  original,
+	}
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := protocolCredentialsFromDeploy(replacement)
+	h := &agentHandler{layout: layout}
+	next, err := h.buildProtocolPatchConfig(nodeapi.ProtocolPatch{
+		Protocol: "tuic", Port: 20443, Credentials: override,
+	})
+	if err != nil {
+		t.Fatalf("buildProtocolPatchConfig: %v", err)
+	}
+	if next.Creds.TUICPassword != replacement.TUICPassword ||
+		next.Creds.TUICUUID != replacement.TUICUUID ||
+		next.Creds.TUICPassword == original.TUICPassword {
+		t.Fatalf("target credential patch not applied: %+v", next.Creds)
+	}
+	if next.Creds.HysteriaPassword != original.HysteriaPassword ||
+		next.Creds.RealityVisionUUID != original.RealityVisionUUID ||
+		next.Creds.RealityGRPCUUID != original.RealityGRPCUUID ||
+		next.Creds.AnyTLSPassword != original.AnyTLSPassword ||
+		next.Creds.RealityPrivateKey != original.RealityPrivateKey ||
+		next.Creds.RealityPublicKey != original.RealityPublicKey ||
+		next.Creds.RealityShortID != original.RealityShortID {
+		t.Fatalf("patch overwrote another protocol credential: %+v", next.Creds)
+	}
+	if next.Domain != cfg.Domain || next.DisplayName != cfg.DisplayName ||
+		next.Salt != cfg.Salt || next.SiteTemplate != cfg.SiteTemplate ||
+		next.RealityServerName != cfg.RealityServerName ||
+		next.RealityHandshakePort != cfg.RealityHandshakePort ||
+		next.MonitorAlias != cfg.MonitorAlias ||
+		next.MonitorInterface != cfg.MonitorInterface ||
+		next.MonitorIntervalSeconds != cfg.MonitorIntervalSeconds ||
+		next.TrafficTotalLimitBytes != cfg.TrafficTotalLimitBytes ||
+		next.ResetDay != cfg.ResetDay || next.ResetHour != cfg.ResetHour {
+		t.Fatalf("patch overwrote non-protocol state: before=%+v after=%+v", cfg, next)
+	}
+	if next.Ports.TUIC != 20443 || next.Ports.Hysteria2 != cfg.Ports.Hysteria2 ||
+		next.Ports.RealityVision != cfg.Ports.RealityVision ||
+		next.Ports.RealityGRPC != cfg.Ports.RealityGRPC ||
+		next.Ports.AnyTLS != cfg.Ports.AnyTLS {
+		t.Fatalf("patch overwrote another protocol port: %+v", next.Ports)
+	}
+
+	if err := deploy.WriteInstallState(layout.StateDir, next); err != nil {
+		t.Fatal(err)
+	}
+	stateResponse, err := h.ProtocolState(context.Background())
+	if err != nil {
+		t.Fatalf("ProtocolState: %v", err)
+	}
+	if stateResponse.Credentials.TUICPassword != replacement.TUICPassword ||
+		stateResponse.Ports.TUIC != 20443 || stateResponse.Domain != "spoke.example.com" ||
+		stateResponse.Revision == "" {
+		t.Fatalf("protocol state = %+v", stateResponse)
+	}
+	if err := nodeapi.ValidateProtocolStateResponse(stateResponse); err != nil {
+		t.Fatalf("invalid protocol state response: %v", err)
+	}
+}
+
+func TestAgentRejectsStaleProtocolRevisionBeforeMutation(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	creds, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := deploy.Config{
+		Domain: "spoke.example.com", SpokeMode: true,
+		Salt:                 "protocol-revision-test-salt",
+		Enabled:              []config.Protocol{config.ProtocolHysteria2},
+		RealityServerName:    "www.example.com",
+		RealityHandshakePort: 443,
+		Ports:                config.Ports{RealityVision: 8443, RealityGRPC: 8444, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
+		Creds:                creds,
+	}
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	h := &agentHandler{layout: layout}
+	before, err := h.ProtocolState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := protocolCredentialsFromDeploy(creds)
+	override.HysteriaPassword += "-new"
+	err = h.Install(context.Background(), nodeapi.InstallRequest{
+		ConfigOnly:               true,
+		ExpectedProtocolRevision: strings.Repeat("0", 64),
+		ProtocolPatch: &nodeapi.ProtocolPatch{
+			Protocol: "hysteria2", Port: 19443, Credentials: override,
+		},
+	}, io.Discard)
+	if !nodeapi.IsProtocolRevisionConflict(err) {
+		t.Fatalf("stale revision error = %v", err)
+	}
+	after, stateErr := h.ProtocolState(context.Background())
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
+	if after.Revision != before.Revision ||
+		after.Credentials.HysteriaPassword != before.Credentials.HysteriaPassword {
+		t.Fatalf("stale CAS mutated protocol state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestProtocolPatchOwnsOnlySelectedProtocolFields(t *testing.T) {
+	tests := []struct {
+		protocol config.Protocol
+		port     int
+		apply    func(*deploy.Credentials, *config.Ports, deploy.Credentials, int)
+	}{
+		{config.ProtocolRealityVision, 18443, func(c *deploy.Credentials, p *config.Ports, n deploy.Credentials, port int) {
+			c.RealityVisionUUID, p.RealityVision = n.RealityVisionUUID, port
+		}},
+		{config.ProtocolRealityGRPC, 18444, func(c *deploy.Credentials, p *config.Ports, n deploy.Credentials, port int) {
+			c.RealityGRPCUUID, p.RealityGRPC = n.RealityGRPCUUID, port
+		}},
+		{config.ProtocolHysteria2, 19443, func(c *deploy.Credentials, p *config.Ports, n deploy.Credentials, port int) {
+			c.HysteriaPassword, p.Hysteria2 = n.HysteriaPassword, port
+		}},
+		{config.ProtocolTUIC, 20443, func(c *deploy.Credentials, p *config.Ports, n deploy.Credentials, port int) {
+			c.TUICUUID, c.TUICPassword, p.TUIC = n.TUICUUID, n.TUICPassword, port
+		}},
+		{config.ProtocolAnyTLS, 21443, func(c *deploy.Credentials, p *config.Ports, n deploy.Credentials, port int) {
+			c.AnyTLSPassword, p.AnyTLS = n.AnyTLSPassword, port
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.protocol), func(t *testing.T) {
+			layout := paths.LayoutForRoot(t.TempDir())
+			original, err := deploy.GenerateCredentials()
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacement, err := deploy.GenerateCredentials()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ports := config.Ports{RealityVision: 8443, RealityGRPC: 8444, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443}
+			cfg := deploy.Config{
+				Domain: "spoke.example.com", Salt: "patch-table-salt",
+				Enabled: config.AllProtocols, Ports: ports, Creds: original,
+			}
+			if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+				t.Fatal(err)
+			}
+			got, err := (&agentHandler{layout: layout}).buildProtocolPatchConfig(nodeapi.ProtocolPatch{
+				Protocol: string(tt.protocol), Port: tt.port,
+				Credentials: protocolCredentialsFromDeploy(replacement),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCreds, wantPorts := original, ports
+			tt.apply(&wantCreds, &wantPorts, replacement, tt.port)
+			if got.Creds != wantCreds || got.Ports != wantPorts {
+				t.Fatalf("patch result credentials/ports = %+v / %+v, want %+v / %+v", got.Creds, got.Ports, wantCreds, wantPorts)
+			}
+		})
+	}
+}
+
+func TestAgentInstallProtocolPatchTouchesOnlyTargetRuntimeState(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	const domain = "legacy.example.com"
+	cfg := deploy.Config{
+		Domain: domain, DisplayName: "legacy display", Salt: "legacy-patch-salt",
+		SiteTemplate:      deploy.DefaultSiteTemplate,
+		Enabled:           []config.Protocol{config.ProtocolHysteria2},
+		RealityServerName: "legacy-reality.example.com", RealityHandshakePort: 443,
+		DeployMonitor: true, MonitorAlias: "legacy monitor", MonitorInterface: "eth9",
+		MonitorPort: 19090, MonitorIntervalSeconds: 60,
+		TrafficTotalLimitBytes: 987654, ResetDay: 6, ResetHour: 7,
+		Ports: config.Ports{Hysteria2: 9443},
+		// Legacy nodes may not have generated credentials for disabled
+		// protocols. Only the enabled Hysteria2 credential is present.
+		Creds: deploy.Credentials{HysteriaPassword: "legacy-password"},
+	}
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(layout.ConfigJSON), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.ConfigJSON, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	certPath, keyPath := certmgr.CertPaths(layout, domain)
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalCert := []byte("legacy certificate bytes")
+	originalKey := []byte("legacy private key bytes")
+	if err := os.WriteFile(certPath, originalCert, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, originalKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &handlerRecordingRunner{}
+	monitorReloads := 0
+	systemdDir := filepath.Join(layout.Root, "systemd")
+	if err := os.MkdirAll(systemdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	supervisor := newMonitorSupervisor(context.Background(), layout)
+	supervisor.now = func() time.Time { return time.Unix(1234, 0).UTC() }
+	supervisor.newMonitor = func(*monitor.Store, monitor.Config) (http.Handler, func(context.Context) error) {
+		monitorReloads++
+		return http.NotFoundHandler(), func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+	}
+	h := &agentHandler{
+		layout: layout, monitor: supervisor, systemdDir: systemdDir,
+		nginxConfPath: filepath.Join(layout.Root, "nginx", "singbox-deploy.conf"),
+		newRunner:     func(context.Context, io.Writer) system.Runner { return runner },
+	}
+	before, err := h.ProtocolState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = h.Install(context.Background(), nodeapi.InstallRequest{
+		ConfigOnly: true, ExpectedProtocolRevision: before.Revision,
+		// These stale/untrusted general and other-protocol fields must be
+		// ignored by a protocol patch.
+		Domain: "overwrite.example.com", DisplayName: "overwrite",
+		RealityServerName: "overwrite.example.com", EnabledProtocols: []string{"anytls"},
+		Ports:          nodeapi.PortSet{AnyTLS: 21443},
+		Monitor:        false,
+		CertificatePEM: "overwrite certificate",
+		PrivateKeyPEM:  "overwrite key",
+		ProtocolPatch: &nodeapi.ProtocolPatch{
+			Protocol: "hysteria2", Port: 19443,
+			Credentials: nodeapi.ProtocolCredentials{HysteriaPassword: "rotated-password"},
+		},
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("Install protocol patch: %v", err)
+	}
+
+	after, err := deploy.LoadProtocolConfig(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Creds.HysteriaPassword != "rotated-password" || after.Ports.Hysteria2 != 19443 {
+		t.Fatalf("target patch not applied: %+v", after)
+	}
+	if after.Domain != cfg.Domain || after.DisplayName != cfg.DisplayName ||
+		after.RealityServerName != cfg.RealityServerName ||
+		after.MonitorAlias != cfg.MonitorAlias || !after.DeployMonitor ||
+		after.TrafficTotalLimitBytes != cfg.TrafficTotalLimitBytes ||
+		strings.Join(protocolNamesForState(after.Enabled), ",") != "hysteria2" {
+		t.Fatalf("protocol patch changed unrelated state: before=%+v after=%+v", cfg, after)
+	}
+	gotCert, _ := os.ReadFile(certPath)
+	gotKey, _ := os.ReadFile(keyPath)
+	certInfo, certErr := os.Stat(certPath)
+	keyInfo, keyErr := os.Stat(keyPath)
+	if !bytes.Equal(gotCert, originalCert) || !bytes.Equal(gotKey, originalKey) ||
+		certErr != nil || keyErr != nil ||
+		certInfo.Mode().Perm() != 0o644 || keyInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("protocol patch changed certificate pair or modes: cert=%q/%v key=%q/%v", gotCert, certInfo.Mode(), gotKey, keyInfo.Mode())
+	}
+	if monitorReloads != 0 {
+		t.Fatalf("protocol patch reloaded monitor %d time(s)", monitorReloads)
+	}
+	for _, command := range runner.commands {
+		if strings.Contains(command, "disable --now") ||
+			strings.Contains(command, "daemon-reload") ||
+			strings.Contains(command, system.MonitorService) {
+			t.Fatalf("protocol patch ran unrelated service command %q", command)
+		}
+	}
+}
+
+func TestOrdinaryConfigOnlyPreservesNewerProtocolState(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	original, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := deploy.Config{
+		Domain: "spoke.example.com", DisplayName: "old display",
+		Salt: "ordinary-reconfigure-salt", SiteTemplate: deploy.DefaultSiteTemplate,
+		Enabled:           []config.Protocol{config.ProtocolHysteria2, config.ProtocolTUIC},
+		RealityServerName: "current.example.com", RealityHandshakePort: 443,
+		MonitorAlias: "old monitor", MonitorPort: 19090, MonitorIntervalSeconds: 60,
+		Ports: config.Ports{RealityVision: 8443, RealityGRPC: 8444, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
+		Creds: original,
+	}
+	if err := deploy.WriteInstallState(layout.StateDir, current); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &agentHandler{layout: layout}
+	patched, err := h.buildProtocolPatchConfig(nodeapi.ProtocolPatch{
+		Protocol: "tuic", Port: 20443, Credentials: protocolCredentialsFromDeploy(replacement),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deploy.WriteInstallState(layout.StateDir, patched); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := nodeapi.InstallRequest{
+		ConfigOnly: true,
+		Domain:     "spoke.example.com", DisplayName: "new display", SiteTemplate: "dimension",
+		RealityServerName: "stale.example.com", RealityHandshakePort: 8443,
+		EnabledProtocols: []string{"hysteria2"},
+		Ports:            nodeapi.PortSet{Hysteria2: 19443, TUIC: 10443},
+		Monitor:          true, MonitorAlias: "new monitor", MonitorPort: 19090,
+		MonitorIntervalSeconds: 90,
+	}
+	got, err := h.buildSpokeConfig(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Creds.TUICUUID != replacement.TUICUUID ||
+		got.Creds.TUICPassword != replacement.TUICPassword ||
+		got.Ports.TUIC != 20443 ||
+		got.RealityServerName != patched.RealityServerName ||
+		got.RealityHandshakePort != patched.RealityHandshakePort ||
+		strings.Join(protocolNamesForState(got.Enabled), ",") != strings.Join(protocolNamesForState(patched.Enabled), ",") {
+		t.Fatalf("ordinary stale reconfigure rolled back protocol state: patched=%+v got=%+v", patched, got)
+	}
+	if got.DisplayName != "new display" || got.SiteTemplate != "dimension" ||
+		got.MonitorAlias != "new monitor" || got.MonitorIntervalSeconds != 90 {
+		t.Fatalf("ordinary reconfigure did not apply general settings: %+v", got)
+	}
+}
+
+func TestExplicitProtocolReplacementChangesFullStateAndRequiresCAS(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	creds, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := deploy.Config{
+		Domain: "spoke.example.com", DisplayName: "concurrent display",
+		Salt: "replacement-cas-salt", SiteTemplate: "dimension",
+		Enabled:           []config.Protocol{config.ProtocolHysteria2},
+		RealityServerName: "old.example.com", RealityHandshakePort: 443,
+		DeployMonitor: true, MonitorAlias: "concurrent monitor",
+		MonitorPort: 19090, MonitorIntervalSeconds: 75,
+		TrafficTotalLimitBytes: 456789, ResetDay: 5, ResetHour: 6,
+		Ports: config.Ports{RealityVision: 8443, RealityGRPC: 8444, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
+		Creds: creds,
+	}
+	if err := deploy.WriteInstallState(layout.StateDir, current); err != nil {
+		t.Fatal(err)
+	}
+	h := &agentHandler{layout: layout}
+	stateBefore, err := h.ProtocolState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := nodeapi.InstallRequest{
+		ConfigOnly: true, ReplaceProtocolState: true,
+		ExpectedProtocolRevision: stateBefore.Revision,
+		Domain:                   "stale.example.com", DisplayName: "stale display",
+		Monitor: false, MonitorAlias: "stale monitor",
+		EnabledProtocols:  []string{"vless-reality-vision", "anytls"},
+		RealityServerName: "new.example.com", RealityHandshakePort: 8443,
+		Ports: nodeapi.PortSet{RealityVision: 18443, RealityGRPC: 8444, Hysteria2: 9443, TUIC: 10443, AnyTLS: 21443},
+	}
+	emptyReplacement := req
+	emptyReplacement.EnabledProtocols = nil
+	if _, err := h.buildSpokeConfig(emptyReplacement); err == nil ||
+		!strings.Contains(err.Error(), "at least one enabled protocol") {
+		t.Fatalf("empty replacement fell through to default-all semantics: %v", err)
+	}
+	if err := nodeapi.ValidateInstallSingBoxVersion(req); err != nil {
+		t.Fatalf("valid explicit replacement: %v", err)
+	}
+	next, err := h.buildSpokeConfig(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(protocolNamesForState(next.Enabled), ",") != "vless-reality-vision,anytls" ||
+		next.Ports.RealityVision != 18443 || next.Ports.AnyTLS != 21443 ||
+		next.RealityServerName != "new.example.com" || next.RealityHandshakePort != 8443 {
+		t.Fatalf("explicit replacement did not apply protocol state: %+v", next)
+	}
+	if next.Domain != current.Domain || next.DisplayName != current.DisplayName ||
+		next.SiteTemplate != current.SiteTemplate || next.MonitorAlias != current.MonitorAlias ||
+		!next.DeployMonitor || next.MonitorIntervalSeconds != current.MonitorIntervalSeconds ||
+		next.TrafficTotalLimitBytes != current.TrafficTotalLimitBytes ||
+		next.ResetDay != current.ResetDay || next.ResetHour != current.ResetHour {
+		t.Fatalf("explicit protocol replacement overwrote non-protocol state: before=%+v after=%+v", current, next)
+	}
+
+	req.ExpectedProtocolRevision = strings.Repeat("0", 64)
+	err = h.Install(context.Background(), req, io.Discard)
+	if !nodeapi.IsProtocolRevisionConflict(err) {
+		t.Fatalf("stale explicit replacement error = %v", err)
+	}
+	stateAfter, stateErr := h.ProtocolState(context.Background())
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
+	if stateAfter.Revision != stateBefore.Revision {
+		t.Fatalf("stale explicit replacement mutated state: before=%+v after=%+v", stateBefore, stateAfter)
 	}
 }
 

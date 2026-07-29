@@ -33,6 +33,13 @@ type CoreHandler interface {
 	ChangeCore(ctx context.Context, req CoreRequest, log io.Writer) error
 }
 
+// ProtocolStateHandler is implemented by agents that support full protocol
+// editing. Keeping it optional lets a newer Hub diagnose an older Agent
+// cleanly instead of changing the base lifecycle interface.
+type ProtocolStateHandler interface {
+	ProtocolState(context.Context) (ProtocolStateResponse, error)
+}
+
 // MonitorHandler is implemented by an agent that has an in-process monitor.
 // The Server invokes it only with one of the fixed local monitor paths declared
 // by MonitorEndpoint and strips the request query before dispatch.
@@ -50,6 +57,7 @@ type Server struct {
 func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
 	s.handle(mux, http.MethodGet, "/api/health", s.handleHealth)
+	s.handle(mux, http.MethodGet, "/api/protocol-state", s.handleProtocolState)
 	s.handle(mux, http.MethodPost, "/api/install", s.handleInstall)
 	s.handle(mux, http.MethodPost, "/api/cert", s.handleCert)
 	s.handle(mux, http.MethodPost, "/api/uninstall", s.handleUninstall)
@@ -114,6 +122,20 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.Handler.Health())
+}
+
+func (s *Server) handleProtocolState(w http.ResponseWriter, r *http.Request) {
+	handler, ok := s.Handler.(ProtocolStateHandler)
+	if !ok {
+		http.Error(w, "protocol state is not supported by this agent", http.StatusNotImplemented)
+		return
+	}
+	current, err := handler.ProtocolState(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, current)
 }
 
 func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {

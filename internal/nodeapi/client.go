@@ -67,6 +67,34 @@ func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
 	return health, nil
 }
 
+// ProtocolState fetches the current editable protocol settings. The endpoint
+// includes credentials and is available only through the Agent's authenticated
+// WireGuard listener.
+func (c *Client) ProtocolState(ctx context.Context) (ProtocolStateResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/protocol-state", nil)
+	if err != nil {
+		return ProtocolStateResponse{}, err
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return ProtocolStateResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ProtocolStateResponse{}, statusError(resp)
+	}
+	var state ProtocolStateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		return ProtocolStateResponse{}, err
+	}
+	if err := ValidateProtocolStateResponse(state); err != nil {
+		return ProtocolStateResponse{}, fmt.Errorf("agent returned invalid protocol state: %w", err)
+	}
+	return state, nil
+}
+
 // Install runs a full or config-only install on the agent, forwarding streamed
 // log lines to log until the agent reports completion or failure.
 func (c *Client) Install(ctx context.Context, req InstallRequest, log io.Writer) error {

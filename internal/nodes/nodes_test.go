@@ -17,26 +17,28 @@ import (
 func TestNodeRoundTrip(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	n := Node{
-		Alias:              "tokyo-server",
-		SubscriptionAlias:  "tokyo-clients",
-		SSHHost:            "203.0.113.9",
-		SSHPort:            22,
-		SSHUser:            "root",
-		WGPublicKey:        "pub",
-		WGIP:               "10.90.0.2",
-		Token:              "tok",
-		AgentPort:          19091,
-		Arch:               "arm64",
-		Installed:          true,
-		AgentVersion:       "v2.0.0",
-		SingBoxVersion:     "v1.13.14",
-		LastSeen:           time.Date(2026, 7, 10, 1, 2, 3, 4, time.UTC),
-		Domain:             "spoke.example.com",
-		EnabledProtocols:   []string{"hysteria2", "tuic"},
-		Hysteria2Port:      8443,
-		Monitor:            true,
-		MonitorAlias:       "Tokyo",
-		PendingCertificate: true,
+		Alias:                          "tokyo-server",
+		SubscriptionAlias:              "tokyo-clients",
+		SSHHost:                        "203.0.113.9",
+		SSHPort:                        22,
+		SSHUser:                        "root",
+		WGPublicKey:                    "pub",
+		WGIP:                           "10.90.0.2",
+		Token:                          "tok",
+		AgentPort:                      19091,
+		Arch:                           "arm64",
+		Installed:                      true,
+		AgentVersion:                   "v2.0.0",
+		SingBoxVersion:                 "v1.13.14",
+		LastSeen:                       time.Date(2026, 7, 10, 1, 2, 3, 4, time.UTC),
+		Domain:                         "spoke.example.com",
+		EnabledProtocols:               []string{"hysteria2", "tuic"},
+		Hysteria2Port:                  8443,
+		ProtocolSettingsGeneration:     7,
+		Monitor:                        true,
+		MonitorAlias:                   "Tokyo",
+		PendingCertificate:             true,
+		SubscriptionSettingsGeneration: 9,
 	}
 	if err := Add(layout, n); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -61,8 +63,42 @@ func TestNodeRoundTrip(t *testing.T) {
 	if len(got.EnabledProtocols) != 2 || got.EnabledProtocols[0] != "hysteria2" {
 		t.Fatalf("protocols mismatch: %+v", got.EnabledProtocols)
 	}
+	if got.ProtocolSettingsGeneration != 7 || got.SubscriptionSettingsGeneration != 9 {
+		t.Fatalf("settings generations mismatch: %+v", got)
+	}
 	if got.AgentAddr() != "10.90.0.2:19091" {
 		t.Fatalf("AgentAddr = %q", got.AgentAddr())
+	}
+}
+
+func TestLegacyNodeWithoutSettingsGenerationsLoadsAsZero(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := Add(layout, Node{
+		Alias: "legacy", WGIP: "10.90.0.2",
+		ProtocolSettingsGeneration: 4, SubscriptionSettingsGeneration: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(nodesPath(layout))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("read node registry: entries=%v err=%v", entries, err)
+	}
+	entry := filepath.Join(nodesPath(layout), entries[0].Name())
+	for _, name := range []string{
+		"protocol_settings_generation",
+		"subscription_settings_generation",
+	} {
+		if err := os.Remove(filepath.Join(entry, name)); err != nil {
+			t.Fatalf("remove legacy-missing field %s: %v", name, err)
+		}
+	}
+	list, err := Load(layout)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("load legacy node: list=%+v err=%v", list, err)
+	}
+	if list[0].ProtocolSettingsGeneration != 0 ||
+		list[0].SubscriptionSettingsGeneration != 0 {
+		t.Fatalf("legacy generations did not default to zero: %+v", list[0])
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 )
 
@@ -167,7 +168,7 @@ func TestProtocolManagementChangesSpokeProtocolSetByStableID(t *testing.T) {
 	}
 }
 
-func TestProtocolManagementEditsOnlyInstalledSpokeProtocolPort(t *testing.T) {
+func TestProtocolManagementEditsInstalledSpokeProtocolCredentialAndPort(t *testing.T) {
 	layout := protocolManagerState(t, "hysteria2", "")
 	node := nodes.Node{
 		ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Alias: "London", Domain: "uk.example.com",
@@ -192,21 +193,357 @@ func TestProtocolManagementEditsOnlyInstalledSpokeProtocolPort(t *testing.T) {
 	if pm.phase != protocolPhaseEditPick || pm.editNodeID != node.ID {
 		t.Fatalf("select spoke: phase=%v id=%q", pm.phase, pm.editNodeID)
 	}
-	for _, want := range []string{"Spoke · Edit", "installed Spoke protocol", "credentials are preserved", "hysteria2"} {
+	for _, want := range []string{"Spoke · Edit", "same credential", "listen-port", "hysteria2"} {
 		if !strings.Contains(pm.View(), want) {
 			t.Fatalf("spoke edit picker missing %q:\n%s", want, pm.View())
 		}
 	}
-	_, _ = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd, _ := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if pm.phase != protocolPhaseLoadingSpokeState || cmd == nil {
+		t.Fatalf("spoke settings load did not start asynchronously: phase=%v cmd=%v", pm.phase, cmd != nil)
+	}
+	_, _ = pm.Update(cmd())
 	if pm.phase != protocolPhaseForm || pm.editProto != config.ProtocolHysteria2 {
 		t.Fatalf("open spoke port form: phase=%v proto=%q", pm.phase, pm.editProto)
 	}
-	if len(pm.fields) != 1 || pm.fields[0].key != "hysteria2_port" {
-		t.Fatalf("spoke edit fields = %+v, want only Hysteria2 port", pm.fields)
+	if len(pm.fields) != 2 || pm.fields[0].key != "hysteria2_password" ||
+		pm.fields[1].key != "hysteria2_port" {
+		t.Fatalf("spoke edit fields = %+v, want Hysteria2 password and port", pm.fields)
 	}
-	if !strings.Contains(pm.fields[0].note, "credential") ||
-		!strings.Contains(pm.fields[0].note, "preserved") {
-		t.Fatalf("spoke edit form does not explain credential preservation: %q", pm.fields[0].note)
+	if !pm.fields[0].secret {
+		t.Fatal("Hysteria2 password field is not masked")
+	}
+	view := pm.View()
+	if strings.Contains(view, pm.values["hysteria2_password"]) {
+		t.Fatalf("spoke password leaked in form:\n%s", view)
+	}
+	pm.phase = protocolPhaseConfirm
+	confirm := pm.View()
+	if strings.Contains(confirm, pm.values["hysteria2_password"]) ||
+		!strings.Contains(confirm, "•••••••• (set)") {
+		t.Fatalf("spoke password was not masked in confirmation:\n%s", confirm)
+	}
+}
+
+func TestSpokeProtocolEditFieldsMatchHubWithoutBundlingRealitySNI(t *testing.T) {
+	tests := []struct {
+		proto config.Protocol
+		keys  []string
+	}{
+		{config.ProtocolRealityVision, []string{"reality_vision_uuid", "reality_vision_port"}},
+		{config.ProtocolRealityGRPC, []string{"reality_grpc_uuid", "reality_grpc_port"}},
+		{config.ProtocolHysteria2, []string{"hysteria2_password", "hysteria2_port"}},
+		{config.ProtocolTUIC, []string{"tuic_uuid", "tuic_password", "tuic_port"}},
+		{config.ProtocolAnyTLS, []string{"anytls_password", "anytls_port"}},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.proto), func(t *testing.T) {
+			fields := spokeProtocolEditFields(tt.proto)
+			var keys []string
+			for _, field := range fields {
+				keys = append(keys, field.key)
+				if field.key == "reality_sni" || field.key == "reality_handshake_port" ||
+					field.key == "reality_private_key" || field.key == "reality_public_key" ||
+					field.key == "reality_short_id" {
+					t.Fatalf("Reality shared field was bundled into protocol edit: %+v", fields)
+				}
+				if !strings.HasSuffix(field.key, "_port") && !field.secret {
+					t.Fatalf("credential field %q is not masked", field.key)
+				}
+			}
+			if strings.Join(keys, ",") != strings.Join(tt.keys, ",") {
+				t.Fatalf("fields = %v, want %v", keys, tt.keys)
+			}
+		})
+	}
+}
+
+func TestSpokeProtocolTargetAndRollbackRevisionsCoverEveryProtocol(t *testing.T) {
+	generated, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCredentials := nodeapi.ProtocolCredentials{
+		RealityVisionUUID: generated.RealityVisionUUID,
+		RealityGRPCUUID:   generated.RealityGRPCUUID,
+		HysteriaPassword:  generated.HysteriaPassword,
+		TUICUUID:          generated.TUICUUID,
+		TUICPassword:      generated.TUICPassword,
+		AnyTLSPassword:    generated.AnyTLSPassword,
+		RealityPrivateKey: generated.RealityPrivateKey,
+		RealityPublicKey:  generated.RealityPublicKey,
+		RealityShortID:    generated.RealityShortID,
+	}
+	current := nodeapi.ProtocolStateResponse{
+		Revision:             strings.Repeat("a", 64),
+		Domain:               "uk.example.com",
+		RealityServerName:    "www.example.com",
+		RealityHandshakePort: 443,
+		EnabledProtocols:     []string{"vless-reality-vision", "vless-reality-grpc", "hysteria2", "tuic", "anytls"},
+		Ports: nodeapi.PortSet{
+			RealityVision: 8443, RealityGRPC: 8444, Hysteria2: 9443,
+			TUIC: 10443, AnyTLS: 11443,
+		},
+		Credentials: originalCredentials,
+	}
+	originalRevision, err := nodeapi.ProtocolStateRevision(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Revision = originalRevision
+
+	tests := []struct {
+		name  string
+		proto config.Protocol
+		port  int
+		edit  func(*nodeapi.ProtocolCredentials)
+	}{
+		{"reality vision", config.ProtocolRealityVision, 18443, func(c *nodeapi.ProtocolCredentials) {
+			c.RealityVisionUUID = "11111111-1111-4111-8111-111111111111"
+		}},
+		{"reality grpc", config.ProtocolRealityGRPC, 18444, func(c *nodeapi.ProtocolCredentials) {
+			c.RealityGRPCUUID = "22222222-2222-4222-8222-222222222222"
+		}},
+		{"hysteria2", config.ProtocolHysteria2, 19443, func(c *nodeapi.ProtocolCredentials) {
+			c.HysteriaPassword = "changed-hysteria-password"
+		}},
+		{"tuic", config.ProtocolTUIC, 20443, func(c *nodeapi.ProtocolCredentials) {
+			c.TUICUUID = "33333333-3333-4333-8333-333333333333"
+			c.TUICPassword = "changed-tuic-password"
+		}},
+		{"anytls", config.ProtocolAnyTLS, 21443, func(c *nodeapi.ProtocolCredentials) {
+			c.AnyTLSPassword = "changed-anytls-password"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			targetCredentials := originalCredentials
+			tt.edit(&targetCredentials)
+			patch := nodeapi.ProtocolPatch{
+				Protocol: string(tt.proto), Port: tt.port, Credentials: targetCredentials,
+			}
+			gotTarget, err := spokeProtocolTargetRevision(current, patch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied := current
+			if err := applyProtocolPatchToState(&applied, patch); err != nil {
+				t.Fatal(err)
+			}
+			applied.Revision = ""
+			wantTarget, err := nodeapi.ProtocolStateRevision(applied)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotTarget != wantTarget {
+				t.Fatalf("target revision=%q, want %q", gotTarget, wantTarget)
+			}
+
+			rollback, err := spokeProtocolRollbackPatch(tt.proto, current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := applyProtocolPatchToState(&applied, rollback); err != nil {
+				t.Fatal(err)
+			}
+			applied.Revision = ""
+			gotRollback, err := nodeapi.ProtocolStateRevision(applied)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotRollback != originalRevision {
+				t.Fatalf("rollback revision=%q, want original %q", gotRollback, originalRevision)
+			}
+		})
+	}
+}
+
+func TestSpokeProtocolNodeRevisionMatchesAgentNormalization(t *testing.T) {
+	generated, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := nodeapi.ProtocolStateResponse{
+		Domain:               "agent.example.com",
+		RealityServerName:    "old.example.com",
+		RealityHandshakePort: 8443,
+		EnabledProtocols:     []string{"hysteria2"},
+		Ports:                nodeapi.PortSet{Hysteria2: 9443},
+		Credentials: nodeapi.ProtocolCredentials{
+			RealityVisionUUID: generated.RealityVisionUUID,
+			RealityGRPCUUID:   generated.RealityGRPCUUID,
+			HysteriaPassword:  generated.HysteriaPassword,
+			TUICUUID:          generated.TUICUUID,
+			TUICPassword:      generated.TUICPassword,
+			AnyTLSPassword:    generated.AnyTLSPassword,
+			RealityPrivateKey: generated.RealityPrivateKey,
+			RealityPublicKey:  generated.RealityPublicKey,
+			RealityShortID:    generated.RealityShortID,
+		},
+	}
+	node := nodes.Node{
+		// ReplaceProtocolState deliberately preserves the Agent's Domain even
+		// if an inconsistent registry snapshot contains another value.
+		Domain:               "registry.example.com",
+		RealityServerName:    "new.example.com",
+		RealityHandshakePort: 0,
+		EnabledProtocols:     []string{"anytls"},
+		AnyTLSPort:           21443,
+	}
+	got, err := spokeProtocolNodeRevision(current, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := current
+	expected.Domain = "agent.example.com"
+	expected.RealityServerName = node.RealityServerName
+	expected.RealityHandshakePort = config.DefaultRealityHandshakePort
+	expected.EnabledProtocols = []string{"anytls"}
+	expected.Ports = nodeapi.PortSet{AnyTLS: node.AnyTLSPort}
+	want, err := nodeapi.ProtocolStateRevision(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("normalized target revision=%q, want %q", got, want)
+	}
+}
+
+func TestValidateSpokeProtocolStateAcceptsLegacyDefaultHandshakePort(t *testing.T) {
+	node := nodes.Node{
+		Domain: "legacy.example.com", EnabledProtocols: []string{"hysteria2"},
+		Hysteria2Port: 9443, RealityHandshakePort: 0,
+	}
+	state := nodeapi.ProtocolStateResponse{
+		Domain: "legacy.example.com", EnabledProtocols: []string{"hysteria2"},
+		Ports:                nodeapi.PortSet{Hysteria2: 9443},
+		RealityHandshakePort: config.DefaultRealityHandshakePort,
+		Credentials:          nodeapi.ProtocolCredentials{HysteriaPassword: "legacy-password"},
+	}
+	revision, err := nodeapi.ProtocolStateRevision(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Revision = revision
+	if err := validateSpokeProtocolState(node, state); err != nil {
+		t.Fatalf("legacy default handshake port rejected: %v", err)
+	}
+	state.RealityHandshakePort = 8443
+	state.Revision, err = nodeapi.ProtocolStateRevision(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSpokeProtocolState(node, state); err == nil {
+		t.Fatal("non-default Agent handshake drift was accepted")
+	}
+}
+
+func TestSpokeProtocolEditRejectsStaleCredentialSnapshotBeforeMutation(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	node := nodes.Node{
+		ID: "abababababababababababababababab", Alias: "London", Domain: "uk.example.com",
+		WGIP: "10.90.0.2", Token: "token", Installed: true,
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 9443,
+		RealityVisionPort: 8443, RealityGRPCPort: 8444, TUICPort: 10443, AnyTLSPort: 11443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	withProtocolManagerDeps(t, layout)
+	pm := newProtocolManager()
+	pm.action = protocolActionEditSpoke
+	pm.editNodeID = node.ID
+	pm.cursor = 0
+	cmd := pm.startEditForm()
+	if cmd == nil || pm.phase != protocolPhaseLoadingSpokeState {
+		t.Fatalf("start editor load: cmd=%v phase=%v", cmd != nil, pm.phase)
+	}
+	_, _ = pm.Update(cmd())
+	if !pm.haveSpokeState || pm.phase != protocolPhaseForm {
+		t.Fatalf("open editor: state=%v phase=%v err=%q", pm.haveSpokeState, pm.phase, pm.fieldErr)
+	}
+	stale := pm.editSpokeState
+	stale.Credentials.HysteriaPassword += "-changed-elsewhere"
+	fetchSpokeProtocolState = func(context.Context, nodes.Node) (nodeapi.ProtocolStateResponse, error) {
+		return stale, nil
+	}
+	err := pm.applySpokeProtocol(context.Background(), &logWriter{ch: make(chan runMsg, 1)}, nil)
+	if err == nil || !strings.Contains(err.Error(), "changed after this form was opened") {
+		t.Fatalf("stale snapshot error = %v", err)
+	}
+	persisted, loadErr := nodes.Load(layout)
+	if loadErr != nil || len(persisted) != 1 || persisted[0].Hysteria2Port != node.Hysteria2Port {
+		t.Fatalf("registry mutated before stale-state rejection: %+v err=%v", persisted, loadErr)
+	}
+}
+
+func TestSpokeProtocolStateLoadCanBeCancelledWithoutApplyingStaleResult(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	node := nodes.Node{
+		ID: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", Alias: "London", Domain: "uk.example.com",
+		WGIP: "10.90.0.2", Installed: true,
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 9443,
+		RealityVisionPort: 8443, RealityGRPCPort: 8444, TUICPort: 10443, AnyTLSPort: 11443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	withProtocolManagerDeps(t, layout)
+	pm := newProtocolManager()
+	pm.action = protocolActionEditSpoke
+	pm.editNodeID = node.ID
+	pm.cursor = 0
+	cmd := pm.startEditForm()
+	if cmd == nil || pm.phase != protocolPhaseLoadingSpokeState {
+		t.Fatalf("start editor load: cmd=%v phase=%v", cmd != nil, pm.phase)
+	}
+	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if !done || pm.spokeStateStop != nil {
+		t.Fatalf("cancel load: done=%v cancel retained=%v", done, pm.spokeStateStop != nil)
+	}
+	_, _ = pm.Update(cmd())
+	if pm.haveSpokeState || pm.phase != protocolPhaseEditPick {
+		t.Fatalf("cancelled response mutated model: state=%v phase=%v", pm.haveSpokeState, pm.phase)
+	}
+}
+
+func TestSpokeProtocolStateLoadIgnoresEarlierRequestForSameTarget(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	node := nodes.Node{
+		ID: "edededededededededededededededed", Alias: "London", Domain: "uk.example.com",
+		WGIP: "10.90.0.2", Installed: true,
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 9443,
+		RealityVisionPort: 8443, RealityGRPCPort: 8444, TUICPort: 10443, AnyTLSPort: 11443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	withProtocolManagerDeps(t, layout)
+	pm := newProtocolManager()
+	pm.action = protocolActionEditSpoke
+	pm.editNodeID = node.ID
+	pm.cursor = 0
+
+	first := pm.startEditForm()
+	firstID := pm.spokeStateLoad
+	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyCtrlB})
+	if done || pm.phase != protocolPhaseEditPick {
+		t.Fatalf("back from first load: done=%v phase=%v", done, pm.phase)
+	}
+	second := pm.startEditForm()
+	secondID := pm.spokeStateLoad
+	if first == nil || second == nil || firstID == secondID {
+		t.Fatalf("load generations: first=%d second=%d", firstID, secondID)
+	}
+	_, _ = pm.Update(first())
+	if pm.phase != protocolPhaseLoadingSpokeState || pm.spokeStateStop == nil || pm.haveSpokeState {
+		t.Fatalf("old response interrupted newer load: phase=%v cancel=%v state=%v",
+			pm.phase, pm.spokeStateStop != nil, pm.haveSpokeState)
+	}
+	_, _ = pm.Update(second())
+	if pm.phase != protocolPhaseForm || !pm.haveSpokeState {
+		t.Fatalf("new response was not applied: phase=%v state=%v err=%q",
+			pm.phase, pm.haveSpokeState, pm.fieldErr)
 	}
 }
 
@@ -338,7 +675,7 @@ func TestSpokeProtocolTransactionPersistsSuccessfulApply(t *testing.T) {
 	}
 	if strings.Join(remote.EnabledProtocols, ",") != "vless-reality-grpc,anytls" ||
 		remote.RealityServerName != original.RealityServerName || remote.RealityGRPCPort != 18444 ||
-		remote.AnyTLSPort != 21443 {
+		remote.AnyTLSPort != 21443 || remote.ProtocolSettingsGeneration != 1 {
 		t.Fatalf("remote target = %+v", remote)
 	}
 	list, loadErr := nodes.Load(layout)
@@ -347,7 +684,8 @@ func TestSpokeProtocolTransactionPersistsSuccessfulApply(t *testing.T) {
 	}
 	got := list[0]
 	if strings.Join(got.EnabledProtocols, ",") != "vless-reality-grpc,anytls" ||
-		got.RealityServerName != original.RealityServerName || got.AnyTLSPort != 21443 {
+		got.RealityServerName != original.RealityServerName || got.AnyTLSPort != 21443 ||
+		got.ProtocolSettingsGeneration != 1 {
 		t.Fatalf("persisted protocol settings = %+v", got)
 	}
 	if got.RealityVisionPort != original.RealityVisionPort ||
@@ -434,6 +772,12 @@ func TestSpokeProtocolTransactionRollsBackRegistryAndRemote(t *testing.T) {
 		rolledBack.RealityVisionPort != original.RealityVisionPort {
 		t.Fatalf("remote rollback did not receive original settings: %+v", rolledBack)
 	}
+	if rolledBack.AgentVersion != "new-agent" ||
+		rolledBack.MonitorAlias != "updated concurrently" ||
+		rolledBack.RealityServerName != "concurrent.example.com" ||
+		rolledBack.Hysteria2Port != 29443 {
+		t.Fatalf("remote rollback discarded concurrent settings: %+v", rolledBack)
+	}
 	list, loadErr := nodes.Load(layout)
 	if loadErr != nil || len(list) != 1 {
 		t.Fatalf("load rolled-back registry: list=%+v err=%v", list, loadErr)
@@ -453,6 +797,135 @@ func TestSpokeProtocolTransactionRollsBackRegistryAndRemote(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].Status != "running" || events[1].Status != "ok" {
 		t.Fatalf("registry progress = %+v", events)
+	}
+}
+
+func TestSpokeProtocolRollbackPreservesNewerSamePortGeneration(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	original := nodes.Node{
+		ID: "acacacacacacacacacacacacacacacac", Alias: "London", Domain: "uk.example.com",
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 9443,
+		ProtocolSettingsGeneration: 10,
+	}
+	if err := nodes.Save(layout, []nodes.Node{original}); err != nil {
+		t.Fatal(err)
+	}
+	change, err := spokeProtocolPortRegistryChange(config.ProtocolHysteria2, map[string]string{
+		"hysteria2_port": "10443",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyErr := errors.New("injected post-apply failure")
+	var rollbackNode nodes.Node
+	err = applySpokeRegistryReconfigure(
+		context.Background(), layout, original.ID, io.Discard, nil, change,
+		func(_ context.Context, applied nodes.Node, _ io.Writer) error {
+			if applied.ProtocolSettingsGeneration != 11 || applied.Hysteria2Port != 10443 {
+				t.Fatalf("applied registry state = %+v", applied)
+			}
+			// A newer credential edit chose the same public port. The visible
+			// value alone cannot identify transaction ownership.
+			if err := nodes.Mutate(layout, original.ID, func(current *nodes.Node) error {
+				current.Hysteria2Port = 10443
+				current.ProtocolSettingsGeneration = 12
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return applyErr
+		},
+		func(_ context.Context, current nodes.Node, _ io.Writer) error {
+			rollbackNode = current
+			return nil
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), applyErr.Error()) {
+		t.Fatalf("transaction error = %v", err)
+	}
+	list, loadErr := nodes.Load(layout)
+	if loadErr != nil || len(list) != 1 {
+		t.Fatalf("load registry: %+v err=%v", list, loadErr)
+	}
+	if list[0].Hysteria2Port != 10443 || list[0].ProtocolSettingsGeneration != 12 {
+		t.Fatalf("older rollback overwrote newer same-port edit: %+v", list[0])
+	}
+	if rollbackNode.Hysteria2Port != 10443 || rollbackNode.ProtocolSettingsGeneration != 12 {
+		t.Fatalf("remote rollback did not receive concurrent registry state: %+v", rollbackNode)
+	}
+}
+
+func TestSpokeRegistryChangeRejectsUnknownGeneration(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	node := nodes.Node{
+		ID: "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc", Alias: "London",
+		Domain: "uk.example.com", EnabledProtocols: []string{"hysteria2"},
+		Hysteria2Port: 9443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	remoteCalled := false
+	err := applySpokeRegistryReconfigure(
+		context.Background(), layout, node.ID, io.Discard, nil,
+		spokeRegistryChange{
+			Detail:     "invalid generation",
+			Generation: spokeRegistryGeneration(99),
+			Apply:      func(*nodes.Node) error { return nil },
+			Restore:    func(*nodes.Node, nodes.Node, nodes.Node) {},
+		},
+		func(context.Context, nodes.Node, io.Writer) error {
+			remoteCalled = true
+			return nil
+		},
+		func(context.Context, nodes.Node, io.Writer) error { return nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "generation") {
+		t.Fatalf("unknown generation error = %v", err)
+	}
+	if remoteCalled {
+		t.Fatal("unknown generation reached the Agent")
+	}
+}
+
+func TestSpokeRegistryGenerationOverflowDoesNotPersistVisibleChange(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	node := nodes.Node{
+		ID: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", Alias: "London",
+		Domain: "uk.example.com", EnabledProtocols: []string{"hysteria2"},
+		Hysteria2Port: 9443, ProtocolSettingsGeneration: ^uint64(0),
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	change, err := spokeProtocolPortRegistryChange(config.ProtocolHysteria2, map[string]string{
+		"hysteria2_port": "10443",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteCalled := false
+	err = applySpokeRegistryReconfigure(
+		context.Background(), layout, node.ID, io.Discard, nil, change,
+		func(context.Context, nodes.Node, io.Writer) error {
+			remoteCalled = true
+			return nil
+		},
+		func(context.Context, nodes.Node, io.Writer) error { return nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "exhausted") {
+		t.Fatalf("overflow error = %v", err)
+	}
+	if remoteCalled {
+		t.Fatal("overflowed transaction reached the Agent")
+	}
+	list, loadErr := nodes.Load(layout)
+	if loadErr != nil || len(list) != 1 {
+		t.Fatalf("load registry: list=%+v err=%v", list, loadErr)
+	}
+	if list[0].Hysteria2Port != node.Hysteria2Port ||
+		list[0].ProtocolSettingsGeneration != node.ProtocolSettingsGeneration {
+		t.Fatalf("overflowed transaction persisted a partial change: %+v", list[0])
 	}
 }
 
@@ -477,11 +950,18 @@ func TestSpokeProtocolPortAndSNIChangesOwnOnlyTheirField(t *testing.T) {
 	if afterPort.Hysteria2Port != 19443 || afterPort.RealityServerName != original.RealityServerName {
 		t.Fatalf("port change touched unrelated fields: %+v", afterPort)
 	}
+	appliedPort := cloneSpokeNode(afterPort)
 	afterPort.RealityServerName = "concurrent.example.com"
-	portChange.Restore(&afterPort, original)
+	portChange.Restore(&afterPort, original, appliedPort)
 	if afterPort.Hysteria2Port != original.Hysteria2Port ||
 		afterPort.RealityServerName != "concurrent.example.com" {
 		t.Fatalf("port rollback touched unrelated fields: %+v", afterPort)
+	}
+	concurrentPort := cloneSpokeNode(appliedPort)
+	concurrentPort.Hysteria2Port = 29443
+	portChange.Restore(&concurrentPort, original, appliedPort)
+	if concurrentPort.Hysteria2Port != 29443 {
+		t.Fatalf("port rollback overwrote a concurrent owner: %+v", concurrentPort)
 	}
 
 	sniChange, err := spokeRealitySNIRegistryChange(map[string]string{
@@ -498,11 +978,18 @@ func TestSpokeProtocolPortAndSNIChangesOwnOnlyTheirField(t *testing.T) {
 		afterSNI.Hysteria2Port != original.Hysteria2Port {
 		t.Fatalf("SNI change touched unrelated fields: %+v", afterSNI)
 	}
+	appliedSNI := cloneSpokeNode(afterSNI)
 	afterSNI.Hysteria2Port = 29443
-	sniChange.Restore(&afterSNI, original)
+	sniChange.Restore(&afterSNI, original, appliedSNI)
 	if afterSNI.RealityServerName != original.RealityServerName ||
 		afterSNI.Hysteria2Port != 29443 {
 		t.Fatalf("SNI rollback touched unrelated fields: %+v", afterSNI)
+	}
+	concurrentSNI := cloneSpokeNode(appliedSNI)
+	concurrentSNI.RealityServerName = "newer.example.com"
+	sniChange.Restore(&concurrentSNI, original, appliedSNI)
+	if concurrentSNI.RealityServerName != "newer.example.com" {
+		t.Fatalf("SNI rollback overwrote a concurrent owner: %+v", concurrentSNI)
 	}
 }
 

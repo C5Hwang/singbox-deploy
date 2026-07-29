@@ -19,6 +19,7 @@ type Field struct {
 	Note      string
 	Options   []string
 	Multi     bool
+	Secret    bool
 	Skip      func(vals map[string]string) bool
 	NoteFunc  func(vals map[string]string) string
 	BadgeFunc func(vals map[string]string) string
@@ -50,28 +51,28 @@ func ProtocolInstallFieldsForProtocol(proto config.Protocol) []Field {
 	switch proto {
 	case config.ProtocolRealityVision:
 		return []Field{
-			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID (optional)", Note: "Blank generates a random UUID."},
+			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID (optional)", Note: "Blank generates a random UUID.", Secret: true},
 			{Key: "reality_vision_port", Label: "VLESS Reality Vision port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolRealityGRPC:
 		return []Field{
-			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID (optional)", Note: "Blank generates a random UUID."},
+			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID (optional)", Note: "Blank generates a random UUID.", Secret: true},
 			{Key: "reality_grpc_port", Label: "VLESS Reality gRPC port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolHysteria2:
 		return []Field{
-			{Key: "hysteria2_password", Label: "Hysteria2 password (optional)", Note: "Blank generates a random password."},
+			{Key: "hysteria2_password", Label: "Hysteria2 password (optional)", Note: "Blank generates a random password.", Secret: true},
 			{Key: "hysteria2_port", Label: "Hysteria2 port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolTUIC:
 		return []Field{
-			{Key: "tuic_uuid", Label: "TUIC UUID (optional)", Note: "Blank generates a random UUID."},
-			{Key: "tuic_password", Label: "TUIC password (optional)", Note: "Blank generates a random password."},
+			{Key: "tuic_uuid", Label: "TUIC UUID (optional)", Note: "Blank generates a random UUID.", Secret: true},
+			{Key: "tuic_password", Label: "TUIC password (optional)", Note: "Blank generates a random password.", Secret: true},
 			{Key: "tuic_port", Label: "TUIC port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	case config.ProtocolAnyTLS:
 		return []Field{
-			{Key: "anytls_password", Label: "AnyTLS password (optional)", Note: "Blank generates a random password."},
+			{Key: "anytls_password", Label: "AnyTLS password (optional)", Note: "Blank generates a random password.", Secret: true},
 			{Key: "anytls_port", Label: "AnyTLS port (optional)", Note: "Blank chooses a random listen port."},
 		}
 	default:
@@ -83,28 +84,28 @@ func ProtocolEditFieldsForProtocol(cfg deploy.Config, proto config.Protocol) []F
 	switch proto {
 	case config.ProtocolRealityVision:
 		return []Field{
-			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID", Def: cfg.Creds.RealityVisionUUID},
+			{Key: "reality_vision_uuid", Label: "VLESS Reality Vision UUID", Def: cfg.Creds.RealityVisionUUID, Secret: true},
 			{Key: "reality_vision_port", Label: "VLESS Reality Vision port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	case config.ProtocolRealityGRPC:
 		return []Field{
-			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID", Def: cfg.Creds.RealityGRPCUUID},
+			{Key: "reality_grpc_uuid", Label: "VLESS Reality gRPC UUID", Def: cfg.Creds.RealityGRPCUUID, Secret: true},
 			{Key: "reality_grpc_port", Label: "VLESS Reality gRPC port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	case config.ProtocolHysteria2:
 		return []Field{
-			{Key: "hysteria2_password", Label: "Hysteria2 password", Def: cfg.Creds.HysteriaPassword},
+			{Key: "hysteria2_password", Label: "Hysteria2 password", Def: cfg.Creds.HysteriaPassword, Secret: true},
 			{Key: "hysteria2_port", Label: "Hysteria2 port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	case config.ProtocolTUIC:
 		return []Field{
-			{Key: "tuic_uuid", Label: "TUIC UUID", Def: cfg.Creds.TUICUUID},
-			{Key: "tuic_password", Label: "TUIC password", Def: cfg.Creds.TUICPassword},
+			{Key: "tuic_uuid", Label: "TUIC UUID", Def: cfg.Creds.TUICUUID, Secret: true},
+			{Key: "tuic_password", Label: "TUIC password", Def: cfg.Creds.TUICPassword, Secret: true},
 			{Key: "tuic_port", Label: "TUIC port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	case config.ProtocolAnyTLS:
 		return []Field{
-			{Key: "anytls_password", Label: "AnyTLS password", Def: cfg.Creds.AnyTLSPassword},
+			{Key: "anytls_password", Label: "AnyTLS password", Def: cfg.Creds.AnyTLSPassword, Secret: true},
 			{Key: "anytls_port", Label: "AnyTLS port", Def: PortDefault(PortForProtocol(proto, cfg.Ports))},
 		}
 	default:

@@ -42,6 +42,10 @@ const (
 type agentHandler struct {
 	layout  paths.Layout
 	monitor *monitorSupervisor
+	// systemdDir is a test seam for protocol reconfigure integration tests.
+	// Production leaves it empty and deploy.Orchestrator uses the system path.
+	systemdDir    string
+	nginxConfPath string
 
 	mutationOnce        sync.Once
 	mutationGate        chan struct{}
@@ -108,6 +112,41 @@ func (h *agentHandler) Health() nodeapi.HealthResponse {
 	}
 }
 
+func (h *agentHandler) ProtocolState(ctx context.Context) (nodeapi.ProtocolStateResponse, error) {
+	if err := h.beginMutation(nonNilContext(ctx)); err != nil {
+		return nodeapi.ProtocolStateResponse{}, err
+	}
+	defer h.endMutation()
+	return h.protocolStateUnlocked()
+}
+
+func (h *agentHandler) protocolStateUnlocked() (nodeapi.ProtocolStateResponse, error) {
+	cfg, err := deploy.LoadProtocolConfig(h.layout)
+	if err != nil {
+		return nodeapi.ProtocolStateResponse{}, fmt.Errorf("load protocol state: %w", err)
+	}
+	response := nodeapi.ProtocolStateResponse{
+		Domain:               cfg.Domain,
+		RealityServerName:    cfg.RealityServerName,
+		RealityHandshakePort: cfg.RealityHandshakePort,
+		EnabledProtocols:     protocolNamesForState(cfg.Enabled),
+		Ports: nodeapi.PortSet{
+			RealityVision: cfg.Ports.RealityVision,
+			RealityGRPC:   cfg.Ports.RealityGRPC,
+			Hysteria2:     cfg.Ports.Hysteria2,
+			TUIC:          cfg.Ports.TUIC,
+			AnyTLS:        cfg.Ports.AnyTLS,
+		},
+		Credentials: protocolCredentialsFromDeploy(cfg.Creds),
+	}
+	revision, err := nodeapi.ProtocolStateRevision(response)
+	if err != nil {
+		return nodeapi.ProtocolStateResponse{}, fmt.Errorf("revision protocol state: %w", err)
+	}
+	response.Revision = revision
+	return response, nil
+}
+
 func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, log io.Writer) error {
 	ctx = nonNilContext(ctx)
 	if err := h.beginMutation(ctx); err != nil {
@@ -135,10 +174,28 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	if err := nodeapi.ValidateInstallSingBoxVersion(req); err != nil {
 		return err
 	}
-	cfg, err := h.buildSpokeConfig(req)
+	if req.ExpectedProtocolRevision != "" {
+		current, err := h.protocolStateUnlocked()
+		if err != nil {
+			return fmt.Errorf("check protocol revision precondition: %w", err)
+		}
+		if current.Revision != req.ExpectedProtocolRevision {
+			return nodeapi.ProtocolRevisionConflict()
+		}
+	}
+	var (
+		cfg deploy.Config
+		err error
+	)
+	if req.ProtocolPatch != nil {
+		cfg, err = h.buildProtocolPatchConfig(*req.ProtocolPatch)
+	} else {
+		cfg, err = h.buildSpokeConfig(req)
+	}
 	if err != nil {
 		return err
 	}
+	protocolOnly := req.ProtocolPatch != nil || req.ReplaceProtocolState
 	host, err := system.DetectHost()
 	if err != nil {
 		return fmt.Errorf("detect host: %w", err)
@@ -149,17 +206,25 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 		}
 	}
 	runner := h.commandRunner(ctx, log)
-	// Remove stale Hub-only services left by an interrupted older deployment
-	// before activating the spoke. A full standalone deployment was rejected
-	// above, so this cleanup cannot destroy a live migration source.
-	disableLegacyHubServices(runner, "/etc/systemd/system")
+	if !protocolOnly {
+		// Remove stale Hub-only services left by an interrupted older
+		// deployment before activating the spoke. A protocol-only patch must
+		// not touch unrelated service state.
+		disableLegacyHubServices(runner, "/etc/systemd/system")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := h.writePushedCertificate(req.Domain, req.CertificatePEM, req.PrivateKeyPEM); err != nil {
-		return fmt.Errorf("write certificate: %w", err)
+	if !protocolOnly {
+		if err := h.writePushedCertificate(req.Domain, req.CertificatePEM, req.PrivateKeyPEM); err != nil {
+			return fmt.Errorf("write certificate: %w", err)
+		}
 	}
-	orch := h.newSpokeOrchestrator(ctx, req, host, runner, log)
+	orchRunner := runner
+	if protocolOnly {
+		orchRunner = protocolOnlyRunner{Runner: runner}
+	}
+	orch := h.newSpokeOrchestrator(ctx, req, host, orchRunner, log)
 	applyErr := runSpokeDeployment(
 		req.ConfigOnly,
 		func() error { return orch.Run(ctx, cfg) },
@@ -167,6 +232,9 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	)
 	if applyErr != nil {
 		return applyErr
+	}
+	if protocolOnly {
+		return nil
 	}
 	if err := removeLegacyHubArtifacts(h.layout); err != nil {
 		return fmt.Errorf("remove legacy standalone management artifacts: %w", err)
@@ -180,6 +248,20 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	return nil
 }
 
+// protocolOnlyRunner suppresses the systemd manager reload emitted by the
+// generic reconfigure path. A protocol-only change still restarts sing-box and
+// reloads Nginx, but must not mutate unrelated service-manager state.
+type protocolOnlyRunner struct {
+	system.Runner
+}
+
+func (r protocolOnlyRunner) Run(command system.Command) error {
+	if command.Name == "systemctl" && len(command.Args) == 1 && command.Args[0] == "daemon-reload" {
+		return nil
+	}
+	return r.Runner.Run(command)
+}
+
 func (h *agentHandler) newSpokeOrchestrator(
 	_ context.Context,
 	req nodeapi.InstallRequest,
@@ -189,10 +271,12 @@ func (h *agentHandler) newSpokeOrchestrator(
 ) *deploy.Orchestrator {
 	pinnedVersion := req.SingBoxVersion
 	return &deploy.Orchestrator{
-		Runner: runner,
-		Layout: h.layout,
-		GOOS:   "linux",
-		GOARCH: host.Arch,
+		Runner:        runner,
+		Layout:        h.layout,
+		SystemdDir:    h.systemdDir,
+		NginxConfPath: h.nginxConfPath,
+		GOOS:          "linux",
+		GOARCH:        host.Arch,
 		// A full spoke install must resolve to the exact hub-selected tag. This
 		// fixed resolver deliberately performs no "latest" release lookup.
 		LatestSingBox: func(context.Context) (string, error) {
@@ -1231,12 +1315,22 @@ func (h *agentHandler) writePushedCertificate(domain, certPEM, keyPEM string) er
 // buildSpokeConfig assembles the spoke deploy.Config from the hub's request,
 // preserving generated credentials and the subscription salt across edits.
 func (h *agentHandler) buildSpokeConfig(req nodeapi.InstallRequest) (deploy.Config, error) {
+	if req.ReplaceProtocolState {
+		if err := nodeapi.ValidateProtocolStateReplacement(req); err != nil {
+			return deploy.Config{}, err
+		}
+	}
 	var creds deploy.Credentials
 	var salt string
-	if existing, err := deploy.LoadProtocolConfig(h.layout); err == nil {
+	existing, loadErr := deploy.LoadProtocolConfig(h.layout)
+	if loadErr == nil {
 		creds = existing.Creds
 		salt = existing.Salt
 	} else {
+		if req.ConfigOnly {
+			return deploy.Config{}, fmt.Errorf("load current config before reconfigure: %w", loadErr)
+		}
+		var err error
 		creds, err = deploy.GenerateCredentials()
 		if err != nil {
 			return deploy.Config{}, err
@@ -1262,7 +1356,7 @@ func (h *agentHandler) buildSpokeConfig(req nodeapi.InstallRequest) (deploy.Conf
 	if monitorPort <= 0 {
 		monitorPort = deploy.DefaultMonitorPort
 	}
-	return deploy.Config{
+	cfg := deploy.Config{
 		Domain:               req.Domain,
 		SpokeMode:            true,
 		Enabled:              enabled,
@@ -1296,7 +1390,101 @@ func (h *agentHandler) buildSpokeConfig(req nodeapi.InstallRequest) (deploy.Conf
 		OS:       host.OS,
 		Firewall: host.Firewall,
 		Creds:    creds,
-	}, nil
+	}
+	if req.ConfigOnly && !req.ReplaceProtocolState {
+		cfg.Enabled = append([]config.Protocol(nil), existing.Enabled...)
+		cfg.Ports = existing.Ports
+		cfg.RealityServerName = existing.RealityServerName
+		cfg.RealityHandshakePort = existing.RealityHandshakePort
+		cfg.Creds = existing.Creds
+	} else if req.ConfigOnly && req.ReplaceProtocolState {
+		// A complete protocol replacement still owns only protocol fields.
+		// Begin from current Agent state so a concurrent monitor/display/site
+		// update cannot be overwritten by a stale Hub node snapshot.
+		replacement := existing
+		replacement.Enabled = append([]config.Protocol(nil), cfg.Enabled...)
+		replacement.Ports = cfg.Ports
+		replacement.RealityServerName = cfg.RealityServerName
+		replacement.RealityHandshakePort = cfg.RealityHandshakePort
+		replacement.SpokeMode = true
+		replacement.OS = host.OS
+		replacement.Firewall = host.Firewall
+		cfg = replacement
+	}
+	return cfg, nil
+}
+
+// buildProtocolPatchConfig starts from the Agent's current persisted state and
+// changes only the selected protocol's owned credential fields and listen
+// port. In particular it never copies general reconfigure fields supplied by
+// the Hub request.
+func (h *agentHandler) buildProtocolPatchConfig(patch nodeapi.ProtocolPatch) (deploy.Config, error) {
+	if err := nodeapi.ValidateProtocolPatch(patch); err != nil {
+		return deploy.Config{}, err
+	}
+	cfg, err := deploy.LoadProtocolConfig(h.layout)
+	if err != nil {
+		return deploy.Config{}, fmt.Errorf("load current config for protocol patch: %w", err)
+	}
+	target := config.Protocol(patch.Protocol)
+	installed := false
+	for _, protocol := range cfg.Enabled {
+		if protocol == target {
+			installed = true
+			break
+		}
+	}
+	if !installed {
+		return deploy.Config{}, fmt.Errorf("cannot patch protocol %q because it is not installed", patch.Protocol)
+	}
+	switch target {
+	case config.ProtocolRealityVision:
+		cfg.Creds.RealityVisionUUID = patch.Credentials.RealityVisionUUID
+		cfg.Ports.RealityVision = patch.Port
+	case config.ProtocolRealityGRPC:
+		cfg.Creds.RealityGRPCUUID = patch.Credentials.RealityGRPCUUID
+		cfg.Ports.RealityGRPC = patch.Port
+	case config.ProtocolHysteria2:
+		cfg.Creds.HysteriaPassword = patch.Credentials.HysteriaPassword
+		cfg.Ports.Hysteria2 = patch.Port
+	case config.ProtocolTUIC:
+		cfg.Creds.TUICUUID = patch.Credentials.TUICUUID
+		cfg.Creds.TUICPassword = patch.Credentials.TUICPassword
+		cfg.Ports.TUIC = patch.Port
+	case config.ProtocolAnyTLS:
+		cfg.Creds.AnyTLSPassword = patch.Credentials.AnyTLSPassword
+		cfg.Ports.AnyTLS = patch.Port
+	}
+	host, err := system.DetectHost()
+	if err != nil {
+		return deploy.Config{}, fmt.Errorf("detect host for protocol patch: %w", err)
+	}
+	cfg.SpokeMode = true
+	cfg.OS = host.OS
+	cfg.Firewall = host.Firewall
+	return cfg, nil
+}
+
+func protocolCredentialsFromDeploy(creds deploy.Credentials) nodeapi.ProtocolCredentials {
+	return nodeapi.ProtocolCredentials{
+		RealityVisionUUID: creds.RealityVisionUUID,
+		RealityGRPCUUID:   creds.RealityGRPCUUID,
+		HysteriaPassword:  creds.HysteriaPassword,
+		TUICUUID:          creds.TUICUUID,
+		TUICPassword:      creds.TUICPassword,
+		AnyTLSPassword:    creds.AnyTLSPassword,
+		RealityPrivateKey: creds.RealityPrivateKey,
+		RealityPublicKey:  creds.RealityPublicKey,
+		RealityShortID:    creds.RealityShortID,
+	}
+}
+
+func protocolNamesForState(protocols []config.Protocol) []string {
+	names := make([]string, 0, len(protocols))
+	for _, protocol := range protocols {
+		names = append(names, string(protocol))
+	}
+	return names
 }
 
 func protocolsFromStrings(values []string) []config.Protocol {

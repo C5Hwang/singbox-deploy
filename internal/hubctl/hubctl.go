@@ -425,17 +425,30 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 	return node, nil
 }
 
-// installNode issues the node's certificate and pushes a full install.
+// installNode pushes a full install or a certificate-independent settings
+// reconfiguration. Only the full-install path issues and distributes a pair.
 func (c *Controller) installNode(ctx context.Context, node nodes.Node, log io.Writer, configOnly bool) error {
-	fmt.Fprintf(log, "ensuring certificate for %s...\n", node.Domain)
-	if _, issued, err := c.CertManager.EnsureIssued(ctx, node.Domain, "", certmgr.DefaultRenewBefore); err != nil {
-		return fmt.Errorf("ensure certificate: %w", err)
-	} else if issued {
-		fmt.Fprintf(log, "issued a fresh DNS-01 certificate for %s\n", node.Domain)
-	}
-	req, err := c.buildInstallRequest(node)
-	if err != nil {
-		return err
+	var (
+		req nodeapi.InstallRequest
+		err error
+	)
+	if configOnly {
+		// Certificate renewal and distribution have their own transactional
+		// path. Keeping certificates out of settings reconfiguration prevents
+		// a request prepared before a renewal from writing the old pair back
+		// after the renewal has already reached the Agent.
+		req = c.buildNodeRequest(node)
+	} else {
+		fmt.Fprintf(log, "ensuring certificate for %s...\n", node.Domain)
+		if _, issued, issueErr := c.CertManager.EnsureIssued(ctx, node.Domain, "", certmgr.DefaultRenewBefore); issueErr != nil {
+			return fmt.Errorf("ensure certificate: %w", issueErr)
+		} else if issued {
+			fmt.Fprintf(log, "issued a fresh DNS-01 certificate for %s\n", node.Domain)
+		}
+		req, err = c.buildInstallRequest(node)
+		if err != nil {
+			return err
+		}
 	}
 	req.ConfigOnly = configOnly
 	fmt.Fprintf(log, "installing sing-box on %s...\n", node.EffectiveAlias())
@@ -455,7 +468,67 @@ func (c *Controller) installNode(ctx context.Context, node nodes.Node, log io.Wr
 // operator edited its subscription or monitor settings from the hub), then
 // refreshes the hub's combined subscription to reflect the change.
 func (c *Controller) Reconfigure(ctx context.Context, node nodes.Node, log io.Writer) error {
+	return c.reconfigure(ctx, node, log, nil, false, "")
+}
+
+// ProtocolState reads the Agent's current editable protocol state over the
+// authenticated WireGuard control path.
+func (c *Controller) ProtocolState(ctx context.Context, node nodes.Node) (nodeapi.ProtocolStateResponse, error) {
 	c.defaults()
+	return c.NewClient(node).ProtocolState(ctx)
+}
+
+// PatchProtocolRevision applies one protocol's credentials and listen port
+// without shipping a complete spoke configuration or certificate. The Agent
+// compares expectedRevision while holding its mutation gate, then merges the
+// patch into its current local configuration so concurrent monitor, display,
+// certificate, and unrelated protocol changes cannot be overwritten.
+func (c *Controller) PatchProtocolRevision(
+	ctx context.Context,
+	node nodes.Node,
+	patch nodeapi.ProtocolPatch,
+	expectedRevision string,
+	log io.Writer,
+) error {
+	if err := nodeapi.ValidateProtocolPatch(patch); err != nil {
+		return err
+	}
+	if err := nodeapi.ValidateProtocolRevision(expectedRevision); err != nil {
+		return err
+	}
+	return c.reconfigure(ctx, node, log, &patch, false, expectedRevision)
+}
+
+// ReplaceProtocolStateRevision applies the complete non-secret protocol
+// selection, ports, and shared Reality settings stored in node. Credentials
+// remain Agent-owned. The revision precondition prevents an older full
+// protocol form from overwriting a newer single-protocol patch.
+func (c *Controller) ReplaceProtocolStateRevision(
+	ctx context.Context,
+	node nodes.Node,
+	expectedRevision string,
+	log io.Writer,
+) error {
+	if err := nodeapi.ValidateProtocolRevision(expectedRevision); err != nil {
+		return err
+	}
+	return c.reconfigure(ctx, node, log, nil, true, expectedRevision)
+}
+
+func (c *Controller) reconfigure(
+	ctx context.Context,
+	node nodes.Node,
+	log io.Writer,
+	protocolPatch *nodeapi.ProtocolPatch,
+	replaceProtocolState bool,
+	expectedProtocolRevision string,
+) error {
+	c.defaults()
+	// A complete protocol replacement must apply exactly the registry snapshot
+	// owned by its calling transaction. Connection and status fields are
+	// reloaded below, but a later transaction's not-yet-applied protocol intent
+	// must not be absorbed into this request.
+	desiredProtocolNode := node
 	var checked nodes.Node
 	return deploy.RunSteps(ctx, c.Progress, []deploy.Step{
 		{
@@ -471,8 +544,47 @@ func (c *Controller) Reconfigure(ctx context.Context, node nodes.Node, log io.Wr
 			Label:  "Spoke configuration",
 			Detail: "apply the requested settings over WireGuard",
 			Run: func(ctx context.Context) error {
+				// Reload after health/version reconciliation. Settings
+				// transactions persist their owned registry fields before
+				// reaching the Agent, so carrying the caller's older snapshot
+				// here could undo a transaction that committed while health
+				// checking was in progress.
+				registered, err := nodes.Load(c.Layout)
+				if err != nil {
+					return fmt.Errorf("reload spoke registry before apply: %w", err)
+				}
+				found := false
+				for _, current := range registered {
+					if current.ID == node.ID {
+						node = current
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("node %s was removed before reconfigure", node.ID)
+				}
 				node.AgentVersion = checked.AgentVersion
 				node.LastSeen = checked.LastSeen
+				if protocolPatch != nil {
+					req := nodeapi.InstallRequest{
+						ConfigOnly:               true,
+						ProtocolPatch:            protocolPatch,
+						ExpectedProtocolRevision: expectedProtocolRevision,
+					}
+					fmt.Fprintf(log, "patching %s protocol settings on %s...\n", protocolPatch.Protocol, node.EffectiveAlias())
+					return c.NewClient(node).Install(ctx, req, log)
+				}
+				if replaceProtocolState {
+					desired := node
+					copyNodeProtocolState(&desired, desiredProtocolNode)
+					req := c.buildNodeRequest(desired)
+					req.ConfigOnly = true
+					req.ReplaceProtocolState = true
+					req.ExpectedProtocolRevision = expectedProtocolRevision
+					fmt.Fprintf(log, "replacing protocol settings on %s...\n", node.EffectiveAlias())
+					return c.NewClient(node).Install(ctx, req, log)
+				}
 				return c.installNode(ctx, node, log, true)
 			},
 		},
@@ -484,7 +596,6 @@ func (c *Controller) Reconfigure(ctx context.Context, node nodes.Node, log io.Wr
 					current.Installed = true
 					current.AgentVersion = checked.AgentVersion
 					current.LastSeen = checked.LastSeen
-					current.PendingCertificate = false
 					return nil
 				})
 			},
@@ -494,12 +605,26 @@ func (c *Controller) Reconfigure(ctx context.Context, node nodes.Node, log io.Wr
 			Detail: "republish the aggregated subscription",
 			Run: func(ctx context.Context) error {
 				if err := c.RefreshSubscriptions(ctx); err != nil {
+					if protocolPatch != nil || replaceProtocolState {
+						return fmt.Errorf("refresh subscriptions after protocol change: %w", err)
+					}
 					fmt.Fprintf(log, "warning: subscription refresh had issues: %v\n", err)
 				}
 				return nil
 			},
 		},
 	})
+}
+
+func copyNodeProtocolState(dst *nodes.Node, src nodes.Node) {
+	dst.RealityServerName = src.RealityServerName
+	dst.RealityHandshakePort = src.RealityHandshakePort
+	dst.EnabledProtocols = append([]string(nil), src.EnabledProtocols...)
+	dst.RealityVisionPort = src.RealityVisionPort
+	dst.RealityGRPCPort = src.RealityGRPCPort
+	dst.Hysteria2Port = src.Hysteria2Port
+	dst.TUICPort = src.TUICPort
+	dst.AnyTLSPort = src.AnyTLSPort
 }
 
 // PushCert ships the node's current certificate pair to its agent, used after
@@ -956,6 +1081,13 @@ func (c *Controller) buildInstallRequest(node nodes.Node) (nodeapi.InstallReques
 	if err != nil {
 		return nodeapi.InstallRequest{}, err
 	}
+	req := c.buildNodeRequest(node)
+	req.CertificatePEM = string(certPEM)
+	req.PrivateKeyPEM = string(keyPEM)
+	return req, nil
+}
+
+func (c *Controller) buildNodeRequest(node nodes.Node) nodeapi.InstallRequest {
 	return nodeapi.InstallRequest{
 		InstallTransactionID: node.ID,
 		SingBoxVersion:       strings.TrimSpace(c.ExpectedCoreVersion),
@@ -981,9 +1113,7 @@ func (c *Controller) buildInstallRequest(node nodes.Node) (nodeapi.InstallReques
 		TrafficTotalLimitBytes: node.TrafficTotalLimitBytes,
 		ResetDay:               node.ResetDay,
 		ResetHour:              node.ResetHour,
-		CertificatePEM:         string(certPEM),
-		PrivateKeyPEM:          string(keyPEM),
-	}, nil
+	}
 }
 
 func (c *Controller) expectedCoreVersion(ctx context.Context) (string, error) {

@@ -3,14 +3,18 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
+	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
+	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/protocol"
@@ -24,6 +28,7 @@ const (
 	protocolPhaseAction protocolPhase = iota
 	protocolPhaseSelect
 	protocolPhaseEditPick
+	protocolPhaseLoadingSpokeState
 	protocolPhaseForm
 	protocolPhaseConfirm
 	protocolPhaseRunning
@@ -48,9 +53,25 @@ var (
 	updateProtocolsRun           = protocol.Update
 	refreshProtocolSubscriptions = refreshHubSubscriptions
 	applySpokeProtocolRun        = (*protocolManager).applySpokeProtocol
+	fetchSpokeProtocolState      = func(ctx context.Context, node nodes.Node) (nodeapi.ProtocolStateResponse, error) {
+		ctrl := &hubctl.Controller{Layout: protocolUILayout(), ExpectedVersion: toolVersion}
+		checked, err := ctrl.CheckHealth(ctx, node, io.Discard)
+		if err != nil {
+			return nodeapi.ProtocolStateResponse{}, fmt.Errorf("reconcile Agent version: %w", err)
+		}
+		return ctrl.ProtocolState(ctx, checked)
+	}
 )
 
 type protocolActionItem = actionItem[protocolAction]
+
+type spokeProtocolStateMsg struct {
+	loadID uint64
+	nodeID string
+	proto  config.Protocol
+	state  nodeapi.ProtocolStateResponse
+	err    error
+}
 
 type protocolManager struct {
 	phase  protocolPhase
@@ -69,8 +90,12 @@ type protocolManager struct {
 	selected map[string]bool
 	parameterForm
 
-	editProto  config.Protocol
-	editNodeID string
+	editProto      config.Protocol
+	editNodeID     string
+	editSpokeState nodeapi.ProtocolStateResponse
+	haveSpokeState bool
+	spokeStateStop context.CancelFunc
+	spokeStateLoad uint64
 
 	commandRun
 	result deploy.Config
@@ -115,6 +140,8 @@ func (pm *protocolManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		pm.setSize(msg.Width, msg.Height)
+	case spokeProtocolStateMsg:
+		pm.handleSpokeProtocolState(msg)
 	case runMsg:
 		return pm.handleRun(msg), false
 	case tea.KeyMsg:
@@ -179,8 +206,7 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
 			Move: pm.moveInstalled,
 			Confirm: func() (tea.Cmd, bool) {
-				pm.startEditForm()
-				return nil, false
+				return pm.startEditForm(), false
 			},
 			Back: func() (tea.Cmd, bool) {
 				if pm.action == protocolActionEditSpoke {
@@ -198,6 +224,17 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if handled {
 			return cmd, done
 		}
+	case protocolPhaseLoadingSpokeState:
+		switch {
+		case isSelectionBackKey(msg):
+			pm.cancelSpokeStateLoad()
+			pm.phase = protocolPhaseEditPick
+			pm.fieldErr = ""
+		case msg.String() == "esc", isSelectionCancelKey(msg):
+			pm.cancelSpokeStateLoad()
+			pm.phase = protocolPhaseEditPick
+			return nil, true
+		}
 	case protocolPhaseForm:
 		cmd, done, handled := pm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
@@ -210,6 +247,13 @@ func (pm *protocolManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 						pm.fieldErr = "selected spoke no longer exists"
 					}
 					return
+				}
+				if pm.action == protocolActionEditSpoke {
+					if _, _, err := spokeProtocolEditRegistryChange(pm.editProto, pm.values); err != nil {
+						pm.fieldErr = err.Error()
+						pm.parameterForm.backToLastField()
+						return
+					}
 				}
 				pm.phase = protocolPhaseConfirm
 			},
@@ -264,6 +308,9 @@ func (pm *protocolManager) moveAction(delta int) {
 func (pm *protocolManager) activateAction() {
 	pm.fieldErr = ""
 	pm.editNodeID = ""
+	pm.cancelSpokeStateLoad()
+	pm.haveSpokeState = false
+	pm.editSpokeState = nodeapi.ProtocolStateResponse{}
 	actions := pm.actions()
 	idx, ok := selectedIndex(pm.cursor, len(actions))
 	if !ok {
@@ -352,28 +399,74 @@ func (pm *protocolManager) prepareChangeConfirm() {
 	pm.startForm(fields)
 }
 
-func (pm *protocolManager) startEditForm() {
+func (pm *protocolManager) startEditForm() tea.Cmd {
 	if !pm.canApply() {
 		pm.fieldErr = pm.applyBlocker()
-		return
+		return nil
 	}
 	installed := pm.installedProtocols()
 	idx, ok := selectedIndex(pm.cursor, len(installed))
 	if !ok {
 		pm.fieldErr = "no installed protocols"
-		return
+		return nil
 	}
 	pm.editProto = installed[idx]
 	if pm.action == protocolActionEditSpoke {
 		node, ok := pm.editSpokeNode()
 		if !ok {
 			pm.fieldErr = "selected spoke no longer exists"
-			return
+			return nil
 		}
-		pm.startSpokeForm([]field{spokePortEditField(pm.editProto, node)}, spokeProtocolValues(node))
-		return
+		pm.cancelSpokeStateLoad()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		pm.spokeStateStop = cancel
+		pm.haveSpokeState = false
+		pm.editSpokeState = nodeapi.ProtocolStateResponse{}
+		pm.phase = protocolPhaseLoadingSpokeState
+		loadID, nodeID, proto := pm.spokeStateLoad, node.ID, pm.editProto
+		return func() tea.Msg {
+			state, err := fetchSpokeProtocolState(ctx, node)
+			return spokeProtocolStateMsg{loadID: loadID, nodeID: nodeID, proto: proto, state: state, err: err}
+		}
 	}
 	pm.startForm(pm.editFields(pm.editProto))
+	return nil
+}
+
+func (pm *protocolManager) handleSpokeProtocolState(msg spokeProtocolStateMsg) {
+	if pm.phase != protocolPhaseLoadingSpokeState ||
+		msg.loadID != pm.spokeStateLoad ||
+		msg.nodeID != pm.editNodeID || msg.proto != pm.editProto {
+		return
+	}
+	pm.cancelSpokeStateLoad()
+	if msg.err != nil {
+		pm.phase = protocolPhaseEditPick
+		pm.fieldErr = "read current spoke protocol settings: " + msg.err.Error()
+		return
+	}
+	node, ok := pm.editSpokeNode()
+	if !ok {
+		pm.phase = protocolPhaseEditPick
+		pm.fieldErr = "selected spoke no longer exists"
+		return
+	}
+	if err := validateSpokeProtocolState(node, msg.state); err != nil {
+		pm.phase = protocolPhaseEditPick
+		pm.fieldErr = err.Error()
+		return
+	}
+	pm.editSpokeState = msg.state
+	pm.haveSpokeState = true
+	pm.startSpokeForm(spokeProtocolEditFields(pm.editProto), spokeProtocolEditValues(node, msg.state))
+}
+
+func (pm *protocolManager) cancelSpokeStateLoad() {
+	if pm.spokeStateStop != nil {
+		pm.spokeStateStop()
+		pm.spokeStateStop = nil
+	}
+	pm.spokeStateLoad++
 }
 
 func (pm *protocolManager) startRealitySNIForm() {
@@ -446,6 +539,40 @@ func spokePortEditField(proto config.Protocol, node nodes.Node) field {
 	}
 }
 
+func spokeProtocolEditFields(proto config.Protocol) []field {
+	port := field{
+		key: portFieldKey(proto), label: string(proto) + " listen port",
+		note: "Public listen port for this protocol.",
+	}
+	secret := func(key, label string) field {
+		return field{key: key, label: label, secret: true, note: "Current value is loaded over the authenticated WireGuard Agent connection and remains masked."}
+	}
+	switch proto {
+	case config.ProtocolRealityVision:
+		return []field{
+			secret("reality_vision_uuid", "VLESS Reality Vision UUID"),
+			port,
+		}
+	case config.ProtocolRealityGRPC:
+		return []field{
+			secret("reality_grpc_uuid", "VLESS Reality gRPC UUID"),
+			port,
+		}
+	case config.ProtocolHysteria2:
+		return []field{secret("hysteria2_password", "Hysteria2 password"), port}
+	case config.ProtocolTUIC:
+		return []field{
+			secret("tuic_uuid", "TUIC UUID"),
+			secret("tuic_password", "TUIC password"),
+			port,
+		}
+	case config.ProtocolAnyTLS:
+		return []field{secret("anytls_password", "AnyTLS password"), port}
+	default:
+		return nil
+	}
+}
+
 func spokeProtocolValues(node nodes.Node) map[string]string {
 	monitorPort := node.MonitorPort
 	if monitorPort <= 0 {
@@ -462,6 +589,43 @@ func spokeProtocolValues(node nodes.Node) map[string]string {
 		"monitor":             yesNoString(node.Monitor),
 		"monitor_port":        strconv.Itoa(monitorPort),
 	}
+}
+
+func spokeProtocolEditValues(node nodes.Node, state nodeapi.ProtocolStateResponse) map[string]string {
+	values := spokeProtocolValues(node)
+	values["reality_sni"] = state.RealityServerName
+	values["reality_handshake_port"] = strconv.Itoa(state.RealityHandshakePort)
+	values["reality_vision_uuid"] = state.Credentials.RealityVisionUUID
+	values["reality_grpc_uuid"] = state.Credentials.RealityGRPCUUID
+	values["hysteria2_password"] = state.Credentials.HysteriaPassword
+	values["tuic_uuid"] = state.Credentials.TUICUUID
+	values["tuic_password"] = state.Credentials.TUICPassword
+	values["anytls_password"] = state.Credentials.AnyTLSPassword
+	values["reality_private_key"] = state.Credentials.RealityPrivateKey
+	values["reality_public_key"] = state.Credentials.RealityPublicKey
+	values["reality_short_id"] = state.Credentials.RealityShortID
+	return values
+}
+
+func validateSpokeProtocolState(node nodes.Node, state nodeapi.ProtocolStateResponse) error {
+	if state.Domain != node.Domain {
+		return fmt.Errorf("spoke protocol state belongs to %q, expected %q", state.Domain, node.Domain)
+	}
+	nodeRealityHandshakePort := node.RealityHandshakePort
+	if nodeRealityHandshakePort <= 0 {
+		nodeRealityHandshakePort = config.DefaultRealityHandshakePort
+	}
+	if strings.Join(state.EnabledProtocols, ",") != strings.Join(node.EnabledProtocols, ",") ||
+		state.RealityServerName != node.RealityServerName ||
+		state.RealityHandshakePort != nodeRealityHandshakePort ||
+		state.Ports.RealityVision != node.RealityVisionPort ||
+		state.Ports.RealityGRPC != node.RealityGRPCPort ||
+		state.Ports.Hysteria2 != node.Hysteria2Port ||
+		state.Ports.TUIC != node.TUICPort ||
+		state.Ports.AnyTLS != node.AnyTLSPort {
+		return fmt.Errorf("spoke protocol state differs from the Hub registry; reconfigure the spoke before editing credentials")
+	}
+	return nodeapi.ValidateProtocolStateResponse(state)
 }
 
 func (pm *protocolManager) startSpokeForm(fields []field, values map[string]string) {
@@ -624,7 +788,62 @@ func (pm *protocolManager) applySpokeProtocol(ctx context.Context, logs *logWrit
 			pm.values,
 		)
 	case protocolActionEditSpoke:
-		change, err = spokeProtocolPortRegistryChange(pm.editProto, pm.values)
+		if !pm.haveSpokeState {
+			return fmt.Errorf("current spoke credentials were not loaded")
+		}
+		latest, fetchErr := fetchSpokeProtocolState(ctx, node)
+		if fetchErr != nil {
+			return fmt.Errorf("recheck current spoke protocol settings: %w", fetchErr)
+		}
+		if !reflect.DeepEqual(latest, pm.editSpokeState) {
+			return fmt.Errorf("spoke protocol settings changed after this form was opened; reopen the editor to avoid overwriting newer credentials")
+		}
+		var targetPatch nodeapi.ProtocolPatch
+		change, targetPatch, err = spokeProtocolEditRegistryChange(pm.editProto, pm.values)
+		if err == nil {
+			layout := protocolUILayout()
+			ctrl := &hubctl.Controller{
+				Layout: layout, Runner: system.NewExecRunner(logs), ExpectedVersion: toolVersion,
+				Progress: offsetRunProgress(progress, 1, 5),
+			}
+			rollbackCtrl := *ctrl
+			rollbackCtrl.Progress = nil
+			targetRevision, revisionErr := spokeProtocolTargetRevision(latest, targetPatch)
+			if revisionErr != nil {
+				return revisionErr
+			}
+			rollbackPatch, patchErr := spokeProtocolRollbackPatch(pm.editProto, latest)
+			if patchErr != nil {
+				return patchErr
+			}
+			revisionConflict := false
+			return applySpokeRegistryReconfigure(
+				ctx, layout, node.ID, logs, progress, change,
+				func(ctx context.Context, node nodes.Node, log io.Writer) error {
+					err := ctrl.PatchProtocolRevision(ctx, node, targetPatch, latest.Revision, log)
+					revisionConflict = nodeapi.IsProtocolRevisionConflict(err)
+					return err
+				},
+				func(ctx context.Context, node nodes.Node, log io.Writer) error {
+					if revisionConflict {
+						return rollbackCtrl.RefreshSubscriptions(ctx)
+					}
+					current, err := rollbackCtrl.ProtocolState(ctx, node)
+					if err != nil {
+						return fmt.Errorf("inspect spoke before credential rollback: %w", err)
+					}
+					switch current.Revision {
+					case pm.editSpokeState.Revision:
+						// The failed request did not commit any editable state.
+						return rollbackCtrl.RefreshSubscriptions(ctx)
+					case targetRevision:
+						return rollbackCtrl.PatchProtocolRevision(ctx, node, rollbackPatch, targetRevision, log)
+					default:
+						return nodeapi.ProtocolRevisionConflict()
+					}
+				},
+			)
+		}
 	case protocolActionRealitySNISpoke:
 		change, err = spokeRealitySNIRegistryChange(pm.values)
 	default:
@@ -641,10 +860,41 @@ func (pm *protocolManager) applySpokeProtocol(ctx context.Context, logs *logWrit
 	}
 	rollbackCtrl := *ctrl
 	rollbackCtrl.Progress = nil
+	latest, fetchErr := fetchSpokeProtocolState(ctx, node)
+	if fetchErr != nil {
+		return fmt.Errorf("read current spoke protocol settings before replacement: %w", fetchErr)
+	}
+	var targetRevision string
+	revisionConflict := false
 	return applySpokeRegistryReconfigure(
 		ctx, layout, node.ID, logs, progress, change,
-		ctrl.Reconfigure,
-		rollbackCtrl.Reconfigure,
+		func(ctx context.Context, updated nodes.Node, log io.Writer) error {
+			var revisionErr error
+			targetRevision, revisionErr = spokeProtocolNodeRevision(latest, updated)
+			if revisionErr != nil {
+				return revisionErr
+			}
+			err := ctrl.ReplaceProtocolStateRevision(ctx, updated, latest.Revision, log)
+			revisionConflict = nodeapi.IsProtocolRevisionConflict(err)
+			return err
+		},
+		func(ctx context.Context, restored nodes.Node, log io.Writer) error {
+			if revisionConflict {
+				return rollbackCtrl.RefreshSubscriptions(ctx)
+			}
+			current, err := rollbackCtrl.ProtocolState(ctx, restored)
+			if err != nil {
+				return fmt.Errorf("inspect spoke before protocol-state rollback: %w", err)
+			}
+			switch current.Revision {
+			case latest.Revision:
+				return rollbackCtrl.RefreshSubscriptions(ctx)
+			case targetRevision:
+				return rollbackCtrl.ReplaceProtocolStateRevision(ctx, restored, targetRevision, log)
+			default:
+				return nodeapi.ProtocolRevisionConflict()
+			}
+		},
 	)
 }
 
@@ -664,7 +914,8 @@ func spokeProtocolSelectionRegistryChange(currentProtocols []config.Protocol, va
 		addedPorts[proto] = port
 	}
 	return spokeRegistryChange{
-		Detail: "install or remove spoke protocols while preserving credentials",
+		Detail:     "install or remove spoke protocols while preserving credentials",
+		Generation: spokeRegistryGenerationProtocol,
 		Apply: func(current *nodes.Node) error {
 			current.EnabledProtocols = append([]string(nil), enabled...)
 			for proto, port := range addedPorts {
@@ -672,10 +923,14 @@ func spokeProtocolSelectionRegistryChange(currentProtocols []config.Protocol, va
 			}
 			return nil
 		},
-		Restore: func(current *nodes.Node, original nodes.Node) {
-			current.EnabledProtocols = append([]string(nil), original.EnabledProtocols...)
+		Restore: func(current *nodes.Node, original, applied nodes.Node) {
+			if reflect.DeepEqual(current.EnabledProtocols, applied.EnabledProtocols) {
+				current.EnabledProtocols = append([]string(nil), original.EnabledProtocols...)
+			}
 			for _, proto := range added {
-				setSpokeProtocolPort(current, proto, spokeProtocolPort(original, proto))
+				if spokeProtocolPort(*current, proto) == spokeProtocolPort(applied, proto) {
+					setSpokeProtocolPort(current, proto, spokeProtocolPort(original, proto))
+				}
 			}
 		},
 	}, nil
@@ -687,15 +942,158 @@ func spokeProtocolPortRegistryChange(proto config.Protocol, values map[string]st
 		return spokeRegistryChange{}, err
 	}
 	return spokeRegistryChange{
-		Detail: fmt.Sprintf("change the %s spoke listen port; preserve its credential", proto),
+		Detail:     fmt.Sprintf("change the %s spoke listen port; preserve its credential", proto),
+		Generation: spokeRegistryGenerationProtocol,
 		Apply: func(current *nodes.Node) error {
 			setSpokeProtocolPort(current, proto, port)
 			return nil
 		},
-		Restore: func(current *nodes.Node, original nodes.Node) {
-			setSpokeProtocolPort(current, proto, spokeProtocolPort(original, proto))
+		Restore: func(current *nodes.Node, original, applied nodes.Node) {
+			if spokeProtocolPort(*current, proto) == spokeProtocolPort(applied, proto) {
+				setSpokeProtocolPort(current, proto, spokeProtocolPort(original, proto))
+			}
 		},
 	}, nil
+}
+
+func spokeProtocolEditRegistryChange(
+	proto config.Protocol,
+	values map[string]string,
+) (spokeRegistryChange, nodeapi.ProtocolPatch, error) {
+	port, err := parseSpokeProtocolPort(proto, values)
+	if err != nil {
+		return spokeRegistryChange{}, nodeapi.ProtocolPatch{}, err
+	}
+	credentials := spokeProtocolCredentialsFromValues(values)
+	patch := nodeapi.ProtocolPatch{
+		Protocol:    string(proto),
+		Port:        port,
+		Credentials: credentials,
+	}
+	if err := nodeapi.ValidateProtocolPatch(patch); err != nil {
+		return spokeRegistryChange{}, nodeapi.ProtocolPatch{}, err
+	}
+	return spokeRegistryChange{
+		Detail:     fmt.Sprintf("change the %s spoke credential and listen port", proto),
+		Generation: spokeRegistryGenerationProtocol,
+		Apply: func(current *nodes.Node) error {
+			setSpokeProtocolPort(current, proto, port)
+			return nil
+		},
+		Restore: func(current *nodes.Node, original, applied nodes.Node) {
+			if spokeProtocolPort(*current, proto) == spokeProtocolPort(applied, proto) {
+				setSpokeProtocolPort(current, proto, spokeProtocolPort(original, proto))
+			}
+		},
+	}, patch, nil
+}
+
+func spokeProtocolTargetRevision(
+	current nodeapi.ProtocolStateResponse,
+	patch nodeapi.ProtocolPatch,
+) (string, error) {
+	if err := applyProtocolPatchToState(&current, patch); err != nil {
+		return "", err
+	}
+	current.Revision = ""
+	return nodeapi.ProtocolStateRevision(current)
+}
+
+func spokeProtocolNodeRevision(
+	current nodeapi.ProtocolStateResponse,
+	node nodes.Node,
+) (string, error) {
+	enabled := deploy.CanonicalProtocols(protocolsFromValue(strings.Join(node.EnabledProtocols, ",")))
+	if len(enabled) == 0 {
+		return "", fmt.Errorf("select at least one protocol")
+	}
+	current.Revision = ""
+	current.RealityServerName = node.RealityServerName
+	current.RealityHandshakePort = node.RealityHandshakePort
+	if current.RealityHandshakePort <= 0 {
+		current.RealityHandshakePort = config.DefaultRealityHandshakePort
+	}
+	current.EnabledProtocols = protocolStringSlice(enabled)
+	current.Ports = nodeapi.PortSet{
+		RealityVision: node.RealityVisionPort,
+		RealityGRPC:   node.RealityGRPCPort,
+		Hysteria2:     node.Hysteria2Port,
+		TUIC:          node.TUICPort,
+		AnyTLS:        node.AnyTLSPort,
+	}
+	return nodeapi.ProtocolStateRevision(current)
+}
+
+func spokeProtocolRollbackPatch(
+	proto config.Protocol,
+	current nodeapi.ProtocolStateResponse,
+) (nodeapi.ProtocolPatch, error) {
+	patch := nodeapi.ProtocolPatch{
+		Protocol:    string(proto),
+		Credentials: current.Credentials,
+	}
+	switch proto {
+	case config.ProtocolRealityVision:
+		patch.Port = current.Ports.RealityVision
+	case config.ProtocolRealityGRPC:
+		patch.Port = current.Ports.RealityGRPC
+	case config.ProtocolHysteria2:
+		patch.Port = current.Ports.Hysteria2
+	case config.ProtocolTUIC:
+		patch.Port = current.Ports.TUIC
+	case config.ProtocolAnyTLS:
+		patch.Port = current.Ports.AnyTLS
+	default:
+		return nodeapi.ProtocolPatch{}, fmt.Errorf("unsupported protocol %q", proto)
+	}
+	if err := nodeapi.ValidateProtocolPatch(patch); err != nil {
+		return nodeapi.ProtocolPatch{}, err
+	}
+	return patch, nil
+}
+
+func applyProtocolPatchToState(current *nodeapi.ProtocolStateResponse, patch nodeapi.ProtocolPatch) error {
+	if current == nil {
+		return fmt.Errorf("protocol state is required")
+	}
+	if err := nodeapi.ValidateProtocolPatch(patch); err != nil {
+		return err
+	}
+	switch config.Protocol(patch.Protocol) {
+	case config.ProtocolRealityVision:
+		current.Ports.RealityVision = patch.Port
+		current.Credentials.RealityVisionUUID = patch.Credentials.RealityVisionUUID
+	case config.ProtocolRealityGRPC:
+		current.Ports.RealityGRPC = patch.Port
+		current.Credentials.RealityGRPCUUID = patch.Credentials.RealityGRPCUUID
+	case config.ProtocolHysteria2:
+		current.Ports.Hysteria2 = patch.Port
+		current.Credentials.HysteriaPassword = patch.Credentials.HysteriaPassword
+	case config.ProtocolTUIC:
+		current.Ports.TUIC = patch.Port
+		current.Credentials.TUICUUID = patch.Credentials.TUICUUID
+		current.Credentials.TUICPassword = patch.Credentials.TUICPassword
+	case config.ProtocolAnyTLS:
+		current.Ports.AnyTLS = patch.Port
+		current.Credentials.AnyTLSPassword = patch.Credentials.AnyTLSPassword
+	default:
+		return fmt.Errorf("unsupported protocol %q", patch.Protocol)
+	}
+	return nil
+}
+
+func spokeProtocolCredentialsFromValues(values map[string]string) nodeapi.ProtocolCredentials {
+	return nodeapi.ProtocolCredentials{
+		RealityVisionUUID: strings.TrimSpace(values["reality_vision_uuid"]),
+		RealityGRPCUUID:   strings.TrimSpace(values["reality_grpc_uuid"]),
+		HysteriaPassword:  strings.TrimSpace(values["hysteria2_password"]),
+		TUICUUID:          strings.TrimSpace(values["tuic_uuid"]),
+		TUICPassword:      strings.TrimSpace(values["tuic_password"]),
+		AnyTLSPassword:    strings.TrimSpace(values["anytls_password"]),
+		RealityPrivateKey: strings.TrimSpace(values["reality_private_key"]),
+		RealityPublicKey:  strings.TrimSpace(values["reality_public_key"]),
+		RealityShortID:    strings.TrimSpace(values["reality_short_id"]),
+	}
 }
 
 func spokeRealitySNIRegistryChange(values map[string]string) (spokeRegistryChange, error) {
@@ -704,13 +1102,16 @@ func spokeRealitySNIRegistryChange(values map[string]string) (spokeRegistryChang
 		return spokeRegistryChange{}, err
 	}
 	return spokeRegistryChange{
-		Detail: "change the spoke Reality SNI",
+		Detail:     "change the spoke Reality SNI",
+		Generation: spokeRegistryGenerationProtocol,
 		Apply: func(current *nodes.Node) error {
 			current.RealityServerName = realitySNI
 			return nil
 		},
-		Restore: func(current *nodes.Node, original nodes.Node) {
-			current.RealityServerName = original.RealityServerName
+		Restore: func(current *nodes.Node, original, applied nodes.Node) {
+			if current.RealityServerName == applied.RealityServerName {
+				current.RealityServerName = original.RealityServerName
+			}
 		},
 	}, nil
 }
@@ -817,6 +1218,8 @@ func (pm *protocolManager) View() string {
 		return pm.selectView()
 	case protocolPhaseEditPick:
 		return pm.editPickView()
+	case protocolPhaseLoadingSpokeState:
+		return pm.loadingSpokeStateView()
 	case protocolPhaseForm:
 		return pm.formView()
 	case protocolPhaseConfirm:
@@ -831,6 +1234,15 @@ func (pm *protocolManager) View() string {
 	default:
 		return ""
 	}
+}
+
+func (pm *protocolManager) loadingSpokeStateView() string {
+	title := "Protocol Management · Spoke · Loading settings"
+	if node, ok := pm.editSpokeNode(); ok {
+		title += " · " + node.EffectiveAlias()
+	}
+	return flowTitle.Render(title) + "\n\n" +
+		dimStyle.Render("Authenticating the Agent, reconciling its version, and reading the current masked protocol credentials…")
 }
 
 func (pm *protocolManager) actionView() string {
@@ -877,7 +1289,7 @@ func (pm *protocolManager) editPickView() string {
 		if node, ok := pm.editSpokeNode(); ok {
 			title += " · " + node.EffectiveAlias()
 		}
-		note = "Choose an installed Spoke protocol to edit only its listen port; existing credentials are preserved."
+		note = "Choose an installed Spoke protocol to edit the same credential and listen-port fields offered for the Hub."
 	}
 	b.WriteString(flowTitle.Render(title) + "\n\n")
 	b.WriteString(dimStyle.Render(note) + "\n")
@@ -912,7 +1324,7 @@ func (pm *protocolManager) formView() string {
 			case protocolActionChangeSpoke:
 				title = "Protocol Management · Spoke · Install / Remove · " + node.EffectiveAlias()
 			case protocolActionEditSpoke:
-				title = "Protocol Management · Spoke · Edit " + string(pm.editProto) + " port · " + node.EffectiveAlias()
+				title = "Protocol Management · Spoke · Edit " + string(pm.editProto) + " · " + node.EffectiveAlias()
 			case protocolActionRealitySNISpoke:
 				title = "Protocol Management · Spoke · Reality SNI · " + node.EffectiveAlias()
 			}
@@ -974,17 +1386,20 @@ func (pm *protocolManager) confirmView() string {
 		}
 	case protocolActionEditSpoke:
 		if node, ok := pm.editSpokeNode(); ok {
-			portKey := portFieldKey(pm.editProto)
 			rows = append(rows,
 				summaryRow("Target", "Spoke"),
 				summaryRow("Spoke", spokeOptionLabel(node)),
 				summaryRow("Stable node ID", node.ID),
-				summaryRow("Edit", string(pm.editProto)+" listen port"),
-				summaryRow("Current port", spokeProtocolPortValue(spokeProtocolPort(node, pm.editProto), pm.editProto)),
-				summaryRow("Target port", pm.values[portKey]),
-				summaryRow("Credentials", "preserve existing spoke credentials"),
+				summaryRow("Edit", string(pm.editProto)+" complete settings"),
 				summaryRow("Transport", "authenticated Agent over WireGuard"),
 			)
+			for _, f := range pm.fields {
+				value := pm.values[f.key]
+				if f.secret {
+					value = "•••••••• (set)"
+				}
+				rows = append(rows, summaryRow(f.label, value))
+			}
 		}
 	case protocolActionRealitySNISpoke:
 		if node, ok := pm.editSpokeNode(); ok {
@@ -1011,7 +1426,11 @@ func (pm *protocolManager) confirmView() string {
 			summaryRow("Edit", string(pm.editProto)),
 		)
 		for _, f := range pm.fields {
-			rows = append(rows, summaryRow(f.label, or(pm.values[f.key], "generate/keep current")))
+			value := or(pm.values[f.key], "generate/keep current")
+			if f.secret && pm.values[f.key] != "" {
+				value = "•••••••• (set)"
+			}
+			rows = append(rows, summaryRow(f.label, value))
 		}
 	default:
 		added, removed := protocolDiff(pm.cfg.Enabled, pm.targetProtocols())
@@ -1025,7 +1444,11 @@ func (pm *protocolManager) confirmView() string {
 		if len(pm.fields) > 0 {
 			rows = append(rows, summaryBlank(), summaryText("New protocol parameters:"))
 			for _, f := range pm.fields {
-				rows = append(rows, summaryIndentedRow(2, f.label, or(pm.values[f.key], "generate/default")))
+				value := or(pm.values[f.key], "generate/default")
+				if f.secret && pm.values[f.key] != "" {
+					value = "•••••••• (set)"
+				}
+				rows = append(rows, summaryIndentedRow(2, f.label, value))
 			}
 		}
 	}
@@ -1062,7 +1485,7 @@ func (pm *protocolManager) doneSummary() string {
 				rows = append(rows,
 					summaryRow("Protocol", string(pm.editProto)),
 					summaryRow("Port", strconv.Itoa(spokeProtocolPort(node, pm.editProto))),
-					summaryRow("Credential", "preserved"),
+					summaryRow("Settings", "updated; credentials remain masked"),
 				)
 			case protocolActionRealitySNISpoke:
 				rows = append(rows, summaryRow("Reality SNI", node.RealityServerName))
@@ -1092,6 +1515,8 @@ func (pm *protocolManager) footerHints() []operationHint {
 		return []operationHint{hint(keyMove, "Move"), hint(keySpace, "Toggle"), hint(keyEnter, "Continue"), hint(keyBack, "Back"), hint(keyCancel, "Cancel")}
 	case protocolPhaseEditPick:
 		return actionBackFooterHints("Edit")
+	case protocolPhaseLoadingSpokeState:
+		return []operationHint{hint(keyBack, "Back"), hint(keyCancel, "Cancel")}
 	case protocolPhaseForm:
 		return pm.parameterForm.footerHints()
 	case protocolPhaseConfirm:
@@ -1117,7 +1542,7 @@ func (pm *protocolManager) actions() []protocolActionItem {
 	actions = append(actions,
 		protocolActionItem{separator: true, label: "Spokes (WireGuard)"},
 		protocolActionItem{action: protocolActionChangeSpoke, label: "Spoke · Install / remove protocols"},
-		protocolActionItem{action: protocolActionEditSpoke, label: "Spoke · Edit installed protocol settings (ports only; credentials preserved)"},
+		protocolActionItem{action: protocolActionEditSpoke, label: "Spoke · Edit installed protocol settings (credentials / ports)"},
 	)
 	if len(pm.nodes) > 0 {
 		actions = append(actions, protocolActionItem{action: protocolActionRealitySNISpoke, label: "Spoke · Edit Reality SNI"})

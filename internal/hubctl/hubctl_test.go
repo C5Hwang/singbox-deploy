@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -455,6 +456,7 @@ func TestReconfigureReportsEveryHighLevelPhase(t *testing.T) {
 		Token: "tok", AgentPort: 19091, Arch: "amd64", Installed: true,
 		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 8443,
 		Monitor: true, MonitorAlias: "tokyo", MonitorIntervalSeconds: 60, ResetDay: 1,
+		PendingCertificate: true,
 	}
 	if err := nodes.Add(layout, node); err != nil {
 		t.Fatal(err)
@@ -483,6 +485,19 @@ func TestReconfigureReportsEveryHighLevelPhase(t *testing.T) {
 	if err := ctrl.Reconfigure(context.Background(), node, io.Discard); err != nil {
 		t.Fatalf("Reconfigure: %v", err)
 	}
+	handler.mu.Lock()
+	reconfigureReq := handler.installReq
+	handler.mu.Unlock()
+	if reconfigureReq.CertificatePEM != "" || reconfigureReq.PrivateKeyPEM != "" {
+		t.Fatal("settings reconfigure carried certificate material")
+	}
+	updatedNodes, err := nodes.Load(layout)
+	if err != nil || len(updatedNodes) != 1 {
+		t.Fatalf("load reconfigured registry: nodes=%+v err=%v", updatedNodes, err)
+	}
+	if updatedNodes[0].PendingCertificate {
+		t.Fatal("health reconciliation did not complete the separate pending certificate delivery")
+	}
 	wantLabels := []string{"Agent health", "Spoke configuration", "Registry status", "Subscriptions"}
 	if len(events) != 2*len(wantLabels) {
 		t.Fatalf("progress event count = %d, want %d: %+v", len(events), 2*len(wantLabels), events)
@@ -495,6 +510,186 @@ func TestReconfigureReportsEveryHighLevelPhase(t *testing.T) {
 		if complete.Index != i+1 || complete.Total != len(wantLabels) || complete.Label != label || complete.Status != "ok" {
 			t.Errorf("complete event %d = %+v", i, complete)
 		}
+	}
+}
+
+func TestPatchProtocolPropagatesOnlyProtocolPatch(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	node := nodes.Node{
+		ID:    "0123456789abcdef0123456789abcdef",
+		Alias: "tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "tok", AgentPort: 19091, Installed: true,
+		EnabledProtocols: []string{"tuic"}, TUICPort: 10443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &lifecycleHandler{health: nodeapi.HealthResponse{
+		OK: true, Version: "v-test", Installed: true, SingBoxActive: true, Domain: node.Domain,
+	}}
+	server := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: handler}).Mux())
+	defer server.Close()
+	ctrl := &Controller{
+		Layout: layout, ExpectedVersion: "v-test",
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: server.URL, Token: n.Token, HTTP: server.Client()}
+		},
+	}
+	creds, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := nodeapi.ProtocolCredentials{
+		RealityVisionUUID: creds.RealityVisionUUID,
+		RealityGRPCUUID:   creds.RealityGRPCUUID,
+		HysteriaPassword:  creds.HysteriaPassword,
+		TUICUUID:          creds.TUICUUID,
+		TUICPassword:      creds.TUICPassword,
+		AnyTLSPassword:    creds.AnyTLSPassword,
+		RealityPrivateKey: creds.RealityPrivateKey,
+		RealityPublicKey:  creds.RealityPublicKey,
+		RealityShortID:    creds.RealityShortID,
+	}
+	revision := strings.Repeat("a", 64)
+	patch := nodeapi.ProtocolPatch{
+		Protocol:    "tuic",
+		Port:        node.TUICPort,
+		Credentials: override,
+	}
+	if err := ctrl.PatchProtocolRevision(context.Background(), node, patch, revision, io.Discard); err != nil {
+		t.Fatalf("PatchProtocolRevision: %v", err)
+	}
+	handler.mu.Lock()
+	req := handler.installReq
+	handler.mu.Unlock()
+	wantReq := nodeapi.InstallRequest{
+		ConfigOnly:               true,
+		ProtocolPatch:            &patch,
+		ExpectedProtocolRevision: revision,
+	}
+	if !reflect.DeepEqual(req, wantReq) {
+		t.Fatalf("protocol patch request = %+v, want only %+v", req, wantReq)
+	}
+}
+
+func TestReplaceProtocolStateUsesExplicitCASRequest(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	node := nodes.Node{
+		ID:    "abababababababababababababababab",
+		Alias: "tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "tok", AgentPort: 19091, Installed: true,
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 10443,
+		RealityServerName: "www.example.com", RealityHandshakePort: 443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &lifecycleHandler{health: nodeapi.HealthResponse{
+		OK: true, Version: "v-test", Installed: true, SingBoxActive: true, Domain: node.Domain,
+	}}
+	server := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: handler}).Mux())
+	defer server.Close()
+	ctrl := &Controller{
+		Layout: layout, ExpectedVersion: "v-test",
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: server.URL, Token: n.Token, HTTP: server.Client()}
+		},
+	}
+	// Simulate a later protocol transaction reaching the registry before this
+	// transaction leaves its health phase. Its intent must remain in the
+	// registry, but must not be folded into this transaction's Agent request.
+	concurrent := node
+	concurrent.EnabledProtocols = []string{"anytls"}
+	concurrent.AnyTLSPort = 21443
+	concurrent.RealityServerName = "concurrent.example.com"
+	if err := nodes.Update(layout, concurrent); err != nil {
+		t.Fatal(err)
+	}
+	revision := strings.Repeat("b", 64)
+	if err := ctrl.ReplaceProtocolStateRevision(context.Background(), node, revision, io.Discard); err != nil {
+		t.Fatalf("ReplaceProtocolStateRevision: %v", err)
+	}
+	handler.mu.Lock()
+	req := handler.installReq
+	handler.mu.Unlock()
+	wantReq := ctrl.buildNodeRequest(node)
+	wantReq.ConfigOnly = true
+	wantReq.ReplaceProtocolState = true
+	wantReq.ExpectedProtocolRevision = revision
+	if !reflect.DeepEqual(req, wantReq) {
+		t.Fatalf("complete protocol replacement request = %+v, want %+v", req, wantReq)
+	}
+	if req.CertificatePEM != "" || req.PrivateKeyPEM != "" {
+		t.Fatal("complete protocol replacement carried certificate material")
+	}
+	stored, err := nodes.Load(layout)
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("load concurrent registry state: nodes=%+v err=%v", stored, err)
+	}
+	if strings.Join(stored[0].EnabledProtocols, ",") != "anytls" ||
+		stored[0].AnyTLSPort != concurrent.AnyTLSPort ||
+		stored[0].RealityServerName != concurrent.RealityServerName {
+		t.Fatalf("older replacement overwrote later registry intent: %+v", stored[0])
+	}
+}
+
+func TestReconfigureProtocolTreatsSubscriptionRefreshAsTransactional(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	hubCfg := hysteriaConfig(t, "hub.example.com", "HUB", "hub-salt", 9443)
+	if err := deploy.WriteInstallState(layout.StateDir, hubCfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := deploy.WriteSubscriptions(layout, hubCfg); err != nil {
+		t.Fatal(err)
+	}
+	node := nodes.Node{
+		ID:    "0123456789abcdef0123456789abcdef",
+		Alias: "tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "tok", AgentPort: 19091, Installed: true, IncludeInSubscription: true,
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 10443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	writeCertificatePair(t, layout, node.Domain)
+	handler := &lifecycleHandler{
+		health: nodeapi.HealthResponse{
+			OK: true, Version: "v-test", Installed: true, SingBoxActive: true, Domain: node.Domain,
+		},
+		subscriptionErr: errors.New("injected stale subscription failure"),
+	}
+	server := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: handler}).Mux())
+	defer server.Close()
+	ctrl := &Controller{
+		Layout: layout, ExpectedVersion: "v-test",
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: server.URL, Token: n.Token, HTTP: server.Client()}
+		},
+	}
+	creds, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := nodeapi.ProtocolCredentials{
+		RealityVisionUUID: creds.RealityVisionUUID, RealityGRPCUUID: creds.RealityGRPCUUID,
+		HysteriaPassword: creds.HysteriaPassword, TUICUUID: creds.TUICUUID,
+		TUICPassword: creds.TUICPassword, AnyTLSPassword: creds.AnyTLSPassword,
+		RealityPrivateKey: creds.RealityPrivateKey, RealityPublicKey: creds.RealityPublicKey,
+		RealityShortID: creds.RealityShortID,
+	}
+	err = ctrl.PatchProtocolRevision(context.Background(), node, nodeapi.ProtocolPatch{
+		Protocol: "hysteria2", Port: node.Hysteria2Port, Credentials: override,
+	}, strings.Repeat("a", 64), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "refresh subscriptions after protocol change") {
+		t.Fatalf("credential reconfigure refresh error = %v", err)
+	}
+
+	var normalLog strings.Builder
+	if err := ctrl.Reconfigure(context.Background(), node, &normalLog); err != nil {
+		t.Fatalf("ordinary reconfigure should keep warning semantics: %v", err)
+	}
+	if !strings.Contains(normalLog.String(), "warning: subscription refresh") {
+		t.Fatalf("ordinary reconfigure did not report refresh warning: %q", normalLog.String())
 	}
 }
 
@@ -997,14 +1192,15 @@ func TestTeardownAllRetainsOverlayWhenSpokeDoesNotAcknowledge(t *testing.T) {
 }
 
 type lifecycleHandler struct {
-	mu             sync.Mutex
-	health         nodeapi.HealthResponse
-	healthCount    int
-	installCount   int
-	installReq     nodeapi.InstallRequest
-	installErr     error
-	uninstallCount int
-	uninstallReq   nodeapi.UninstallRequest
+	mu              sync.Mutex
+	health          nodeapi.HealthResponse
+	healthCount     int
+	installCount    int
+	installReq      nodeapi.InstallRequest
+	installErr      error
+	uninstallCount  int
+	uninstallReq    nodeapi.UninstallRequest
+	subscriptionErr error
 }
 
 func (h *lifecycleHandler) Health() nodeapi.HealthResponse {
@@ -1041,7 +1237,12 @@ func (h *lifecycleHandler) Uninstall(_ context.Context, req nodeapi.UninstallReq
 	return nil
 }
 
-func (h *lifecycleHandler) Subscription(string) ([]byte, error) { return nil, nil }
+func (h *lifecycleHandler) Subscription(string) ([]byte, error) {
+	if h.subscriptionErr != nil {
+		return nil, h.subscriptionErr
+	}
+	return nil, nil
+}
 
 type upgradeHealthHandler struct {
 	mu         sync.Mutex

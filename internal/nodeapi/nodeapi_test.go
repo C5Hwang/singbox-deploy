@@ -10,15 +10,18 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 )
 
 // fakeHandler is a scripted agent implementation for the round-trip test.
 type fakeHandler struct {
-	installReq InstallRequest
-	upgradeReq UpgradeRequest
-	coreReq    CoreRequest
-	failWith   string
-	monitor    http.Handler
+	installReq    InstallRequest
+	upgradeReq    UpgradeRequest
+	coreReq       CoreRequest
+	failWith      string
+	monitor       http.Handler
+	protocolState ProtocolStateResponse
 }
 
 func (h *fakeHandler) Health() HealthResponse {
@@ -72,6 +75,10 @@ func (h *fakeHandler) Subscription(format string) ([]byte, error) {
 
 func (h *fakeHandler) MonitorHandler() http.Handler { return h.monitor }
 
+func (h *fakeHandler) ProtocolState(context.Context) (ProtocolStateResponse, error) {
+	return h.protocolState, nil
+}
+
 func newTestServer(t *testing.T, h Handler, token string) (*Client, func()) {
 	t.Helper()
 	srv := httptest.NewServer((&Server{Token: token, Handler: h}).Mux())
@@ -89,6 +96,204 @@ func TestHealthRoundTrip(t *testing.T) {
 	if !health.OK || health.Version != "test" || !health.Installed ||
 		health.SingBoxVersion != "v1.12.4" {
 		t.Fatalf("unexpected health: %+v", health)
+	}
+}
+
+func TestProtocolStateRoundTripAndCredentialValidation(t *testing.T) {
+	creds := testProtocolCredentials(t)
+	state := ProtocolStateResponse{
+		Domain: "spoke.example.com", EnabledProtocols: []string{"tuic"},
+		Ports: PortSet{TUIC: 10443}, Credentials: creds,
+	}
+	revision, err := ProtocolStateRevision(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Revision = revision
+	h := &fakeHandler{protocolState: state}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+	got, err := client.ProtocolState(context.Background())
+	if err != nil {
+		t.Fatalf("ProtocolState: %v", err)
+	}
+	if got.Domain != h.protocolState.Domain || got.Ports.TUIC != 10443 ||
+		got.Credentials.TUICPassword != creds.TUICPassword || got.Revision != revision {
+		t.Fatalf("protocol state = %+v", got)
+	}
+	tampered := state
+	tampered.Ports.TUIC++
+	if err := ValidateProtocolStateResponse(tampered); err == nil ||
+		!strings.Contains(err.Error(), "revision does not match") {
+		t.Fatalf("tampered protocol state validation = %v", err)
+	}
+
+	bad := creds
+	bad.RealityPublicKey = creds.RealityPrivateKey
+	if err := ValidateProtocolCredentials(&bad); err == nil ||
+		!strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("mismatched Reality key validation = %v", err)
+	}
+	badTarget := creds
+	badTarget.TUICUUID = "not-a-uuid"
+	if err := client.Install(context.Background(), InstallRequest{
+		ConfigOnly: true, ExpectedProtocolRevision: revision,
+		ProtocolPatch: &ProtocolPatch{
+			Protocol: "tuic", Port: 10443, Credentials: badTarget,
+		},
+	}, io.Discard); err == nil {
+		t.Fatal("client accepted invalid credential override")
+	}
+	if h.installReq.ProtocolPatch != nil {
+		t.Fatal("invalid credentials reached the Agent install handler")
+	}
+	if err := ValidateInstallSingBoxVersion(InstallRequest{
+		ConfigOnly: true, ExpectedProtocolRevision: "not-a-digest",
+	}); err == nil {
+		t.Fatal("revision without a protocol patch was accepted")
+	}
+	for name, req := range map[string]InstallRequest{
+		"missing revision": {
+			ConfigOnly:    true,
+			ProtocolPatch: &ProtocolPatch{Protocol: "tuic", Port: 10443, Credentials: creds},
+		},
+		"not config only": {
+			ExpectedProtocolRevision: revision,
+			ProtocolPatch:            &ProtocolPatch{Protocol: "tuic", Port: 10443, Credentials: creds},
+		},
+		"unsupported protocol": {
+			ConfigOnly: true, ExpectedProtocolRevision: revision,
+			ProtocolPatch: &ProtocolPatch{Protocol: "ssh", Port: 10443, Credentials: creds},
+		},
+		"invalid port": {
+			ConfigOnly: true, ExpectedProtocolRevision: revision,
+			ProtocolPatch: &ProtocolPatch{Protocol: "tuic", Port: 0, Credentials: creds},
+		},
+		"replacement missing revision": {
+			ConfigOnly: true, ReplaceProtocolState: true,
+		},
+		"replacement not config only": {
+			ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+		},
+		"patch and replacement": {
+			ConfigOnly: true, ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+			ProtocolPatch: &ProtocolPatch{Protocol: "tuic", Port: 10443, Credentials: creds},
+		},
+		"replacement empty protocols": {
+			ConfigOnly: true, ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+		},
+		"replacement unknown protocol": {
+			ConfigOnly: true, ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+			EnabledProtocols: []string{"ssh"},
+		},
+		"replacement duplicate protocol": {
+			ConfigOnly: true, ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+			EnabledProtocols: []string{"hysteria2", "hysteria2"},
+			Ports:            PortSet{Hysteria2: 9443},
+		},
+		"replacement missing enabled port": {
+			ConfigOnly: true, ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+			EnabledProtocols: []string{"tuic"},
+		},
+		"replacement out of range port": {
+			ConfigOnly: true, ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+			EnabledProtocols: []string{"anytls"},
+			Ports:            PortSet{AnyTLS: 65536},
+		},
+		"replacement invalid handshake port": {
+			ConfigOnly: true, ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+			EnabledProtocols:     []string{"hysteria2"},
+			Ports:                PortSet{Hysteria2: 9443},
+			RealityHandshakePort: -1,
+		},
+	} {
+		if err := ValidateInstallSingBoxVersion(req); err == nil {
+			t.Errorf("%s request was accepted", name)
+		}
+	}
+	if err := ValidateInstallSingBoxVersion(InstallRequest{
+		ConfigOnly: true, ReplaceProtocolState: true, ExpectedProtocolRevision: revision,
+		EnabledProtocols: []string{"hysteria2"}, Ports: PortSet{Hysteria2: 9443},
+	}); err != nil {
+		t.Fatalf("valid complete protocol replacement rejected: %v", err)
+	}
+}
+
+func TestLegacyProtocolStateAndPatchValidateOnlyEnabledTarget(t *testing.T) {
+	legacyCreds := ProtocolCredentials{HysteriaPassword: "legacy-hysteria-password"}
+	state := ProtocolStateResponse{
+		Domain: "legacy.example.com", EnabledProtocols: []string{"hysteria2"},
+		Ports: PortSet{Hysteria2: 9443}, Credentials: legacyCreds,
+	}
+	revision, err := ProtocolStateRevision(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Revision = revision
+	h := &fakeHandler{protocolState: state}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+	got, err := client.ProtocolState(context.Background())
+	if err != nil {
+		t.Fatalf("legacy ProtocolState: %v", err)
+	}
+	if got.Credentials.HysteriaPassword != legacyCreds.HysteriaPassword {
+		t.Fatalf("legacy protocol state = %+v", got)
+	}
+
+	patch := ProtocolPatch{
+		Protocol: "hysteria2", Port: 19443,
+		Credentials: ProtocolCredentials{HysteriaPassword: "rotated-password"},
+	}
+	if err := client.Install(context.Background(), InstallRequest{
+		ConfigOnly: true, ExpectedProtocolRevision: revision, ProtocolPatch: &patch,
+	}, io.Discard); err != nil {
+		t.Fatalf("legacy Hysteria2 patch: %v", err)
+	}
+	if h.installReq.ProtocolPatch == nil ||
+		h.installReq.ProtocolPatch.Credentials.HysteriaPassword != "rotated-password" {
+		t.Fatalf("legacy patch did not reach handler: %+v", h.installReq)
+	}
+
+	missingTarget := patch
+	missingTarget.Credentials.HysteriaPassword = ""
+	if err := ValidateProtocolPatch(missingTarget); err == nil ||
+		!strings.Contains(err.Error(), "Hysteria2 password") {
+		t.Fatalf("missing target credential validation = %v", err)
+	}
+	wrongTarget := patch
+	wrongTarget.Protocol = "tuic"
+	if err := ValidateProtocolPatch(wrongTarget); err == nil ||
+		!strings.Contains(err.Error(), "TUIC UUID") {
+		t.Fatalf("missing TUIC target credentials validation = %v", err)
+	}
+
+	// Disabled credentials are not required, but remain covered by the
+	// revision so an unseen change cannot pass the CAS.
+	tampered := state
+	tampered.Credentials.TUICPassword = "disabled-but-changed"
+	if err := ValidateProtocolStateResponse(tampered); err == nil ||
+		!strings.Contains(err.Error(), "revision does not match") {
+		t.Fatalf("disabled credential was omitted from revision coverage: %v", err)
+	}
+}
+
+func testProtocolCredentials(t *testing.T) ProtocolCredentials {
+	t.Helper()
+	creds, err := deploy.GenerateCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ProtocolCredentials{
+		RealityVisionUUID: creds.RealityVisionUUID,
+		RealityGRPCUUID:   creds.RealityGRPCUUID,
+		HysteriaPassword:  creds.HysteriaPassword,
+		TUICUUID:          creds.TUICUUID,
+		TUICPassword:      creds.TUICPassword,
+		AnyTLSPassword:    creds.AnyTLSPassword,
+		RealityPrivateKey: creds.RealityPrivateKey,
+		RealityPublicKey:  creds.RealityPublicKey,
+		RealityShortID:    creds.RealityShortID,
 	}
 }
 
