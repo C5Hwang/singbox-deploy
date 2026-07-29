@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"golang.org/x/mod/semver"
 )
 
 // PortSet is the protocol listen-port assignment for a spoke.
@@ -56,8 +58,68 @@ type InstallRequest struct {
 	// sing-box core. Used when the operator edits an already-installed spoke.
 	ConfigOnly bool `json:"configOnly"`
 
+	// SingBoxVersion is the exact stable upstream release tag selected by the
+	// hub, for example v1.12.4. It is mandatory for a full install. Config-only
+	// requests do not download or replace the core and may omit it.
+	SingBoxVersion string `json:"singBoxVersion,omitempty"`
+
 	CertificatePEM string `json:"certificatePEM"`
 	PrivateKeyPEM  string `json:"privateKeyPEM"`
+}
+
+// CoreRequest asks an agent to replace its local sing-box core with one exact
+// stable upstream release.
+type CoreRequest struct {
+	SingBoxVersion string `json:"singBoxVersion"`
+}
+
+// ValidateStableSingBoxTag accepts only a canonical, v-prefixed, three-part
+// stable semantic version. Aliases such as "latest", abbreviated versions,
+// prereleases, build metadata, and surrounding whitespace are rejected.
+func ValidateStableSingBoxTag(tag string) error {
+	if tag == "" {
+		return fmt.Errorf("sing-box version tag is required")
+	}
+	normalized, err := NormalizeSingBoxVersion(tag)
+	if err != nil || normalized != tag {
+		return fmt.Errorf("sing-box version %q must be an exact stable tag such as v1.12.4", tag)
+	}
+	return nil
+}
+
+// NormalizeSingBoxVersion converts the stable version token printed by the
+// sing-box binary into the canonical upstream release-tag form.
+func NormalizeSingBoxVersion(version string) (string, error) {
+	if version == "" || strings.TrimSpace(version) != version {
+		return "", fmt.Errorf("sing-box version is empty or has surrounding whitespace")
+	}
+	candidate := version
+	if !strings.HasPrefix(candidate, "v") {
+		candidate = "v" + candidate
+	}
+	if !semver.IsValid(candidate) || semver.Canonical(candidate) != candidate ||
+		semver.Prerelease(candidate) != "" || semver.Build(candidate) != "" {
+		return "", fmt.Errorf("sing-box version %q is not an exact stable semantic version", version)
+	}
+	return candidate, nil
+}
+
+// ValidateInstallSingBoxVersion enforces a pinned core for full installs.
+// Config-only requests never touch the core, but a supplied tag must still be
+// well formed so malformed protocol data is not silently ignored.
+func ValidateInstallSingBoxVersion(req InstallRequest) error {
+	if req.ConfigOnly && req.SingBoxVersion == "" {
+		return nil
+	}
+	if req.SingBoxVersion == "" {
+		return fmt.Errorf("sing-box version is required for full install")
+	}
+	return ValidateStableSingBoxTag(req.SingBoxVersion)
+}
+
+// ValidateCoreRequest validates the exact target of a core mutation.
+func ValidateCoreRequest(req CoreRequest) error {
+	return ValidateStableSingBoxTag(req.SingBoxVersion)
 }
 
 // CertRequest ships a refreshed certificate pair to a spoke (e.g. after the hub
@@ -157,12 +219,13 @@ func validVersion(version string) bool {
 
 // HealthResponse reports agent liveness and deployment state.
 type HealthResponse struct {
-	OK            bool   `json:"ok"`
-	Version       string `json:"version"`
-	Installed     bool   `json:"installed"`
-	SingBoxActive bool   `json:"singBoxActive"`
-	Domain        string `json:"domain,omitempty"`
-	Error         string `json:"error,omitempty"`
+	OK             bool   `json:"ok"`
+	Version        string `json:"version"`
+	Installed      bool   `json:"installed"`
+	SingBoxVersion string `json:"singBoxVersion,omitempty"`
+	SingBoxActive  bool   `json:"singBoxActive"`
+	Domain         string `json:"domain,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // Subscription formats the agent can return over the overlay. These mirror the

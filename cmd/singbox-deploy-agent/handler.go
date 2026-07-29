@@ -20,12 +20,12 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/agentfirewall"
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/core"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
-	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
@@ -51,6 +51,12 @@ type agentHandler struct {
 	inspectAgent    func(context.Context, string, string) error
 	scheduleRestart func()
 	scheduleStop    func()
+
+	// Core seams keep health/version verification and Manager orchestration
+	// testable without replacing the host's actual sing-box binary.
+	readCoreVersion func(context.Context) (string, error)
+	coreActive      func(context.Context) bool
+	runCoreManager  func(context.Context, core.Action, string, io.Writer) (core.Result, error)
 }
 
 func (h *agentHandler) Health() nodeapi.HealthResponse {
@@ -63,12 +69,36 @@ func (h *agentHandler) Health() nodeapi.HealthResponse {
 			Error:   fmt.Sprintf("read deployment state: %v", err),
 		}
 	}
+	installed := domain != ""
+	if !installed {
+		return nodeapi.HealthResponse{
+			OK:        true,
+			Version:   version,
+			Installed: false,
+			Domain:    domain,
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	active := h.isCoreActive(ctx)
+	coreVersion, err := h.currentCoreVersion(ctx)
+	if err != nil {
+		return nodeapi.HealthResponse{
+			OK:            false,
+			Version:       version,
+			Installed:     true,
+			SingBoxActive: active,
+			Domain:        domain,
+			Error:         fmt.Sprintf("inspect sing-box core version: %v", err),
+		}
+	}
 	return nodeapi.HealthResponse{
-		OK:            true,
-		Version:       version,
-		Installed:     domain != "",
-		SingBoxActive: singBoxActive(),
-		Domain:        domain,
+		OK:             true,
+		Version:        version,
+		Installed:      true,
+		SingBoxVersion: coreVersion,
+		SingBoxActive:  active,
+		Domain:         domain,
 	}
 }
 
@@ -96,6 +126,9 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 			return err
 		}
 	}
+	if err := nodeapi.ValidateInstallSingBoxVersion(req); err != nil {
+		return err
+	}
 	cfg, err := h.buildSpokeConfig(req)
 	if err != nil {
 		return err
@@ -120,23 +153,12 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	if err := h.writePushedCertificate(req.Domain, req.CertificatePEM, req.PrivateKeyPEM); err != nil {
 		return fmt.Errorf("write certificate: %w", err)
 	}
-	orch := &deploy.Orchestrator{
-		Runner:   runner,
-		Layout:   h.layout,
-		Releases: release.NewClient("", nil),
-		GOOS:     "linux",
-		GOARCH:   host.Arch,
-		// The hub decides when to (re)install; skip host-side conflict/port gating.
-		CheckConflicts: func(context.Context, deploy.Config) error { return nil },
-		CheckPorts:     func(context.Context, deploy.Config) error { return nil },
-		Progress:       agentProgressLogger(log),
-	}
-	var applyErr error
-	if req.ConfigOnly {
-		applyErr = orch.Reconfigure(ctx, cfg)
-	} else {
-		applyErr = orch.Run(ctx, cfg)
-	}
+	orch := h.newSpokeOrchestrator(ctx, req, host, runner, log)
+	applyErr := runSpokeDeployment(
+		req.ConfigOnly,
+		func() error { return orch.Run(ctx, cfg) },
+		func() error { return orch.Reconfigure(ctx, cfg) },
+	)
 	if applyErr != nil {
 		return applyErr
 	}
@@ -150,6 +172,44 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 		h.monitor.reload()
 	}
 	return nil
+}
+
+func (h *agentHandler) newSpokeOrchestrator(
+	_ context.Context,
+	req nodeapi.InstallRequest,
+	host system.Host,
+	runner system.Runner,
+	log io.Writer,
+) *deploy.Orchestrator {
+	pinnedVersion := req.SingBoxVersion
+	return &deploy.Orchestrator{
+		Runner: runner,
+		Layout: h.layout,
+		GOOS:   "linux",
+		GOARCH: host.Arch,
+		// A full spoke install must resolve to the exact hub-selected tag. This
+		// fixed resolver deliberately performs no "latest" release lookup.
+		LatestSingBox: func(context.Context) (string, error) {
+			if err := nodeapi.ValidateStableSingBoxTag(pinnedVersion); err != nil {
+				return "", err
+			}
+			return pinnedVersion, nil
+		},
+		// The hub decides when to (re)install; skip host-side conflict/port gating.
+		CheckConflicts: func(context.Context, deploy.Config) error { return nil },
+		CheckPorts:     func(context.Context, deploy.Config) error { return nil },
+		Progress:       agentProgressLogger(log),
+	}
+}
+
+// runSpokeDeployment keeps the config-only path structurally separate from a
+// full install. Reconfigure never invokes the Orchestrator's core download
+// step, while every full install does.
+func runSpokeDeployment(configOnly bool, fullInstall, reconfigure func() error) error {
+	if configOnly {
+		return reconfigure()
+	}
+	return fullInstall()
 }
 
 func disableLegacyHubServices(runner system.Runner, systemdDir string) {
@@ -680,6 +740,85 @@ func (h *agentHandler) Upgrade(ctx context.Context, req nodeapi.UpgradeRequest, 
 	return nil
 }
 
+// ChangeCore replaces the local sing-box binary with one exact stable release,
+// then independently verifies the installed tag and active service state before
+// acknowledging success to the Hub.
+func (h *agentHandler) ChangeCore(ctx context.Context, req nodeapi.CoreRequest, log io.Writer) error {
+	ctx = nonNilContext(ctx)
+	if err := h.beginMutation(ctx); err != nil {
+		return err
+	}
+	defer h.endMutation()
+
+	if err := nodeapi.ValidateCoreRequest(req); err != nil {
+		return err
+	}
+	run := h.runCoreManager
+	if run == nil {
+		run = h.runCoreManagerDefault
+	}
+	result, err := run(ctx, core.ActionChangeStable, req.SingBoxVersion, log)
+	if err != nil {
+		return err
+	}
+	if result.Tag != req.SingBoxVersion {
+		return fmt.Errorf("sing-box core manager reported target %q, expected %q", result.Tag, req.SingBoxVersion)
+	}
+	reported, err := h.currentCoreVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("verify installed sing-box core version: %w", err)
+	}
+	if reported != req.SingBoxVersion {
+		return fmt.Errorf("installed sing-box core reports %q, expected %q", reported, req.SingBoxVersion)
+	}
+	if !h.isCoreActive(ctx) {
+		return fmt.Errorf("sing-box service is not active after changing core to %s", req.SingBoxVersion)
+	}
+	fmt.Fprintf(log, "verified sing-box core %s and active %s\n", reported, system.SingBoxService)
+	return nil
+}
+
+func (h *agentHandler) runCoreManagerDefault(
+	ctx context.Context,
+	action core.Action,
+	tag string,
+	log io.Writer,
+) (core.Result, error) {
+	host, err := system.DetectHost()
+	if err != nil {
+		return core.Result{}, fmt.Errorf("detect host for sing-box core change: %w", err)
+	}
+	manager := &core.Manager{
+		Runner:   h.commandRunner(ctx, log),
+		Layout:   h.layout,
+		Progress: agentProgressLogger(log),
+		GOOS:     "linux",
+		GOARCH:   host.Arch,
+	}
+	return manager.Run(ctx, action, tag)
+}
+
+func (h *agentHandler) currentCoreVersion(ctx context.Context) (string, error) {
+	read := h.readCoreVersion
+	if read == nil {
+		read = func(ctx context.Context) (string, error) {
+			return core.InstalledVersion(ctx, h.layout.SingBoxBin)
+		}
+	}
+	version, err := read(ctx)
+	if err != nil {
+		return "", err
+	}
+	return nodeapi.NormalizeSingBoxVersion(version)
+}
+
+func (h *agentHandler) isCoreActive(ctx context.Context) bool {
+	if h.coreActive != nil {
+		return h.coreActive(ctx)
+	}
+	return singBoxActiveContext(ctx)
+}
+
 func (h *agentHandler) beginMutation(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -977,7 +1116,11 @@ func protocolsFromStrings(values []string) []config.Protocol {
 	return out
 }
 
-func singBoxActive() bool {
-	err := exec.Command("systemctl", "is-active", "--quiet", system.SingBoxService).Run()
+func singBoxActiveContext(ctx context.Context) bool {
+	err := exec.CommandContext(nonNilContext(ctx), "systemctl", "is-active", "--quiet", system.SingBoxService).Run()
 	return err == nil
+}
+
+func singBoxActive() bool {
+	return singBoxActiveContext(context.Background())
 }

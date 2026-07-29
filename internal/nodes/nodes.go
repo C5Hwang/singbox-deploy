@@ -68,7 +68,11 @@ type Node struct {
 	// Hub-observed agent state. LastSeen is updated only after an authenticated
 	// health response has been received over the overlay.
 	AgentVersion string
-	LastSeen     time.Time
+	// SingBoxVersion is the exact upstream release tag most recently reported
+	// by the authenticated Agent (for example v1.13.14). Keeping it beside the
+	// Agent version lets the Hub detect fleet drift without trusting SSH.
+	SingBoxVersion string
+	LastSeen       time.Time
 
 	// IncludeInSubscription controls whether this spoke contributes entries to
 	// the hub's aggregate subscription. Legacy entries default to true.
@@ -281,8 +285,9 @@ func Mutate(layout paths.Layout, id string, mutate func(*Node) error) error {
 // Each is an independent observation of the agent, so an interrupted update can
 // leave one stale but never leaves the registry internally inconsistent.
 var statusFields = map[string]struct{}{
-	"agent_version": {},
-	"last_seen":     {},
+	"agent_version":   {},
+	"singbox_version": {},
+	"last_seen":       {},
 }
 
 // MutateStatus updates only the hub-observed status fields of one node, writing
@@ -608,6 +613,7 @@ func decodeNode(root string) Node {
 		Arch:                   get("arch", ""),
 		Installed:              get("installed", "no") == "yes",
 		AgentVersion:           get("agent_version", ""),
+		SingBoxVersion:         get("singbox_version", ""),
 		LastSeen:               lastSeen,
 		IncludeInSubscription:  get("include_in_subscription", "yes") == "yes",
 		PendingCertificate:     get("pending_certificate", "no") == "yes",
@@ -658,6 +664,7 @@ func encodeNode(n Node) map[string]string {
 		"arch":                      strings.TrimSpace(n.Arch),
 		"installed":                 yesNo(n.Installed),
 		"agent_version":             strings.TrimSpace(n.AgentVersion),
+		"singbox_version":           strings.TrimSpace(n.SingBoxVersion),
 		"last_seen":                 lastSeen,
 		"include_in_subscription":   yesNo(n.IncludeInSubscription),
 		"pending_certificate":       yesNo(n.PendingCertificate),

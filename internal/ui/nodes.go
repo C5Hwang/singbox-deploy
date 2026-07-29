@@ -748,6 +748,11 @@ func renderNodeRow(n nodes.Node) string {
 		default:
 			status = statusOK.Render("agent " + n.AgentVersion)
 		}
+		if n.SingBoxVersion == "" {
+			status += " · " + statusWarn.Render("core unknown")
+		} else {
+			status += " · " + statusOK.Render("core "+n.SingBoxVersion)
+		}
 	}
 	if n.PendingCertificate {
 		status += " · " + statusWarn.Render("certificate pending")

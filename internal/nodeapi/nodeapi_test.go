@@ -16,12 +16,16 @@ import (
 type fakeHandler struct {
 	installReq InstallRequest
 	upgradeReq UpgradeRequest
+	coreReq    CoreRequest
 	failWith   string
 	monitor    http.Handler
 }
 
 func (h *fakeHandler) Health() HealthResponse {
-	return HealthResponse{OK: true, Version: "test", Installed: true, SingBoxActive: true}
+	return HealthResponse{
+		OK: true, Version: "test", Installed: true,
+		SingBoxVersion: "v1.12.4", SingBoxActive: true,
+	}
 }
 
 func (h *fakeHandler) Install(_ context.Context, req InstallRequest, log io.Writer) error {
@@ -53,6 +57,15 @@ func (h *fakeHandler) Upgrade(_ context.Context, req UpgradeRequest, log io.Writ
 	return nil
 }
 
+func (h *fakeHandler) ChangeCore(_ context.Context, req CoreRequest, log io.Writer) error {
+	h.coreReq = req
+	fmt.Fprintf(log, "changed core to %s\n", req.SingBoxVersion)
+	if h.failWith != "" {
+		return fmt.Errorf("%s", h.failWith)
+	}
+	return nil
+}
+
 func (h *fakeHandler) Subscription(format string) ([]byte, error) {
 	return []byte("body-for-" + format), nil
 }
@@ -73,8 +86,59 @@ func TestHealthRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Health: %v", err)
 	}
-	if !health.OK || health.Version != "test" || !health.Installed {
+	if !health.OK || health.Version != "test" || !health.Installed ||
+		health.SingBoxVersion != "v1.12.4" {
 		t.Fatalf("unexpected health: %+v", health)
+	}
+}
+
+func TestStableSingBoxVersionValidationAndNormalization(t *testing.T) {
+	for _, tag := range []string{"v0.0.0", "v1.12.4", "v12.345.6789"} {
+		if err := ValidateStableSingBoxTag(tag); err != nil {
+			t.Errorf("valid stable tag %q rejected: %v", tag, err)
+		}
+	}
+	for _, tag := range []string{
+		"", "1.12.4", "v1", "v1.12", "v1.12.04", "v1.12.4-rc.1",
+		"v1.12.4+build.1", " v1.12.4", "v1.12.4 ", "latest",
+	} {
+		if err := ValidateStableSingBoxTag(tag); err == nil {
+			t.Errorf("invalid or non-stable tag %q accepted", tag)
+		}
+	}
+	for raw, want := range map[string]string{
+		"1.12.4":  "v1.12.4",
+		"v1.12.4": "v1.12.4",
+	} {
+		got, err := NormalizeSingBoxVersion(raw)
+		if err != nil || got != want {
+			t.Errorf("NormalizeSingBoxVersion(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"", "latest", "1.12.4-rc.1", "1.12"} {
+		if _, err := NormalizeSingBoxVersion(raw); err == nil {
+			t.Errorf("non-exact reported version %q normalized", raw)
+		}
+	}
+}
+
+func TestInstallSingBoxVersionValidation(t *testing.T) {
+	if err := ValidateInstallSingBoxVersion(InstallRequest{
+		SingBoxVersion: "v1.12.4",
+	}); err != nil {
+		t.Fatalf("valid full-install pin rejected: %v", err)
+	}
+	if err := ValidateInstallSingBoxVersion(InstallRequest{}); err == nil ||
+		!strings.Contains(err.Error(), "required for full install") {
+		t.Fatalf("missing full-install pin error = %v", err)
+	}
+	if err := ValidateInstallSingBoxVersion(InstallRequest{ConfigOnly: true}); err != nil {
+		t.Fatalf("config-only request should not require a core download pin: %v", err)
+	}
+	if err := ValidateInstallSingBoxVersion(InstallRequest{
+		ConfigOnly: true, SingBoxVersion: "latest",
+	}); err == nil {
+		t.Fatal("config-only request accepted a malformed optional core tag")
 	}
 }
 
@@ -94,12 +158,18 @@ func TestInstallStreamsLogAndSucceeds(t *testing.T) {
 	client, closeFn := newTestServer(t, h, "secret")
 	defer closeFn()
 	var log bytes.Buffer
-	req := InstallRequest{Domain: "spoke.example.com", EnabledProtocols: []string{"hysteria2"}}
+	req := InstallRequest{
+		Domain: "spoke.example.com", EnabledProtocols: []string{"hysteria2"},
+		SingBoxVersion: "v1.12.4",
+	}
 	if err := client.Install(context.Background(), req, &log); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	if h.installReq.Domain != "spoke.example.com" {
 		t.Fatalf("agent received wrong request: %+v", h.installReq)
+	}
+	if h.installReq.SingBoxVersion != "v1.12.4" {
+		t.Fatalf("agent received unpinned request: %+v", h.installReq)
 	}
 	out := log.String()
 	if !strings.Contains(out, "step 1") || !strings.Contains(out, "step 2") {
@@ -114,7 +184,9 @@ func TestInstallPropagatesError(t *testing.T) {
 	h := &fakeHandler{failWith: "boom happened"}
 	client, closeFn := newTestServer(t, h, "secret")
 	defer closeFn()
-	err := client.Install(context.Background(), InstallRequest{}, io.Discard)
+	err := client.Install(context.Background(), InstallRequest{
+		SingBoxVersion: "v1.12.4",
+	}, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "boom happened") {
 		t.Fatalf("expected error to propagate, got %v", err)
 	}
@@ -164,6 +236,7 @@ func TestEndpointsRejectWrongMethods(t *testing.T) {
 		{path: "/api/cert", wrong: http.MethodGet, allow: http.MethodPost},
 		{path: "/api/uninstall", wrong: http.MethodGet, allow: http.MethodPost},
 		{path: "/api/upgrade", wrong: http.MethodGet, allow: http.MethodPost},
+		{path: "/api/core", wrong: http.MethodGet, allow: http.MethodPost},
 		{path: "/api/subscription?format=default", wrong: http.MethodPost, allow: http.MethodGet},
 		{path: "/api/monitor/summary", wrong: http.MethodPost, allow: http.MethodGet},
 	}
@@ -224,6 +297,7 @@ func TestJSONEndpointsRejectSecondValueAndTrailingGarbage(t *testing.T) {
 		{path: "/api/cert", payload: CertRequest{Domain: "spoke.example.com"}},
 		{path: "/api/uninstall", payload: UninstallRequest{KeepOverlay: true}},
 		{path: "/api/upgrade", payload: NewUpgradeRequest("v2.0.0", []byte("agent"))},
+		{path: "/api/core", payload: CoreRequest{SingBoxVersion: "v1.12.4"}},
 	}
 	for _, tc := range tests {
 		encoded, err := json.Marshal(tc.payload)
@@ -367,6 +441,71 @@ func TestUpgradeRejectsInvalidVersionAndDigestBeforeSend(t *testing.T) {
 	}
 	if len(h.upgradeReq.Binary) != 0 {
 		t.Fatal("invalid upgrade reached the agent handler")
+	}
+}
+
+func TestCoreChangeRoundTripIsAuthenticatedAndPinned(t *testing.T) {
+	h := &fakeHandler{}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+
+	var log bytes.Buffer
+	req := CoreRequest{SingBoxVersion: "v1.12.4"}
+	if err := client.ChangeCore(context.Background(), req, &log); err != nil {
+		t.Fatalf("ChangeCore: %v", err)
+	}
+	if h.coreReq != req {
+		t.Fatalf("agent received core request %+v, want %+v", h.coreReq, req)
+	}
+	if !strings.Contains(log.String(), "changed core to v1.12.4") {
+		t.Fatalf("core log not streamed: %q", log.String())
+	}
+
+	client.Token = "wrong"
+	err := client.ChangeCore(context.Background(), CoreRequest{SingBoxVersion: "v1.12.5"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("unauthenticated core change error = %v", err)
+	}
+	if h.coreReq.SingBoxVersion != "v1.12.4" {
+		t.Fatalf("unauthenticated request reached handler: %+v", h.coreReq)
+	}
+}
+
+func TestCoreChangeRejectsInvalidTagBeforeSend(t *testing.T) {
+	h := &fakeHandler{}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+
+	for _, tag := range []string{"", "latest", "1.12.4", "v1.12.4-beta.1"} {
+		if err := client.ChangeCore(context.Background(), CoreRequest{
+			SingBoxVersion: tag,
+		}, io.Discard); err == nil {
+			t.Errorf("ChangeCore accepted %q", tag)
+		}
+	}
+	if h.coreReq.SingBoxVersion != "" {
+		t.Fatalf("invalid core request reached handler: %+v", h.coreReq)
+	}
+}
+
+func TestCoreEndpointRejectsInvalidTagBeforeHandler(t *testing.T) {
+	h := &fakeHandler{}
+	handler := (&Server{Token: "secret", Handler: h}).Mux()
+	for _, tag := range []string{"", "latest", "1.12.4", "v1.12.4-rc.1"} {
+		body, err := json.Marshal(CoreRequest{SingBoxVersion: tag})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/core", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("tag %q status = %d, want %d; body=%q", tag, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+	}
+	if h.coreReq.SingBoxVersion != "" {
+		t.Fatalf("invalid core request reached handler: %+v", h.coreReq)
 	}
 }
 

@@ -70,6 +70,9 @@ func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
 // Install runs a full or config-only install on the agent, forwarding streamed
 // log lines to log until the agent reports completion or failure.
 func (c *Client) Install(ctx context.Context, req InstallRequest, log io.Writer) error {
+	if err := ValidateInstallSingBoxVersion(req); err != nil {
+		return err
+	}
 	return c.stream(ctx, "/api/install", req, log)
 }
 
@@ -91,6 +94,15 @@ func (c *Client) Upgrade(ctx context.Context, req UpgradeRequest, log io.Writer)
 		return err
 	}
 	return c.stream(ctx, "/api/upgrade", req, log)
+}
+
+// ChangeCore replaces the spoke's local sing-box core with the exact requested
+// stable upstream release.
+func (c *Client) ChangeCore(ctx context.Context, req CoreRequest, log io.Writer) error {
+	if err := ValidateCoreRequest(req); err != nil {
+		return err
+	}
+	return c.stream(ctx, "/api/core", req, log)
 }
 
 // Subscription fetches one subscription format body from the agent.

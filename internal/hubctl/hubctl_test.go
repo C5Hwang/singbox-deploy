@@ -88,7 +88,7 @@ func TestWriteHubConfigRendersPeers(t *testing.T) {
 
 func TestBuildInstallRequestIncludesCert(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
-	c := &Controller{Layout: layout}
+	c := &Controller{Layout: layout, ExpectedCoreVersion: "v1.12.4"}
 	c.defaults()
 	// Place a cert pair the request should embed.
 	certPEM, keyPEM := writeCertificatePair(t, layout, "spoke.example.com")
@@ -113,11 +113,58 @@ func TestBuildInstallRequestIncludesCert(t *testing.T) {
 	if req.InstallTransactionID != node.ID {
 		t.Fatalf("install transaction ID = %q, want %q", req.InstallTransactionID, node.ID)
 	}
+	if req.SingBoxVersion != "v1.12.4" {
+		t.Fatalf("sing-box pin = %q, want v1.12.4", req.SingBoxVersion)
+	}
 	if req.CertificatePEM != string(certPEM) || req.PrivateKeyPEM != string(keyPEM) {
 		t.Fatalf("certificate not embedded: %+v", req)
 	}
 	if req.Ports.Hysteria2 != 9443 || !req.Monitor {
 		t.Fatalf("ports/monitor not mapped: %+v", req)
+	}
+}
+
+func TestFullSpokeInstallPinsAndVerifiesHubCoreVersion(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	node := nodes.Node{
+		ID: "0123456789abcdef0123456789abcdef", Alias: "tokyo",
+		Domain: "spoke.example.com", WGIP: "10.90.0.2", Token: "token",
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 9443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	writeCertificatePair(t, layout, node.Domain)
+
+	handler := &lifecycleHandler{health: nodeapi.HealthResponse{
+		OK: true, Version: "v-test",
+	}}
+	server := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: handler}).Mux())
+	defer server.Close()
+	controller := &Controller{
+		Layout:              layout,
+		ExpectedCoreVersion: "v1.12.4",
+		NewClient: func(nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: server.URL, Token: node.Token, HTTP: server.Client()}
+		},
+	}
+	controller.defaults()
+	if err := controller.installNode(context.Background(), node, io.Discard, false); err != nil {
+		t.Fatalf("installNode: %v", err)
+	}
+
+	handler.mu.Lock()
+	request := handler.installReq
+	handler.mu.Unlock()
+	if request.SingBoxVersion != "v1.12.4" {
+		t.Fatalf("full install pin = %q", request.SingBoxVersion)
+	}
+	registry, err := nodes.Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registry) != 1 || registry[0].SingBoxVersion != "v1.12.4" {
+		t.Fatalf("verified core version was not persisted: %+v", registry)
 	}
 }
 
@@ -531,10 +578,11 @@ func TestAddNodeRollsBackRegistryPeerAndConfigOnFailure(t *testing.T) {
 	var progressEvents []deploy.Event
 	wgDir := filepath.Join(dir, "wireguard")
 	ctrl := &Controller{
-		Layout:          layout,
-		Runner:          hubRunner,
-		WGConfDir:       wgDir,
-		ExpectedVersion: "v-test",
+		Layout:              layout,
+		Runner:              hubRunner,
+		WGConfDir:           wgDir,
+		ExpectedVersion:     "v-test",
+		ExpectedCoreVersion: "v1.12.4",
 		Bootstrapper: &bootstrap.Bootstrapper{Dial: func(_ context.Context, target bootstrap.Target) (bootstrap.Runner, error) {
 			dialFingerprints = append(dialFingerprints, target.HostKeyFingerprint)
 			return sshRunner, nil
@@ -619,10 +667,11 @@ func TestAddNodeRefusesExistingStandaloneWithoutInstallOrUninstall(t *testing.T)
 	var dialCount int
 	wgDir := filepath.Join(dir, "wireguard")
 	ctrl := &Controller{
-		Layout:          layout,
-		Runner:          hubRunner,
-		WGConfDir:       wgDir,
-		ExpectedVersion: "v-test",
+		Layout:              layout,
+		Runner:              hubRunner,
+		WGConfDir:           wgDir,
+		ExpectedVersion:     "v-test",
+		ExpectedCoreVersion: "v1.12.4",
 		Bootstrapper: &bootstrap.Bootstrapper{Dial: func(_ context.Context, _ bootstrap.Target) (bootstrap.Runner, error) {
 			dialCount++
 			return sshRunner, nil
@@ -697,10 +746,11 @@ func TestAddNodeRollbackUsesMatchingInstallTransaction(t *testing.T) {
 	defer srv.Close()
 	var dialCount int
 	ctrl := &Controller{
-		Layout:          layout,
-		Runner:          &hubCommandRunner{},
-		WGConfDir:       filepath.Join(dir, "wireguard"),
-		ExpectedVersion: "v-test",
+		Layout:              layout,
+		Runner:              &hubCommandRunner{},
+		WGConfDir:           filepath.Join(dir, "wireguard"),
+		ExpectedVersion:     "v-test",
+		ExpectedCoreVersion: "v1.12.4",
 		Bootstrapper: &bootstrap.Bootstrapper{Dial: func(_ context.Context, _ bootstrap.Target) (bootstrap.Runner, error) {
 			dialCount++
 			return &bootstrapTestRunner{}, nil
@@ -969,6 +1019,13 @@ func (h *lifecycleHandler) Install(_ context.Context, req nodeapi.InstallRequest
 	defer h.mu.Unlock()
 	h.installCount++
 	h.installReq = req
+	if h.installErr == nil && !req.ConfigOnly {
+		h.health.OK = true
+		h.health.Installed = true
+		h.health.SingBoxActive = true
+		h.health.SingBoxVersion = req.SingBoxVersion
+		h.health.Domain = req.Domain
+	}
 	return h.installErr
 }
 

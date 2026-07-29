@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/agentfirewall"
+	"github.com/C5Hwang/singbox-deploy/internal/core"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
@@ -173,6 +174,209 @@ func TestAgentHealthReportsStateReadFailure(t *testing.T) {
 	health := (&agentHandler{layout: layout}).Health()
 	if health.OK || !strings.Contains(health.Error, "read deployment state") {
 		t.Fatalf("Health = %+v, want explicit state read failure", health)
+	}
+}
+
+func TestAgentHealthReportsNormalizedExactCoreTag(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := state.NewStore(layout.StateDir).WriteString("domain", "spoke.example.com\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &agentHandler{
+		layout: layout,
+		readCoreVersion: func(context.Context) (string, error) {
+			return "1.12.4", nil
+		},
+		coreActive: func(context.Context) bool { return true },
+	}
+	health := h.Health()
+	if !health.OK || !health.Installed || !health.SingBoxActive ||
+		health.SingBoxVersion != "v1.12.4" || health.Error != "" {
+		t.Fatalf("Health = %+v", health)
+	}
+}
+
+func TestAgentHealthReportsCoreInspectionFailure(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := state.NewStore(layout.StateDir).WriteString("domain", "spoke.example.com\n", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &agentHandler{
+		layout: layout,
+		readCoreVersion: func(context.Context) (string, error) {
+			return "", errors.New("malformed sing-box version output")
+		},
+		coreActive: func(context.Context) bool { return true },
+	}
+	health := h.Health()
+	if health.OK || !health.Installed || health.SingBoxVersion != "" ||
+		!strings.Contains(health.Error, "inspect sing-box core version") {
+		t.Fatalf("Health = %+v", health)
+	}
+}
+
+func TestAgentCoreChangeUsesManagerAndVerifiesResult(t *testing.T) {
+	var (
+		gotAction core.Action
+		gotTag    string
+	)
+	h := &agentHandler{
+		runCoreManager: func(_ context.Context, action core.Action, tag string, _ io.Writer) (core.Result, error) {
+			gotAction, gotTag = action, tag
+			return core.Result{Tag: tag}, nil
+		},
+		readCoreVersion: func(context.Context) (string, error) {
+			return "v1.12.4", nil
+		},
+		coreActive: func(context.Context) bool { return true },
+	}
+	var log bytes.Buffer
+	if err := h.ChangeCore(context.Background(), nodeapi.CoreRequest{
+		SingBoxVersion: "v1.12.4",
+	}, &log); err != nil {
+		t.Fatalf("ChangeCore: %v", err)
+	}
+	if gotAction != core.ActionChangeStable || gotTag != "v1.12.4" {
+		t.Fatalf("manager call = %q %q", gotAction, gotTag)
+	}
+	if !strings.Contains(log.String(), "verified sing-box core v1.12.4") {
+		t.Fatalf("verification log = %q", log.String())
+	}
+}
+
+func TestAgentCoreChangeRejectsInvalidAndUnverifiedTargets(t *testing.T) {
+	t.Run("invalid tag", func(t *testing.T) {
+		called := false
+		h := &agentHandler{
+			runCoreManager: func(context.Context, core.Action, string, io.Writer) (core.Result, error) {
+				called = true
+				return core.Result{}, nil
+			},
+		}
+		err := h.ChangeCore(context.Background(), nodeapi.CoreRequest{}, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "required") || called {
+			t.Fatalf("ChangeCore error=%v managerCalled=%v", err, called)
+		}
+	})
+	t.Run("reported mismatch", func(t *testing.T) {
+		h := &agentHandler{
+			runCoreManager: func(_ context.Context, _ core.Action, tag string, _ io.Writer) (core.Result, error) {
+				return core.Result{Tag: tag}, nil
+			},
+			readCoreVersion: func(context.Context) (string, error) {
+				return "v1.12.3", nil
+			},
+			coreActive: func(context.Context) bool { return true },
+		}
+		err := h.ChangeCore(context.Background(), nodeapi.CoreRequest{
+			SingBoxVersion: "v1.12.4",
+		}, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), `reports "v1.12.3"`) {
+			t.Fatalf("mismatch error = %v", err)
+		}
+	})
+	t.Run("service inactive", func(t *testing.T) {
+		h := &agentHandler{
+			runCoreManager: func(_ context.Context, _ core.Action, tag string, _ io.Writer) (core.Result, error) {
+				return core.Result{Tag: tag}, nil
+			},
+			readCoreVersion: func(context.Context) (string, error) {
+				return "v1.12.4", nil
+			},
+			coreActive: func(context.Context) bool { return false },
+		}
+		err := h.ChangeCore(context.Background(), nodeapi.CoreRequest{
+			SingBoxVersion: "v1.12.4",
+		}, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "not active") {
+			t.Fatalf("inactive-service error = %v", err)
+		}
+	})
+}
+
+func TestAgentCoreChangeWaitsOnMutationGate(t *testing.T) {
+	called := false
+	h := &agentHandler{
+		runCoreManager: func(context.Context, core.Action, string, io.Writer) (core.Result, error) {
+			called = true
+			return core.Result{}, nil
+		},
+	}
+	if err := h.beginMutation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := h.ChangeCore(ctx, nodeapi.CoreRequest{SingBoxVersion: "v1.12.4"}, io.Discard)
+	h.endMutation()
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("ChangeCore error=%v managerCalled=%v", err, called)
+	}
+}
+
+func TestAgentFullInstallRequiresExactCorePinBeforeRunner(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	runnerCreated := false
+	h := &agentHandler{
+		layout: layout,
+		newRunner: func(context.Context, io.Writer) system.Runner {
+			runnerCreated = true
+			return &handlerRecordingRunner{}
+		},
+	}
+	err := h.Install(context.Background(), nodeapi.InstallRequest{
+		InstallTransactionID: testInstallTransactionID,
+	}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "sing-box version is required for full install") {
+		t.Fatalf("Install error = %v", err)
+	}
+	if runnerCreated {
+		t.Fatal("full install created a runner before validating the core pin")
+	}
+}
+
+func TestSpokeOrchestratorPinsRequestedCoreVersion(t *testing.T) {
+	h := &agentHandler{layout: paths.LayoutForRoot(t.TempDir())}
+	orch := h.newSpokeOrchestrator(
+		context.Background(),
+		nodeapi.InstallRequest{SingBoxVersion: "v1.12.4"},
+		system.Host{Arch: "arm64"},
+		&handlerRecordingRunner{},
+		io.Discard,
+	)
+	tag, err := orch.LatestSingBox(context.Background())
+	if err != nil || tag != "v1.12.4" {
+		t.Fatalf("pinned resolver = %q, %v", tag, err)
+	}
+	if orch.GOARCH != "arm64" {
+		t.Fatalf("orchestrator GOARCH = %q, want arm64", orch.GOARCH)
+	}
+}
+
+func TestConfigOnlyInstallSelectsReconfigureWithoutFullInstall(t *testing.T) {
+	var full, reconfigure bool
+	h := &agentHandler{layout: paths.LayoutForRoot(t.TempDir())}
+	orch := h.newSpokeOrchestrator(
+		context.Background(),
+		nodeapi.InstallRequest{ConfigOnly: true},
+		system.Host{Arch: "amd64"},
+		&handlerRecordingRunner{},
+		io.Discard,
+	)
+	err := runSpokeDeployment(
+		true,
+		func() error {
+			full = true
+			_, err := orch.LatestSingBox(context.Background())
+			return err
+		},
+		func() error {
+			reconfigure = true
+			return nil
+		},
+	)
+	if err != nil || full || !reconfigure {
+		t.Fatalf("runSpokeDeployment error=%v full=%v reconfigure=%v", err, full, reconfigure)
 	}
 }
 

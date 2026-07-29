@@ -27,6 +27,12 @@ type UpgradeHandler interface {
 	Upgrade(ctx context.Context, req UpgradeRequest, log io.Writer) error
 }
 
+// CoreHandler is implemented by agents that support changing the local
+// sing-box core to an exact hub-selected stable release.
+type CoreHandler interface {
+	ChangeCore(ctx context.Context, req CoreRequest, log io.Writer) error
+}
+
 // MonitorHandler is implemented by an agent that has an in-process monitor.
 // The Server invokes it only with one of the fixed local monitor paths declared
 // by MonitorEndpoint and strips the request query before dispatch.
@@ -48,6 +54,7 @@ func (s *Server) Mux() http.Handler {
 	s.handle(mux, http.MethodPost, "/api/cert", s.handleCert)
 	s.handle(mux, http.MethodPost, "/api/uninstall", s.handleUninstall)
 	s.handle(mux, http.MethodPost, "/api/upgrade", s.handleUpgrade)
+	s.handle(mux, http.MethodPost, "/api/core", s.handleCore)
 	s.handle(mux, http.MethodGet, "/api/subscription", s.handleSubscription)
 	for _, endpoint := range monitorEndpoints {
 		apiPath, _, _ := endpoint.paths()
@@ -115,6 +122,10 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := ValidateInstallSingBoxVersion(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	streamOperation(w, func(log io.Writer) error {
 		return s.Handler.Install(r.Context(), req, log)
 	})
@@ -159,6 +170,26 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	streamOperation(w, func(log io.Writer) error {
 		return handler.Upgrade(r.Context(), req, log)
+	})
+}
+
+func (s *Server) handleCore(w http.ResponseWriter, r *http.Request) {
+	var req CoreRequest
+	if err := decodeJSON(w, r, &req, maxCoreRequestBody); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ValidateCoreRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	handler, ok := s.Handler.(CoreHandler)
+	if !ok {
+		http.Error(w, "sing-box core management is not supported", http.StatusNotImplemented)
+		return
+	}
+	streamOperation(w, func(log io.Writer) error {
+		return handler.ChangeCore(r.Context(), req, log)
 	})
 }
 
@@ -211,6 +242,7 @@ const (
 	maxInstallRequestBody   int64 = 4 << 20
 	maxCertRequestBody      int64 = 2 << 20
 	maxUninstallRequestBody int64 = 16 << 10
+	maxCoreRequestBody      int64 = 4 << 10
 	// []byte expands by 4/3 when JSON/base64 encoded. Leave a small allowance
 	// for field names and the version/digest strings.
 	maxUpgradeRequestBody int64 = (MaxAgentBinarySize+2)/3*4 + 4096

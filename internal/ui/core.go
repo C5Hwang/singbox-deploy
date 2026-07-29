@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 
 	corepkg "github.com/C5Hwang/singbox-deploy/internal/core"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -59,6 +62,7 @@ var (
 	coreServiceSnapshot = func() string { return serviceState(system.SingBoxService) }
 	coreLogOutput       = defaultCoreLogOutput
 	coreReleaseClient   = func() *release.Client { return release.NewClient("", nil) }
+	changeFleetCoreRun  = defaultChangeFleetCore
 )
 
 type coreActionItem = actionItem[coreAction]
@@ -75,6 +79,8 @@ type coreManager struct {
 
 	currentVersion string
 	serviceState   string
+	nodes          []nodes.Node
+	nodesErr       error
 	fieldErr       string
 
 	cursor     int
@@ -97,6 +103,7 @@ func newCoreManager() *coreManager {
 func (cm *coreManager) refreshSnapshot() {
 	cm.currentVersion = coreCurrentVersion(coreUILayout())
 	cm.serviceState = coreServiceSnapshot()
+	cm.nodes, cm.nodesErr = nodes.Load(coreUILayout())
 }
 
 func (cm *coreManager) setSize(width, height int) {
@@ -309,10 +316,25 @@ func (cm *coreManager) startRun() tea.Cmd {
 	cm.resetRun(make(chan runMsg, 64))
 	ch := cm.ch
 	logs := &logWriter{ch: ch}
+	uiAction := cm.action
+	tag := cm.targetTag
+	layout := coreUILayout()
+	backendAction, _ := cm.backendAction()
 	mgr := cm.backendManager(logs)
-	action, tag := cm.backendAction()
 	go func() {
-		res, err := mgr.Run(context.Background(), action, tag)
+		if uiAction == coreActionChangeStable {
+			err := changeFleetCoreRun(
+				context.Background(), layout, tag, logs,
+				runProgressSender(ch),
+			)
+			if err != nil {
+				ch <- runMsg{done: true, err: err}
+				return
+			}
+			ch <- runMsg{done: true, resultTag: tag}
+			return
+		}
+		res, err := mgr.Run(context.Background(), backendAction, "")
 		ch <- runMsg{done: true, err: err, resultTag: res.Tag}
 	}()
 	return cm.waitForRun()
@@ -389,10 +411,24 @@ func (cm *coreManager) View() string {
 
 func (cm *coreManager) actionView() string {
 	rows := []summaryLine{
-		summaryRow("Current version", or(cm.currentVersion, "not installed")),
-		summaryRow("Service", or(cm.serviceState, "unknown")),
-		summaryRow("Binary", coreUILayout().SingBoxBin),
-		summaryRow("Config", coreUILayout().ConfigJSON),
+		summaryRow("Current version (Hub)", or(cm.currentVersion, "not installed")),
+		summaryRow("Hub service", or(cm.serviceState, "unknown")),
+		summaryRow("Hub binary", coreUILayout().SingBoxBin),
+		summaryRow("Hub config", coreUILayout().ConfigJSON),
+	}
+	if cm.nodesErr != nil {
+		rows = append(rows, summaryRow("Spokes", "registry error: "+cm.nodesErr.Error()))
+	} else if len(cm.nodes) == 0 {
+		rows = append(rows, summaryRow("Spokes", "none registered"))
+	} else {
+		rows = append(rows, summaryBlank(), summaryText("Spokes (last authenticated health):"))
+		for _, node := range cm.nodes {
+			state := or(node.SingBoxVersion, "unknown")
+			if !node.Installed {
+				state = "not installed"
+			}
+			rows = append(rows, summaryIndentedRow(2, node.EffectiveAlias(), state))
+		}
 	}
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("sing-box Core Management") + "\n\n")
@@ -426,11 +462,14 @@ func (cm *coreManager) confirmView() string {
 		summaryRow("Service", or(cm.serviceState, "unknown")),
 	}
 	if cm.action == coreActionChangeStable {
-		rows = append(rows, summaryRow("Target release", cm.targetTag))
+		rows = append(rows,
+			summaryRow("Target release", cm.targetTag),
+			summaryRow("Scope", fmt.Sprintf("Hub + %d installed Spoke(s)", cm.installedSpokeCount())),
+		)
 	}
 	rows = append(rows, summaryBlank())
 	if cm.isReplaceAction() {
-		rows = append(rows, summaryText("This will stop sing-box.service, download the selected stable release, replace the managed binary, validate config.json, and restart sing-box.service."))
+		rows = append(rows, summaryText("Every installed Spoke is changed and verified first; the Hub commits last. A failure rolls changed nodes back to their exact preflight versions."))
 	} else {
 		rows = append(rows, summaryText("This will run systemctl "+cm.systemctlAction()+" sing-box.service."))
 	}
@@ -486,13 +525,39 @@ func (cm *coreManager) footerHints() []operationHint {
 func (cm *coreManager) actions() []coreActionItem {
 	return []coreActionItem{
 		{separator: true, label: "Config"},
-		{action: coreActionChangeStable, label: "Change sing-box version"},
+		{action: coreActionChangeStable, label: "Change sing-box version · Hub + all Spokes"},
 		{separator: true, label: "Service"},
 		{action: coreActionStart, label: "Start sing-box.service"},
 		{action: coreActionStop, label: "Stop sing-box.service"},
 		{action: coreActionRestart, label: "Restart sing-box.service"},
 		{action: coreActionLogs, label: "View sing-box.service logs"},
 	}
+}
+
+func (cm *coreManager) installedSpokeCount() int {
+	count := 0
+	for _, node := range cm.nodes {
+		if node.Installed {
+			count++
+		}
+	}
+	return count
+}
+
+func defaultChangeFleetCore(
+	ctx context.Context,
+	layout paths.Layout,
+	target string,
+	log io.Writer,
+	progress func(deploy.Event),
+) error {
+	controller := &hubctl.Controller{
+		Layout:          layout,
+		Runner:          system.NewExecRunner(log),
+		ExpectedVersion: toolVersion,
+		Progress:        progress,
+	}
+	return controller.ChangeFleetCore(ctx, target, log)
 }
 
 func (cm *coreManager) actionLabel() string {

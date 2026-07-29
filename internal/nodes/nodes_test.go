@@ -29,6 +29,7 @@ func TestNodeRoundTrip(t *testing.T) {
 		Arch:               "arm64",
 		Installed:          true,
 		AgentVersion:       "v2.0.0",
+		SingBoxVersion:     "v1.13.14",
 		LastSeen:           time.Date(2026, 7, 10, 1, 2, 3, 4, time.UTC),
 		Domain:             "spoke.example.com",
 		EnabledProtocols:   []string{"hysteria2", "tuic"},
@@ -52,7 +53,9 @@ func TestNodeRoundTrip(t *testing.T) {
 		got.EffectiveSubscriptionAlias() != "tokyo-clients" || got.WGIP != "10.90.0.2" || !got.Installed {
 		t.Fatalf("node round-trip mismatch: %+v", got)
 	}
-	if !got.IncludeInSubscription || got.AgentVersion != "v2.0.0" || !got.LastSeen.Equal(n.LastSeen) || !got.PendingCertificate {
+	if !got.IncludeInSubscription || got.AgentVersion != "v2.0.0" ||
+		got.SingBoxVersion != "v1.13.14" || !got.LastSeen.Equal(n.LastSeen) ||
+		!got.PendingCertificate {
 		t.Fatalf("node status round-trip mismatch: %+v", got)
 	}
 	if len(got.EnabledProtocols) != 2 || got.EnabledProtocols[0] != "hysteria2" {
@@ -283,13 +286,15 @@ func TestMutateStatusUpdatesInPlaceAndRefusesConfigurationEdits(t *testing.T) {
 	seen := time.Date(2026, 7, 25, 8, 30, 0, 0, time.UTC)
 	updated, err := MutateStatus(layout, id, func(n *Node) error {
 		n.AgentVersion = "v2.0.0"
+		n.SingBoxVersion = "v1.13.14"
 		n.LastSeen = seen
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("MutateStatus: %v", err)
 	}
-	if updated.AgentVersion != "v2.0.0" || !updated.LastSeen.Equal(seen) || updated.Alias != "tokyo" {
+	if updated.AgentVersion != "v2.0.0" || updated.SingBoxVersion != "v1.13.14" ||
+		!updated.LastSeen.Equal(seen) || updated.Alias != "tokyo" {
 		t.Fatalf("returned node = %+v", updated)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -299,7 +304,9 @@ func TestMutateStatusUpdatesInPlaceAndRefusesConfigurationEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].AgentVersion != "v2.0.0" || !list[0].LastSeen.Equal(seen) || list[0].Hysteria2Port != 8443 {
+	if len(list) != 1 || list[0].AgentVersion != "v2.0.0" ||
+		list[0].SingBoxVersion != "v1.13.14" || !list[0].LastSeen.Equal(seen) ||
+		list[0].Hysteria2Port != 8443 {
 		t.Fatalf("persisted node = %+v", list)
 	}
 

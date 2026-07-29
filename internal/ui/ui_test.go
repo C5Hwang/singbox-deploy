@@ -977,6 +977,7 @@ func withCoreDeps(t *testing.T, layout paths.Layout) {
 	oldService := coreServiceSnapshot
 	oldLogs := coreLogOutput
 	oldRelease := coreReleaseClient
+	oldFleetChange := changeFleetCoreRun
 	t.Cleanup(func() {
 		coreUILayout = oldLayout
 		detectCoreHost = oldDetect
@@ -984,12 +985,16 @@ func withCoreDeps(t *testing.T, layout paths.Layout) {
 		coreServiceSnapshot = oldService
 		coreLogOutput = oldLogs
 		coreReleaseClient = oldRelease
+		changeFleetCoreRun = oldFleetChange
 	})
 	coreUILayout = func() paths.Layout { return layout }
 	detectCoreHost = func() (system.Host, error) { return supportedTestHost(), nil }
 	coreCurrentVersion = func(paths.Layout) string { return "sing-box version 1.12.0" }
 	coreServiceSnapshot = func() string { return "running" }
 	coreLogOutput = func(context.Context, int) (string, error) { return "log line\n", nil }
+	changeFleetCoreRun = func(context.Context, paths.Layout, string, io.Writer, func(deploy.Event)) error {
+		return nil
+	}
 }
 
 func withUninstallDeps(t *testing.T, layout paths.Layout) {

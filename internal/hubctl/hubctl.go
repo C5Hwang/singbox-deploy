@@ -17,6 +17,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/assets/agentbin"
 	"github.com/C5Hwang/singbox-deploy/internal/bootstrap"
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/core"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
@@ -45,6 +46,10 @@ type Controller struct {
 	// this so the Hub binary is not committed unless every installed spoke is
 	// already running the exact candidate Agent version.
 	RequireExactAgentVersion bool
+	// ExpectedCoreVersion pins a full spoke install to the exact sing-box
+	// release already running on the Hub. It is normally detected from the Hub
+	// binary; tests and recovery tooling may supply it explicitly.
+	ExpectedCoreVersion string
 	// Progress receives the high-level phases of operator-driven spoke
 	// operations. Agent-side deployment logs remain on the supplied log writer.
 	Progress func(deploy.Event)
@@ -58,6 +63,11 @@ type Controller struct {
 	NewClient    func(node nodes.Node) *nodeapi.Client
 	CertManager  *certmgr.Manager
 	AgentBinary  func(arch string) ([]byte, error)
+	// Core seams keep fleet convergence and rollback testable without replacing
+	// the test process' binaries or contacting GitHub.
+	CurrentCoreVersion func(ctx context.Context) (string, error)
+	ChangeLocalCore    func(ctx context.Context, tag string, log io.Writer) error
+	LocalCoreActive    func() error
 	// CheckOverlaySubnet rejects conflicts with existing host routes before
 	// overlay identity/config state is written. Tests may inject a deterministic
 	// checker; production inspects /proc/net/route.
@@ -84,6 +94,35 @@ func (c *Controller) defaults() {
 	}
 	if c.AgentBinary == nil {
 		c.AgentBinary = agentbin.Binary
+	}
+	if c.CurrentCoreVersion == nil {
+		c.CurrentCoreVersion = func(ctx context.Context) (string, error) {
+			return core.InstalledVersion(ctx, c.Layout.SingBoxBin)
+		}
+	}
+	if c.ChangeLocalCore == nil {
+		c.ChangeLocalCore = func(ctx context.Context, tag string, _ io.Writer) error {
+			host, err := system.DetectHost()
+			if err != nil {
+				return fmt.Errorf("detect Hub architecture: %w", err)
+			}
+			manager := &core.Manager{
+				Runner: c.Runner,
+				Layout: c.Layout,
+				GOOS:   "linux",
+				GOARCH: host.Arch,
+			}
+			_, err = manager.Run(ctx, core.ActionChangeStable, tag)
+			return err
+		}
+	}
+	if c.LocalCoreActive == nil {
+		c.LocalCoreActive = func() error {
+			return c.Runner.Run(system.Command{
+				Name: "systemctl",
+				Args: []string{"is-active", "--quiet", system.SingBoxService},
+			})
+		}
 	}
 	if c.CheckOverlaySubnet == nil {
 		c.CheckOverlaySubnet = func(subnet string) error {
@@ -215,6 +254,11 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 	if !nodes.HubInstalled(c.Layout) {
 		return nodes.Node{}, fmt.Errorf("install the hub before adding spoke nodes")
 	}
+	coreVersion, err := c.expectedCoreVersion(ctx)
+	if err != nil {
+		return nodes.Node{}, fmt.Errorf("pin spoke sing-box core to the Hub: %w", err)
+	}
+	c.ExpectedCoreVersion = coreVersion
 	identity, ok, err := nodes.LoadHubIdentity(c.Layout)
 	if err != nil {
 		return nodes.Node{}, err
@@ -390,7 +434,16 @@ func (c *Controller) installNode(ctx context.Context, node nodes.Node, log io.Wr
 	}
 	req.ConfigOnly = configOnly
 	fmt.Fprintf(log, "installing sing-box on %s...\n", node.EffectiveAlias())
-	return c.NewClient(node).Install(ctx, req, log)
+	if err := c.NewClient(node).Install(ctx, req, log); err != nil {
+		return err
+	}
+	if configOnly {
+		return nil
+	}
+	if _, err := c.verifySpokeCore(ctx, node, req.SingBoxVersion); err != nil {
+		return fmt.Errorf("verify pinned spoke core after install: %w", err)
+	}
+	return nil
 }
 
 // Reconfigure pushes an updated install to an already-registered node (e.g. the
@@ -717,7 +770,7 @@ func (c *Controller) probeAgent(ctx context.Context, node *nodes.Node) (nodeapi.
 	if !health.OK {
 		return health, fmt.Errorf("agent %s reported unhealthy%s", node.EffectiveAlias(), healthErrorSuffix(health))
 	}
-	if err := c.persistAgentHealth(node, health.Version); err != nil {
+	if err := c.persistAgentHealth(node, health); err != nil {
 		return health, fmt.Errorf("persist agent health: %w", err)
 	}
 	return health, nil
@@ -761,7 +814,7 @@ func (c *Controller) reconcileAgentVersion(ctx context.Context, node *nodes.Node
 		}
 		health, err = client.Health(ctx)
 		if err == nil && health.OK && health.Version == expected {
-			if err := c.persistAgentHealth(node, health.Version); err != nil {
+			if err := c.persistAgentHealth(node, health); err != nil {
 				return fmt.Errorf("persist reconciled agent health: %w", err)
 			}
 			return nil
@@ -843,10 +896,11 @@ func canonicalAgentSemver(version string) string {
 // a concurrent TUI edit cannot be overwritten by a stale health-check copy, and
 // uses the status-only writer so a fleet-wide probe does not restage the whole
 // registry once per node.
-func (c *Controller) persistAgentHealth(node *nodes.Node, version string) error {
+func (c *Controller) persistAgentHealth(node *nodes.Node, health nodeapi.HealthResponse) error {
 	seen := time.Now().UTC()
 	updated, err := nodes.MutateStatus(c.Layout, node.ID, func(current *nodes.Node) error {
-		current.AgentVersion = version
+		current.AgentVersion = health.Version
+		current.SingBoxVersion = health.SingBoxVersion
 		current.LastSeen = seen
 		return nil
 	})
@@ -896,6 +950,7 @@ func (c *Controller) buildInstallRequest(node nodes.Node) (nodeapi.InstallReques
 	}
 	return nodeapi.InstallRequest{
 		InstallTransactionID: node.ID,
+		SingBoxVersion:       strings.TrimSpace(c.ExpectedCoreVersion),
 		Domain:               node.Domain,
 		DisplayName:          node.EffectiveSubscriptionAlias(),
 		RealityServerName:    node.RealityServerName,
@@ -921,6 +976,21 @@ func (c *Controller) buildInstallRequest(node nodes.Node) (nodeapi.InstallReques
 		CertificatePEM:         string(certPEM),
 		PrivateKeyPEM:          string(keyPEM),
 	}, nil
+}
+
+func (c *Controller) expectedCoreVersion(ctx context.Context) (string, error) {
+	tag := strings.TrimSpace(c.ExpectedCoreVersion)
+	if tag == "" {
+		var err error
+		tag, err = c.CurrentCoreVersion(ctx)
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := nodeapi.ValidateStableSingBoxTag(tag); err != nil {
+		return "", fmt.Errorf("Hub reports %q: %w", tag, err)
+	}
+	return tag, nil
 }
 
 func healthErrorSuffix(health nodeapi.HealthResponse) string {
