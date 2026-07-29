@@ -31,6 +31,8 @@ func fakeDownload(bodies map[string][]byte) func(context.Context, string, string
 	}
 }
 
+func acceptCandidate(context.Context, string, string) error { return nil }
+
 func TestVerifyChecksumMatch(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
@@ -100,9 +102,10 @@ func TestRunCallsReplaceFailureRollbackAfterSpokesPrepared(t *testing.T) {
 	rolledBack := false
 	activated := false
 	m := &Manager{
-		Download:   fakeDownload(bodies),
-		GOARCH:     "amd64",
-		InstallBin: installPath,
+		Download:         fakeDownload(bodies),
+		InspectCandidate: acceptCandidate,
+		GOARCH:           "amd64",
+		InstallBin:       installPath,
 		BeforeReplace: func(_ context.Context, candidatePath, targetVersion string) error {
 			prepared = true
 			if targetVersion != "v2.0.0" {
@@ -146,9 +149,10 @@ func TestRunCallsAfterReplaceForCommittedHub(t *testing.T) {
 	installPath := filepath.Join(root, "singbox-deploy")
 	activated := false
 	m := &Manager{
-		Download:   fakeDownload(bodies),
-		GOARCH:     "amd64",
-		InstallBin: installPath,
+		Download:         fakeDownload(bodies),
+		InspectCandidate: acceptCandidate,
+		GOARCH:           "amd64",
+		InstallBin:       installPath,
 		AfterReplace: func(_ context.Context, targetVersion string) error {
 			activated = true
 			if targetVersion != "v2.0.0" {
@@ -181,9 +185,10 @@ func TestRunReturnsCommittedResultAndCleansUpWhenActivationFails(t *testing.T) {
 	root := t.TempDir()
 	installPath := filepath.Join(root, "singbox-deploy")
 	m := &Manager{
-		Download:   fakeDownload(bodies),
-		GOARCH:     "amd64",
-		InstallBin: installPath,
+		Download:         fakeDownload(bodies),
+		InspectCandidate: acceptCandidate,
+		GOARCH:           "amd64",
+		InstallBin:       installPath,
 		AfterReplace: func(context.Context, string) error {
 			return errors.New("monitor restart failed")
 		},
@@ -209,5 +214,75 @@ func TestRunReturnsCommittedResultAndCleansUpWhenActivationFails(t *testing.T) {
 	updateDir := filepath.Join(root, ".singbox-deploy-update")
 	if _, statErr := os.Stat(updateDir); !os.IsNotExist(statErr) {
 		t.Fatalf("temporary update directory remains after committed failure: %v", statErr)
+	}
+}
+
+func TestRunRejectsWrongCandidateVersionBeforeReplace(t *testing.T) {
+	body := []byte("#!/bin/sh\nprintf '%s\\n' v2.0.1\n")
+	bodies := map[string][]byte{
+		"singbox-deploy-linux-amd64": body,
+		"SHA256SUMS":                 []byte(sha256Hex(body) + "  singbox-deploy-linux-amd64\n"),
+	}
+	root := t.TempDir()
+	installPath := filepath.Join(root, "singbox-deploy")
+	old := []byte("old-hub-binary")
+	if err := os.WriteFile(installPath, old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	beforeReplace := false
+	m := &Manager{
+		Download:   fakeDownload(bodies),
+		GOARCH:     "amd64",
+		InstallBin: installPath,
+		BeforeReplace: func(context.Context, string, string) error {
+			beforeReplace = true
+			return nil
+		},
+	}
+
+	_, err := m.Run(context.Background(), "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), `candidate reports version "v2.0.1", expected "v2.0.0"`) {
+		t.Fatalf("expected exact candidate version failure, got %v", err)
+	}
+	if beforeReplace {
+		t.Fatal("spoke preparation must not run for a wrong-version hub candidate")
+	}
+	installed, readErr := os.ReadFile(installPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(installed) != string(old) {
+		t.Fatalf("installed hub changed after rejected candidate: got %q", installed)
+	}
+}
+
+func TestRunRejectsDamagedCandidateBeforeReplace(t *testing.T) {
+	body := []byte("not an executable image")
+	bodies := map[string][]byte{
+		"singbox-deploy-linux-amd64": body,
+		"SHA256SUMS":                 []byte(sha256Hex(body) + "  singbox-deploy-linux-amd64\n"),
+	}
+	root := t.TempDir()
+	installPath := filepath.Join(root, "singbox-deploy")
+	old := []byte("old-hub-binary")
+	if err := os.WriteFile(installPath, old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{
+		Download:   fakeDownload(bodies),
+		GOARCH:     "amd64",
+		InstallBin: installPath,
+	}
+
+	_, err := m.Run(context.Background(), "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "run candidate --version") {
+		t.Fatalf("expected damaged candidate execution failure, got %v", err)
+	}
+	installed, readErr := os.ReadFile(installPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(installed) != string(old) {
+		t.Fatalf("installed hub changed after rejected candidate: got %q", installed)
 	}
 }

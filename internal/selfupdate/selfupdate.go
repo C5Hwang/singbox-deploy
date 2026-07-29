@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
@@ -50,9 +52,13 @@ type Manager struct {
 	Releases     *release.Client
 	Download     func(ctx context.Context, url, dest string) error
 	LatestStable func(ctx context.Context) (string, error)
-	Progress     func(deploy.Event)
-	Version      string
-	GOARCH       string
+	// InspectCandidate verifies that the staged hub binary is runnable and
+	// reports the requested release. It is injectable so tests do not need to
+	// manufacture platform-specific executables.
+	InspectCandidate func(ctx context.Context, candidatePath, targetVersion string) error
+	Progress         func(deploy.Event)
+	Version          string
+	GOARCH           string
 	// BeforeReplace receives the verified, executable candidate path. The TUI
 	// uses it to export the candidate's embedded agents and upgrade every spoke
 	// before the hub binary itself is replaced, preserving version equality.
@@ -84,6 +90,9 @@ func (m *Manager) Defaults() {
 		m.LatestStable = func(ctx context.Context) (string, error) {
 			return m.Releases.LatestStable(ctx, owner, repoName)
 		}
+	}
+	if m.InspectCandidate == nil {
+		m.InspectCandidate = inspectCandidate
 	}
 	if m.GOARCH == "" {
 		m.GOARCH = "amd64"
@@ -139,7 +148,10 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 			if err := verifyChecksum(candidatePath, sumsPath, asset); err != nil {
 				return err
 			}
-			return os.Chmod(candidatePath, 0o755)
+			if err := os.Chmod(candidatePath, 0o755); err != nil {
+				return err
+			}
+			return m.InspectCandidate(ctx, candidatePath, tag)
 		}},
 	}
 	if m.BeforeReplace != nil {
@@ -182,6 +194,19 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 		return Result{Tag: tag}, &CommittedError{Err: err}
 	}
 	return Result{Tag: tag}, nil
+}
+
+func inspectCandidate(ctx context.Context, path, expectedVersion string) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(checkCtx, path, "--version").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("run candidate --version: %w", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != expectedVersion {
+		return fmt.Errorf("candidate reports version %q, expected %q", got, expectedVersion)
+	}
+	return nil
 }
 
 // verifyChecksum confirms the SHA-256 of binPath matches the entry for asset in
