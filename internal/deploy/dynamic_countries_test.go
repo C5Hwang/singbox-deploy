@@ -80,6 +80,39 @@ func TestFillProfilesProducesValidOutput(t *testing.T) {
 			t.Fatalf("clash profile should not have %s (no matching nodes)", absent)
 		}
 	}
+
+	for _, want := range []string{
+		"allow-lan: false",
+		`bind-address: "127.0.0.1"`,
+		"external-controller: 127.0.0.1:9090",
+		"listen: 127.0.0.1:1053",
+	} {
+		if !strings.Contains(out.ClashProfile, want) {
+			t.Fatalf("Clash profile missing safe local binding %q", want)
+		}
+	}
+	if strings.Contains(out.ClashProfile, "0.0.0.0") {
+		t.Fatalf("Clash profile exposes a client listener on all interfaces:\n%s", out.ClashProfile)
+	}
+
+	var singBoxProfile struct {
+		Inbounds []struct {
+			Type   string `json:"type"`
+			Listen string `json:"listen"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal([]byte(out.SingBoxProfile), &singBoxProfile); err != nil {
+		t.Fatalf("sing-box profile not valid JSON: %v\n%s", err, out.SingBoxProfile)
+	}
+	for _, inbound := range singBoxProfile.Inbounds {
+		if inbound.Type == "mixed" {
+			if inbound.Listen != "127.0.0.1" {
+				t.Fatalf("sing-box mixed inbound listen = %q, want loopback", inbound.Listen)
+			}
+			return
+		}
+	}
+	t.Fatal("sing-box profile is missing its mixed inbound")
 }
 
 func TestFillProfilesRoutesAddressQueriesToFakeIP(t *testing.T) {
