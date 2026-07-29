@@ -293,20 +293,43 @@ func upgradeSpokeAgentsBeforeHub(ctx context.Context, candidatePath, targetVersi
 		RequireExactAgentVersion: true,
 		AgentBinary:              loadAgent,
 	}
+	return upgradeSelectedSpokeAgents(ctx, list, ctrl, logs, restoreSelectedSpokeAgents)
+}
+
+func upgradeSelectedSpokeAgents(
+	ctx context.Context,
+	list []nodes.Node,
+	ctrl *hubctl.Controller,
+	logs *logWriter,
+	restore func(context.Context, []nodes.Node, *logWriter) error,
+) error {
 	var upgraded []nodes.Node
+	recordPossiblyUpgraded := func(node nodes.Node) {
+		for i := range upgraded {
+			if upgraded[i].ID == node.ID {
+				upgraded[i] = node
+				return
+			}
+		}
+		upgraded = append(upgraded, node)
+	}
+	ctrl.BeforeAgentUpgrade = recordPossiblyUpgraded
 	for _, node := range list {
 		if !node.Installed {
 			continue
 		}
 		fmt.Fprintf(logs, "upgrading %s agent over WireGuard before replacing the hub...\n", node.EffectiveAlias())
-		if _, err := ctrl.CheckHealth(ctx, node, logs); err != nil {
+		checked, err := ctrl.CheckHealth(ctx, node, logs)
+		if err != nil {
 			upgradeErr := fmt.Errorf("upgrade %s: %w", node.EffectiveAlias(), err)
 			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			rollbackErr := restoreSelectedSpokeAgents(rollbackCtx, upgraded, logs)
+			rollbackErr := restore(rollbackCtx, upgraded, logs)
 			cancel()
 			return errors.Join(upgradeErr, rollbackErr)
 		}
-		upgraded = append(upgraded, node)
+		// Keep the existing all-successful-nodes rollback behavior, including a
+		// node that was already on the candidate version before this run.
+		recordPossiblyUpgraded(checked)
 	}
 	return nil
 }

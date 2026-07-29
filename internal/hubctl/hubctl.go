@@ -63,6 +63,11 @@ type Controller struct {
 	NewClient    func(node nodes.Node) *nodeapi.Client
 	CertManager  *certmgr.Manager
 	AgentBinary  func(arch string) ([]byte, error)
+	// BeforeAgentUpgrade is called immediately before an Agent upgrade request
+	// is sent. Coordinated self-update uses it to record the node as possibly
+	// changed before the request, because the response can be lost after the
+	// remote Agent has already committed its replacement.
+	BeforeAgentUpgrade func(node nodes.Node)
 	// Core seams keep fleet convergence and rollback testable without replacing
 	// the test process' binaries or contacting GitHub.
 	CurrentCoreVersion func(ctx context.Context) (string, error)
@@ -801,6 +806,9 @@ func (c *Controller) reconcileAgentVersion(ctx context.Context, node *nodes.Node
 	}
 	client := c.NewClient(*node)
 	fmt.Fprintf(log, "agent %s reports %s; reconciling to hub version %s...\n", node.EffectiveAlias(), health.Version, expected)
+	if c.BeforeAgentUpgrade != nil {
+		c.BeforeAgentUpgrade(*node)
+	}
 	if err := client.Upgrade(ctx, nodeapi.NewUpgradeRequest(expected, binary), log); err != nil {
 		return fmt.Errorf("reconcile agent %s: %w", node.EffectiveAlias(), err)
 	}
