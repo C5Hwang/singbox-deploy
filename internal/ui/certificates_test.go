@@ -76,8 +76,8 @@ func TestAddCertificateRejectsManagedDomainAndPointsToRenew(t *testing.T) {
 		t.Fatalf("duplicate add phase = %d, want certificate list", m.phase)
 	}
 	for _, want := range []string{domain, "already managed", "Renew certificate"} {
-		if !strings.Contains(m.result, want) {
-			t.Fatalf("duplicate-add result missing %q: %q", want, m.result)
+		if !strings.Contains(m.notice.text, want) {
+			t.Fatalf("duplicate-add result missing %q: %q", want, m.notice.text)
 		}
 	}
 	if issued || m.startCmd != nil {
@@ -122,8 +122,8 @@ func TestAddCertificateIssuesAndDistributesWithDistinctResult(t *testing.T) {
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("add calls = %v, want %v", calls, wantCalls)
 	}
-	if m.result != "certificate added" {
-		t.Fatalf("add result = %q", m.result)
+	if m.notice.text != "certificate added" {
+		t.Fatalf("add result = %q", m.notice.text)
 	}
 	if view := m.View(); !strings.Contains(view, "Certificate added") {
 		t.Fatalf("add completion title is not distinct:\n%s", view)
@@ -196,8 +196,8 @@ func TestRenewCertificateRequiresExplicitYThenIssuesAndDistributes(t *testing.T)
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("renew calls = %v, want %v", calls, wantCalls)
 	}
-	if m.result != "certificate renewed" {
-		t.Fatalf("renew result = %q", m.result)
+	if m.notice.text != "certificate renewed" {
+		t.Fatalf("renew result = %q", m.notice.text)
 	}
 	if view := m.View(); !strings.Contains(view, "Certificate renewed") {
 		t.Fatalf("renew completion title is not distinct:\n%s", view)

@@ -151,11 +151,11 @@ func TestCertificateDeleteRefusesInstalledSpokeConsumer(t *testing.T) {
 	m.phase = certPhaseCertPick
 	m.pickCursor = 0
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !strings.Contains(m.result, "cannot delete "+domain) || !strings.Contains(m.result, "certificate is used by tokyo ("+domain+")") {
-		t.Fatalf("delete was not blocked: %q", m.result)
+	if !strings.Contains(m.notice.text, "cannot delete "+domain) || !strings.Contains(m.notice.text, "certificate is used by tokyo ("+domain+")") {
+		t.Fatalf("delete was not blocked: %q", m.notice.text)
 	}
-	if strings.Contains(m.result, list[0].ID) {
-		t.Fatalf("delete protection leaked raw spoke ID %q: %q", list[0].ID, m.result)
+	if strings.Contains(m.notice.text, list[0].ID) {
+		t.Fatalf("delete protection leaked raw spoke ID %q: %q", list[0].ID, m.notice.text)
 	}
 	managed, err := certmgr.IsManaged(layout, domain)
 	if err != nil || !managed {

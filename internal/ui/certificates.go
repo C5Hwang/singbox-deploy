@@ -68,7 +68,7 @@ type certManager struct {
 	// the next key returns directly to the suspended caller.
 	returnAfterIssue bool
 
-	result   string
+	notice   transientNotice
 	loadErr  error
 	startCmd tea.Cmd // waitForRun command produced when a run starts inside a callback
 
@@ -100,17 +100,21 @@ func newCertManagerForDomain(domain, email string) *certManager {
 }
 
 func (m *certManager) reload() {
+	m.loadErr = nil
 	if err := certmgr.SeedLegacyCredentials(m.layout); err != nil {
 		m.loadErr = err
+		m.notice.setError("load certificate state failed: " + err.Error())
 	}
 	inv, err := certmgr.Inventory(m.layout)
 	if err != nil {
 		m.loadErr = err
+		m.notice.setError("load certificate inventory failed: " + err.Error())
 	}
 	m.inventory = inv
 	creds, err := certmgr.LoadCredentials(m.layout)
 	if err != nil {
 		m.loadErr = err
+		m.notice.setError("load DNS credentials failed: " + err.Error())
 	}
 	m.creds = creds
 }
@@ -124,6 +128,7 @@ func (m *certManager) setSize(w, h int) {
 }
 
 func (m *certManager) Update(msg tea.Msg) (tea.Cmd, bool) {
+	m.notice.clearForUserAction(msg)
 	switch m.phase {
 	case certPhaseRunning:
 		return m.updateRunning(msg)
@@ -175,9 +180,9 @@ func (m *certManager) updateRunning(msg tea.Msg) (tea.Cmd, bool) {
 		if rm.done {
 			if rm.err == nil {
 				if m.operation == certOperationRenew {
-					m.result = "certificate renewed"
+					m.notice.setInfo("certificate renewed")
 				} else {
-					m.result = "certificate added"
+					m.notice.setInfo("certificate added")
 				}
 			}
 			m.phase = certPhaseDone
@@ -200,7 +205,7 @@ func (m *certManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 				m.beginCertForm()
 			case 1:
 				if len(m.inventory) == 0 {
-					m.result = "no certificates to renew"
+					m.notice.setError("no certificates to renew")
 					return nil, false
 				}
 				m.pickCursor = 0
@@ -208,7 +213,7 @@ func (m *certManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 				m.phase = certPhaseRenewPick
 			case 2:
 				if len(m.inventory) == 0 {
-					m.result = "no certificates to delete"
+					m.notice.setError("no certificates to delete")
 					return nil, false
 				}
 				m.pickCursor = 0
@@ -233,7 +238,7 @@ func (m *certManager) updateCredList(key tea.KeyMsg) (tea.Cmd, bool) {
 				m.beginCredForm("")
 			case 1:
 				if len(m.creds) == 0 {
-					m.result = "no credentials to delete"
+					m.notice.setError("no credentials to delete")
 					return nil, false
 				}
 				m.pickCursor = 0
@@ -287,13 +292,13 @@ func (m *certManager) updateCertPick(key tea.KeyMsg) (tea.Cmd, bool) {
 				domain := m.inventory[idx].Domain
 				consumers, err := (&hubctl.Controller{Layout: m.layout}).CertificateConsumers(domain)
 				if err != nil {
-					m.result = "delete failed: " + err.Error()
+					m.notice.setError("delete failed: " + err.Error())
 				} else if len(consumers) > 0 {
-					m.result = fmt.Sprintf("cannot delete %s: certificate is used by %s", domain, strings.Join(consumers.Labels(), ", "))
+					m.notice.setError(fmt.Sprintf("cannot delete %s: certificate is used by %s", domain, strings.Join(consumers.Labels(), ", ")))
 				} else if err := certmgr.Deregister(m.layout, domain); err != nil {
-					m.result = "delete failed: " + err.Error()
+					m.notice.setError("delete failed: " + err.Error())
 				} else {
-					m.result = "deleted certificate " + domain
+					m.notice.setInfo("deleted certificate " + domain)
 				}
 				m.reload()
 			}
@@ -311,9 +316,9 @@ func (m *certManager) updateCredPick(key tea.KeyMsg) (tea.Cmd, bool) {
 		Confirm: func() (tea.Cmd, bool) {
 			if idx, ok := selectedIndex(m.pickCursor, len(m.creds)); ok {
 				if err := certmgr.DeleteCredential(m.layout, m.creds[idx].Domain); err != nil {
-					m.result = "delete failed: " + err.Error()
+					m.notice.setError("delete failed: " + err.Error())
 				} else {
-					m.result = "deleted DNS credential"
+					m.notice.setInfo("deleted DNS credential")
 				}
 				m.reload()
 			}
@@ -397,13 +402,13 @@ func (m *certManager) completeForm() {
 func (m *certManager) continueAdd(domain, email string) {
 	managed, err := certmgr.IsManaged(m.layout, domain)
 	if managed {
-		m.result = fmt.Sprintf("%s is already managed; use Renew certificate instead", domain)
+		m.notice.setError(fmt.Sprintf("%s is already managed; use Renew certificate instead", domain))
 		m.phase = certPhaseList
 		return
 	}
 	var unmanaged *certmgr.UnmanagedDomainError
 	if err != nil && !errors.As(err, &unmanaged) {
-		m.result = "cannot add certificate: " + err.Error()
+		m.notice.setError("cannot add certificate: " + err.Error())
 		m.phase = certPhaseList
 		return
 	}
@@ -412,7 +417,7 @@ func (m *certManager) continueAdd(domain, email string) {
 		m.pendingDomain = domain
 		m.pendingEmail = email
 		m.resumeIssueAfterCred = true
-		m.result = "no DNS credential covers " + domain + "; add one to continue"
+		m.notice.setError("no DNS credential covers " + domain + "; add one to continue")
 		m.beginCredForm(domain)
 		return
 	}
@@ -427,7 +432,7 @@ func (m *certManager) completeCredForm() {
 		Email:      strings.TrimSpace(m.form.values["email"]),
 	}
 	if err := certmgr.UpsertCredential(m.layout, cred); err != nil {
-		m.result = "save credential failed: " + err.Error()
+		m.notice.setError("save credential failed: " + err.Error())
 		m.reload()
 		m.phase = certPhaseCredList
 		return
@@ -440,13 +445,13 @@ func (m *certManager) completeCredForm() {
 			return
 		}
 	}
-	m.result = "saved DNS credential for " + cred.Domain
+	m.notice.setInfo("saved DNS credential for " + cred.Domain)
 	m.phase = certPhaseCredList
 }
 
 func (m *certManager) startCertificateRun(operation certOperation, domain, email string) {
 	m.operation = operation
-	m.result = ""
+	m.notice.clear()
 	m.phase = certPhaseRunning
 	ch := make(chan runMsg, 64)
 	m.run.resetRun(ch)
@@ -525,6 +530,9 @@ func (m *certManager) View() string {
 func (m *certManager) listView() string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("Certificate management") + "\n\n")
+	if notice := m.notice.view(); notice != "" {
+		b.WriteString(notice + "\n\n")
+	}
 	if len(m.inventory) == 0 {
 		b.WriteString(dimStyle.Render("No managed certificates yet.") + "\n\n")
 	} else {
@@ -537,15 +545,15 @@ func (m *certManager) listView() string {
 	}
 	b.WriteString(dimStyle.Render(fmt.Sprintf("DNS credentials: %d", len(m.creds))) + "\n\n")
 	b.WriteString(renderActionMenu(certActions, m.actionCursor))
-	if m.result != "" {
-		b.WriteString("\n\n" + summaryInfo.Render(m.result))
-	}
 	return b.String()
 }
 
 func (m *certManager) credListView() string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("DNS credentials") + "\n\n")
+	if notice := m.notice.view(); notice != "" {
+		b.WriteString(notice + "\n\n")
+	}
 	if len(m.creds) == 0 {
 		b.WriteString(dimStyle.Render("No DNS credentials yet. Add one to authorize certificate issuance.") + "\n\n")
 	} else {

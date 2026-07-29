@@ -63,7 +63,7 @@ type nodeManager struct {
 	hubReady   bool
 	actionCur  int
 	pickCursor int
-	result     string
+	notice     transientNotice
 	action     string // "add" or "remove" for the running phase label
 	startCmd   tea.Cmd
 	// certificateDomainRequest asks the root model to suspend node creation and
@@ -105,7 +105,7 @@ func (m *nodeManager) reload() {
 	m.hubReady = nodes.HubInstalled(m.layout)
 	list, err := nodes.Load(m.layout)
 	if err != nil {
-		m.result = "load nodes failed: " + err.Error()
+		m.notice.setError("load nodes failed: " + err.Error())
 	}
 	m.list = list
 }
@@ -119,6 +119,7 @@ func (m *nodeManager) setSize(w, h int) {
 }
 
 func (m *nodeManager) Update(msg tea.Msg) (tea.Cmd, bool) {
+	m.notice.clearForUserAction(msg)
 	switch m.phase {
 	case nodePhaseRunning:
 		return m.updateRunning(msg)
@@ -135,7 +136,7 @@ func (m *nodeManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case nodePhaseHostKeyScan:
 		if scanned, ok := msg.(nodeHostKeyScanMsg); ok {
 			if scanned.err != nil {
-				m.result = "scan SSH host key failed: " + scanned.err.Error()
+				m.notice.setError("scan SSH host key failed: " + scanned.err.Error())
 				m.clearPendingTarget()
 				m.phase = nodePhaseList
 				return nil, false
@@ -189,13 +190,13 @@ func (m *nodeManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 			switch m.actionCur {
 			case 0:
 				if !m.hubReady {
-					m.result = "install the hub before adding spoke nodes"
+					m.notice.setError("install the hub before adding spoke nodes")
 					return nil, false
 				}
 				m.beginForm()
 			case 1:
 				if len(m.list) == 0 {
-					m.result = "no nodes to remove"
+					m.notice.setError("no nodes to remove")
 					return nil, false
 				}
 				m.action = ""
@@ -203,7 +204,7 @@ func (m *nodeManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 				m.phase = nodePhaseDeletePick
 			case 2:
 				if len(m.list) == 0 {
-					m.result = "no nodes to detach"
+					m.notice.setError("no nodes to detach")
 					return nil, false
 				}
 				m.pickCursor = 0
@@ -408,7 +409,7 @@ func (m *nodeManager) completeForm() {
 	if vals["ssh_auth"] == "key" {
 		pem, err := os.ReadFile(strings.TrimSpace(vals["ssh_key_path"]))
 		if err != nil {
-			m.result = "read SSH key failed: " + err.Error()
+			m.notice.setError("read SSH key failed: " + err.Error())
 			m.phase = nodePhaseList
 			return
 		}
@@ -516,7 +517,7 @@ func (m *nodeManager) updateHostKeyConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
 	switch strings.ToLower(key.String()) {
 	case "y":
 		if m.hostKeyInfo.Fingerprint == "" {
-			m.result = "SSH server did not present a host key fingerprint"
+			m.notice.setError("SSH server did not present a host key fingerprint")
 			m.clearPendingTarget()
 			m.phase = nodePhaseList
 			return nil, false
@@ -534,7 +535,7 @@ func (m *nodeManager) updateHostKeyConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
 	case "n", "esc":
 		m.clearPendingTarget()
 		m.phase = nodePhaseList
-		m.result = "SSH host key was not trusted; node was not added"
+		m.notice.setError("SSH host key was not trusted; node was not added")
 	}
 	return nil, false
 }
@@ -674,6 +675,9 @@ func bootstrapTargetLabel(target bootstrap.Target) string {
 func (m *nodeManager) listView() string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("Spoke nodes") + "\n\n")
+	if notice := m.notice.view(); notice != "" {
+		b.WriteString(notice + "\n\n")
+	}
 	if !m.hubReady {
 		b.WriteString(statusWarn.Render("Install the hub first — spoke nodes join the hub's overlay.") + "\n\n")
 	}
@@ -686,9 +690,6 @@ func (m *nodeManager) listView() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(renderActionMenu(nodeActions, m.actionCur))
-	if m.result != "" {
-		b.WriteString("\n\n" + summaryInfo.Render(m.result))
-	}
 	return b.String()
 }
 
