@@ -176,7 +176,7 @@ func (o Options) stepSelectedData(context.Context) error {
 		}
 	}
 	if o.DeleteMonitorDB {
-		if err := removeManagedFile(root, o.Layout.MonitorDB); err != nil {
+		if err := removeManagedSQLiteDB(root, o.Layout.MonitorDB); err != nil {
 			return err
 		}
 		if err := removeEmptyManagedDir(root, filepath.Dir(o.Layout.MonitorDB)); err != nil {
@@ -254,6 +254,19 @@ func removeManagedFile(root, target string) error {
 	}
 	_, err := removeFileIfExists(filepath.Clean(target))
 	return err
+}
+
+func removeManagedSQLiteDB(root, target string) error {
+	if err := validateManagedPath(root, target); err != nil {
+		return err
+	}
+	cleanTarget := filepath.Clean(target)
+	for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
+		if _, err := removeFileIfExists(cleanTarget + suffix); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func removeEmptyManagedDir(root, target string) error {
