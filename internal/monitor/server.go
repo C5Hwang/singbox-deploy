@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -67,6 +68,10 @@ type Monitor struct {
 	prev           InterfaceCounters
 	havePrev       bool
 	stoppedByQuota bool
+	// trafficMu linearizes sampling, absolute usage adjustments, and quota
+	// enforcement. In particular, a sample cannot land between calculating an
+	// adjustment and committing it.
+	trafficMu sync.Mutex
 
 	resCollector *ResourceCollector
 	// latestResource is written by the sampling goroutine and read by HTTP
@@ -74,6 +79,24 @@ type Monitor struct {
 	latestResource  atomic.Pointer[ResourceSnapshot]
 	remoteRefreshMu sync.Mutex
 }
+
+// TrafficUsage is one authoritative current-cycle usage snapshot.
+type TrafficUsage struct {
+	Totals     TrafficTotals
+	CycleStart time.Time
+}
+
+// TrafficUsageUpdate records the exact totals immediately before and after an
+// absolute adjustment.
+type TrafficUsageUpdate struct {
+	Previous TrafficUsage
+	Applied  TrafficUsage
+	Warning  string
+}
+
+// ErrTrafficCycleChanged indicates that an absolute adjustment was prepared
+// for a quota cycle that has since reset.
+var ErrTrafficCycleChanged = errors.New("traffic quota cycle changed")
 
 // New returns a Monitor backed by store. control may be nil to disable quota
 // enforcement (e.g. in tests).
@@ -157,11 +180,12 @@ type SourceSummary struct {
 
 func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 	now := m.now()
-	used, err := m.usedThisCycle(now)
+	usage, err := m.CurrentTrafficUsage()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	used := usage.Totals
 	var sampledAt string
 	if ts, ok := m.store.LatestSampleTime(); ok {
 		sampledAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
@@ -438,6 +462,63 @@ func (m *Monitor) usedThisCycle(now time.Time) (TrafficTotals, error) {
 	return m.store.TotalsSince(CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix())
 }
 
+// CurrentTrafficUsage returns a linearized snapshot for the active quota
+// cycle.
+func (m *Monitor) CurrentTrafficUsage() (TrafficUsage, error) {
+	m.trafficMu.Lock()
+	defer m.trafficMu.Unlock()
+	now := m.now()
+	cycleStart := CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour)
+	totals, err := m.store.TotalsSince(cycleStart.Unix())
+	if err != nil {
+		return TrafficUsage{}, err
+	}
+	return TrafficUsage{Totals: totals, CycleStart: cycleStart}, nil
+}
+
+// SetCurrentTrafficUsage replaces the absolute totals for the expected active
+// quota cycle and immediately reconciles quota service state.
+func (m *Monitor) SetCurrentTrafficUsage(expectedCycleStart int64, target TrafficTotals) (TrafficUsageUpdate, error) {
+	m.trafficMu.Lock()
+	defer m.trafficMu.Unlock()
+	now := m.now()
+	cycleStart := CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour)
+	if cycleStart.Unix() != expectedCycleStart {
+		return TrafficUsageUpdate{}, ErrTrafficCycleChanged
+	}
+	previous, err := m.store.ReplaceTotalsSince(cycleStart.Unix(), now.Unix(), target)
+	if err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	update := TrafficUsageUpdate{
+		Previous: TrafficUsage{Totals: previous, CycleStart: cycleStart},
+		Applied:  TrafficUsage{Totals: target, CycleStart: cycleStart},
+	}
+	if err := m.reconcileQuota(now); err != nil {
+		update.Warning = trafficUsageReconciliationWarning(err)
+	}
+	return update, nil
+}
+
+const maxTrafficUsageWarningBytes = 2048
+
+func trafficUsageReconciliationWarning(err error) string {
+	warning := strings.ToValidUTF8(
+		fmt.Sprintf("traffic usage was updated but quota reconciliation failed: %v", err),
+		"\uFFFD",
+	)
+	warning = strings.NewReplacer("\r", " ", "\n", " ").Replace(warning)
+	if len(warning) <= maxTrafficUsageWarningBytes {
+		return warning
+	}
+	const suffix = "..."
+	cut := maxTrafficUsageWarningBytes - len(suffix)
+	for cut > 0 && cut < len(warning) && warning[cut]&0xc0 == 0x80 {
+		cut--
+	}
+	return strings.TrimSpace(warning[:cut]) + suffix
+}
+
 func (m *Monitor) now() time.Time {
 	if m.cfg.Now != nil {
 		return m.cfg.Now().UTC()
@@ -518,6 +599,8 @@ func (m *Monitor) Run(ctx context.Context) error {
 }
 
 func (m *Monitor) sampleOnce(now time.Time) {
+	m.trafficMu.Lock()
+	defer m.trafficMu.Unlock()
 	cur, err := ReadCounters(m.cfg.Interface)
 	if err != nil {
 		log.Printf("monitor: read counters: %v", err)
@@ -567,53 +650,68 @@ func (m *Monitor) resourceSampleOnce(now time.Time) {
 }
 
 func (m *Monitor) enforceQuota(now time.Time) {
+	if err := m.reconcileQuota(now); err != nil {
+		log.Printf("monitor: enforce quota: %v", err)
+	}
+}
+
+func (m *Monitor) reconcileQuota(now time.Time) error {
 	if m.control == nil {
-		return
+		return nil
 	}
 	limits := TrafficLimits{InBytes: m.cfg.InLimitBytes, OutBytes: m.cfg.OutLimitBytes, TotalBytes: m.cfg.TotalLimitBytes}
 	if limits == (TrafficLimits{}) {
 		if m.stoppedByQuota {
 			if err := m.control.Start(); err != nil {
-				log.Printf("monitor: start sing-box: %v", err)
-				return
+				return fmt.Errorf("start sing-box after limits were removed: %w", err)
 			}
-			m.setStoppedByQuota(false)
+			if err := m.setStoppedByQuota(false); err != nil {
+				return fmt.Errorf("clear quota stop ownership after limits were removed: %w", err)
+			}
 			log.Printf("monitor: traffic limits removed, restarted sing-box")
 		}
-		return
+		return nil
 	}
 	used, err := m.usedThisCycle(now)
 	if err != nil {
-		log.Printf("monitor: used this cycle: %v", err)
-		return
+		return fmt.Errorf("read usage for quota enforcement: %w", err)
 	}
 	switch {
 	case limits.Exceeded(used):
-		if active, _ := m.control.IsActive(); active {
-			if err := m.control.Stop(); err != nil {
-				log.Printf("monitor: stop sing-box: %v", err)
-				return
+		active, err := m.control.IsActive()
+		if err != nil {
+			return fmt.Errorf("inspect sing-box before quota enforcement: %w", err)
+		}
+		if active {
+			// Persist ownership first. If the process dies after this point, a
+			// restarted monitor can safely finish or release the stop.
+			if err := m.setStoppedByQuota(true); err != nil {
+				return fmt.Errorf("persist quota stop ownership: %w", err)
 			}
-			m.setStoppedByQuota(true)
+			if err := m.control.Stop(); err != nil {
+				return fmt.Errorf("stop sing-box after quota exceeded: %w", err)
+			}
 			log.Printf("monitor: quota exceeded (in=%d/%d out=%d/%d total=%d/%d bytes), stopped sing-box", used.InBytes, m.cfg.InLimitBytes, used.OutBytes, m.cfg.OutLimitBytes, used.Total(), m.cfg.TotalLimitBytes)
 		}
 	case m.stoppedByQuota:
 		if err := m.control.Start(); err != nil {
-			log.Printf("monitor: start sing-box: %v", err)
-			return
+			return fmt.Errorf("start sing-box after usage returned below quota: %w", err)
 		}
-		m.setStoppedByQuota(false)
-		log.Printf("monitor: new cycle, restarted sing-box")
+		if err := m.setStoppedByQuota(false); err != nil {
+			return fmt.Errorf("clear quota stop ownership after service recovery: %w", err)
+		}
+		log.Printf("monitor: usage below quota, restarted sing-box")
 	}
+	return nil
 }
 
-// setStoppedByQuota updates the in-memory flag and persists it; a write failure
-// is logged but does not block quota enforcement.
-func (m *Monitor) setStoppedByQuota(stopped bool) {
-	m.stoppedByQuota = stopped
+// setStoppedByQuota persists ownership before publishing it in memory.
+func (m *Monitor) setStoppedByQuota(stopped bool) error {
 	if err := m.store.SetQuotaStopped(stopped); err != nil {
-		log.Printf("monitor: persist quota stop flag: %v", err)
+		return err
 	}
+	m.stoppedByQuota = stopped
+	return nil
 }
 
 func (m *Monitor) maintenance(now time.Time) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,6 +53,9 @@ type monitorSupervisor struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	handler http.Handler
+	active  *monitor.Monitor
+	store   *monitor.Store
+	cfg     monitor.Config
 
 	// retryTimer and stopped are guarded by lifecycle. retryDelay is injectable
 	// so tests can prove recovery without waiting for the production backoff.
@@ -118,9 +123,11 @@ func (s *monitorSupervisor) reload() {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	newMonitor := s.newMonitor
+	var active *monitor.Monitor
 	if newMonitor == nil {
 		newMonitor = func(store *monitor.Store, cfg monitor.Config) (http.Handler, func(context.Context) error) {
 			m := monitor.New(store, cfg, systemdSingBox{})
+			active = m
 			return m.Handler(), m.Run
 		}
 	}
@@ -132,6 +139,9 @@ func (s *monitorSupervisor) reload() {
 	s.cancel = cancel
 	s.done = done
 	s.handler = handler
+	s.active = active
+	s.store = dbStore
+	s.cfg = cfg
 	s.mu.Unlock()
 
 	go func() {
@@ -152,6 +162,9 @@ func (s *monitorSupervisor) reload() {
 				s.handler = nil
 				s.cancel = nil
 				s.done = nil
+				s.active = nil
+				s.store = nil
+				s.cfg = monitor.Config{}
 				retry = true
 			}
 			s.mu.Unlock()
@@ -275,6 +288,9 @@ func (s *monitorSupervisor) stopRunning() {
 	s.cancel = nil
 	s.done = nil
 	s.handler = nil
+	s.active = nil
+	s.store = nil
+	s.cfg = monitor.Config{}
 	s.mu.Unlock()
 	if cancel == nil {
 		return
@@ -294,6 +310,54 @@ func (s *monitorSupervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handler.ServeHTTP(w, r)
+}
+
+func (s *monitorSupervisor) trafficUsage() (monitor.TrafficUsage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.store == nil {
+		return monitor.TrafficUsage{}, fmt.Errorf("agent monitor is not running")
+	}
+	if s.active != nil {
+		return s.active.CurrentTrafficUsage()
+	}
+	now := time.Now().UTC()
+	if s.cfg.Now != nil {
+		now = s.cfg.Now().UTC()
+	}
+	cycleStart := monitor.CycleStart(now, s.cfg.ResetDay, s.cfg.ResetHour)
+	totals, err := s.store.TotalsSince(cycleStart.Unix())
+	if err != nil {
+		return monitor.TrafficUsage{}, err
+	}
+	return monitor.TrafficUsage{Totals: totals, CycleStart: cycleStart}, nil
+}
+
+func (s *monitorSupervisor) setTrafficUsage(expectedCycleStart int64, target monitor.TrafficTotals) (monitor.TrafficUsageUpdate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.store == nil {
+		return monitor.TrafficUsageUpdate{}, fmt.Errorf("agent monitor is not running")
+	}
+	if s.active != nil {
+		return s.active.SetCurrentTrafficUsage(expectedCycleStart, target)
+	}
+	now := time.Now().UTC()
+	if s.cfg.Now != nil {
+		now = s.cfg.Now().UTC()
+	}
+	cycleStart := monitor.CycleStart(now, s.cfg.ResetDay, s.cfg.ResetHour)
+	if cycleStart.Unix() != expectedCycleStart {
+		return monitor.TrafficUsageUpdate{}, monitor.ErrTrafficCycleChanged
+	}
+	previous, err := s.store.ReplaceTotalsSince(cycleStart.Unix(), now.Unix(), target)
+	if err != nil {
+		return monitor.TrafficUsageUpdate{}, err
+	}
+	return monitor.TrafficUsageUpdate{
+		Previous: monitor.TrafficUsage{Totals: previous, CycleStart: cycleStart},
+		Applied:  monitor.TrafficUsage{Totals: target, CycleStart: cycleStart},
+	}, nil
 }
 
 func readString(store state.Store, name, fallback string) string {
@@ -329,7 +393,11 @@ func readUint(store state.Store, name string, fallback uint64) uint64 {
 }
 
 // systemdSingBox controls sing-box.service for quota enforcement.
-type systemdSingBox struct{}
+type systemdSingBox struct {
+	// systemctlOutput is a test seam for the read-only status query. Start and
+	// Stop intentionally keep using exec.Command directly.
+	systemctlOutput func(...string) ([]byte, error)
+}
 
 func (systemdSingBox) Start() error {
 	return exec.Command("systemctl", "start", "sing-box.service").Run()
@@ -339,13 +407,45 @@ func (systemdSingBox) Stop() error {
 	return exec.Command("systemctl", "stop", "sing-box.service").Run()
 }
 
-func (systemdSingBox) IsActive() (bool, error) {
-	err := exec.Command("systemctl", "is-active", "--quiet", "sing-box.service").Run()
-	if err == nil {
+func (s systemdSingBox) IsActive() (bool, error) {
+	run := s.systemctlOutput
+	if run == nil {
+		run = func(args ...string) ([]byte, error) {
+			return exec.Command("systemctl", args...).Output()
+		}
+	}
+	out, err := run(
+		"show",
+		"--property=LoadState",
+		"--property=ActiveState",
+		"sing-box.service",
+	)
+	if err != nil {
+		return false, fmt.Errorf("query sing-box systemd state: %w", err)
+	}
+	properties := make(map[string]string, 2)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok {
+			properties[key] = strings.TrimSpace(value)
+		}
+	}
+	if loadState := properties["LoadState"]; loadState != "loaded" {
+		if loadState == "" {
+			loadState = "missing"
+		}
+		return false, fmt.Errorf("sing-box systemd LoadState is %q", loadState)
+	}
+	switch activeState := properties["ActiveState"]; activeState {
+	case "active", "activating", "reloading", "deactivating", "maintenance", "refreshing":
+		// Transitional states may still be serving traffic. Treat them as
+		// active so an exceeded quota always issues an idempotent stop.
 		return true, nil
-	}
-	if _, ok := err.(*exec.ExitError); ok {
+	case "inactive", "failed":
 		return false, nil
+	case "":
+		return false, fmt.Errorf("sing-box systemd ActiveState is missing")
+	default:
+		return false, fmt.Errorf("sing-box systemd ActiveState is unknown: %q", activeState)
 	}
-	return false, err
 }

@@ -210,13 +210,21 @@ func (s *Store) InsertSample(ts int64, iface string, rx, tx, deltaIn, deltaOut u
 // TotalsSince returns in/out usage for samples and aggregated hourly buckets at
 // or after since.
 func (s *Store) TotalsSince(since int64) (TrafficTotals, error) {
+	return totalsSince(s.db, since)
+}
+
+type rowQueryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func totalsSince(queryer rowQueryer, since int64) (TrafficTotals, error) {
 	var inSum, outSum int64
 	for _, query := range []string{
 		`SELECT COALESCE(SUM(delta_rx_bytes), 0), COALESCE(SUM(delta_tx_bytes), 0) FROM samples WHERE ts >= ?`,
 		`SELECT COALESCE(SUM(in_bytes), 0), COALESCE(SUM(out_bytes), 0) FROM hourly WHERE ts_hour >= ?`,
 		`SELECT COALESCE(SUM(in_bytes), 0), COALESCE(SUM(out_bytes), 0) FROM adjustments WHERE ts >= ?`,
 	} {
-		in, out, err := s.sumPair(query, since)
+		in, out, err := sumPair(queryer, query, since)
 		if err != nil {
 			return TrafficTotals{}, err
 		}
@@ -231,9 +239,9 @@ func (s *Store) TotalsSince(since int64) (TrafficTotals, error) {
 
 // sumPair runs a two-column SUM query with a single bind value and returns
 // both sums.
-func (s *Store) sumPair(query string, since int64) (int64, int64, error) {
+func sumPair(queryer rowQueryer, query string, since int64) (int64, int64, error) {
 	var a, b sql.NullInt64
-	if err := s.db.QueryRow(query, since).Scan(&a, &b); err != nil {
+	if err := queryer.QueryRow(query, since).Scan(&a, &b); err != nil {
 		return 0, 0, err
 	}
 	return a.Int64, b.Int64, nil
@@ -243,23 +251,41 @@ func (s *Store) sumPair(query string, since int64) (int64, int64, error) {
 // target values. It records a signed adjustment row rather than rewriting raw
 // counter samples, preserving the sampled history.
 func (s *Store) SetTotalsSince(since, ts int64, target TrafficTotals) error {
-	current, err := s.TotalsSince(since)
+	_, err := s.ReplaceTotalsSince(since, ts, target)
+	return err
+}
+
+// ReplaceTotalsSince is SetTotalsSince with the exact pre-commit totals
+// returned to the caller. The read and adjustment insert share one database
+// transaction, so a sampler using this Store cannot interleave between them.
+func (s *Store) ReplaceTotalsSince(since, ts int64, target TrafficTotals) (TrafficTotals, error) {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return TrafficTotals{}, err
+	}
+	defer tx.Rollback()
+	current, err := totalsSince(tx, since)
+	if err != nil {
+		return TrafficTotals{}, err
 	}
 	deltaIn, err := signedDifference(target.InBytes, current.InBytes)
 	if err != nil {
-		return err
+		return TrafficTotals{}, err
 	}
 	deltaOut, err := signedDifference(target.OutBytes, current.OutBytes)
 	if err != nil {
-		return err
+		return TrafficTotals{}, err
 	}
-	_, err = s.db.Exec(
+	if _, err = tx.Exec(
 		`INSERT INTO adjustments(ts, in_bytes, out_bytes) VALUES(?, ?, ?)`,
 		ts, deltaIn, deltaOut,
-	)
-	return err
+	); err != nil {
+		return TrafficTotals{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return TrafficTotals{}, err
+	}
+	return current, nil
 }
 
 // TrendHourly returns hourly buckets at or after since, oldest first. It unions

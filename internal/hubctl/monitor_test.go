@@ -89,6 +89,74 @@ func TestRefreshMonitorAndDrillDownUseAuthenticatedAgentAPI(t *testing.T) {
 	}
 }
 
+func TestTrafficUsageUsesAuthenticatedAgentAPIWithoutMutatingRegistry(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	node := nodes.Node{
+		ID: "0123456789abcdef0123456789abcdef", Alias: "London",
+		Domain: "uk.example.com", WGIP: "10.90.0.2", Token: "node-secret",
+		Installed: true, Monitor: true, TrafficTotalLimitBytes: 10 << 30,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	var methods []string
+	httpClient := &http.Client{Transport: monitorRoundTripper(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "10.90.0.2:19091" ||
+			(req.URL.Path != "/api/health" && req.URL.Path != "/api/monitor/usage") {
+			t.Fatalf("traffic usage URL = %s", req.URL.String())
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer node-secret" {
+			t.Fatalf("authorization = %q", got)
+		}
+		methods = append(methods, req.Method+" "+req.URL.Path)
+		body := `{"inBytes":100,"outBytes":200,"cycleStart":1782864000}`
+		if req.URL.Path == "/api/health" {
+			body = `{"ok":true,"version":"v1","installed":true,"singBoxActive":true,"domain":"uk.example.com"}`
+		} else if req.Method == http.MethodPut {
+			body = `{"previous":{"inBytes":100,"outBytes":200,"cycleStart":1782864000},"applied":{"inBytes":300,"outBytes":400,"cycleStart":1782864000}}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(body)), Request: req,
+		}, nil
+	})}
+	ctrl := &Controller{
+		Layout: layout,
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{
+				BaseURL: "http://" + n.WGIP + ":19091", Token: n.Token, HTTP: httpClient,
+			}
+		},
+	}
+	current, err := ctrl.TrafficUsage(context.Background(), node)
+	if err != nil || current.InBytes != 100 || current.OutBytes != 200 {
+		t.Fatalf("TrafficUsage = %+v, err=%v", current, err)
+	}
+	updated, err := ctrl.SetTrafficUsage(context.Background(), node, nodeapi.TrafficUsageRequest{
+		InBytes: 300, OutBytes: 400, ExpectedCycleStart: current.CycleStart,
+	})
+	if err != nil || updated.Previous != current ||
+		updated.Applied.InBytes != 300 || updated.Applied.OutBytes != 400 {
+		t.Fatalf("SetTrafficUsage = %+v, err=%v", updated, err)
+	}
+	wantMethods := []string{
+		"GET /api/health", "GET /api/monitor/usage",
+		"GET /api/health", "PUT /api/monitor/usage",
+	}
+	if strings.Join(methods, ",") != strings.Join(wantMethods, ",") {
+		t.Fatalf("methods = %v", methods)
+	}
+	persisted, err := nodes.Load(layout)
+	if err != nil || len(persisted) != 1 {
+		t.Fatalf("load registry after usage update: %+v err=%v", persisted, err)
+	}
+	if persisted[0].ID != node.ID || persisted[0].Domain != node.Domain ||
+		persisted[0].TrafficTotalLimitBytes != node.TrafficTotalLimitBytes ||
+		!persisted[0].Monitor || persisted[0].AgentVersion != "v1" {
+		t.Fatalf("dynamic usage mutated registry settings: %+v", persisted[0])
+	}
+}
+
 // The hub's monitor service refreshes on a short timer. A spoke that is behind
 // on agent version or still owed a certificate must not turn every tick into a
 // binary push or a remote service restart.

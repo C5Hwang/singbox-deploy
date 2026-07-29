@@ -300,8 +300,12 @@ func TestStoreSetTotalsSinceAddsSignedAdjustment(t *testing.T) {
 	if err := store.InsertSample(base, "eth0", 100, 80, 100, 80); err != nil {
 		t.Fatalf("InsertSample error: %v", err)
 	}
-	if err := store.SetTotalsSince(base-1, base+1, TrafficTotals{InBytes: 40, OutBytes: 200}); err != nil {
-		t.Fatalf("SetTotalsSince error: %v", err)
+	previous, err := store.ReplaceTotalsSince(base-1, base+1, TrafficTotals{InBytes: 40, OutBytes: 200})
+	if err != nil {
+		t.Fatalf("ReplaceTotalsSince error: %v", err)
+	}
+	if previous != (TrafficTotals{InBytes: 100, OutBytes: 80}) {
+		t.Fatalf("previous totals = %#v", previous)
 	}
 	totals, err := store.TotalsSince(base - 1)
 	if err != nil {
@@ -424,14 +428,15 @@ func TestNextCycleResetWithHour(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type fakeController struct {
-	active  bool
-	starts  int
-	stops   int
-	startFn func() error
-	stopFn  func() error
+	active    bool
+	starts    int
+	stops     int
+	activeErr error
+	startFn   func() error
+	stopFn    func() error
 }
 
-func (c *fakeController) IsActive() (bool, error) { return c.active, nil }
+func (c *fakeController) IsActive() (bool, error) { return c.active, c.activeErr }
 func (c *fakeController) Start() error {
 	c.starts++
 	c.active = true
@@ -442,10 +447,10 @@ func (c *fakeController) Start() error {
 }
 func (c *fakeController) Stop() error {
 	c.stops++
-	c.active = false
 	if c.stopFn != nil {
 		return c.stopFn()
 	}
+	c.active = false
 	return nil
 }
 
@@ -593,6 +598,126 @@ func TestEnforceQuotaRestartsWhenLimitsRemoved(t *testing.T) {
 	}
 	if m.stoppedByQuota {
 		t.Fatal("stoppedByQuota should clear when limits removed")
+	}
+}
+
+func TestSetCurrentTrafficUsageReconcilesQuotaImmediately(t *testing.T) {
+	store, cleanup := tempStore(t)
+	defer cleanup()
+
+	now := time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC)
+	cycleStart := CycleStart(now, 1)
+	ctrl := &fakeController{active: true}
+	m := New(store, Config{
+		TotalLimitBytes: 100, ResetDay: 1, Now: func() time.Time { return now },
+	}, ctrl)
+
+	update, err := m.SetCurrentTrafficUsage(cycleStart.Unix(), TrafficTotals{InBytes: 60, OutBytes: 50})
+	if err != nil {
+		t.Fatalf("set usage above quota: %v", err)
+	}
+	if update.Previous.Totals != (TrafficTotals{}) ||
+		update.Applied.Totals != (TrafficTotals{InBytes: 60, OutBytes: 50}) ||
+		update.Applied.CycleStart != cycleStart || ctrl.stops != 1 || !m.stoppedByQuota {
+		t.Fatalf("above quota result=%+v stops=%d stopped=%v", update, ctrl.stops, m.stoppedByQuota)
+	}
+	stopped, err := store.QuotaStopped()
+	if err != nil || !stopped {
+		t.Fatalf("quota marker after stop = %v, err=%v", stopped, err)
+	}
+
+	update, err = m.SetCurrentTrafficUsage(cycleStart.Unix(), TrafficTotals{InBytes: 10, OutBytes: 20})
+	if err != nil {
+		t.Fatalf("set usage below quota: %v", err)
+	}
+	if update.Previous.Totals != (TrafficTotals{InBytes: 60, OutBytes: 50}) ||
+		update.Applied.Totals != (TrafficTotals{InBytes: 10, OutBytes: 20}) ||
+		ctrl.starts != 1 || m.stoppedByQuota {
+		t.Fatalf("below quota result=%+v starts=%d stopped=%v", update, ctrl.starts, m.stoppedByQuota)
+	}
+	stopped, err = store.QuotaStopped()
+	if err != nil || stopped {
+		t.Fatalf("quota marker after release = %v, err=%v", stopped, err)
+	}
+
+	if _, err := m.SetCurrentTrafficUsage(cycleStart.AddDate(0, -1, 0).Unix(), TrafficTotals{InBytes: 1}); !errors.Is(err, ErrTrafficCycleChanged) {
+		t.Fatalf("stale cycle error = %v", err)
+	}
+	current, err := m.CurrentTrafficUsage()
+	if err != nil || current.Totals != update.Applied.Totals {
+		t.Fatalf("stale request changed usage: %+v err=%v", current, err)
+	}
+}
+
+func TestSetCurrentTrafficUsageReturnsBoundedSingleLineReconciliationWarning(t *testing.T) {
+	store, cleanup := tempStore(t)
+	defer cleanup()
+
+	now := time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC)
+	ctrl := &fakeController{
+		active:    true,
+		activeErr: errors.New(strings.Repeat("failure", 400) + "\r\nsecond line"),
+	}
+	m := New(store, Config{
+		TotalLimitBytes: 1, ResetDay: 1, Now: func() time.Time { return now },
+	}, ctrl)
+
+	update, err := m.SetCurrentTrafficUsage(
+		CycleStart(now, 1).Unix(),
+		TrafficTotals{InBytes: 2},
+	)
+	if err != nil {
+		t.Fatalf("SetCurrentTrafficUsage error = %v", err)
+	}
+	if update.Applied.Totals.InBytes != 2 {
+		t.Fatalf("committed usage = %+v", update.Applied)
+	}
+	if len(update.Warning) > maxTrafficUsageWarningBytes {
+		t.Fatalf("warning length = %d", len(update.Warning))
+	}
+	if strings.ContainsAny(update.Warning, "\r\n") {
+		t.Fatalf("warning is not single-line: %q", update.Warning)
+	}
+	if !strings.HasSuffix(update.Warning, "...") {
+		t.Fatalf("truncated warning = %q", update.Warning)
+	}
+}
+
+func TestSetCurrentTrafficUsageKeepsQuotaOwnershipAfterStopFailure(t *testing.T) {
+	store, cleanup := tempStore(t)
+	defer cleanup()
+
+	now := time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC)
+	stopErr := errors.New("systemd stop failed")
+	ctrl := &fakeController{active: true, stopFn: func() error { return stopErr }}
+	m := New(store, Config{
+		TotalLimitBytes: 10, ResetDay: 1, Now: func() time.Time { return now },
+	}, ctrl)
+	cycleStart := CycleStart(now, 1).Unix()
+
+	high, err := m.SetCurrentTrafficUsage(cycleStart, TrafficTotals{InBytes: 11})
+	if err != nil {
+		t.Fatalf("SetCurrentTrafficUsage above quota error = %v", err)
+	}
+	if !strings.Contains(high.Warning, stopErr.Error()) || !m.stoppedByQuota {
+		t.Fatalf("failed stop update=%+v stoppedByQuota=%v", high, m.stoppedByQuota)
+	}
+	stopped, err := store.QuotaStopped()
+	if err != nil || !stopped {
+		t.Fatalf("persisted quota ownership = %v, err=%v", stopped, err)
+	}
+
+	ctrl.stopFn = nil
+	low, err := m.SetCurrentTrafficUsage(cycleStart, TrafficTotals{InBytes: 1})
+	if err != nil {
+		t.Fatalf("SetCurrentTrafficUsage below quota error = %v", err)
+	}
+	if low.Warning != "" || ctrl.starts != 1 || m.stoppedByQuota {
+		t.Fatalf("recovery update=%+v starts=%d stoppedByQuota=%v", low, ctrl.starts, m.stoppedByQuota)
+	}
+	stopped, err = store.QuotaStopped()
+	if err != nil || stopped {
+		t.Fatalf("quota ownership after recovery = %v, err=%v", stopped, err)
 	}
 }
 

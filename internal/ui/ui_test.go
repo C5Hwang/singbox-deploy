@@ -404,7 +404,7 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 		t.Fatalf("monitor manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust hub traffic counters", "Edit spoke monitor settings", "WireGuard only"} {
+	for _, want := range []string{"Monitor", "Monitor alias", "US-local", "Adjust hub traffic counters", "Edit spoke monitor settings", "Adjust spoke traffic counters", "WireGuard only"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("monitor manager view missing %q:\n%s", want, view)
 		}

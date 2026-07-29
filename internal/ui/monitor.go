@@ -13,6 +13,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -30,6 +31,7 @@ const (
 	monitorPhaseServiceConfirm
 	monitorPhaseLogsLoading
 	monitorPhaseLogs
+	monitorPhaseSpokeUsageLoading
 )
 
 // monitorLogsMsg carries the result of the async journalctl read.
@@ -38,12 +40,20 @@ type monitorLogsMsg struct {
 	err  error
 }
 
+type spokeTrafficUsageMsg struct {
+	loadID uint64
+	nodeID string
+	usage  nodeapi.TrafficUsage
+	err    error
+}
+
 type monitorAction int
 
 const (
 	monitorActionLocal monitorAction = iota
 	monitorActionUsage
 	monitorActionEditSpoke
+	monitorActionSpokeUsage
 	monitorActionStart
 	monitorActionStop
 	monitorActionRestart
@@ -55,9 +65,22 @@ var (
 	detectMonitorHost      = system.DetectHost
 	updateMonitorRun       = monitor.UpdateSettings
 	applySpokeMonitorRun   = (*monitorManager).applySpokeMonitor
-	monitorServiceSnapshot = func() string { return serviceState(system.MonitorService) }
-	monitorServiceRun      = runMonitorServiceAction
-	monitorLogOutput       = defaultMonitorLogOutput
+	fetchSpokeTrafficUsage = func(ctx context.Context, node nodes.Node) (nodeapi.TrafficUsage, error) {
+		ctrl := &hubctl.Controller{Layout: monitorUILayout(), ExpectedVersion: toolVersion}
+		return ctrl.TrafficUsage(ctx, node)
+	}
+	setSpokeTrafficUsage = func(ctx context.Context, node nodes.Node, req nodeapi.TrafficUsageRequest) (nodeapi.TrafficUsageUpdate, error) {
+		ctrl := &hubctl.Controller{Layout: monitorUILayout(), ExpectedVersion: toolVersion}
+		return ctrl.SetTrafficUsage(ctx, node, req)
+	}
+	refreshSpokeMonitorSnapshot = func(ctx context.Context) error {
+		ctrl := &hubctl.Controller{Layout: monitorUILayout(), ExpectedVersion: toolVersion}
+		return ctrl.RefreshMonitor(ctx)
+	}
+	applySpokeTrafficUsageRun = (*monitorManager).applySpokeTrafficUsage
+	monitorServiceSnapshot    = func() string { return serviceState(system.MonitorService) }
+	monitorServiceRun         = runMonitorServiceAction
+	monitorLogOutput          = defaultMonitorLogOutput
 )
 
 type monitorActionItem = actionItem[monitorAction]
@@ -83,6 +106,14 @@ type monitorManager struct {
 
 	cursor        int
 	editNodeIndex int
+	editNodeID    string
+
+	spokeUsage       nodeapi.TrafficUsage
+	spokeUsageUpdate nodeapi.TrafficUsageUpdate
+	haveSpokeUsage   bool
+	spokeUsageStop   context.CancelFunc
+	spokeUsageLoad   uint64
+
 	parameterForm
 	commandRun
 	result deploy.Config
@@ -133,6 +164,9 @@ func (tm *monitorManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 		tm.svcLogs.set(msg.logs, msg.err)
 		tm.phase = monitorPhaseLogs
 		return nil, false
+	case spokeTrafficUsageMsg:
+		tm.handleSpokeTrafficUsage(msg)
+		return nil, false
 	case runMsg:
 		return tm.handleRun(msg), false
 	case tea.KeyMsg:
@@ -167,6 +201,7 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return cmd, done
 		}
 	case monitorPhaseForm:
+		var completeCmd tea.Cmd
 		cmd, done, handled := tm.parameterForm.handleKey(msg, parameterFormKeyHandlers{
 			Complete: func() {
 				if tm.action == monitorActionEditSpoke && tm.editNodeIndex < 0 {
@@ -180,6 +215,17 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 					tm.startEditSpokeMonitorForm()
 					return
 				}
+				if tm.action == monitorActionSpokeUsage && tm.editNodeID == "" {
+					selectedLabel := tm.values["adjust_spoke_traffic_select"]
+					node, ok := spokeNodeForLabel(tm.trafficSpokes(), selectedLabel)
+					if !ok {
+						tm.parameterForm.fieldErr = "selected spoke no longer exists"
+						return
+					}
+					tm.editNodeID = node.ID
+					completeCmd = tm.startSpokeTrafficUsageLoad()
+					return
+				}
 				tm.phase = monitorPhaseConfirm
 			},
 			Back: func() {
@@ -189,13 +235,28 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 						tm.startForm(tm.editSpokeMonitorSelectField())
 						return
 					}
+					if tm.action == monitorActionSpokeUsage && tm.editNodeID != "" {
+						tm.startSpokeTrafficSelector()
+						return
+					}
 					tm.phase = monitorPhaseAction
 				}
 			},
 			Cancel: func() (tea.Cmd, bool) { return nil, true },
 		})
 		if handled {
+			if completeCmd != nil {
+				return completeCmd, done
+			}
 			return cmd, done
+		}
+	case monitorPhaseSpokeUsageLoading:
+		switch {
+		case isSelectionBackKey(msg):
+			tm.startSpokeTrafficSelector()
+		case msg.String() == "esc", isSelectionCancelKey(msg):
+			tm.cancelSpokeUsageLoad()
+			return nil, true
 		}
 	case monitorPhaseConfirm:
 		switch {
@@ -289,6 +350,11 @@ func (tm *monitorManager) moveAction(delta int) {
 func (tm *monitorManager) activateAction() tea.Cmd {
 	tm.fieldErr = ""
 	tm.editNodeIndex = -1
+	tm.editNodeID = ""
+	tm.cancelSpokeUsageLoad()
+	tm.haveSpokeUsage = false
+	tm.spokeUsage = nodeapi.TrafficUsage{}
+	tm.spokeUsageUpdate = nodeapi.TrafficUsageUpdate{}
 	actions := tm.actions()
 	idx, ok := selectedIndex(tm.cursor, len(actions))
 	if !ok {
@@ -306,6 +372,16 @@ func (tm *monitorManager) activateAction() tea.Cmd {
 			return nil
 		}
 		tm.startForm(tm.editSpokeMonitorSelectField())
+	case monitorActionSpokeUsage:
+		if len(tm.trafficSpokes()) == 0 {
+			tm.fieldErr = "no installed spoke nodes are registered; add and install one under Spoke → Spoke nodes"
+			return nil
+		}
+		if !tm.canApply() {
+			tm.fieldErr = tm.applyBlocker()
+			return nil
+		}
+		tm.startSpokeTrafficSelector()
 	case monitorActionLogs:
 		return tm.loadServiceLogsCmd()
 	case monitorActionStart, monitorActionStop, monitorActionRestart:
@@ -332,6 +408,101 @@ func (tm *monitorManager) localFields() []field {
 
 func (tm *monitorManager) usageFields() []field {
 	return fieldsFromParameters(uiparams.MonitorUsageFields(tm.totals.InBytes, tm.totals.OutBytes))
+}
+
+func (tm *monitorManager) trafficSpokes() []nodes.Node {
+	out := make([]nodes.Node, 0, len(tm.nodes))
+	for _, node := range tm.nodes {
+		if node.Installed {
+			out = append(out, node)
+		}
+	}
+	return out
+}
+
+func (tm *monitorManager) spokeTrafficNode() (nodes.Node, bool) {
+	for _, node := range tm.nodes {
+		if node.ID == tm.editNodeID && node.Installed {
+			return node, true
+		}
+	}
+	return nodes.Node{}, false
+}
+
+func (tm *monitorManager) startSpokeTrafficSelector() {
+	tm.cancelSpokeUsageLoad()
+	tm.editNodeID = ""
+	tm.haveSpokeUsage = false
+	tm.spokeUsage = nodeapi.TrafficUsage{}
+	tm.spokeUsageUpdate = nodeapi.TrafficUsageUpdate{}
+	spokes := tm.trafficSpokes()
+	if len(spokes) == 0 {
+		tm.phase = monitorPhaseAction
+		tm.fieldErr = "no installed spoke nodes are registered; add and install one under Spoke → Spoke nodes"
+		return
+	}
+	tm.startForm([]field{{
+		key:     "adjust_spoke_traffic_select",
+		label:   "Spoke traffic counters to adjust",
+		options: spokeLabels(spokes),
+		note:    "The stable node ID identifies the spoke; fresh usage is read through its authenticated WireGuard Agent.",
+	}})
+}
+
+func (tm *monitorManager) startSpokeTrafficUsageLoad() tea.Cmd {
+	node, ok := tm.spokeTrafficNode()
+	if !ok {
+		tm.startSpokeTrafficSelector()
+		tm.parameterForm.fieldErr = "selected spoke no longer exists"
+		return nil
+	}
+	tm.cancelSpokeUsageLoad()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	tm.spokeUsageStop = cancel
+	tm.haveSpokeUsage = false
+	tm.spokeUsage = nodeapi.TrafficUsage{}
+	tm.spokeUsageUpdate = nodeapi.TrafficUsageUpdate{}
+	tm.phase = monitorPhaseSpokeUsageLoading
+	loadID, nodeID := tm.spokeUsageLoad, node.ID
+	return func() tea.Msg {
+		usage, err := fetchSpokeTrafficUsage(ctx, node)
+		return spokeTrafficUsageMsg{loadID: loadID, nodeID: nodeID, usage: usage, err: err}
+	}
+}
+
+func (tm *monitorManager) handleSpokeTrafficUsage(msg spokeTrafficUsageMsg) {
+	if tm.phase != monitorPhaseSpokeUsageLoading ||
+		msg.loadID != tm.spokeUsageLoad ||
+		msg.nodeID != tm.editNodeID {
+		return
+	}
+	tm.cancelSpokeUsageLoad()
+	if msg.err != nil {
+		tm.startSpokeTrafficSelector()
+		tm.parameterForm.fieldErr = "read current spoke traffic counters: " + msg.err.Error()
+		return
+	}
+	if _, ok := tm.spokeTrafficNode(); !ok {
+		tm.startSpokeTrafficSelector()
+		tm.parameterForm.fieldErr = "selected spoke no longer exists"
+		return
+	}
+	if msg.usage.CycleStart <= 0 {
+		tm.startSpokeTrafficSelector()
+		tm.parameterForm.fieldErr = "Agent returned an invalid traffic quota cycle"
+		return
+	}
+	tm.spokeUsage = msg.usage
+	tm.haveSpokeUsage = true
+	tm.startForm(fieldsFromParameters(uiparams.MonitorUsageFields(msg.usage.InBytes, msg.usage.OutBytes)))
+}
+
+func (tm *monitorManager) cancelSpokeUsageLoad() {
+	if tm.spokeUsageStop != nil {
+		tm.spokeUsageStop()
+		tm.spokeUsageStop = nil
+	}
+	tm.spokeUsageLoad++
 }
 
 func (tm *monitorManager) editSpokeMonitorSelectField() []field {
@@ -420,6 +591,13 @@ func (tm *monitorManager) startRun() tea.Cmd {
 		}()
 		return tm.waitForRun()
 	}
+	if tm.action == monitorActionSpokeUsage {
+		go func() {
+			err := applySpokeTrafficUsageRun(tm, context.Background(), logs, progress)
+			ch <- runMsg{done: true, err: err}
+		}()
+		return tm.waitForRun()
+	}
 	opts := tm.updateOptions()
 	opts.Layout = monitorUILayout()
 	opts.Runner = system.NewExecRunner(logs)
@@ -433,6 +611,97 @@ func (tm *monitorManager) startRun() tea.Cmd {
 		ch <- runMsg{done: true, err: err}
 	}()
 	return tm.waitForRun()
+}
+
+func (tm *monitorManager) applySpokeTrafficUsage(ctx context.Context, logs *logWriter, progress func(deploy.Event)) error {
+	if !tm.haveSpokeUsage || tm.spokeUsage.CycleStart <= 0 {
+		return fmt.Errorf("current spoke traffic counters were not loaded")
+	}
+	layout := monitorUILayout()
+	list, err := nodes.Load(layout)
+	if err != nil {
+		return fmt.Errorf("reload spoke registry: %w", err)
+	}
+	var selected nodes.Node
+	for _, node := range list {
+		if node.ID == tm.editNodeID && node.Installed {
+			selected = node
+			break
+		}
+	}
+	if selected.ID == "" {
+		return fmt.Errorf("selected spoke no longer exists")
+	}
+	inBytes, err := uiparams.ParseTrafficSize(tm.values["current_in_traffic"])
+	if err != nil {
+		return err
+	}
+	outBytes, err := uiparams.ParseTrafficSize(tm.values["current_out_traffic"])
+	if err != nil {
+		return err
+	}
+	req := nodeapi.TrafficUsageRequest{
+		InBytes:            inBytes,
+		OutBytes:           outBytes,
+		ExpectedCycleStart: tm.spokeUsage.CycleStart,
+	}
+	usageEvent := deploy.Event{
+		Index: 1, Total: 2, Label: "Spoke traffic counters",
+		Detail: "set the current quota-cycle usage through the authenticated Agent", Status: "running",
+	}
+	deploy.EmitProgress(progress, usageEvent)
+	update, err := setSpokeTrafficUsage(ctx, selected, req)
+	if err != nil {
+		usageEvent.Status = "fail"
+		usageEvent.Err = err
+		deploy.EmitProgress(progress, usageEvent)
+		return fmt.Errorf("adjust spoke traffic counters over WireGuard: %w", err)
+	}
+	tm.spokeUsageUpdate = update
+	applied := update.Applied
+	if applied.CycleStart != req.ExpectedCycleStart ||
+		applied.InBytes != req.InBytes || applied.OutBytes != req.OutBytes {
+		err := fmt.Errorf(
+			"Agent confirmed unexpected traffic counters (cycle=%d in=%d out=%d)",
+			applied.CycleStart, applied.InBytes, applied.OutBytes,
+		)
+		usageEvent.Status = "fail"
+		usageEvent.Err = err
+		deploy.EmitProgress(progress, usageEvent)
+		return err
+	}
+	if strings.TrimSpace(update.Warning) != "" {
+		usageEvent.Status = "warn"
+		usageEvent.Err = errors.New(strings.TrimSpace(update.Warning))
+		fmt.Fprintf(
+			logs,
+			"warning: spoke traffic counters were updated, but quota reconciliation reported: %s; inspect the Agent service state before retrying\n",
+			strings.TrimSpace(update.Warning),
+		)
+	} else {
+		usageEvent.Status = "ok"
+	}
+	deploy.EmitProgress(progress, usageEvent)
+	fmt.Fprintf(logs, "updated traffic counters on %s for quota cycle %d\n", selected.EffectiveAlias(), applied.CycleStart)
+
+	monitorEvent := deploy.Event{
+		Index: 2, Total: 2, Label: "Monitor snapshot",
+		Detail: "refresh the hub dashboard from the spoke", Status: "running",
+	}
+	deploy.EmitProgress(progress, monitorEvent)
+	if err := refreshSpokeMonitorSnapshot(ctx); err != nil {
+		fmt.Fprintf(
+			logs,
+			"warning: spoke traffic counters were updated, but the Hub monitor snapshot could not be refreshed: %v; the periodic refresh will retry\n",
+			err,
+		)
+		monitorEvent.Status = "warn"
+		monitorEvent.Err = err
+	} else {
+		monitorEvent.Status = "ok"
+	}
+	deploy.EmitProgress(progress, monitorEvent)
+	return nil
 }
 
 func (tm *monitorManager) applySpokeMonitor(ctx context.Context, logs *logWriter, progress func(deploy.Event)) error {
@@ -593,16 +862,31 @@ func (tm *monitorManager) View() string {
 		if tm.runErr != nil {
 			return commandFailedView(tm, "Monitor update failed")
 		}
-		return flowOK.Render("Monitor settings updated") + "\n\n" + tm.doneSummary()
+		title := "Monitor settings updated"
+		if tm.action == monitorActionSpokeUsage {
+			title = "Spoke traffic counters updated"
+		}
+		return flowOK.Render(title) + "\n\n" + tm.doneSummary()
 	case monitorPhaseServiceConfirm:
 		return tm.serviceConfirmView()
 	case monitorPhaseLogsLoading:
 		return flowTitle.Render("Monitor · Logs") + "\n\n" + dimStyle.Render("Loading service logs…")
 	case monitorPhaseLogs:
 		return tm.serviceLogsView()
+	case monitorPhaseSpokeUsageLoading:
+		return tm.loadingSpokeTrafficUsageView()
 	default:
 		return ""
 	}
+}
+
+func (tm *monitorManager) loadingSpokeTrafficUsageView() string {
+	title := "Monitor · Spoke · Loading traffic counters"
+	if node, ok := tm.spokeTrafficNode(); ok {
+		title += " · " + node.EffectiveAlias()
+	}
+	return flowTitle.Render(title) + "\n\n" +
+		dimStyle.Render("Reading fresh quota-cycle usage from the authenticated WireGuard Agent…")
 }
 
 func (tm *monitorManager) actionView() string {
@@ -668,6 +952,15 @@ func (tm *monitorManager) confirmView() string {
 			summaryRow("Current inbound", byteSize(tm.totals.InBytes)+" -> "+tm.values["current_in_traffic"]),
 			summaryRow("Current outbound", byteSize(tm.totals.OutBytes)+" -> "+tm.values["current_out_traffic"]),
 		)
+	case monitorActionSpokeUsage:
+		if node, ok := tm.spokeTrafficNode(); ok {
+			rows = append(rows,
+				summaryRow("Spoke", spokeOptionLabel(node)),
+				summaryRow("Quota cycle start", formatTrafficCycleStart(tm.spokeUsage.CycleStart)),
+				summaryRow("Current inbound", byteSize(tm.spokeUsage.InBytes)+" -> "+tm.values["current_in_traffic"]),
+				summaryRow("Current outbound", byteSize(tm.spokeUsage.OutBytes)+" -> "+tm.values["current_out_traffic"]),
+			)
+		}
 	case monitorActionEditSpoke:
 		if tm.editNodeIndex >= 0 && tm.editNodeIndex < len(tm.nodes) {
 			node := tm.nodes[tm.editNodeIndex]
@@ -684,11 +977,46 @@ func (tm *monitorManager) confirmView() string {
 			)
 		}
 	}
-	rows = append(rows, summaryBlank(), summaryText("This will update monitor state and refresh /monitor data."))
+	rows = append(rows, summaryBlank())
+	if tm.action == monitorActionSpokeUsage {
+		rows = append(rows, summaryText("This will replace the selected spoke's current quota-cycle counters and refresh /monitor data."))
+	} else {
+		rows = append(rows, summaryText("This will update monitor state and refresh /monitor data."))
+	}
 	return flowTitle.Render("Monitor · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (tm *monitorManager) doneSummary() string {
+	if tm.action == monitorActionSpokeUsage {
+		rows := []summaryLine{
+			summaryRow("Spoke traffic counters", "updated"),
+			summaryRow("Current inbound", tm.values["current_in_traffic"]),
+			summaryRow("Current outbound", tm.values["current_out_traffic"]),
+			summaryRow("Quota cycle start", formatTrafficCycleStart(tm.spokeUsage.CycleStart)),
+			summaryRow("Spoke transport", "WireGuard"),
+		}
+		if node, ok := tm.spokeTrafficNode(); ok {
+			rows = append([]summaryLine{summaryRow("Spoke", spokeOptionLabel(node))}, rows...)
+		}
+		quota := "reconciled"
+		snapshot := "refreshed"
+		for _, event := range tm.events {
+			if event.Label == "Spoke traffic counters" && event.Status == "warn" {
+				quota = "warning; counters committed, inspect Agent service state before retrying"
+				if warning := strings.TrimSpace(tm.spokeUsageUpdate.Warning); warning != "" {
+					quota = "warning: " + warning + "; counters committed, inspect Agent service state before retrying"
+				}
+			}
+			if event.Label == "Monitor snapshot" && event.Status == "warn" {
+				snapshot = "refresh warning; periodic refresh will retry"
+			}
+		}
+		rows = append(rows,
+			summaryRow("Agent quota reconciliation", quota),
+			summaryRow("Hub monitor snapshot", snapshot),
+		)
+		return renderSummary(rows)
+	}
 	cfg := tm.result
 	if cfg.Domain == "" {
 		cfg = tm.cfg
@@ -725,6 +1053,8 @@ func (tm *monitorManager) footerHints() []operationHint {
 		return nil
 	case monitorPhaseLogs:
 		return []operationHint{hint(keyMoveMouse, "Scroll"), hint(keyRefresh, "Refresh"), hint(keyReturn, "Return")}
+	case monitorPhaseSpokeUsageLoading:
+		return []operationHint{hint(keyBack, "Back"), hint(keyCancel, "Cancel")}
 	default:
 		return nil
 	}
@@ -737,12 +1067,20 @@ func (tm *monitorManager) actions() []monitorActionItem {
 		{action: monitorActionUsage, label: "Adjust hub traffic counters"},
 		{separator: true, label: "Spokes (WireGuard)"},
 		{action: monitorActionEditSpoke, label: "Edit spoke monitor settings"},
+		{action: monitorActionSpokeUsage, label: "Adjust spoke traffic counters"},
 		{separator: true, label: "Hub service"},
 		{action: monitorActionStart, label: "Start hub monitor service"},
 		{action: monitorActionStop, label: "Stop hub monitor service"},
 		{action: monitorActionRestart, label: "Restart hub monitor service"},
 		{action: monitorActionLogs, label: "View hub monitor service logs"},
 	}
+}
+
+func formatTrafficCycleStart(unix int64) string {
+	if unix <= 0 {
+		return "unknown"
+	}
+	return time.Unix(unix, 0).UTC().Format("2006-01-02 15:04 GMT")
 }
 
 func (tm *monitorManager) serviceConfirmView() string {

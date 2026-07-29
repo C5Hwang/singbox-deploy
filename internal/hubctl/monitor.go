@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -148,6 +149,39 @@ func (c *Controller) MonitorData(ctx context.Context, nodeID string, endpoint no
 		return c.NewClient(node).Monitor(ctx, endpoint)
 	}
 	return nil, fmt.Errorf("monitor node %s not found", nodeID)
+}
+
+// TrafficUsage reads one installed Spoke's authoritative current-cycle totals
+// through its authenticated WireGuard Agent endpoint.
+func (c *Controller) TrafficUsage(ctx context.Context, node nodes.Node) (nodeapi.TrafficUsage, error) {
+	c.defaults()
+	if !node.Installed {
+		return nodeapi.TrafficUsage{}, fmt.Errorf("node %s is not installed", node.EffectiveAlias())
+	}
+	checked, err := c.CheckHealth(ctx, node, io.Discard)
+	if err != nil {
+		return nodeapi.TrafficUsage{}, fmt.Errorf("reconcile Agent before reading traffic usage: %w", err)
+	}
+	return c.NewClient(checked).TrafficUsage(ctx)
+}
+
+// SetTrafficUsage replaces one installed Spoke's absolute current-cycle totals.
+// Dynamic usage is Agent-owned and is deliberately never persisted in the Hub
+// node registry.
+func (c *Controller) SetTrafficUsage(
+	ctx context.Context,
+	node nodes.Node,
+	req nodeapi.TrafficUsageRequest,
+) (nodeapi.TrafficUsageUpdate, error) {
+	c.defaults()
+	if !node.Installed {
+		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("node %s is not installed", node.EffectiveAlias())
+	}
+	checked, err := c.CheckHealth(ctx, node, io.Discard)
+	if err != nil {
+		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("reconcile Agent before setting traffic usage: %w", err)
+	}
+	return c.NewClient(checked).SetTrafficUsage(ctx, req)
 }
 
 func monitorSourceKey(source monitor.SourceSummary) string {

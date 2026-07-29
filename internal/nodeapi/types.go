@@ -19,7 +19,11 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-const protocolRevisionConflictMarker = "protocol-state-revision-conflict"
+const (
+	protocolRevisionConflictMarker = "protocol-state-revision-conflict"
+	trafficCycleConflictMarker     = "traffic-usage-cycle-conflict"
+	maxTrafficUsageBytes           = uint64(1<<63 - 1)
+)
 
 // PortSet is the protocol listen-port assignment for a spoke.
 type PortSet struct {
@@ -70,6 +74,89 @@ type ProtocolStateResponse struct {
 	EnabledProtocols     []string            `json:"enabledProtocols"`
 	Ports                PortSet             `json:"ports"`
 	Credentials          ProtocolCredentials `json:"credentials"`
+}
+
+// TrafficUsage is the current absolute inbound/outbound usage in the Agent's
+// active quota cycle. CycleStart is a Unix timestamp and lets the Hub detect a
+// form that crossed a monthly reset boundary before it writes anything.
+type TrafficUsage struct {
+	InBytes    uint64 `json:"inBytes"`
+	OutBytes   uint64 `json:"outBytes"`
+	CycleStart int64  `json:"cycleStart"`
+}
+
+// TrafficUsageRequest replaces the absolute usage totals for one quota cycle.
+// Traffic counters are sampled continuously, so individual totals deliberately
+// do not use compare-and-swap. The cycle boundary is stable and is checked to
+// prevent an old form from seeding a newly-reset month with previous-cycle
+// values.
+type TrafficUsageRequest struct {
+	InBytes            uint64 `json:"inBytes"`
+	OutBytes           uint64 `json:"outBytes"`
+	ExpectedCycleStart int64  `json:"expectedCycleStart"`
+}
+
+// TrafficUsageUpdate records both sides of one linearized absolute
+// replacement. Previous lets callers later remove the exact artificial
+// adjustment without discarding traffic sampled between form load and commit.
+type TrafficUsageUpdate struct {
+	Previous TrafficUsage `json:"previous"`
+	Applied  TrafficUsage `json:"applied"`
+	// Warning is non-empty only when the absolute counters committed but
+	// immediate quota service reconciliation could not be confirmed.
+	Warning string `json:"warning,omitempty"`
+}
+
+// ValidateTrafficUsage validates an Agent usage snapshot.
+func ValidateTrafficUsage(usage TrafficUsage) error {
+	if usage.InBytes > maxTrafficUsageBytes || usage.OutBytes > maxTrafficUsageBytes {
+		return fmt.Errorf("traffic usage must not exceed %d bytes per direction", maxTrafficUsageBytes)
+	}
+	if usage.CycleStart <= 0 {
+		return fmt.Errorf("traffic usage cycle start must be a positive Unix timestamp")
+	}
+	return nil
+}
+
+// ValidateTrafficUsageRequest validates an absolute usage replacement.
+func ValidateTrafficUsageRequest(req TrafficUsageRequest) error {
+	if req.InBytes > maxTrafficUsageBytes || req.OutBytes > maxTrafficUsageBytes {
+		return fmt.Errorf("traffic usage must not exceed %d bytes per direction", maxTrafficUsageBytes)
+	}
+	if req.ExpectedCycleStart <= 0 {
+		return fmt.Errorf("expected traffic usage cycle start must be a positive Unix timestamp")
+	}
+	return nil
+}
+
+// ValidateTrafficUsageUpdate verifies both snapshots and their shared quota
+// cycle.
+func ValidateTrafficUsageUpdate(update TrafficUsageUpdate) error {
+	if err := ValidateTrafficUsage(update.Previous); err != nil {
+		return fmt.Errorf("previous traffic usage: %w", err)
+	}
+	if err := ValidateTrafficUsage(update.Applied); err != nil {
+		return fmt.Errorf("applied traffic usage: %w", err)
+	}
+	if update.Previous.CycleStart != update.Applied.CycleStart {
+		return fmt.Errorf("traffic usage update crossed quota cycles")
+	}
+	if len(update.Warning) > 2048 || strings.ContainsAny(update.Warning, "\r\n") {
+		return fmt.Errorf("traffic usage update warning is invalid")
+	}
+	return nil
+}
+
+// TrafficCycleConflict reports that a usage form crossed a quota reset
+// boundary before the Agent acquired its mutation gate.
+func TrafficCycleConflict() error {
+	return fmt.Errorf("%s: spoke traffic quota cycle changed before the update acquired the Agent mutation lock", trafficCycleConflictMarker)
+}
+
+// IsTrafficCycleConflict recognizes the stable conflict marker after it crosses
+// the Agent API.
+func IsTrafficCycleConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), trafficCycleConflictMarker)
 }
 
 // InstallRequest is the full parameter set the hub pushes to install or

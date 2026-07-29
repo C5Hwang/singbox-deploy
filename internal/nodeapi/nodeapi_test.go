@@ -16,12 +16,16 @@ import (
 
 // fakeHandler is a scripted agent implementation for the round-trip test.
 type fakeHandler struct {
-	installReq    InstallRequest
-	upgradeReq    UpgradeRequest
-	coreReq       CoreRequest
-	failWith      string
-	monitor       http.Handler
-	protocolState ProtocolStateResponse
+	installReq     InstallRequest
+	upgradeReq     UpgradeRequest
+	coreReq        CoreRequest
+	failWith       string
+	monitor        http.Handler
+	protocolState  ProtocolStateResponse
+	trafficUsage   TrafficUsage
+	trafficReq     TrafficUsageRequest
+	trafficErr     error
+	trafficWarning string
 }
 
 func (h *fakeHandler) Health() HealthResponse {
@@ -77,6 +81,24 @@ func (h *fakeHandler) MonitorHandler() http.Handler { return h.monitor }
 
 func (h *fakeHandler) ProtocolState(context.Context) (ProtocolStateResponse, error) {
 	return h.protocolState, nil
+}
+
+func (h *fakeHandler) TrafficUsage(context.Context) (TrafficUsage, error) {
+	return h.trafficUsage, h.trafficErr
+}
+
+func (h *fakeHandler) SetTrafficUsage(_ context.Context, req TrafficUsageRequest) (TrafficUsageUpdate, error) {
+	h.trafficReq = req
+	if h.trafficErr != nil {
+		return TrafficUsageUpdate{}, h.trafficErr
+	}
+	previous := h.trafficUsage
+	h.trafficUsage = TrafficUsage{
+		InBytes: req.InBytes, OutBytes: req.OutBytes, CycleStart: req.ExpectedCycleStart,
+	}
+	return TrafficUsageUpdate{
+		Previous: previous, Applied: h.trafficUsage, Warning: h.trafficWarning,
+	}, nil
 }
 
 func newTestServer(t *testing.T, h Handler, token string) (*Client, func()) {
@@ -216,6 +238,129 @@ func TestProtocolStateRoundTripAndCredentialValidation(t *testing.T) {
 		EnabledProtocols: []string{"hysteria2"}, Ports: PortSet{Hysteria2: 9443},
 	}); err != nil {
 		t.Fatalf("valid complete protocol replacement rejected: %v", err)
+	}
+}
+
+func TestTrafficUsageRoundTripAndCycleConflict(t *testing.T) {
+	h := &fakeHandler{trafficUsage: TrafficUsage{
+		InBytes: 100, OutBytes: 200, CycleStart: 1_782_864_000,
+	}, trafficWarning: "usage committed; quota state needs inspection"}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+
+	got, err := client.TrafficUsage(context.Background())
+	if err != nil {
+		t.Fatalf("TrafficUsage: %v", err)
+	}
+	if got != h.trafficUsage {
+		t.Fatalf("TrafficUsage = %+v, want %+v", got, h.trafficUsage)
+	}
+	req := TrafficUsageRequest{
+		InBytes: 300, OutBytes: 400, ExpectedCycleStart: got.CycleStart,
+	}
+	updated, err := client.SetTrafficUsage(context.Background(), req)
+	if err != nil {
+		t.Fatalf("SetTrafficUsage: %v", err)
+	}
+	if h.trafficReq != req || updated.Previous != got ||
+		updated.Applied.InBytes != req.InBytes ||
+		updated.Applied.OutBytes != req.OutBytes ||
+		updated.Applied.CycleStart != req.ExpectedCycleStart ||
+		updated.Warning != h.trafficWarning {
+		t.Fatalf("traffic update: request=%+v response=%+v", h.trafficReq, updated)
+	}
+
+	h.trafficErr = TrafficCycleConflict()
+	_, err = client.SetTrafficUsage(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "409") || !IsTrafficCycleConflict(err) {
+		t.Fatalf("cycle conflict = %v", err)
+	}
+}
+
+func TestTrafficUsageRoundTripPreservesMaximallyEscapedWarning(t *testing.T) {
+	const cycleStart = int64(1_782_864_000)
+	warning := strings.Repeat("<", 2048)
+	h := &fakeHandler{
+		trafficUsage:   TrafficUsage{InBytes: 1, OutBytes: 2, CycleStart: cycleStart},
+		trafficWarning: warning,
+	}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+
+	update, err := client.SetTrafficUsage(context.Background(), TrafficUsageRequest{
+		InBytes: 3, OutBytes: 4, ExpectedCycleStart: cycleStart,
+	})
+	if err != nil {
+		t.Fatalf("SetTrafficUsage with escaped warning: %v", err)
+	}
+	if update.Warning != warning || update.Previous.InBytes != 1 ||
+		update.Applied.InBytes != 3 {
+		t.Fatalf("traffic usage update was not preserved: previous=%+v applied=%+v warning-bytes=%d",
+			update.Previous, update.Applied, len(update.Warning))
+	}
+}
+
+func TestTrafficUsageValidationAndUnsupportedAgent(t *testing.T) {
+	h := &fakeHandler{}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+	if _, err := client.SetTrafficUsage(context.Background(), TrafficUsageRequest{
+		InBytes: 1, OutBytes: 2,
+	}); err == nil || !strings.Contains(err.Error(), "cycle start") {
+		t.Fatalf("invalid usage request = %v", err)
+	}
+	if h.trafficReq != (TrafficUsageRequest{}) {
+		t.Fatalf("invalid request reached Agent: %+v", h.trafficReq)
+	}
+
+	type legacyHandler struct{ Handler }
+	legacyClient, legacyClose := newTestServer(t, legacyHandler{Handler: &fakeHandler{}}, "secret")
+	defer legacyClose()
+	_, err := legacyClient.TrafficUsage(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "501") {
+		t.Fatalf("legacy Agent error = %v", err)
+	}
+}
+
+func TestTrafficUsagePutRequiresAuthAndStrictCompleteJSON(t *testing.T) {
+	valid := `{"inBytes":1,"outBytes":2,"expectedCycleStart":1782864000}`
+	for name, authorization := range map[string]string{
+		"missing": "",
+		"wrong":   "Bearer wrong",
+	} {
+		t.Run("auth-"+name, func(t *testing.T) {
+			h := &fakeHandler{}
+			handler := (&Server{Token: "secret", Handler: h}).Mux()
+			req := httptest.NewRequest(http.MethodPut, "/api/monitor/usage", strings.NewReader(valid))
+			if authorization != "" {
+				req.Header.Set("Authorization", authorization)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized || h.trafficReq != (TrafficUsageRequest{}) {
+				t.Fatalf("status=%d request=%+v", rec.Code, h.trafficReq)
+			}
+		})
+	}
+
+	for name, body := range map[string]string{
+		"missing field":    `{"inBytes":1,"expectedCycleStart":1782864000}`,
+		"unknown field":    `{"inBytes":1,"outBytes":2,"expectedCycleStart":1782864000,"outBytez":3}`,
+		"trailing value":   valid + ` {}`,
+		"trailing garbage": valid + ` trailing`,
+		"oversized":        `{"inBytes":` + strings.Repeat("1", 5000) + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := &fakeHandler{}
+			handler := (&Server{Token: "secret", Handler: h}).Mux()
+			req := httptest.NewRequest(http.MethodPut, "/api/monitor/usage", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer secret")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest || h.trafficReq != (TrafficUsageRequest{}) {
+				t.Fatalf("status=%d request=%+v body=%q", rec.Code, h.trafficReq, rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -444,6 +589,7 @@ func TestEndpointsRejectWrongMethods(t *testing.T) {
 		{path: "/api/core", wrong: http.MethodGet, allow: http.MethodPost},
 		{path: "/api/subscription?format=default", wrong: http.MethodPost, allow: http.MethodGet},
 		{path: "/api/monitor/summary", wrong: http.MethodPost, allow: http.MethodGet},
+		{path: "/api/monitor/usage", wrong: http.MethodPost, allow: http.MethodGet + ", " + http.MethodPut},
 	}
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {

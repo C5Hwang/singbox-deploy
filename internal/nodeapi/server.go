@@ -47,6 +47,14 @@ type MonitorHandler interface {
 	MonitorHandler() http.Handler
 }
 
+// TrafficUsageHandler is implemented by agents that support reading and
+// replacing current-cycle traffic usage. It is separate from MonitorHandler so
+// write requests can never be forwarded to the monitor's read-only HTTP mux.
+type TrafficUsageHandler interface {
+	TrafficUsage(context.Context) (TrafficUsage, error)
+	SetTrafficUsage(context.Context, TrafficUsageRequest) (TrafficUsageUpdate, error)
+}
+
 // Server exposes Handler over HTTP, guarded by a bearer token.
 type Server struct {
 	Token   string
@@ -64,6 +72,7 @@ func (s *Server) Mux() http.Handler {
 	s.handle(mux, http.MethodPost, "/api/upgrade", s.handleUpgrade)
 	s.handle(mux, http.MethodPost, "/api/core", s.handleCore)
 	s.handle(mux, http.MethodGet, "/api/subscription", s.handleSubscription)
+	mux.HandleFunc("/api/monitor/usage", s.auth(s.handleTrafficUsage))
 	for _, endpoint := range monitorEndpoints {
 		apiPath, _, _ := endpoint.paths()
 		s.handle(mux, http.MethodGet, apiPath, s.handleMonitor(endpoint))
@@ -226,6 +235,71 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
+func (s *Server) handleTrafficUsage(w http.ResponseWriter, r *http.Request) {
+	handler, ok := s.Handler.(TrafficUsageHandler)
+	if !ok {
+		http.Error(w, "traffic usage management is not supported by this agent", http.StatusNotImplemented)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		usage, err := handler.TrafficUsage(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := ValidateTrafficUsage(usage); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, usage)
+	case http.MethodPut:
+		var wire struct {
+			InBytes            *uint64 `json:"inBytes"`
+			OutBytes           *uint64 `json:"outBytes"`
+			ExpectedCycleStart *int64  `json:"expectedCycleStart"`
+		}
+		if err := decodeStrictJSON(w, r, &wire, maxTrafficUsageRequestBody); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if wire.InBytes == nil || wire.OutBytes == nil || wire.ExpectedCycleStart == nil {
+			http.Error(w, "inBytes, outBytes, and expectedCycleStart are required", http.StatusBadRequest)
+			return
+		}
+		req := TrafficUsageRequest{
+			InBytes: *wire.InBytes, OutBytes: *wire.OutBytes,
+			ExpectedCycleStart: *wire.ExpectedCycleStart,
+		}
+		if err := ValidateTrafficUsageRequest(req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		update, err := handler.SetTrafficUsage(r.Context(), req)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if IsTrafficCycleConflict(err) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		if err := ValidateTrafficUsageUpdate(update); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if update.Applied.InBytes != req.InBytes || update.Applied.OutBytes != req.OutBytes ||
+			update.Applied.CycleStart != req.ExpectedCycleStart {
+			http.Error(w, "traffic usage handler returned a result that does not match the request", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, update)
+	default:
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *Server) handleMonitor(endpoint MonitorEndpoint) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provider, ok := s.Handler.(MonitorHandler)
@@ -261,10 +335,11 @@ func (s *Server) handleMonitor(endpoint MonitorEndpoint) http.HandlerFunc {
 }
 
 const (
-	maxInstallRequestBody   int64 = 4 << 20
-	maxCertRequestBody      int64 = 2 << 20
-	maxUninstallRequestBody int64 = 16 << 10
-	maxCoreRequestBody      int64 = 4 << 10
+	maxInstallRequestBody      int64 = 4 << 20
+	maxCertRequestBody         int64 = 2 << 20
+	maxUninstallRequestBody    int64 = 16 << 10
+	maxCoreRequestBody         int64 = 4 << 10
+	maxTrafficUsageRequestBody int64 = 4 << 10
 	// []byte expands by 4/3 when JSON/base64 encoded. Leave a small allowance
 	// for field names and the version/digest strings.
 	maxUpgradeRequestBody int64 = (MaxAgentBinarySize+2)/3*4 + 4096
@@ -274,11 +349,22 @@ const (
 // whitespace after the value is permitted; a second value or any other
 // trailing bytes are rejected.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) error {
+	return decodeJSONWithOptions(w, r, dst, maxBytes, false)
+}
+
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) error {
+	return decodeJSONWithOptions(w, r, dst, maxBytes, true)
+}
+
+func decodeJSONWithOptions(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64, strict bool) error {
 	if r.Body == nil {
 		return fmt.Errorf("request body is required")
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(dst); err != nil {
 		return fmt.Errorf("decode JSON request: %w", err)
 	}

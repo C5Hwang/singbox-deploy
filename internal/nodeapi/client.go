@@ -184,6 +184,100 @@ func (c *Client) Monitor(ctx context.Context, endpoint MonitorEndpoint) ([]byte,
 	return body, nil
 }
 
+// TrafficUsage reads the Agent's authoritative current-cycle usage over the
+// authenticated WireGuard control channel.
+func (c *Client) TrafficUsage(ctx context.Context) (TrafficUsage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/monitor/usage", nil)
+	if err != nil {
+		return TrafficUsage{}, err
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return TrafficUsage{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return TrafficUsage{}, statusError(resp)
+	}
+	return decodeTrafficUsage(resp.Body)
+}
+
+// SetTrafficUsage replaces the Agent's absolute current-cycle totals. The
+// cycle precondition prevents a form opened before a monthly reset from
+// applying old values to the new cycle.
+func (c *Client) SetTrafficUsage(ctx context.Context, usage TrafficUsageRequest) (TrafficUsageUpdate, error) {
+	if err := ValidateTrafficUsageRequest(usage); err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	body, err := json.Marshal(usage)
+	if err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := c.newRequest(ctx, http.MethodPut, "/api/monitor/usage", bytes.NewReader(body))
+	if err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return TrafficUsageUpdate{}, statusError(resp)
+	}
+	return decodeTrafficUsageUpdate(resp.Body, usage)
+}
+
+func decodeTrafficUsage(body io.Reader) (TrafficUsage, error) {
+	const maxTrafficUsageResponse = 4 << 10
+	raw, err := io.ReadAll(io.LimitReader(body, maxTrafficUsageResponse+1))
+	if err != nil {
+		return TrafficUsage{}, err
+	}
+	if len(raw) > maxTrafficUsageResponse {
+		return TrafficUsage{}, fmt.Errorf("agent traffic usage response exceeds %d bytes", maxTrafficUsageResponse)
+	}
+	var usage TrafficUsage
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		return TrafficUsage{}, err
+	}
+	if err := ValidateTrafficUsage(usage); err != nil {
+		return TrafficUsage{}, fmt.Errorf("agent returned invalid traffic usage: %w", err)
+	}
+	return usage, nil
+}
+
+func decodeTrafficUsageUpdate(body io.Reader, request TrafficUsageRequest) (TrafficUsageUpdate, error) {
+	// A valid 2 KiB warning can expand to roughly 12 KiB when encoding/json
+	// escapes control characters or HTML-sensitive bytes. Keep the committed
+	// Previous/Applied response bounded without rejecting that valid envelope.
+	const maxTrafficUsageUpdateResponse = 16 << 10
+	raw, err := io.ReadAll(io.LimitReader(body, maxTrafficUsageUpdateResponse+1))
+	if err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	if len(raw) > maxTrafficUsageUpdateResponse {
+		return TrafficUsageUpdate{}, fmt.Errorf("agent traffic usage update response exceeds %d bytes", maxTrafficUsageUpdateResponse)
+	}
+	var update TrafficUsageUpdate
+	if err := json.Unmarshal(raw, &update); err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	if err := ValidateTrafficUsageUpdate(update); err != nil {
+		return TrafficUsageUpdate{}, fmt.Errorf("agent returned invalid traffic usage update: %w", err)
+	}
+	if update.Applied.InBytes != request.InBytes || update.Applied.OutBytes != request.OutBytes ||
+		update.Applied.CycleStart != request.ExpectedCycleStart {
+		return TrafficUsageUpdate{}, fmt.Errorf("agent traffic usage update does not match the request")
+	}
+	return update, nil
+}
+
 // stream posts a JSON body and forwards the streamed log to log, returning the
 // terminal status parsed from the sentinel line.
 func (c *Client) stream(ctx context.Context, path string, payload any, log io.Writer) error {
