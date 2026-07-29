@@ -248,6 +248,7 @@ func TestCleanupRemovesProvisionedAgentAndWireGuardSecrets(t *testing.T) {
 		"disable --now singbox-deploy-agent.service",
 		"disable --now wg-quick@sbwg0.service",
 		"/usr/bin/singbox-deploy-agent",
+		"/usr/bin/singbox-deploy-agent.singbox-deploy-backup",
 		"/etc/wireguard/sbwg0.conf",
 		"/etc/wireguard/sbwg0.key",
 		"/etc/singbox-deploy/state/agent",

@@ -333,6 +333,7 @@ func cleanupProvisionedArtifacts(ctx context.Context, runner Runner, iface strin
 	unit := "wg-quick@" + iface + ".service"
 	paths := []string{
 		AgentBinaryPath,
+		AgentBinaryPath + ".singbox-deploy-backup",
 		"/etc/systemd/system/singbox-deploy-agent.service",
 		"/etc/wireguard/" + iface + ".conf",
 		"/etc/wireguard/" + iface + ".conf.singbox-deploy.template",

@@ -621,7 +621,8 @@ func TestPrepareAgentTeardownRestoresFirewalldBeforeRetry(t *testing.T) {
 func TestAgentUpgradeAtomicallyReplacesAndSchedulesRestart(t *testing.T) {
 	payload := readHostELF(t)
 	target := filepath.Join(t.TempDir(), "singbox-deploy-agent")
-	if err := os.WriteFile(target, []byte("old-agent"), 0o755); err != nil {
+	old := []byte("old-agent")
+	if err := os.WriteFile(target, old, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	restarted := false
@@ -642,7 +643,10 @@ func TestAgentUpgradeAtomicallyReplacesAndSchedulesRestart(t *testing.T) {
 			}
 			return nil
 		},
-		scheduleRestart: func() { restarted = true },
+		scheduleRestart: func() error {
+			restarted = true
+			return nil
+		},
 	}
 	if err := h.Upgrade(context.Background(), nodeapi.NewUpgradeRequest("v9.8.7", payload), io.Discard); err != nil {
 		t.Fatalf("Upgrade: %v", err)
@@ -658,6 +662,120 @@ func TestAgentUpgradeAtomicallyReplacesAndSchedulesRestart(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o755 {
 		t.Fatalf("upgraded mode = %v, err=%v", info.Mode().Perm(), err)
 	}
+	backup, err := os.ReadFile(agentBackupPath(target))
+	if err != nil {
+		t.Fatalf("read recoverable Agent backup: %v", err)
+	}
+	if !bytes.Equal(backup, old) {
+		t.Fatalf("Agent backup = %q, want old executable", backup)
+	}
+}
+
+func TestAgentUpgradeScheduleFailureRestoresOldExecutableAndAllowsRetry(t *testing.T) {
+	payload := readHostELF(t)
+	target := filepath.Join(t.TempDir(), "singbox-deploy-agent")
+	old := []byte("known-good-old-agent")
+	if err := os.WriteFile(target, old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scheduleErr := errors.New("cannot queue transient restart")
+	scheduleCalls := 0
+	h := &agentHandler{
+		agentExecutable: func() (string, error) { return target, nil },
+		inspectAgent:    func(context.Context, string, string) error { return nil },
+		scheduleRestart: func() error {
+			scheduleCalls++
+			if scheduleCalls == 1 {
+				return scheduleErr
+			}
+			return nil
+		},
+	}
+	req := nodeapi.NewUpgradeRequest("v2.0.0", payload)
+	err := h.Upgrade(context.Background(), req, io.Discard)
+	if !errors.Is(err, scheduleErr) || !strings.Contains(err.Error(), "upgrade can be retried") {
+		t.Fatalf("schedule failure = %v, want retryable restoration error", err)
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil || !bytes.Equal(got, old) {
+		t.Fatalf("Agent after schedule failure = %q, err=%v; want old executable", got, readErr)
+	}
+	if _, statErr := os.Stat(agentBackupPath(target)); !os.IsNotExist(statErr) {
+		t.Fatalf("restored backup was not cleaned up: %v", statErr)
+	}
+	if h.restartPending || h.pendingAgentRestore != nil {
+		t.Fatalf("restored upgrade remained blocked: restart=%v recovery=%+v", h.restartPending, h.pendingAgentRestore)
+	}
+
+	if err := h.Upgrade(context.Background(), req, io.Discard); err != nil {
+		t.Fatalf("retry Agent upgrade: %v", err)
+	}
+	got, readErr = os.ReadFile(target)
+	if readErr != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("Agent after retry = %d bytes, err=%v; want candidate", len(got), readErr)
+	}
+	if scheduleCalls != 2 || !h.restartPending {
+		t.Fatalf("retry scheduling calls=%d restartPending=%v", scheduleCalls, h.restartPending)
+	}
+}
+
+func TestAgentUpgradeRestoreFailureRetainsBackupAndRetryRecovers(t *testing.T) {
+	payload := readHostELF(t)
+	target := filepath.Join(t.TempDir(), "singbox-deploy-agent")
+	old := []byte("known-good-old-agent")
+	if err := os.WriteFile(target, old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scheduleErr := errors.New("cannot queue transient restart")
+	restoreErr := errors.New("injected restore rename failure")
+	scheduleCalls := 0
+	failedRestore := false
+	h := &agentHandler{
+		agentExecutable: func() (string, error) { return target, nil },
+		inspectAgent:    func(context.Context, string, string) error { return nil },
+		scheduleRestart: func() error {
+			scheduleCalls++
+			if scheduleCalls == 1 {
+				return scheduleErr
+			}
+			return nil
+		},
+		renameAgent: func(oldPath, newPath string) error {
+			if !failedRestore && newPath == target &&
+				strings.Contains(filepath.Base(oldPath), ".copy-") {
+				failedRestore = true
+				return restoreErr
+			}
+			return os.Rename(oldPath, newPath)
+		},
+	}
+	req := nodeapi.NewUpgradeRequest("v2.0.0", payload)
+	err := h.Upgrade(context.Background(), req, io.Discard)
+	if !errors.Is(err, scheduleErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("combined schedule/restore failure = %v", err)
+	}
+	if h.pendingAgentRestore == nil || h.restartPending {
+		t.Fatalf("recovery state = %+v restartPending=%v", h.pendingAgentRestore, h.restartPending)
+	}
+	backup, readErr := os.ReadFile(agentBackupPath(target))
+	if readErr != nil || !bytes.Equal(backup, old) {
+		t.Fatalf("retained backup = %q, err=%v; want old executable", backup, readErr)
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("committed path before recovery = %d bytes, err=%v; want candidate", len(got), readErr)
+	}
+
+	if err := h.Upgrade(context.Background(), req, io.Discard); err != nil {
+		t.Fatalf("retry after retained-backup recovery: %v", err)
+	}
+	if h.pendingAgentRestore != nil || !h.restartPending || scheduleCalls != 2 {
+		t.Fatalf("retry state recovery=%+v restart=%v schedules=%d", h.pendingAgentRestore, h.restartPending, scheduleCalls)
+	}
+	backup, readErr = os.ReadFile(agentBackupPath(target))
+	if readErr != nil || !bytes.Equal(backup, old) {
+		t.Fatalf("retry backup = %q, err=%v; want recovered old executable", backup, readErr)
+	}
 }
 
 func TestAgentUpgradeFailurePreservesOldExecutable(t *testing.T) {
@@ -672,7 +790,10 @@ func TestAgentUpgradeFailurePreservesOldExecutable(t *testing.T) {
 		inspectAgent: func(context.Context, string, string) error {
 			return os.ErrInvalid
 		},
-		scheduleRestart: func() { t.Fatal("restart scheduled after failed validation") },
+		scheduleRestart: func() error {
+			t.Fatal("restart scheduled after failed validation")
+			return nil
+		},
 	}
 	err := h.Upgrade(context.Background(), nodeapi.NewUpgradeRequest("v2", payload), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "verify staged") {
@@ -691,6 +812,45 @@ func TestAgentUpgradeFailurePreservesOldExecutable(t *testing.T) {
 	got, _ = os.ReadFile(target)
 	if !bytes.Equal(got, old) {
 		t.Fatalf("old executable changed after digest failure")
+	}
+}
+
+func TestAgentUpgradeCommitFailureKeepsOldExecutableAndDoesNotSchedule(t *testing.T) {
+	payload := readHostELF(t)
+	target := filepath.Join(t.TempDir(), "singbox-deploy-agent")
+	old := []byte("known-good-old-agent")
+	if err := os.WriteFile(target, old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commitErr := errors.New("injected candidate rename failure")
+	h := &agentHandler{
+		agentExecutable: func() (string, error) { return target, nil },
+		inspectAgent:    func(context.Context, string, string) error { return nil },
+		renameAgent: func(oldPath, newPath string) error {
+			if newPath == target && strings.Contains(filepath.Base(oldPath), ".upgrade-") {
+				return commitErr
+			}
+			return os.Rename(oldPath, newPath)
+		},
+		scheduleRestart: func() error {
+			t.Fatal("restart scheduled after failed candidate commit")
+			return nil
+		},
+	}
+	err := h.Upgrade(
+		context.Background(),
+		nodeapi.NewUpgradeRequest("v2.0.0", payload),
+		io.Discard,
+	)
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("commit failure = %v", err)
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil || !bytes.Equal(got, old) {
+		t.Fatalf("Agent after commit failure = %q, err=%v; want old executable", got, readErr)
+	}
+	if _, statErr := os.Stat(agentBackupPath(target)); !os.IsNotExist(statErr) {
+		t.Fatalf("unused backup remains after commit failure: %v", statErr)
 	}
 }
 
@@ -734,6 +894,38 @@ func TestInspectStagedAgentChecksReportedVersion(t *testing.T) {
 	}
 	if err := inspectStagedAgent(context.Background(), path, "v4.0.0"); err == nil || !strings.Contains(err.Error(), "reports version") {
 		t.Fatalf("expected reported-version mismatch, got %v", err)
+	}
+}
+
+func TestScheduleAgentRestartUsesIndependentSystemdTimerAndReportsFailure(t *testing.T) {
+	var gotName string
+	var gotArgs []string
+	if err := scheduleAgentRestartWith(func(name string, args ...string) ([]byte, error) {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("schedule Agent restart: %v", err)
+	}
+	if gotName != "systemd-run" {
+		t.Fatalf("restart scheduler command = %q", gotName)
+	}
+	joined := strings.Join(gotArgs, " ")
+	for _, want := range []string{
+		"--collect", "--no-block", "--on-active=1s",
+		"systemctl restart singbox-deploy-agent.service",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("restart scheduler args missing %q: %v", want, gotArgs)
+		}
+	}
+
+	queueErr := errors.New("systemd manager unavailable")
+	err := scheduleAgentRestartWith(func(string, ...string) ([]byte, error) {
+		return []byte("failed to create transient timer"), queueErr
+	})
+	if !errors.Is(err, queueErr) || !strings.Contains(err.Error(), "failed to create transient timer") {
+		t.Fatalf("restart scheduling error = %v", err)
 	}
 }
 
@@ -957,6 +1149,7 @@ func TestAgentTeardownRemovesAllWireGuardSecretsAndTemplates(t *testing.T) {
 		"/etc/wireguard/sbwg0.conf.singbox-deploy.template",
 		"/etc/wireguard/sbwg0.key",
 		"/etc/wireguard/sbwg0.key.singbox-deploy.tmp",
+		"/usr/bin/singbox-deploy-agent.singbox-deploy-backup",
 	} {
 		if !paths[want] {
 			t.Errorf("teardown does not remove %s", want)

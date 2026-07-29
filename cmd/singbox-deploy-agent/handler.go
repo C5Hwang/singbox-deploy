@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"debug/elf"
 	"errors"
 	"fmt"
@@ -33,23 +34,28 @@ import (
 
 // agentHandler implements nodeapi.Handler by driving the local deploy flow in
 // spoke mode.
-const installTransactionFile = "install_transaction_id"
+const (
+	installTransactionFile = "install_transaction_id"
+	agentBackupSuffix      = ".singbox-deploy-backup"
+)
 
 type agentHandler struct {
 	layout  paths.Layout
 	monitor *monitorSupervisor
 
-	mutationOnce    sync.Once
-	mutationGate    chan struct{}
-	restartPending  bool
-	shutdownPending bool
-	newRunner       func(context.Context, io.Writer) system.Runner
-	runUninstall    func(context.Context, uninstall.Options) error
-	// Injectable seams keep the on-disk replacement and delayed restart
+	mutationOnce        sync.Once
+	mutationGate        chan struct{}
+	restartPending      bool
+	shutdownPending     bool
+	pendingAgentRestore *agentReplacement
+	newRunner           func(context.Context, io.Writer) system.Runner
+	runUninstall        func(context.Context, uninstall.Options) error
+	// Injectable seams keep the on-disk replacement and independent restart
 	// independently testable without touching the running test executable.
 	agentExecutable func() (string, error)
 	inspectAgent    func(context.Context, string, string) error
-	scheduleRestart func()
+	scheduleRestart func() error
+	renameAgent     func(oldPath, newPath string) error
 	scheduleStop    func()
 
 	// Core seams keep health/version verification and Manager orchestration
@@ -378,7 +384,7 @@ func prepareAgentAndOverlayTeardown(layout paths.Layout, runner, recoveryRunner 
 		unitsDisabledMarker      = "teardown_units_disabled"
 		firewallCleanupNextFile  = "firewall_cleanup_next"
 		maxAgentStateSnapshotLen = 4 << 20
-		maxTeardownFilesSnapshot = nodeapi.MaxAgentBinarySize + (8 << 20)
+		maxTeardownFilesSnapshot = 2*nodeapi.MaxAgentBinarySize + (8 << 20)
 	)
 	cleanRoot := filepath.Clean(layout.Root)
 	cleanAgentDir := filepath.Clean(agentDir)
@@ -691,26 +697,40 @@ func stopAgentAndOverlayWith(run func(string, ...string) error) {
 }
 
 func agentTeardownPaths() []string {
+	const agentPath = "/usr/bin/singbox-deploy-agent"
 	return []string{
 		"/etc/systemd/system/singbox-deploy-agent.service",
 		"/etc/wireguard/sbwg0.conf",
 		"/etc/wireguard/sbwg0.conf.singbox-deploy.template",
 		"/etc/wireguard/sbwg0.key",
 		"/etc/wireguard/sbwg0.key.singbox-deploy.tmp",
-		"/usr/bin/singbox-deploy-agent",
+		agentPath,
+		agentBackupPath(agentPath),
 	}
 }
 
 // Upgrade validates and stages a hub-supplied agent before atomically replacing
-// the current executable. The systemd restart is deliberately delayed until
-// after this handler has returned so the streamed acknowledgement reaches the
-// hub before the process is stopped.
+// the current executable. The restart is queued in an independent transient
+// systemd timer: scheduling errors are therefore visible while this handler can
+// still restore its backup, while successful jobs remain alive after the old
+// Agent returns its streamed acknowledgement and exits.
 func (h *agentHandler) Upgrade(ctx context.Context, req nodeapi.UpgradeRequest, log io.Writer) error {
 	ctx = nonNilContext(ctx)
 	if err := h.beginMutation(ctx); err != nil {
 		return err
 	}
 	defer h.endMutation()
+
+	rename := h.renameAgent
+	if rename == nil {
+		rename = os.Rename
+	}
+	if h.pendingAgentRestore != nil {
+		if err := restoreAgentReplacement(*h.pendingAgentRestore, rename); err != nil {
+			return fmt.Errorf("retry previous Agent upgrade recovery: %w", err)
+		}
+		h.pendingAgentRestore = nil
+	}
 
 	if err := nodeapi.ValidateUpgradeRequest(req); err != nil {
 		return err
@@ -733,21 +753,26 @@ func (h *agentHandler) Upgrade(ctx context.Context, req nodeapi.UpgradeRequest, 
 	if inspect == nil {
 		inspect = inspectStagedAgent
 	}
-	if err := replaceAgentAtomically(ctx, path, req.Binary, req.Version, inspect); err != nil {
+	replacement, err := replaceAgentAtomically(ctx, path, req.Binary, req.Version, inspect, rename)
+	if err != nil {
 		return err
 	}
-	h.restartPending = true
 
-	fmt.Fprintf(log, "installed agent %s (%s); service restart scheduled\n", req.Version, req.SHA256)
-	if h.scheduleRestart != nil {
-		h.scheduleRestart()
-	} else {
-		time.AfterFunc(750*time.Millisecond, func() {
-			// --no-block queues the job with systemd without waiting for this very
-			// service to return, avoiding a restart/deadlock cycle.
-			_ = exec.Command("systemctl", "--no-block", "restart", "singbox-deploy-agent.service").Run()
-		})
+	schedule := h.scheduleRestart
+	if schedule == nil {
+		schedule = scheduleAgentRestart
 	}
+	if err := schedule(); err != nil {
+		scheduleErr := fmt.Errorf("schedule Agent service restart: %w", err)
+		if restoreErr := restoreAgentReplacement(replacement, rename); restoreErr != nil {
+			h.pendingAgentRestore = &replacement
+			return errors.Join(scheduleErr, fmt.Errorf("restore previous Agent executable: %w", restoreErr))
+		}
+		return fmt.Errorf("%w; previous Agent executable restored, upgrade can be retried", scheduleErr)
+	}
+
+	h.restartPending = true
+	fmt.Fprintf(log, "installed agent %s (%s); independent service restart scheduled\n", req.Version, req.SHA256)
 	return nil
 }
 
@@ -935,13 +960,35 @@ func validateAgentELF(binary []byte) error {
 	return nil
 }
 
+type agentReplacement struct {
+	path       string
+	backupPath string
+}
+
+func agentBackupPath(path string) string {
+	return path + agentBackupSuffix
+}
+
 // replaceAgentAtomically leaves the old executable untouched on every
-// validation/staging failure; rename is the final, atomic commit point.
-func replaceAgentAtomically(ctx context.Context, path string, binary []byte, expectedVersion string, inspect func(context.Context, string, string) error) error {
+// validation/staging failure. A synced, byte-verified backup is committed before
+// the candidate rename, so a later restart-scheduling failure can restore the
+// previously running executable without relying on the Hub connection.
+func replaceAgentAtomically(
+	ctx context.Context,
+	path string,
+	binary []byte,
+	expectedVersion string,
+	inspect func(context.Context, string, string) error,
+	rename func(string, string) error,
+) (agentReplacement, error) {
+	replacement := agentReplacement{path: path, backupPath: agentBackupPath(path)}
+	if rename == nil {
+		rename = os.Rename
+	}
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".upgrade-*")
 	if err != nil {
-		return fmt.Errorf("stage agent upgrade: %w", err)
+		return replacement, fmt.Errorf("stage agent upgrade: %w", err)
 	}
 	tmpPath := tmp.Name()
 	committed := false
@@ -952,25 +999,35 @@ func replaceAgentAtomically(ctx context.Context, path string, binary []byte, exp
 		}
 	}()
 	if _, err := tmp.Write(binary); err != nil {
-		return fmt.Errorf("write staged agent: %w", err)
+		return replacement, fmt.Errorf("write staged agent: %w", err)
 	}
 	if err := tmp.Chmod(0o755); err != nil {
-		return fmt.Errorf("chmod staged agent: %w", err)
+		return replacement, fmt.Errorf("chmod staged agent: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync staged agent: %w", err)
+		return replacement, fmt.Errorf("sync staged agent: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close staged agent: %w", err)
+		return replacement, fmt.Errorf("close staged agent: %w", err)
 	}
 	if err := inspect(ctx, tmpPath, expectedVersion); err != nil {
-		return fmt.Errorf("verify staged agent version: %w", err)
+		return replacement, fmt.Errorf("verify staged agent version: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return replacement, err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("commit agent upgrade: %w", err)
+	if err := copyAgentFileAtomic(path, replacement.backupPath, rename); err != nil {
+		return replacement, fmt.Errorf("back up current Agent executable: %w", err)
+	}
+	if err := rename(tmpPath, path); err != nil {
+		removeErr := os.Remove(replacement.backupPath)
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			return replacement, errors.Join(
+				fmt.Errorf("commit agent upgrade: %w", err),
+				fmt.Errorf("remove unused Agent backup: %w", removeErr),
+			)
+		}
+		return replacement, fmt.Errorf("commit agent upgrade: %w", err)
 	}
 	committed = true
 	// Best-effort directory sync makes the rename durable without turning a
@@ -978,6 +1035,129 @@ func replaceAgentAtomically(ctx context.Context, path string, binary []byte, exp
 	if d, openErr := os.Open(dir); openErr == nil {
 		_ = d.Sync()
 		_ = d.Close()
+	}
+	return replacement, nil
+}
+
+// restoreAgentReplacement copies rather than consumes the backup, so every
+// failure before the final path rename retains a known-good recovery artifact.
+func restoreAgentReplacement(replacement agentReplacement, rename func(string, string) error) error {
+	if err := copyAgentFileAtomic(replacement.backupPath, replacement.path, rename); err != nil {
+		return fmt.Errorf("restore %s from %s: %w (backup retained)",
+			replacement.path, replacement.backupPath, err)
+	}
+	if err := os.Remove(replacement.backupPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove restored Agent backup %s: %w", replacement.backupPath, err)
+	}
+	// The restored path was already synced by copyAgentFileAtomic. Syncing the
+	// backup removal is best effort; failure here must not turn a completed
+	// restoration into a state that blocks the next safe retry.
+	if d, err := os.Open(filepath.Dir(replacement.path)); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
+func copyAgentFileAtomic(sourcePath, targetPath string, rename func(string, string) error) error {
+	if rename == nil {
+		rename = os.Rename
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("source %s is not a regular file", sourcePath)
+	}
+	if info.Size() <= 0 {
+		return fmt.Errorf("source %s is empty", sourcePath)
+	}
+
+	targetDir := filepath.Dir(targetPath)
+	tmp, err := os.CreateTemp(targetDir, filepath.Base(targetPath)+".copy-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		_ = tmp.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	sourceHash := sha256.New()
+	n, err := io.Copy(io.MultiWriter(tmp, sourceHash), source)
+	if err != nil {
+		return err
+	}
+	if n != info.Size() {
+		return fmt.Errorf("source %s changed while being copied: read %d of %d bytes", sourcePath, n, info.Size())
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	stagedHash := sha256.New()
+	if _, err := io.Copy(stagedHash, tmp); err != nil {
+		return err
+	}
+	if !bytes.Equal(sourceHash.Sum(nil), stagedHash.Sum(nil)) {
+		return fmt.Errorf("staged copy checksum mismatch")
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := rename(tmpPath, targetPath); err != nil {
+		return err
+	}
+	committed = true
+	dir, err := os.Open(targetDir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func scheduleAgentRestart() error {
+	return scheduleAgentRestartWith(func(name string, args ...string) ([]byte, error) {
+		return exec.Command(name, args...).CombinedOutput()
+	})
+}
+
+func scheduleAgentRestartWith(run func(string, ...string) ([]byte, error)) error {
+	out, err := run(
+		"systemd-run",
+		"--quiet",
+		"--collect",
+		"--no-block",
+		"--on-active=1s",
+		"systemctl",
+		"restart",
+		"singbox-deploy-agent.service",
+	)
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			return err
+		}
+		return fmt.Errorf("%w: %s", err, detail)
 	}
 	return nil
 }
