@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,6 +13,9 @@ import (
 var version = "dev"
 
 func main() {
+	if printVersion(os.Args, os.Stdout) {
+		return
+	}
 	ui.SetVersion(version)
 	// The monitor subcommand runs the long-lived monitor service and is
 	// dispatched before the interactive UI. It is wired in the monitor task.
@@ -42,4 +46,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func printVersion(args []string, out io.Writer) bool {
+	if len(args) != 2 || args[1] != "--version" {
+		return false
+	}
+	fmt.Fprintln(out, version)
+	return true
 }
