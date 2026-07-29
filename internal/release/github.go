@@ -7,8 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 )
+
+const githubReleasePageSize = 30
 
 // SingBoxArchiveName returns the upstream sing-box archive name for a release
 // tag and OS/arch, e.g. sing-box-1.12.0-linux-amd64.tar.gz.
@@ -47,10 +51,20 @@ type ghRelease struct {
 	Draft      bool   `json:"draft"`
 }
 
-// listReleases fetches the releases list (newest first, as GitHub returns it).
-func (c *Client) listReleases(ctx context.Context, owner, repo string) ([]ghRelease, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/releases", c.baseURL, owner, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// listReleasesPage fetches one releases page (newest first, as GitHub returns
+// it). GitHub's default page is frequently dominated by prereleases, so stable
+// release discovery must be able to continue beyond it.
+func (c *Client) listReleasesPage(ctx context.Context, owner, repo string, page int) ([]ghRelease, error) {
+	endpoint, err := url.Parse(fmt.Sprintf("%s/repos/%s/%s/releases", c.baseURL, owner, repo))
+	if err != nil {
+		return nil, err
+	}
+	query := endpoint.Query()
+	query.Set("per_page", strconv.Itoa(githubReleasePageSize))
+	query.Set("page", strconv.Itoa(page))
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -70,25 +84,33 @@ func (c *Client) listReleases(ctx context.Context, owner, repo string) ([]ghRele
 	return releases, nil
 }
 
-// stableTags returns the non-draft, non-prerelease tags in GitHub order.
-func (c *Client) stableTags(ctx context.Context, owner, repo string) ([]string, error) {
-	releases, err := c.listReleases(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
+// stableTags returns up to limit non-draft, non-prerelease tags in GitHub
+// order. A non-positive limit returns every stable tag.
+func (c *Client) stableTags(ctx context.Context, owner, repo string, limit int) ([]string, error) {
 	var tags []string
-	for _, r := range releases {
-		if r.Draft || r.Prerelease || r.TagName == "" {
-			continue
+	for page := 1; ; page++ {
+		releases, err := c.listReleasesPage(ctx, owner, repo, page)
+		if err != nil {
+			return nil, err
 		}
-		tags = append(tags, r.TagName)
+		for _, r := range releases {
+			if r.Draft || r.Prerelease || r.TagName == "" {
+				continue
+			}
+			tags = append(tags, r.TagName)
+			if limit > 0 && len(tags) == limit {
+				return tags, nil
+			}
+		}
+		if len(releases) < githubReleasePageSize {
+			return tags, nil
+		}
 	}
-	return tags, nil
 }
 
 // LatestStable returns the newest non-draft, non-prerelease release tag.
 func (c *Client) LatestStable(ctx context.Context, owner, repo string) (string, error) {
-	tags, err := c.stableTags(ctx, owner, repo)
+	tags, err := c.stableTags(ctx, owner, repo, 1)
 	if err != nil {
 		return "", err
 	}
@@ -100,12 +122,5 @@ func (c *Client) LatestStable(ctx context.Context, owner, repo string) (string, 
 
 // StableReleases returns up to n newest stable tags.
 func (c *Client) StableReleases(ctx context.Context, owner, repo string, n int) ([]string, error) {
-	tags, err := c.stableTags(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
-	if n > 0 && len(tags) > n {
-		tags = tags[:n]
-	}
-	return tags, nil
+	return c.stableTags(ctx, owner, repo, n)
 }
