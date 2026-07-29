@@ -31,6 +31,10 @@ type monitorSupervisor struct {
 	// now is injectable so lifecycle tests do not need a network-time lookup.
 	// Production leaves it nil and uses the network-backed clock below.
 	now func() time.Time
+	// newNetworkClock is a test seam for network-time failure. Production uses
+	// monitor.NewNetworkClock and falls back to the host's UTC clock if every
+	// trusted HTTP Date source is temporarily unavailable.
+	newNetworkClock func(context.Context) (*monitor.NetworkClock, error)
 	// newMonitor is a lifecycle seam for tests that cannot bind sockets. It
 	// returns the mounted handler and the blocking sampler/server function.
 	newMonitor func(*monitor.Store, monitor.Config) (http.Handler, func(context.Context) error)
@@ -139,11 +143,17 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 	interval := readInt(store, "monitor_interval_seconds", deploy.DefaultMonitorIntervalSeconds)
 	now := s.now
 	if now == nil {
-		clock, err := monitor.NewNetworkClock(context.Background())
-		if err != nil {
-			return monitor.Config{}, err
+		newClock := s.newNetworkClock
+		if newClock == nil {
+			newClock = monitor.NewNetworkClock
 		}
-		now = clock.Now
+		clock, err := newClock(context.Background())
+		if err != nil {
+			log.Printf("agent monitor: network GMT unavailable; using host UTC clock: %v", err)
+			now = func() time.Time { return time.Now().UTC() }
+		} else {
+			now = clock.Now
+		}
 	}
 	return monitor.Config{
 		// Monitor reads are mounted behind the bearer-authenticated agent API.

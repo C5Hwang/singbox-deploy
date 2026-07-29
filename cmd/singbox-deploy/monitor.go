@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
@@ -57,8 +58,11 @@ func runMonitor(args []string) error {
 	}
 	defer store.Close()
 	clock, err := monitor.NewNetworkClock(context.Background())
+	now := func() time.Time { return time.Now().UTC() }
 	if err != nil {
-		return err
+		log.Printf("monitor: network GMT unavailable; using host UTC clock: %v", err)
+	} else {
+		now = clock.Now
 	}
 
 	ctrl := &hubctl.Controller{Layout: layout, ExpectedVersion: version}
@@ -86,7 +90,7 @@ func runMonitor(args []string) error {
 			}
 			return ctrl.MonitorData(ctx, sourceID, endpoint)
 		},
-		Now: clock.Now,
+		Now: now,
 	}
 	m := monitor.New(store, cfg, systemdSingBox{})
 

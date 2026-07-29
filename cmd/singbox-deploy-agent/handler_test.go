@@ -598,6 +598,25 @@ func TestMonitorSupervisorStopDoesNotHoldLockWhileWaiting(t *testing.T) {
 	}
 }
 
+func TestMonitorSupervisorFallsBackToHostUTCWhenNetworkTimeFails(t *testing.T) {
+	layout := installedSpokeLayout(t)
+	supervisor := newMonitorSupervisor(context.Background(), layout)
+	supervisor.newNetworkClock = func(context.Context) (*monitor.NetworkClock, error) {
+		return nil, errors.New("all network time sources unavailable")
+	}
+	cfg, err := supervisor.buildConfig(state.NewStore(layout.StateDir))
+	if err != nil {
+		t.Fatalf("buildConfig rejected host-clock fallback: %v", err)
+	}
+	now := cfg.Now()
+	if now.Location() != time.UTC {
+		t.Fatalf("fallback clock location = %v, want UTC", now.Location())
+	}
+	if delta := time.Since(now); delta < -time.Second || delta > time.Second {
+		t.Fatalf("fallback clock differs from host time by %v", delta)
+	}
+}
+
 // installedSpokeLayout returns a temporary layout whose state files describe an
 // installed, monitored spoke.
 func installedSpokeLayout(t *testing.T) paths.Layout {
