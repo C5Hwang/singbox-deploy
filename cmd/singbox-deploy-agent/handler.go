@@ -672,11 +672,22 @@ func wrapOptionalError(action string, err error) error {
 }
 
 func stopAgentAndOverlay() {
+	stopAgentAndOverlayWith(func(name string, args ...string) error {
+		return exec.Command(name, args...).Run()
+	})
+}
+
+func stopAgentAndOverlayWith(run func(string, ...string) error) {
 	// The durable wg-quick config is already gone, so tear down the simple
-	// managed interface directly instead of asking wg-quick to re-read a
-	// missing file. Queueing our own stop avoids waiting on this process.
-	_ = exec.Command("ip", "link", "delete", "dev", "sbwg0").Run()
-	_ = exec.Command("systemctl", "--no-block", "stop", "singbox-deploy-agent.service").Run()
+	// managed interface directly. Still stop and reset the templated unit:
+	// wg-quick is Type=oneshot with RemainAfterExit, so deleting only the link
+	// leaves systemd reporting an active deployment after the spoke is gone.
+	// Its ExecStop can fail because the config was deliberately removed before
+	// this delayed callback; reset-failed turns that expected state inactive.
+	_ = run("ip", "link", "delete", "dev", "sbwg0")
+	_ = run("systemctl", "stop", "wg-quick@sbwg0.service")
+	_ = run("systemctl", "reset-failed", "wg-quick@sbwg0.service")
+	_ = run("systemctl", "--no-block", "stop", "singbox-deploy-agent.service")
 }
 
 func agentTeardownPaths() []string {

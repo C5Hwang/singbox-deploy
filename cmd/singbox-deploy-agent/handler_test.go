@@ -1019,6 +1019,24 @@ func TestDisableLegacyHubServicesDisablesInstalledUnits(t *testing.T) {
 	}
 }
 
+func TestStopAgentAndOverlayClearsWireGuardUnitState(t *testing.T) {
+	var commands []string
+	stopAgentAndOverlayWith(func(name string, args ...string) error {
+		commands = append(commands, strings.Join(append([]string{name}, args...), " "))
+		return nil
+	})
+
+	want := []string{
+		"ip link delete dev sbwg0",
+		"systemctl stop wg-quick@sbwg0.service",
+		"systemctl reset-failed wg-quick@sbwg0.service",
+		"systemctl --no-block stop singbox-deploy-agent.service",
+	}
+	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands = %v, want %v", commands, want)
+	}
+}
+
 func readHostELF(t *testing.T) []byte {
 	t.Helper()
 	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
