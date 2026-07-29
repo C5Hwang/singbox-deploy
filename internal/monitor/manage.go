@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,20 +62,20 @@ type UpdateOptions struct {
 	Layout paths.Layout
 	Runner system.Runner
 
-	SetLocal          bool
-	SetMonitor        bool
-	DeployMonitor     bool
+	SetLocal              bool
+	SetMonitor            bool
+	DeployMonitor         bool
 	DeployMonitorFrontend bool
-	MonitorAlias      string
-	MonitorPublicPort int
-	MonitorPort       int
-	Interface         string
-	IntervalSeconds   int
-	InLimitBytes      uint64
-	OutLimitBytes     uint64
-	TotalLimitBytes   uint64
-	ResetDay          int
-	ResetHour         int
+	MonitorAlias          string
+	MonitorPublicPort     int
+	MonitorPort           int
+	Interface             string
+	IntervalSeconds       int
+	InLimitBytes          uint64
+	OutLimitBytes         uint64
+	TotalLimitBytes       uint64
+	ResetDay              int
+	ResetHour             int
 
 	SetCurrentTotals bool
 	CurrentInBytes   uint64
@@ -324,8 +325,23 @@ func manageNginxChanged(old, cfg ManageConfig) bool {
 func applyManageMonitorService(opts UpdateOptions, cfg ManageConfig) error {
 	unitPath := filepath.Join(opts.SystemdDir, system.MonitorService)
 	if !cfg.DeployMonitor {
-		return opts.RunCommands(opts.Runner,
+		if err := opts.RunCommands(opts.Runner,
 			system.Command{Name: "systemctl", Args: []string{"disable", "--now", system.MonitorService}},
+		); err != nil {
+			return err
+		}
+		if err := ReleaseQuotaStop(opts.Layout.MonitorDB, func() error {
+			return opts.RunCommands(opts.Runner, system.Systemctl("start", system.SingBoxService))
+		}); err != nil {
+			// State is persisted after this step. Restore the still-configured
+			// monitor so it can retry quota recovery instead of leaving a
+			// disabled service paired with "monitor=yes" state.
+			restoreErr := opts.RunCommands(opts.Runner,
+				system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.MonitorService}},
+			)
+			return errors.Join(err, wrapManageRestoreError(restoreErr))
+		}
+		return opts.RunCommands(opts.Runner,
 			system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
 		)
 	}
@@ -344,6 +360,13 @@ func applyManageMonitorService(opts UpdateOptions, cfg ManageConfig) error {
 		system.Command{Name: "systemctl", Args: []string{"enable", "--now", system.MonitorService}},
 		system.Systemctl("restart", system.MonitorService),
 	)
+}
+
+func wrapManageRestoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("restore monitor service after quota release failure: %w", err)
 }
 
 func writeManageFile(path string, data []byte, perm os.FileMode) error {

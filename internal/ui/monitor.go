@@ -2,8 +2,8 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +56,7 @@ var (
 	updateMonitorRun       = monitor.UpdateSettings
 	applySpokeMonitorRun   = (*monitorManager).applySpokeMonitor
 	monitorServiceSnapshot = func() string { return serviceState(system.MonitorService) }
+	monitorServiceRun      = runMonitorServiceAction
 	monitorLogOutput       = defaultMonitorLogOutput
 )
 
@@ -784,16 +785,36 @@ func (tm *monitorManager) startServiceRun() tea.Cmd {
 	action := tm.serviceSystemctlAction()
 	go func() {
 		ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Monitor service", Detail: action, Status: "running"}}
-		out, err := exec.Command("systemctl", action, system.MonitorService).CombinedOutput()
-		if len(out) > 0 {
-			ch <- runMsg{logLine: strings.TrimSpace(string(out))}
-		}
+		logs := &logWriter{ch: ch}
+		err := monitorServiceRun(monitorUILayout(), system.NewExecRunner(logs), action)
 		if err == nil {
 			ch <- runMsg{event: &deploy.Event{Index: 1, Total: 1, Label: "Monitor service", Detail: action, Status: "done"}}
 		}
 		ch <- runMsg{done: true, err: err}
 	}()
 	return tm.waitForRun()
+}
+
+func runMonitorServiceAction(layout paths.Layout, runner system.Runner, action string) error {
+	if err := runner.Run(system.Systemctl(action, system.MonitorService)); err != nil {
+		return err
+	}
+	if action != "stop" {
+		return nil
+	}
+	releaseErr := monitor.ReleaseQuotaStop(layout.MonitorDB, func() error {
+		return runner.Run(system.Systemctl("start", system.SingBoxService))
+	})
+	if releaseErr == nil {
+		return nil
+	}
+	// A failed quota release must not strand sing-box with no owner left to
+	// retry it. Restore the monitor action the operator just stopped.
+	restoreErr := runner.Run(system.Systemctl("start", system.MonitorService))
+	if restoreErr != nil {
+		restoreErr = fmt.Errorf("restore monitor service after quota release failure: %w", restoreErr)
+	}
+	return errors.Join(releaseErr, restoreErr)
 }
 
 // loadServiceLogsCmd reads journalctl off the UI thread so opening the logs

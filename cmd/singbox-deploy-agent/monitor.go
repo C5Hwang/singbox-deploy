@@ -38,6 +38,9 @@ type monitorSupervisor struct {
 	// newMonitor is a lifecycle seam for tests that cannot bind sockets. It
 	// returns the mounted handler and the blocking sampler/server function.
 	newMonitor func(*monitor.Store, monitor.Config) (http.Handler, func(context.Context) error)
+	// startSingBox is used only when disabling a monitor that previously
+	// stopped sing-box for quota enforcement.
+	startSingBox func() error
 
 	// lifecycle serializes reload/stop so two callers cannot interleave one
 	// caller's teardown with another's startup. It is deliberately separate from
@@ -78,6 +81,14 @@ func (s *monitorSupervisor) reload() {
 
 	store := state.NewStore(s.layout.StateDir)
 	if v, _ := store.ReadValue("monitor", false); v == "no" {
+		start := s.startSingBox
+		if start == nil {
+			start = systemdSingBox{}.Start
+		}
+		if err := monitor.ReleaseQuotaStop(s.layout.MonitorDB, start); err != nil {
+			log.Printf("agent monitor: release quota stop: %v", err)
+			s.scheduleRetryLocked()
+		}
 		return
 	}
 	if _, err := store.ReadValue("domain", true); err != nil {
