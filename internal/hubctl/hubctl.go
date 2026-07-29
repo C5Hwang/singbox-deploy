@@ -40,6 +40,11 @@ type Controller struct {
 	// expected version is older or cannot be ordered. It is reserved for an
 	// explicit recovery path after a failed coordinated self-update.
 	AllowAgentDowngrade bool
+	// RequireExactAgentVersion turns a newer or unordered Agent version into an
+	// error instead of leaving it untouched. Coordinated self-update enables
+	// this so the Hub binary is not committed unless every installed spoke is
+	// already running the exact candidate Agent version.
+	RequireExactAgentVersion bool
 	// Progress receives the high-level phases of operator-driven spoke
 	// operations. Agent-side deployment logs remain on the supplied log writer.
 	Progress func(deploy.Event)
@@ -726,6 +731,10 @@ func (c *Controller) reconcileAgentVersion(ctx context.Context, node *nodes.Node
 		return nil
 	}
 	if !shouldReplaceAgentVersion(health.Version, expected, c.AllowAgentDowngrade) {
+		if c.RequireExactAgentVersion {
+			return fmt.Errorf("agent %s reports version %q; coordinated update requires exact version %q",
+				node.EffectiveAlias(), health.Version, expected)
+		}
 		fmt.Fprintf(log, "agent %s reports %s, newer or unordered relative to hub version %s; leaving it unchanged\n",
 			node.EffectiveAlias(), health.Version, expected)
 		return nil

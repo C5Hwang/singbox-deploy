@@ -288,9 +288,10 @@ func upgradeSpokeAgentsBeforeHub(ctx context.Context, candidatePath, targetVersi
 		return binary, nil
 	}
 	ctrl := &hubctl.Controller{
-		Layout:          layout,
-		ExpectedVersion: targetVersion,
-		AgentBinary:     loadAgent,
+		Layout:                   layout,
+		ExpectedVersion:          targetVersion,
+		RequireExactAgentVersion: true,
+		AgentBinary:              loadAgent,
 	}
 	var upgraded []nodes.Node
 	for _, node := range list {

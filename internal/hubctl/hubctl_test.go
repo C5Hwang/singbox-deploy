@@ -252,6 +252,48 @@ func TestCheckHealthDoesNotDowngradeNewerAgent(t *testing.T) {
 	}
 }
 
+func TestCheckHealthRejectsNewerAgentWhenExactVersionIsRequired(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "tokyo", SSHHost: "tokyo.example", Domain: "spoke.example.com",
+		WGIP: "10.90.0.2", Token: "tok", Arch: "arm64", Installed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := nodes.Load(layout)
+	node := list[0]
+	h := &upgradeHealthHandler{version: "v3.0.0"}
+	srv := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: h}).Mux())
+	defer srv.Close()
+	ctrl := &Controller{
+		Layout:                   layout,
+		ExpectedVersion:          "v2.0.0",
+		RequireExactAgentVersion: true,
+		AgentBinary: func(string) ([]byte, error) {
+			t.Fatal("exact-version gate must not downgrade a newer agent")
+			return nil, nil
+		},
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	updated, err := ctrl.CheckHealth(context.Background(), node, io.Discard)
+	if err == nil ||
+		!strings.Contains(err.Error(), `reports version "v3.0.0"`) ||
+		!strings.Contains(err.Error(), `requires exact version "v2.0.0"`) {
+		t.Fatalf("exact-version error = %v", err)
+	}
+	if updated.AgentVersion != "v3.0.0" || updated.LastSeen.IsZero() {
+		t.Fatalf("authenticated observed status was not retained: %+v", updated)
+	}
+	h.mu.Lock()
+	upgradeVersion := h.upgradeReq.Version
+	h.mu.Unlock()
+	if upgradeVersion != "" {
+		t.Fatalf("exact-version gate downgraded the agent to %q", upgradeVersion)
+	}
+}
+
 func TestCheckHealthAllowsExplicitRecoveryDowngrade(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	if err := nodes.Add(layout, nodes.Node{
