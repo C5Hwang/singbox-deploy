@@ -4,6 +4,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,10 +52,18 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 // WriteFilePair stages both files as temp siblings before renaming them
-// back-to-back: a failure before the first rename leaves the existing pair
-// untouched, and the mismatch window between the renames is minimal. Used for
-// TLS certificate/key pairs whose halves must match on disk.
+// back-to-back. If replacing the second file fails, it restores the first file
+// so an ordinary filesystem error does not leave a mismatched pair. The two
+// renames are not one atomic filesystem transaction, so a process or machine
+// failure between them can still leave a mismatched pair. Used for TLS
+// certificate/key pairs whose halves must match on disk.
 func WriteFilePair(aPath string, aData []byte, aPerm os.FileMode, bPath string, bData []byte, bPerm os.FileMode) error {
+	return writeFilePair(aPath, aData, aPerm, bPath, bData, bPerm, os.Rename)
+}
+
+type renameFileFunc func(oldPath, newPath string) error
+
+func writeFilePair(aPath string, aData []byte, aPerm os.FileMode, bPath string, bData []byte, bPerm os.FileMode, renameFile renameFileFunc) error {
 	aTmp, err := stageFile(aPath, aData, aPerm)
 	if err != nil {
 		return err
@@ -65,10 +74,57 @@ func WriteFilePair(aPath string, aData []byte, aPerm os.FileMode, bPath string, 
 		return err
 	}
 	defer os.Remove(bTmp)
-	if err := os.Rename(aTmp, aPath); err != nil {
+
+	// Keep a staged snapshot of the first file until the second rename commits.
+	// It lets us atomically restore the old first half if that commit fails.
+	var (
+		aRollback      string
+		aExisted       bool
+		removeRollback bool
+	)
+	oldA, err := os.ReadFile(aPath)
+	switch {
+	case err == nil:
+		info, statErr := os.Stat(aPath)
+		if statErr != nil {
+			return statErr
+		}
+		aRollback, err = stageFile(aPath, oldA, info.Mode().Perm())
+		if err != nil {
+			return err
+		}
+		removeRollback = true
+		defer func() {
+			if removeRollback {
+				_ = os.Remove(aRollback)
+			}
+		}()
+		aExisted = true
+	case !os.IsNotExist(err):
 		return err
 	}
-	return os.Rename(bTmp, bPath)
+
+	if err := renameFile(aTmp, aPath); err != nil {
+		return err
+	}
+	if err := renameFile(bTmp, bPath); err != nil {
+		commitErr := fmt.Errorf("replace %s: %w", bPath, err)
+		var rollbackErr error
+		if aExisted {
+			rollbackErr = renameFile(aRollback, aPath)
+		} else if removeErr := os.Remove(aPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			rollbackErr = removeErr
+		}
+		if rollbackErr != nil {
+			if aExisted {
+				removeRollback = false
+				rollbackErr = fmt.Errorf("%w; previous contents retained at %s", rollbackErr, aRollback)
+			}
+			return errors.Join(commitErr, fmt.Errorf("restore %s: %w", aPath, rollbackErr))
+		}
+		return commitErr
+	}
+	return nil
 }
 
 // stageFile writes data to a temp sibling of path, fully synced, ready to be
