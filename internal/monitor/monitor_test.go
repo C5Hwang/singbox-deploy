@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +174,117 @@ func TestStoreInsertAndTotals(t *testing.T) {
 	}
 	if totals.InBytes != 300 || totals.OutBytes != 150 || totals.Total() != 450 {
 		t.Fatalf("totals = %#v, want in=300 out=150 total=450", totals)
+	}
+}
+
+func TestOpenStoreCreatesPrivateDatabase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not available on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "monitor.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+
+	assertStoreFileMode(t, path, storeFileMode)
+	if _, err := os.Stat(path + "-journal"); err == nil {
+		assertStoreFileMode(t, path+"-journal", storeFileMode)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat rollback journal: %v", err)
+	}
+}
+
+func TestOpenStoreTightensLegacyDatabaseAndPreservesData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not available on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "monitor.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("OpenStore initial database: %v", err)
+	}
+	const ts = int64(1_700_000_000)
+	if err := store.InsertSample(ts, "eth0", 120, 80, 120, 80); err != nil {
+		t.Fatalf("InsertSample: %v", err)
+	}
+	if err := store.SetQuotaStopped(true); err != nil {
+		t.Fatalf("SetQuotaStopped: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close initial database: %v", err)
+	}
+	journalPath := path + "-journal"
+	for _, candidate := range []string{path, journalPath} {
+		if err := os.Chmod(candidate, 0o644); err != nil {
+			t.Fatalf("set legacy mode on %s: %v", candidate, err)
+		}
+	}
+
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatalf("reopen legacy database: %v", err)
+	}
+	defer store.Close()
+
+	assertStoreFileMode(t, path, storeFileMode)
+	assertStoreFileMode(t, journalPath, storeFileMode)
+	totals, err := store.TotalsSince(ts)
+	if err != nil {
+		t.Fatalf("TotalsSince after permission migration: %v", err)
+	}
+	if totals != (TrafficTotals{InBytes: 120, OutBytes: 80}) {
+		t.Fatalf("totals after permission migration = %#v", totals)
+	}
+	stopped, err := store.QuotaStopped()
+	if err != nil {
+		t.Fatalf("QuotaStopped after permission migration: %v", err)
+	}
+	if !stopped {
+		t.Fatal("quota ownership marker was lost during permission migration")
+	}
+}
+
+func TestSecureStorePermissionsTightensExistingSidecars(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not available on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "monitor.db")
+	for _, candidate := range append([]string{path}, sidecarPaths(path)...) {
+		if err := os.WriteFile(candidate, []byte("legacy"), 0o644); err != nil {
+			t.Fatalf("write legacy file %s: %v", candidate, err)
+		}
+		if err := os.Chmod(candidate, 0o644); err != nil {
+			t.Fatalf("set legacy mode on %s: %v", candidate, err)
+		}
+	}
+
+	if err := secureStorePermissions(path); err != nil {
+		t.Fatalf("secureStorePermissions: %v", err)
+	}
+	assertStoreFileMode(t, path, storeFileMode)
+	for _, sidecar := range sidecarPaths(path) {
+		assertStoreFileMode(t, sidecar, storeFileMode)
+	}
+}
+
+func sidecarPaths(path string) []string {
+	paths := make([]string, 0, len(sqliteSidecarSuffixes))
+	for _, suffix := range sqliteSidecarSuffixes {
+		paths = append(paths, path+suffix)
+	}
+	return paths
+}
+
+func assertStoreFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %#o, want %#o", path, got, want)
 	}
 }
 

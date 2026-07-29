@@ -2,11 +2,17 @@ package monitor
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
+	"os"
 
 	_ "modernc.org/sqlite"
 )
+
+const storeFileMode = 0o600
+
+var sqliteSidecarSuffixes = []string{"-journal", "-wal", "-shm"}
 
 // Store is the SQLite-backed sample store. It is intentionally configured for a
 // low-memory (256 MB) VPS: a single connection, a small page cache, and a
@@ -35,6 +41,14 @@ func (t TrafficTotals) Total() uint64 { return t.InBytes + t.OutBytes }
 // OpenStore opens (creating if needed) the SQLite database at path and applies
 // the schema and low-memory pragmas.
 func OpenStore(path string) (*Store, error) {
+	// SQLite otherwise creates the main database with its default 0644 mode.
+	// Secure it before opening so migration journals inherit 0600, and tighten
+	// sidecars left by an older version before SQLite has a chance to recover
+	// from them.
+	if err := secureStorePermissions(path); err != nil {
+		return nil, err
+	}
+
 	// busy_timeout guards the single connection against transient locks.
 	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(TRUNCATE)&_pragma=synchronous(NORMAL)&_pragma=cache_size(-2000)"
 	db, err := sql.Open("sqlite", dsn)
@@ -50,7 +64,45 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// Migration can create a new rollback journal. SQLite normally copies the
+	// main database mode, but enforce the invariant here as well so every file
+	// returned by OpenStore is private regardless of driver behavior.
+	if err := secureStorePermissions(path); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+func secureStorePermissions(path string) error {
+	if err := secureStoreFile(path, true); err != nil {
+		return fmt.Errorf("secure monitor database: %w", err)
+	}
+	for _, suffix := range sqliteSidecarSuffixes {
+		if err := secureStoreFile(path+suffix, false); err != nil {
+			return fmt.Errorf("secure monitor database sidecar %s: %w", suffix, err)
+		}
+	}
+	return nil
+}
+
+func secureStoreFile(path string, create bool) error {
+	flags := os.O_RDWR
+	if create {
+		flags |= os.O_CREATE
+	}
+	file, err := os.OpenFile(path, flags, storeFileMode)
+	if !create && errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := file.Chmod(storeFileMode); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func (s *Store) migrate() error {
