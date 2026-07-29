@@ -10,11 +10,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 )
 
-func TestProtocolManagementEditsSpokeByStableID(t *testing.T) {
+func TestProtocolManagementOffersSymmetricHubAndSpokeActions(t *testing.T) {
 	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
 	list := []nodes.Node{
 		{
@@ -48,48 +49,77 @@ func TestProtocolManagementEditsSpokeByStableID(t *testing.T) {
 		t.Fatalf("load protocol manager: %v", pm.loadErr)
 	}
 	actionView := pm.View()
-	for _, want := range []string{"Hub", "Spokes (WireGuard)", "Spoke · Edit protocols / SNI / ports", "Registered spokes: 2"} {
+	for _, want := range []string{
+		"Hub", "Spokes (WireGuard)", "Registered spokes: 2",
+		"Hub · Install / remove protocols",
+		"Hub · Edit installed protocol settings",
+		"Hub · Edit Reality SNI",
+		"Spoke · Install / remove protocols",
+		"Spoke · Edit installed protocol settings",
+		"Spoke · Edit Reality SNI",
+	} {
 		if !strings.Contains(actionView, want) {
 			t.Fatalf("protocol action page missing %q:\n%s", want, actionView)
 		}
 	}
+	if strings.Contains(actionView, "Edit protocols / SNI / ports") {
+		t.Fatalf("spoke actions remain bundled:\n%s", actionView)
+	}
+}
 
-	pm.cursor = pm.actionCursor(protocolActionEditSpoke)
+func TestProtocolManagementChangesSpokeProtocolSetByStableID(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	list := []nodes.Node{
+		{
+			ID: "11111111111111111111111111111111", Alias: "London UI", SubscriptionAlias: "United Kingdom",
+			Domain: "uk.example.com", WGIP: "10.90.0.2", Installed: true,
+			IncludeInSubscription: true,
+			EnabledProtocols:      []string{"vless-reality-vision", "hysteria2"},
+			RealityServerName:     "www.cloudflare.com",
+			RealityVisionPort:     8443,
+			RealityGRPCPort:       8444,
+			Hysteria2Port:         9443,
+			TUICPort:              10443,
+			AnyTLSPort:            11443,
+			Monitor:               true,
+			MonitorPort:           deploy.DefaultMonitorPort,
+		},
+		{
+			ID: "22222222222222222222222222222222", Alias: "Tokyo UI",
+			Domain: "jp.example.com", WGIP: "10.90.0.3", Installed: true,
+			EnabledProtocols: []string{"tuic"}, TUICPort: 20443,
+		},
+	}
+	if err := nodes.Save(layout, list); err != nil {
+		t.Fatalf("save nodes: %v", err)
+	}
+	withProtocolManagerDeps(t, layout)
+
+	pm := newProtocolManager()
+	pm.setSize(110, 32)
+	pm.cursor = pm.actionCursor(protocolActionChangeSpoke)
 	_, done := pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if done || pm.phase != protocolPhaseForm || pm.editNodeID != "" {
 		t.Fatalf("open spoke selector: done=%v phase=%v id=%q", done, pm.phase, pm.editNodeID)
 	}
 	selector := pm.View()
-	for _, want := range []string{"Choose Spoke", "Spoke protocol settings to edit", "London UI", "10.90.0.2", "11111111", "stable node ID"} {
+	for _, want := range []string{"Choose Spoke", "Spoke to manage", "London UI", "10.90.0.2", "11111111", "stable node ID"} {
 		if !strings.Contains(selector, want) {
 			t.Fatalf("spoke selector missing %q:\n%s", want, selector)
 		}
 	}
 
 	_, done = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if done || pm.phase != protocolPhaseForm || pm.editNodeID != list[0].ID {
+	if done || pm.phase != protocolPhaseSelect || pm.editNodeID != list[0].ID {
 		t.Fatalf("select spoke: done=%v phase=%v id=%q", done, pm.phase, pm.editNodeID)
 	}
-	if got := pm.values["protocols"]; got != "vless-reality-vision,hysteria2" {
-		t.Fatalf("seeded protocols = %q", got)
+	if got := protocolSelectionValue(pm.targetProtocols()); got != "vless-reality-vision,hysteria2" {
+		t.Fatalf("seeded target protocols = %q", got)
 	}
-	keys := map[string]bool{}
-	for _, f := range pm.fields {
-		keys[f.key] = true
-		if strings.Contains(f.key, "uuid") || strings.Contains(f.key, "password") {
-			t.Fatalf("spoke form must not expose credential field %q", f.key)
+	for _, want := range []string{"Spoke · Install / Remove", "London UI", "Current:", "Target:"} {
+		if !strings.Contains(pm.View(), want) {
+			t.Fatalf("spoke protocol selection missing %q:\n%s", want, pm.View())
 		}
-	}
-	for _, want := range []string{
-		"protocols", "reality_sni", "reality_vision_port", "reality_grpc_port",
-		"hysteria2_port", "tuic_port", "anytls_port",
-	} {
-		if !keys[want] {
-			t.Errorf("spoke protocol form missing %q", want)
-		}
-	}
-	if !strings.Contains(pm.fields[0].note, "credentials are preserved") {
-		t.Fatalf("credential-preservation note missing: %q", pm.fields[0].note)
 	}
 
 	// Reordering or renaming the in-memory registry after selection must not
@@ -102,11 +132,111 @@ func TestProtocolManagementEditsSpokeByStableID(t *testing.T) {
 		t.Fatalf("stable-ID selection resolved to %+v, ok=%v", selected, ok)
 	}
 
+	pm.selected[string(config.ProtocolTUIC)] = true
+	pm.prepareChangeConfirm()
+	if pm.phase != protocolPhaseForm {
+		t.Fatalf("added protocol should request its port, phase=%v err=%q", pm.phase, pm.fieldErr)
+	}
+	if len(pm.fields) != 1 || pm.fields[0].key != "tuic_port" {
+		t.Fatalf("spoke install fields = %+v, want only TUIC port", pm.fields)
+	}
+	if !strings.Contains(pm.fields[0].note, "credentials") ||
+		!strings.Contains(pm.fields[0].note, "preserved") {
+		t.Fatalf("credential-preservation note missing: %q", pm.fields[0].note)
+	}
+	for _, f := range pm.fields {
+		if f.key == "reality_sni" || strings.Contains(f.key, "uuid") || strings.Contains(f.key, "password") {
+			t.Fatalf("spoke install/remove exposed unrelated field %q", f.key)
+		}
+	}
+
 	pm.phase = protocolPhaseConfirm
 	confirm := pm.View()
-	for _, want := range []string{list[0].ID, "Target", "Spoke", "Credentials", "preserve existing", "authenticated Agent over WireGuard"} {
+	for _, want := range []string{
+		list[0].ID, "Target", "Spoke", "Install / remove protocols",
+		"Credentials", "preserve existing", "authenticated Agent over WireGuard",
+	} {
 		if !strings.Contains(confirm, want) {
 			t.Fatalf("spoke confirmation missing %q:\n%s", want, confirm)
+		}
+	}
+	for _, forbidden := range []string{"Reality SNI", "Reality Vision port", "Hysteria2 port", "AnyTLS port"} {
+		if strings.Contains(confirm, forbidden) {
+			t.Fatalf("spoke install confirmation includes unrelated %q:\n%s", forbidden, confirm)
+		}
+	}
+}
+
+func TestProtocolManagementEditsOnlyInstalledSpokeProtocolPort(t *testing.T) {
+	layout := protocolManagerState(t, "hysteria2", "")
+	node := nodes.Node{
+		ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Alias: "London", Domain: "uk.example.com",
+		WGIP: "10.90.0.2", Installed: true,
+		EnabledProtocols: []string{"hysteria2"}, Hysteria2Port: 9443,
+		RealityVisionPort: 8443, RealityGRPCPort: 8444, TUICPort: 10443, AnyTLSPort: 11443,
+		MonitorPort: deploy.DefaultMonitorPort,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatalf("save node: %v", err)
+	}
+	withProtocolManagerDeps(t, layout)
+
+	pm := newProtocolManager()
+	pm.setSize(100, 30)
+	pm.cursor = pm.actionCursor(protocolActionEditSpoke)
+	pm.activateAction()
+	if pm.phase != protocolPhaseForm || pm.editNodeID != "" {
+		t.Fatalf("open spoke selector: phase=%v id=%q", pm.phase, pm.editNodeID)
+	}
+	_, _ = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if pm.phase != protocolPhaseEditPick || pm.editNodeID != node.ID {
+		t.Fatalf("select spoke: phase=%v id=%q", pm.phase, pm.editNodeID)
+	}
+	for _, want := range []string{"Spoke · Edit", "installed Spoke protocol", "credentials are preserved", "hysteria2"} {
+		if !strings.Contains(pm.View(), want) {
+			t.Fatalf("spoke edit picker missing %q:\n%s", want, pm.View())
+		}
+	}
+	_, _ = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if pm.phase != protocolPhaseForm || pm.editProto != config.ProtocolHysteria2 {
+		t.Fatalf("open spoke port form: phase=%v proto=%q", pm.phase, pm.editProto)
+	}
+	if len(pm.fields) != 1 || pm.fields[0].key != "hysteria2_port" {
+		t.Fatalf("spoke edit fields = %+v, want only Hysteria2 port", pm.fields)
+	}
+	if !strings.Contains(pm.fields[0].note, "credential") ||
+		!strings.Contains(pm.fields[0].note, "preserved") {
+		t.Fatalf("spoke edit form does not explain credential preservation: %q", pm.fields[0].note)
+	}
+}
+
+func TestProtocolManagementEditsSpokeRealitySNISeparately(t *testing.T) {
+	layout := protocolManagerState(t, "vless-reality-vision", "www.microsoft.com")
+	node := nodes.Node{
+		ID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Alias: "London", Domain: "uk.example.com",
+		WGIP: "10.90.0.2", Installed: true,
+		EnabledProtocols:  []string{"vless-reality-vision"},
+		RealityServerName: "www.cloudflare.com", RealityVisionPort: 8443,
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatalf("save node: %v", err)
+	}
+	withProtocolManagerDeps(t, layout)
+
+	pm := newProtocolManager()
+	pm.setSize(100, 30)
+	pm.cursor = pm.actionCursor(protocolActionRealitySNISpoke)
+	pm.activateAction()
+	_, _ = pm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if pm.phase != protocolPhaseForm || pm.editNodeID != node.ID {
+		t.Fatalf("open spoke SNI form: phase=%v id=%q", pm.phase, pm.editNodeID)
+	}
+	if len(pm.fields) != 1 || pm.fields[0].key != "reality_sni" {
+		t.Fatalf("spoke SNI fields = %+v, want only Reality SNI", pm.fields)
+	}
+	for _, want := range []string{"Spoke", "London", "Reality SNI", "default: www.cloudflare.com"} {
+		if !strings.Contains(pm.View(), want) {
+			t.Fatalf("spoke SNI form missing %q:\n%s", want, pm.View())
 		}
 	}
 }
@@ -153,7 +283,7 @@ func TestSpokeProtocolRunForwardsProgressEvents(t *testing.T) {
 	}
 	pm := &protocolManager{
 		phase:      protocolPhaseConfirm,
-		action:     protocolActionEditSpoke,
+		action:     protocolActionChangeSpoke,
 		host:       supportedTestHost(),
 		commandRun: newCommandRun(),
 	}
@@ -178,15 +308,16 @@ func TestSpokeProtocolTransactionPersistsSuccessfulApply(t *testing.T) {
 	if err := nodes.Save(layout, []nodes.Node{original}); err != nil {
 		t.Fatalf("save original node: %v", err)
 	}
-	change, err := spokeProtocolRegistryChange(map[string]string{
-		"protocols":           "vless-reality-grpc,anytls",
-		"reality_sni":         "https://www.cloudflare.com/cdn-cgi/trace",
-		"reality_vision_port": "18443",
-		"reality_grpc_port":   "18444",
-		"hysteria2_port":      "19443",
-		"tuic_port":           "20443",
-		"anytls_port":         "21443",
-	})
+	change, err := spokeProtocolSelectionRegistryChange(
+		[]config.Protocol{config.ProtocolHysteria2},
+		map[string]string{
+			"protocols":           "vless-reality-grpc,anytls",
+			"reality_vision_port": "18443",
+			"reality_grpc_port":   "18444",
+			"hysteria2_port":      "19443",
+			"tuic_port":           "20443",
+			"anytls_port":         "21443",
+		})
 	if err != nil {
 		t.Fatalf("build protocol change: %v", err)
 	}
@@ -206,7 +337,7 @@ func TestSpokeProtocolTransactionPersistsSuccessfulApply(t *testing.T) {
 		t.Fatalf("apply successful transaction: %v", err)
 	}
 	if strings.Join(remote.EnabledProtocols, ",") != "vless-reality-grpc,anytls" ||
-		remote.RealityServerName != "www.cloudflare.com" || remote.RealityGRPCPort != 18444 ||
+		remote.RealityServerName != original.RealityServerName || remote.RealityGRPCPort != 18444 ||
 		remote.AnyTLSPort != 21443 {
 		t.Fatalf("remote target = %+v", remote)
 	}
@@ -216,8 +347,13 @@ func TestSpokeProtocolTransactionPersistsSuccessfulApply(t *testing.T) {
 	}
 	got := list[0]
 	if strings.Join(got.EnabledProtocols, ",") != "vless-reality-grpc,anytls" ||
-		got.RealityServerName != "www.cloudflare.com" || got.AnyTLSPort != 21443 {
+		got.RealityServerName != original.RealityServerName || got.AnyTLSPort != 21443 {
 		t.Fatalf("persisted protocol settings = %+v", got)
+	}
+	if got.RealityVisionPort != original.RealityVisionPort ||
+		got.Hysteria2Port != original.Hysteria2Port ||
+		got.TUICPort != original.TUICPort {
+		t.Fatalf("install/remove changed ports it does not own: %+v", got)
 	}
 	if got.MonitorAlias != original.MonitorAlias {
 		t.Fatalf("unrelated field changed: monitor alias %q", got.MonitorAlias)
@@ -243,15 +379,16 @@ func TestSpokeProtocolTransactionRollsBackRegistryAndRemote(t *testing.T) {
 	if err := nodes.Save(layout, []nodes.Node{original}); err != nil {
 		t.Fatalf("save original node: %v", err)
 	}
-	change, err := spokeProtocolRegistryChange(map[string]string{
-		"protocols":           "hysteria2,tuic",
-		"reality_sni":         "https://www.cloudflare.com/",
-		"reality_vision_port": "18443",
-		"reality_grpc_port":   "18444",
-		"hysteria2_port":      "19443",
-		"tuic_port":           "20443",
-		"anytls_port":         "21443",
-	})
+	change, err := spokeProtocolSelectionRegistryChange(
+		[]config.Protocol{config.ProtocolRealityVision},
+		map[string]string{
+			"protocols":           "vless-reality-vision,tuic",
+			"reality_vision_port": "18443",
+			"reality_grpc_port":   "18444",
+			"hysteria2_port":      "19443",
+			"tuic_port":           "20443",
+			"anytls_port":         "21443",
+		})
 	if err != nil {
 		t.Fatalf("build protocol change: %v", err)
 	}
@@ -266,6 +403,8 @@ func TestSpokeProtocolTransactionRollsBackRegistryAndRemote(t *testing.T) {
 			current.AgentVersion = "new-agent"
 			current.LastSeen = time.Unix(1234, 0).UTC()
 			current.MonitorAlias = "updated concurrently"
+			current.RealityServerName = "concurrent.example.com"
+			current.Hysteria2Port = 29443
 			return nil
 		}); err != nil {
 			t.Fatalf("concurrent status update: %v", err)
@@ -287,8 +426,8 @@ func TestSpokeProtocolTransactionRollsBackRegistryAndRemote(t *testing.T) {
 		!strings.Contains(err.Error(), "previous settings restored") {
 		t.Fatalf("transaction error = %v", err)
 	}
-	if strings.Join(applied.EnabledProtocols, ",") != "hysteria2,tuic" ||
-		applied.Hysteria2Port != 19443 || applied.TUICPort != 20443 {
+	if strings.Join(applied.EnabledProtocols, ",") != "vless-reality-vision,tuic" ||
+		applied.RealityVisionPort != original.RealityVisionPort || applied.TUICPort != 20443 {
 		t.Fatalf("remote apply did not receive target settings: %+v", applied)
 	}
 	if strings.Join(rolledBack.EnabledProtocols, ",") != "vless-reality-vision" ||
@@ -302,15 +441,68 @@ func TestSpokeProtocolTransactionRollsBackRegistryAndRemote(t *testing.T) {
 	got := list[0]
 	if strings.Join(got.EnabledProtocols, ",") != "vless-reality-vision" ||
 		got.RealityVisionPort != original.RealityVisionPort ||
-		got.Hysteria2Port != original.Hysteria2Port {
+		got.TUICPort != original.TUICPort {
 		t.Fatalf("protocol fields were not restored: %+v", got)
 	}
 	if got.AgentVersion != "new-agent" || got.MonitorAlias != "updated concurrently" ||
 		!got.LastSeen.Equal(time.Unix(1234, 0).UTC()) {
 		t.Fatalf("unrelated concurrent fields were overwritten: %+v", got)
 	}
+	if got.RealityServerName != "concurrent.example.com" || got.Hysteria2Port != 29443 {
+		t.Fatalf("rollback overwrote fields not owned by install/remove: %+v", got)
+	}
 	if len(events) != 2 || events[0].Status != "running" || events[1].Status != "ok" {
 		t.Fatalf("registry progress = %+v", events)
+	}
+}
+
+func TestSpokeProtocolPortAndSNIChangesOwnOnlyTheirField(t *testing.T) {
+	original := nodes.Node{
+		EnabledProtocols:  []string{"vless-reality-vision", "hysteria2"},
+		RealityServerName: "www.microsoft.com",
+		RealityVisionPort: 8443,
+		Hysteria2Port:     9443,
+	}
+
+	portChange, err := spokeProtocolPortRegistryChange(config.ProtocolHysteria2, map[string]string{
+		"hysteria2_port": "19443",
+	})
+	if err != nil {
+		t.Fatalf("build port change: %v", err)
+	}
+	afterPort := cloneSpokeNode(original)
+	if err := portChange.Apply(&afterPort); err != nil {
+		t.Fatalf("apply port change: %v", err)
+	}
+	if afterPort.Hysteria2Port != 19443 || afterPort.RealityServerName != original.RealityServerName {
+		t.Fatalf("port change touched unrelated fields: %+v", afterPort)
+	}
+	afterPort.RealityServerName = "concurrent.example.com"
+	portChange.Restore(&afterPort, original)
+	if afterPort.Hysteria2Port != original.Hysteria2Port ||
+		afterPort.RealityServerName != "concurrent.example.com" {
+		t.Fatalf("port rollback touched unrelated fields: %+v", afterPort)
+	}
+
+	sniChange, err := spokeRealitySNIRegistryChange(map[string]string{
+		"reality_sni": "https://www.cloudflare.com/cdn-cgi/trace",
+	})
+	if err != nil {
+		t.Fatalf("build SNI change: %v", err)
+	}
+	afterSNI := cloneSpokeNode(original)
+	if err := sniChange.Apply(&afterSNI); err != nil {
+		t.Fatalf("apply SNI change: %v", err)
+	}
+	if afterSNI.RealityServerName != "www.cloudflare.com" ||
+		afterSNI.Hysteria2Port != original.Hysteria2Port {
+		t.Fatalf("SNI change touched unrelated fields: %+v", afterSNI)
+	}
+	afterSNI.Hysteria2Port = 29443
+	sniChange.Restore(&afterSNI, original)
+	if afterSNI.RealityServerName != original.RealityServerName ||
+		afterSNI.Hysteria2Port != 29443 {
+		t.Fatalf("SNI rollback touched unrelated fields: %+v", afterSNI)
 	}
 }
 
