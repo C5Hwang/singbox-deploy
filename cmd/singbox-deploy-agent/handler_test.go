@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -614,6 +615,65 @@ func TestMonitorSupervisorFallsBackToHostUTCWhenNetworkTimeFails(t *testing.T) {
 	}
 	if delta := time.Since(now); delta < -time.Second || delta > time.Second {
 		t.Fatalf("fallback clock differs from host time by %v", delta)
+	}
+}
+
+func TestMonitorSupervisorRetriesAfterUnexpectedExit(t *testing.T) {
+	supervisor := newMonitorSupervisor(context.Background(), installedSpokeLayout(t))
+	supervisor.now = func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	supervisor.retryDelay = 10 * time.Millisecond
+
+	var (
+		mu        sync.Mutex
+		starts    int
+		restarted = make(chan struct{})
+	)
+	supervisor.newMonitor = func(_ *monitor.Store, _ monitor.Config) (http.Handler, func(context.Context) error) {
+		mu.Lock()
+		starts++
+		current := starts
+		mu.Unlock()
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+		if current == 1 {
+			return handler, func(context.Context) error {
+				return errors.New("transient sampler failure")
+			}
+		}
+		return handler, func(ctx context.Context) error {
+			select {
+			case <-restarted:
+			default:
+				close(restarted)
+			}
+			<-ctx.Done()
+			return nil
+		}
+	}
+
+	supervisor.reload()
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitor did not retry after an unexpected exit")
+	}
+
+	rec := httptest.NewRecorder()
+	supervisor.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("retried monitor status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	supervisor.stop()
+	mu.Lock()
+	startsAfterStop := starts
+	mu.Unlock()
+	time.Sleep(4 * supervisor.retryDelay)
+	mu.Lock()
+	defer mu.Unlock()
+	if starts != startsAfterStop {
+		t.Fatalf("terminal stop allowed another retry: starts %d -> %d", startsAfterStop, starts)
 	}
 }
 

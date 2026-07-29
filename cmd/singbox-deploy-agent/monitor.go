@@ -48,7 +48,15 @@ type monitorSupervisor struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	handler http.Handler
+
+	// retryTimer and stopped are guarded by lifecycle. retryDelay is injectable
+	// so tests can prove recovery without waiting for the production backoff.
+	retryTimer *time.Timer
+	retryDelay time.Duration
+	stopped    bool
 }
+
+const defaultMonitorRetryDelay = 10 * time.Second
 
 func newMonitorSupervisor(parent context.Context, layout paths.Layout) *monitorSupervisor {
 	if parent == nil {
@@ -62,6 +70,10 @@ func newMonitorSupervisor(parent context.Context, layout paths.Layout) *monitorS
 func (s *monitorSupervisor) reload() {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
+	if s.stopped {
+		return
+	}
+	s.cancelRetryLocked()
 	s.stopRunning()
 
 	store := state.NewStore(s.layout.StateDir)
@@ -75,15 +87,18 @@ func (s *monitorSupervisor) reload() {
 	cfg, err := s.buildConfig(store)
 	if err != nil {
 		log.Printf("agent monitor: %v", err)
+		s.scheduleRetryLocked()
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(s.layout.MonitorDB), 0o755); err != nil {
 		log.Printf("agent monitor: create store directory: %v", err)
+		s.scheduleRetryLocked()
 		return
 	}
 	dbStore, err := monitor.OpenStore(s.layout.MonitorDB)
 	if err != nil {
 		log.Printf("agent monitor: open store: %v", err)
+		s.scheduleRetryLocked()
 		return
 	}
 	parent := s.parent
@@ -112,6 +127,7 @@ func (s *monitorSupervisor) reload() {
 		defer close(done)
 		defer dbStore.Close()
 		err := run(ctx)
+		retry := false
 		if ctx.Err() == nil {
 			if err != nil {
 				log.Printf("agent monitor exited: %v", err)
@@ -125,8 +141,14 @@ func (s *monitorSupervisor) reload() {
 				s.handler = nil
 				s.cancel = nil
 				s.done = nil
+				retry = true
 			}
 			s.mu.Unlock()
+		}
+		if retry {
+			// Wait until the deferred database close and done close have both
+			// completed before a retry can open the same SQLite store.
+			go s.retryAfter(done)
 		}
 	}()
 }
@@ -176,7 +198,58 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 func (s *monitorSupervisor) stop() {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
+	s.stopped = true
+	s.cancelRetryLocked()
 	s.stopRunning()
+}
+
+func (s *monitorSupervisor) retryAfter(done <-chan struct{}) {
+	<-done
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	s.scheduleRetryLocked()
+}
+
+func (s *monitorSupervisor) scheduleRetryLocked() {
+	if s.stopped || s.retryTimer != nil {
+		return
+	}
+	if s.parent != nil && s.parent.Err() != nil {
+		return
+	}
+	s.mu.RLock()
+	active := s.done != nil
+	s.mu.RUnlock()
+	if active {
+		return
+	}
+	delay := s.retryDelay
+	if delay <= 0 {
+		delay = defaultMonitorRetryDelay
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		s.lifecycle.Lock()
+		if s.retryTimer != timer {
+			s.lifecycle.Unlock()
+			return
+		}
+		s.retryTimer = nil
+		stopped := s.stopped
+		s.lifecycle.Unlock()
+		if !stopped {
+			s.reload()
+		}
+	})
+	s.retryTimer = timer
+}
+
+func (s *monitorSupervisor) cancelRetryLocked() {
+	if s.retryTimer == nil {
+		return
+	}
+	s.retryTimer.Stop()
+	s.retryTimer = nil
 }
 
 // stopRunning retires the active monitor and waits for it to release its
