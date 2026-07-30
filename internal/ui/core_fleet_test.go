@@ -48,10 +48,17 @@ func TestCoreManagementShowsFleetAndRunsCoordinatedChange(t *testing.T) {
 	for _, want := range []string{
 		"v1.12.4", "Hub + 2 installed Spoke(s)", "then the Hub",
 		"rolled back to its previous version",
+		"Change sing-box version",
 	} {
 		if !strings.Contains(confirm, want) {
 			t.Fatalf("fleet confirmation missing %q:\n%s", want, confirm)
 		}
+	}
+	// The action row must name the action, not the "Config" heading the action
+	// sits under; the two are indistinguishable to a lookup that keeps
+	// separators.
+	if strings.Contains(confirm, "Config") {
+		t.Fatalf("fleet confirmation reported a group heading as the action:\n%s", confirm)
 	}
 
 	var gotLayout paths.Layout

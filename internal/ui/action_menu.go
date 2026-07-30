@@ -9,9 +9,14 @@ type actionItem[T comparable] struct {
 }
 
 // currentActionLabel returns the label of the current action in items.
+//
+// Separators are skipped: they leave action at its zero value, which collides
+// with the first iota constant of every action enum. Without the guard a
+// leading separator shadows the action it introduces and its group heading is
+// reported as the action name.
 func currentActionLabel[T comparable](items []actionItem[T], current T) string {
 	for _, item := range items {
-		if item.action == current {
+		if !item.separator && item.action == current {
 			return item.label
 		}
 	}
