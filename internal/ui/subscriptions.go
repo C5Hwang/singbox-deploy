@@ -761,9 +761,10 @@ func (sm *subscriptionManager) actions() []subscriptionActionItem {
 		{separator: true, label: "Hub"},
 		{action: subscriptionActionDisplayName, label: "Edit hub display name"},
 		{action: subscriptionActionLocal, label: "Edit hub subscription settings"},
-		{separator: true, label: "Spokes (WireGuard)"},
+		{separator: true, label: "Spokes"},
 		{action: subscriptionActionEditSpoke, label: "Edit spoke subscription settings"},
-		{action: subscriptionActionReorder, label: "Reorder hub and spoke sources"},
-		{action: subscriptionActionRefresh, label: "Refresh from spokes now"},
+		{separator: true, label: "Sources"},
+		{action: subscriptionActionReorder, label: "Reorder nodes"},
+		{action: subscriptionActionRefresh, label: "Refresh from spokes"},
 	}
 }

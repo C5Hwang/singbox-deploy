@@ -1540,7 +1540,7 @@ func (pm *protocolManager) actions() []protocolActionItem {
 		actions = append(actions, protocolActionItem{action: protocolActionRealitySNI, label: "Hub · Edit Reality SNI"})
 	}
 	actions = append(actions,
-		protocolActionItem{separator: true, label: "Spokes (WireGuard)"},
+		protocolActionItem{separator: true, label: "Spokes"},
 		protocolActionItem{action: protocolActionChangeSpoke, label: "Spoke · Enabled protocols"},
 		protocolActionItem{action: protocolActionEditSpoke, label: "Spoke · Edit protocol settings"},
 	)

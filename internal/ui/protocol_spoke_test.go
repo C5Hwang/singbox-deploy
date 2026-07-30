@@ -52,7 +52,7 @@ func TestProtocolManagementOffersSymmetricHubAndSpokeActions(t *testing.T) {
 	}
 	actionView := pm.View()
 	for _, want := range []string{
-		"Hub", "Spokes (WireGuard)", "Registered spokes: 2",
+		"Hub", "Spokes", "Registered spokes: 2",
 		"Hub · Enabled protocols",
 		"Hub · Edit protocol settings",
 		"Hub · Edit Reality SNI",

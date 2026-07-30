@@ -1065,14 +1065,14 @@ func (tm *monitorManager) actions() []monitorActionItem {
 		{separator: true, label: "Hub"},
 		{action: monitorActionLocal, label: "Edit hub monitor settings"},
 		{action: monitorActionUsage, label: "Adjust hub traffic counters"},
-		{separator: true, label: "Spokes (WireGuard)"},
+		{separator: true, label: "Spokes"},
 		{action: monitorActionEditSpoke, label: "Edit spoke monitor settings"},
 		{action: monitorActionSpokeUsage, label: "Adjust spoke traffic counters"},
-		{separator: true, label: "Hub service"},
-		{action: monitorActionStart, label: "Start hub monitor service"},
-		{action: monitorActionStop, label: "Stop hub monitor service"},
-		{action: monitorActionRestart, label: "Restart hub monitor service"},
-		{action: monitorActionLogs, label: "View hub monitor service logs"},
+		{separator: true, label: "Service"},
+		{action: monitorActionStart, label: "Start monitor service"},
+		{action: monitorActionStop, label: "Stop monitor service"},
+		{action: monitorActionRestart, label: "Restart monitor service"},
+		{action: monitorActionLogs, label: "View monitor service logs"},
 	}
 }
 
