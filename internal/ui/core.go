@@ -525,7 +525,7 @@ func (cm *coreManager) footerHints() []operationHint {
 func (cm *coreManager) actions() []coreActionItem {
 	return []coreActionItem{
 		{separator: true, label: "Config"},
-		{action: coreActionChangeStable, label: "Change sing-box version · Hub + all Spokes"},
+		{action: coreActionChangeStable, label: "Change sing-box version"},
 		{separator: true, label: "Service"},
 		{action: coreActionStart, label: "Start sing-box.service"},
 		{action: coreActionStop, label: "Stop sing-box.service"},

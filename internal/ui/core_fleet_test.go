@@ -34,7 +34,7 @@ func TestCoreManagementShowsFleetAndRunsCoordinatedChange(t *testing.T) {
 	for _, want := range []string{
 		"Current version (Hub)", "Spokes (last authenticated health)",
 		"London", "v1.12.2", "Tokyo", "v1.12.3",
-		"Change sing-box version · Hub + all Spokes",
+		"Change sing-box version",
 	} {
 		if !strings.Contains(actionView, want) {
 			t.Fatalf("fleet core view missing %q:\n%s", want, actionView)
