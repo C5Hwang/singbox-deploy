@@ -54,11 +54,13 @@ func TestCoreManagementShowsFleetAndRunsCoordinatedChange(t *testing.T) {
 			t.Fatalf("fleet confirmation missing %q:\n%s", want, confirm)
 		}
 	}
-	// The action row must name the action, not the "Config" heading the action
-	// sits under; the two are indistinguishable to a lookup that keeps
-	// separators.
-	if strings.Contains(confirm, "Config") {
-		t.Fatalf("fleet confirmation reported a group heading as the action:\n%s", confirm)
+	// The action row must name the action, never the group heading it sits
+	// under; a separator carries the zero-value action and is otherwise
+	// indistinguishable from the first entry of its group.
+	for _, item := range cm.actions() {
+		if item.separator && cm.actionLabel() == item.label {
+			t.Fatalf("action label resolved to the group heading %q:\n%s", item.label, confirm)
+		}
 	}
 
 	var gotLayout paths.Layout
