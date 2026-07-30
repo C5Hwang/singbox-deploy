@@ -8,36 +8,72 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 )
 
+// Labels and notes shared by every form that collects the same monitor
+// parameter, so the same input always reads the same way whether it is being
+// set during setup, edited on the hub, or edited on a spoke.
+const (
+	LabelMonitorEnabled   = "Enable monitor"
+	LabelMonitorWebUI     = "Enable monitor web UI"
+	LabelMonitorAlias     = "Monitor alias"
+	LabelMonitorPublic    = "Monitor public HTTPS port"
+	LabelMonitorPort      = "Monitor local port"
+	LabelMonitorInterface = "Monitored network interface"
+	LabelMonitorInterval  = "Sampling interval (seconds)"
+	LabelTrafficIn        = "Inbound traffic limit"
+	LabelTrafficOut       = "Outbound traffic limit"
+	LabelTrafficTotal     = "Total traffic limit"
+	LabelResetDay         = "Monthly reset day (1-28)"
+	LabelResetHour        = "Monthly reset hour GMT (0-23)"
+
+	NoteMonitorWebUI      = "Choose no to serve the API only."
+	NoteMonitorAlias      = "Names the hub on the monitor dashboard."
+	NoteSpokeMonitorAlias = "Blank uses the node alias."
+	NoteMonitorPublic     = "Nginx listens on this public HTTPS port for /monitor."
+	NoteMonitorPort       = "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port."
+	NoteMonitorInterface  = "Use auto to detect the default egress interface."
+	NoteMonitorInterval   = "Lower values write more samples."
+	NoteResetDay          = "Day of month when the traffic quota cycle resets."
+	NoteResetHour         = "Hour of day in GMT when the traffic quota cycle resets."
+)
+
+// The quota consequence is stated once, on the first limit, rather than
+// repeated on all three.
+var (
+	NoteTrafficIn    = TrafficSizeNote("0 means unlimited. Exceeding any limit stops sing-box.")
+	NoteTrafficOut   = TrafficSizeNote("0 means unlimited.")
+	NoteTrafficTotal = TrafficSizeNote("0 means unlimited.")
+)
+
 func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
-		{Key: "monitor", Label: "Deploy monitor", Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to skip the monitor service."},
-		{Key: "monitor_frontend", Label: "Deploy monitor frontend", Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to expose the API only (no web UI).", Skip: monitorDisabled},
-		{Key: "monitor_alias", Label: "Monitor alias", Def: deploy.DefaultMonitorAlias, Note: "Shown as the local source name on /monitor.", Skip: monitorDisabled},
-		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(deploy.DefaultMonitorPublicPort), Note: "Nginx listens on this public HTTPS port for /monitor.", Skip: monitorDisabled},
-		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(deploy.DefaultMonitorPort), Note: "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port.", Skip: monitorDisabled},
-		{Key: "monitor_interval_seconds", Label: "Sampling interval (seconds)", Def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), Note: "Default is 60 seconds. Lower values write more samples.", Skip: monitorDisabled},
-		{Key: "traffic_in_limit", Label: "Inbound traffic limit", Def: "0", Note: TrafficSizeNote("0 means unlimited. When any limit is exceeded, sing-box.service is stopped automatically."), Skip: monitorDisabled},
-		{Key: "traffic_out_limit", Label: "Outbound traffic limit", Def: "0", Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
-		{Key: "traffic_total_limit", Label: "Total traffic limit", Def: "0", Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
-		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(deploy.DefaultResetDay), Note: "Day of month when the traffic quota cycle resets.", Skip: monitorDisabled},
-		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(deploy.DefaultResetHour), Note: "Hour of day in GMT when the traffic quota cycle resets.", Skip: monitorDisabled},
+		{Key: "monitor", Label: LabelMonitorEnabled, Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to skip the monitor service."},
+		{Key: "monitor_frontend", Label: LabelMonitorWebUI, Def: "yes", Options: []string{"yes", "no"}, Note: NoteMonitorWebUI, Skip: monitorDisabled},
+		{Key: "monitor_alias", Label: LabelMonitorAlias, Def: deploy.DefaultMonitorAlias, Note: NoteMonitorAlias, Skip: monitorDisabled},
+		{Key: "monitor_public_port", Label: LabelMonitorPublic, Def: strconv.Itoa(deploy.DefaultMonitorPublicPort), Note: NoteMonitorPublic, Skip: monitorDisabled},
+		{Key: "monitor_port", Label: LabelMonitorPort, Def: strconv.Itoa(deploy.DefaultMonitorPort), Note: NoteMonitorPort, Skip: monitorDisabled},
+		{Key: "monitor_interval_seconds", Label: LabelMonitorInterval, Def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), Note: NoteMonitorInterval, Skip: monitorDisabled},
+		{Key: "traffic_in_limit", Label: LabelTrafficIn, Def: "0", Note: NoteTrafficIn, Skip: monitorDisabled},
+		{Key: "traffic_out_limit", Label: LabelTrafficOut, Def: "0", Note: NoteTrafficOut, Skip: monitorDisabled},
+		{Key: "traffic_total_limit", Label: LabelTrafficTotal, Def: "0", Note: NoteTrafficTotal, Skip: monitorDisabled},
+		{Key: "reset_day", Label: LabelResetDay, Def: strconv.Itoa(deploy.DefaultResetDay), Note: NoteResetDay, Skip: monitorDisabled},
+		{Key: "reset_hour", Label: LabelResetHour, Def: strconv.Itoa(deploy.DefaultResetHour), Note: NoteResetHour, Skip: monitorDisabled},
 	}
 }
 
 func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
-		{Key: "monitor", Label: "Deploy monitor", Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: "Choose no to stop the monitor service."},
-		{Key: "monitor_frontend", Label: "Deploy monitor frontend", Def: YesNoString(cfg.DeployMonitorFrontend), Options: []string{"yes", "no"}, Note: "Choose no to expose the API only (no web UI).", Skip: monitorDisabled},
-		{Key: "monitor_alias", Label: "Monitor alias", Def: StringDefault(cfg.MonitorAlias, deploy.DefaultMonitorAlias), Note: "Shown as local source name on /monitor.", Skip: monitorDisabled},
-		{Key: "monitor_public_port", Label: "Monitor public HTTPS port", Def: strconv.Itoa(cfg.MonitorPublicPort), Skip: monitorDisabled},
-		{Key: "monitor_port", Label: "Monitor local port", Def: strconv.Itoa(cfg.MonitorPort), Skip: monitorDisabled},
-		{Key: "monitor_interface", Label: "Monitored network interface", Def: cfg.MonitorInterface, Note: "Leave as current/default interface unless you know the VPS egress interface changed.", Skip: monitorDisabled},
-		{Key: "monitor_interval_seconds", Label: "Sampling interval (seconds)", Def: strconv.Itoa(DefaultMonitorInterval(cfg)), Skip: monitorDisabled},
-		{Key: "traffic_in_limit", Label: "Inbound traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficInLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
-		{Key: "traffic_out_limit", Label: "Outbound traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficOutLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
-		{Key: "traffic_total_limit", Label: "Total traffic limit", Def: FormatTrafficSizeInput(cfg.TrafficTotalLimitBytes), Note: TrafficSizeNote("0 means unlimited."), Skip: monitorDisabled},
-		{Key: "reset_day", Label: "Monthly reset day (1-28)", Def: strconv.Itoa(DefaultResetDay(cfg)), Note: "Day of month when the traffic quota cycle resets.", Skip: monitorDisabled},
-		{Key: "reset_hour", Label: "Monthly reset hour GMT (0-23)", Def: strconv.Itoa(DefaultResetHour(cfg)), Note: "Hour of day in GMT when the traffic quota cycle resets.", Skip: monitorDisabled},
+		{Key: "monitor", Label: LabelMonitorEnabled, Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: "Choose no to stop the monitor service."},
+		{Key: "monitor_frontend", Label: LabelMonitorWebUI, Def: YesNoString(cfg.DeployMonitorFrontend), Options: []string{"yes", "no"}, Note: NoteMonitorWebUI, Skip: monitorDisabled},
+		{Key: "monitor_alias", Label: LabelMonitorAlias, Def: StringDefault(cfg.MonitorAlias, deploy.DefaultMonitorAlias), Note: NoteMonitorAlias, Skip: monitorDisabled},
+		{Key: "monitor_public_port", Label: LabelMonitorPublic, Def: strconv.Itoa(cfg.MonitorPublicPort), Note: NoteMonitorPublic, Skip: monitorDisabled},
+		{Key: "monitor_port", Label: LabelMonitorPort, Def: strconv.Itoa(cfg.MonitorPort), Note: NoteMonitorPort, Skip: monitorDisabled},
+		{Key: "monitor_interface", Label: LabelMonitorInterface, Def: cfg.MonitorInterface, Note: NoteMonitorInterface, Skip: monitorDisabled},
+		{Key: "monitor_interval_seconds", Label: LabelMonitorInterval, Def: strconv.Itoa(DefaultMonitorInterval(cfg)), Note: NoteMonitorInterval, Skip: monitorDisabled},
+		{Key: "traffic_in_limit", Label: LabelTrafficIn, Def: FormatTrafficSizeInput(cfg.TrafficInLimitBytes), Note: NoteTrafficIn, Skip: monitorDisabled},
+		{Key: "traffic_out_limit", Label: LabelTrafficOut, Def: FormatTrafficSizeInput(cfg.TrafficOutLimitBytes), Note: NoteTrafficOut, Skip: monitorDisabled},
+		{Key: "traffic_total_limit", Label: LabelTrafficTotal, Def: FormatTrafficSizeInput(cfg.TrafficTotalLimitBytes), Note: NoteTrafficTotal, Skip: monitorDisabled},
+		{Key: "reset_day", Label: LabelResetDay, Def: strconv.Itoa(DefaultResetDay(cfg)), Note: NoteResetDay, Skip: monitorDisabled},
+		{Key: "reset_hour", Label: LabelResetHour, Def: strconv.Itoa(DefaultResetHour(cfg)), Note: NoteResetHour, Skip: monitorDisabled},
 	}
 }
 

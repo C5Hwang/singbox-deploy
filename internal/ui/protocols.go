@@ -488,7 +488,7 @@ func (pm *protocolManager) editSpokeSelectField() []field {
 		key:     "edit_spoke_select",
 		label:   "Spoke to manage",
 		options: spokeLabels(pm.nodes),
-		note:    "The stable node ID identifies the spoke; changes are delivered through its authenticated WireGuard Agent.",
+		note:    noteSpokeTransport,
 	}}
 }
 
@@ -524,7 +524,7 @@ func (pm *protocolManager) spokeInstallFieldsForAdded(current, target []config.P
 	fields := make([]field, 0, len(added))
 	for _, proto := range added {
 		field := spokePortEditField(proto, node)
-		field.note = "Public listen port for the newly installed protocol; existing spoke credentials are preserved."
+		field.note = uiparams.NotePortListen
 		fields = append(fields, field)
 	}
 	return fields
@@ -535,17 +535,17 @@ func spokePortEditField(proto config.Protocol, node nodes.Node) field {
 		key:   portFieldKey(proto),
 		label: string(proto) + " listen port",
 		def:   spokeProtocolPortValue(spokeProtocolPort(node, proto), proto),
-		note:  "Only this public listen port changes; the existing spoke credential is preserved.",
+		note:  uiparams.NotePortListen,
 	}
 }
 
 func spokeProtocolEditFields(proto config.Protocol) []field {
 	port := field{
 		key: portFieldKey(proto), label: string(proto) + " listen port",
-		note: "Public listen port for this protocol.",
+		note: uiparams.NotePortListen,
 	}
 	secret := func(key, label string) field {
-		return field{key: key, label: label, secret: true, note: "Current value is loaded over the authenticated WireGuard Agent connection and remains masked."}
+		return field{key: key, label: label, secret: true}
 	}
 	switch proto {
 	case config.ProtocolRealityVision:
@@ -1209,7 +1209,7 @@ func (pm *protocolManager) markRunFailed() {
 
 func (pm *protocolManager) View() string {
 	if pm.loadErr != nil {
-		return flowTitle.Render("Protocol Management") + "\n\n" + flowErr.Render(pm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run install first.")
+		return flowTitle.Render(titleProtocols) + "\n\n" + flowErr.Render(pm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run Setup first.")
 	}
 	switch pm.phase {
 	case protocolPhaseAction:
@@ -1230,24 +1230,24 @@ func (pm *protocolManager) View() string {
 		if pm.runErr != nil {
 			return pm.failedView()
 		}
-		return flowOK.Render("Protocol management complete") + "\n\n" + pm.doneSummary()
+		return flowOK.Render(titleProtocols+" complete") + "\n\n" + pm.doneSummary()
 	default:
 		return ""
 	}
 }
 
 func (pm *protocolManager) loadingSpokeStateView() string {
-	title := "Protocol Management · Spoke · Loading settings"
+	title := titleProtocols + " · Spoke · Loading settings"
 	if node, ok := pm.editSpokeNode(); ok {
 		title += " · " + node.EffectiveAlias()
 	}
 	return flowTitle.Render(title) + "\n\n" +
-		dimStyle.Render("Authenticating the Agent, reconciling its version, and reading the current masked protocol credentials…")
+		dimStyle.Render("Reading the spoke's protocol settings…")
 }
 
 func (pm *protocolManager) actionView() string {
 	var b strings.Builder
-	b.WriteString(flowTitle.Render("Protocol Management") + "\n\n")
+	b.WriteString(flowTitle.Render(titleProtocols) + "\n\n")
 	b.WriteString(dimStyle.Render("Current: Hub · ") + protocolLabels(pm.cfg.Enabled) + "\n")
 	b.WriteString(dimStyle.Render("Registered spokes: ") + strconv.Itoa(len(pm.nodes)) + "\n")
 	if !pm.canApply() {
@@ -1263,9 +1263,9 @@ func (pm *protocolManager) actionView() string {
 
 func (pm *protocolManager) selectView() string {
 	var b strings.Builder
-	title := "Protocol Management · Hub · Install / Remove"
+	title := titleProtocols + " · Hub · Enabled protocols"
 	if pm.action == protocolActionChangeSpoke {
-		title = "Protocol Management · Spoke · Install / Remove"
+		title = titleProtocols + " · Spoke · Enabled protocols"
 		if node, ok := pm.editSpokeNode(); ok {
 			title += " · " + node.EffectiveAlias()
 		}
@@ -1282,14 +1282,14 @@ func (pm *protocolManager) selectView() string {
 
 func (pm *protocolManager) editPickView() string {
 	var b strings.Builder
-	title := "Protocol Management · Hub · Edit"
-	note := "Choose an installed Hub protocol to edit its credentials and port."
+	title := titleProtocols + " · Hub · Edit"
+	note := "Choose a protocol to edit its credentials and port."
 	if pm.action == protocolActionEditSpoke {
-		title = "Protocol Management · Spoke · Edit"
+		title = titleProtocols + " · Spoke · Edit"
 		if node, ok := pm.editSpokeNode(); ok {
 			title += " · " + node.EffectiveAlias()
 		}
-		note = "Choose an installed Spoke protocol to edit the same credential and listen-port fields offered for the Hub."
+		note = "Choose a protocol to edit its credentials and port."
 	}
 	b.WriteString(flowTitle.Render(title) + "\n\n")
 	b.WriteString(dimStyle.Render(note) + "\n")
@@ -1313,20 +1313,20 @@ func (pm *protocolManager) editPickView() string {
 }
 
 func (pm *protocolManager) formView() string {
-	title := "Protocol Management · Hub · Parameters"
+	title := titleProtocols + " · Hub · Parameters"
 	if pm.action == protocolActionEdit {
-		title = "Protocol Management · Hub · Edit " + string(pm.editProto)
+		title = titleProtocols + " · Hub · Edit " + string(pm.editProto)
 	}
 	if isSpokeProtocolAction(pm.action) {
-		title = "Protocol Management · Choose Spoke"
+		title = titleProtocols + " · Choose spoke"
 		if node, ok := pm.editSpokeNode(); ok {
 			switch pm.action {
 			case protocolActionChangeSpoke:
-				title = "Protocol Management · Spoke · Install / Remove · " + node.EffectiveAlias()
+				title = titleProtocols + " · Spoke · Enabled protocols · " + node.EffectiveAlias()
 			case protocolActionEditSpoke:
-				title = "Protocol Management · Spoke · Edit " + string(pm.editProto) + " · " + node.EffectiveAlias()
+				title = titleProtocols + " · Spoke · Edit " + string(pm.editProto) + " · " + node.EffectiveAlias()
 			case protocolActionRealitySNISpoke:
-				title = "Protocol Management · Spoke · Reality SNI · " + node.EffectiveAlias()
+				title = titleProtocols + " · Spoke · " + uiparams.LabelRealitySNI + " · " + node.EffectiveAlias()
 			}
 		}
 	}
@@ -1367,7 +1367,7 @@ func (pm *protocolManager) confirmView() string {
 				summaryRow("Target", "Spoke"),
 				summaryRow("Spoke", spokeOptionLabel(node)),
 				summaryRow("Stable node ID", node.ID),
-				summaryRow("Action", "Install / remove protocols"),
+				summaryRow("Action", "Enabled protocols"),
 				summaryRow("Current protocols", protocolLabels(current)),
 				summaryRow("Target protocols", protocolLabels(pm.targetProtocols())),
 				summaryRow("Add", or(protocolStrings(added), "none")),
@@ -1407,7 +1407,7 @@ func (pm *protocolManager) confirmView() string {
 				summaryRow("Target", "Spoke"),
 				summaryRow("Spoke", spokeOptionLabel(node)),
 				summaryRow("Stable node ID", node.ID),
-				summaryRow("Edit", "Reality SNI"),
+				summaryRow("Edit", uiparams.LabelRealitySNI),
 				summaryRow("Current", or(node.RealityServerName, "not set")),
 				summaryRow("Target", or(pm.values["reality_sni"], "not set")),
 				summaryRow("Transport", "authenticated Agent over WireGuard"),
@@ -1416,7 +1416,7 @@ func (pm *protocolManager) confirmView() string {
 	case protocolActionRealitySNI:
 		rows = append(rows,
 			summaryRow("Target", "Hub"),
-			summaryRow("Edit", "Reality SNI"),
+			summaryRow("Edit", uiparams.LabelRealitySNI),
 			summaryRow("Current", or(pm.cfg.RealityServerName, "not set")),
 			summaryRow("Target", or(pm.values["reality_sni"], "not set")),
 		)
@@ -1454,13 +1454,13 @@ func (pm *protocolManager) confirmView() string {
 	}
 	rows = append(rows,
 		summaryBlank(),
-		summaryText("This will regenerate sing-box config and all subscription files on the selected host."),
+		summaryText("Regenerates the sing-box config and all subscription files on the selected host."),
 	)
-	return flowTitle.Render("Protocol Management · Confirm") + "\n\n" + renderSummary(rows)
+	return flowTitle.Render(titleProtocols+" · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (pm *protocolManager) runningView() string {
-	return commandRunningView(pm, "Protocol Management · Running")
+	return commandRunningView(pm, titleProtocols+" · Running")
 }
 
 func (pm *protocolManager) failedView() string {
@@ -1488,7 +1488,7 @@ func (pm *protocolManager) doneSummary() string {
 					summaryRow("Settings", "updated; credentials remain masked"),
 				)
 			case protocolActionRealitySNISpoke:
-				rows = append(rows, summaryRow("Reality SNI", node.RealityServerName))
+				rows = append(rows, summaryRow(uiparams.LabelRealitySNI, node.RealityServerName))
 			}
 			return renderSummary(rows)
 		}
@@ -1533,16 +1533,16 @@ func (pm *protocolManager) footerHints() []operationHint {
 func (pm *protocolManager) actions() []protocolActionItem {
 	actions := []protocolActionItem{
 		{separator: true, label: "Hub"},
-		{action: protocolActionChange, label: "Hub · Install / remove protocols"},
-		{action: protocolActionEdit, label: "Hub · Edit installed protocol settings (credentials / ports)"},
+		{action: protocolActionChange, label: "Hub · Enabled protocols"},
+		{action: protocolActionEdit, label: "Hub · Edit protocol settings"},
 	}
 	if needsRealityProtocol(pm.cfg.Enabled) {
 		actions = append(actions, protocolActionItem{action: protocolActionRealitySNI, label: "Hub · Edit Reality SNI"})
 	}
 	actions = append(actions,
 		protocolActionItem{separator: true, label: "Spokes (WireGuard)"},
-		protocolActionItem{action: protocolActionChangeSpoke, label: "Spoke · Install / remove protocols"},
-		protocolActionItem{action: protocolActionEditSpoke, label: "Spoke · Edit installed protocol settings (credentials / ports)"},
+		protocolActionItem{action: protocolActionChangeSpoke, label: "Spoke · Enabled protocols"},
+		protocolActionItem{action: protocolActionEditSpoke, label: "Spoke · Edit protocol settings"},
 	)
 	if len(pm.nodes) > 0 {
 		actions = append(actions, protocolActionItem{action: protocolActionRealitySNISpoke, label: "Spoke · Edit Reality SNI"})

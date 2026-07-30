@@ -27,23 +27,30 @@ type Field struct {
 
 const DefaultRealityServerName = "www.google.com"
 
+// LabelRealitySNI names the same input everywhere it appears: the setup form,
+// both edit forms, and the confirmation summaries.
+const LabelRealitySNI = "Reality SNI"
+
+// NotePortListen describes a protocol's public listen port wherever it is
+// collected, on the hub or on a spoke.
+const NotePortListen = "Public listen port for this protocol."
+
 func RealitySNIField() Field {
 	return Field{
 		Key:   "reality_sni",
-		Label: "Reality URL/SNI (camouflage server)",
+		Label: LabelRealitySNI,
 		Def:   DefaultRealityServerName,
-		Note:  "You may enter a URL or host; the host is used for the Reality handshake. Target TLS compatibility can vary by server and network path.",
+		Note:  "Accepts a URL or a hostname. The hostname is used for the Reality handshake.",
 	}
 }
 
 func RealitySNIEditField(current string) Field {
 	f := RealitySNIField()
-	f.Label = "Reality URL/SNI (camouflage server)"
 	f.Def = current
 	if f.Def == "" {
 		f.Def = DefaultRealityServerName
 	}
-	f.Note = "Updates the shared Reality handshake SNI for VLESS Reality Vision and VLESS Reality gRPC."
+	f.Note = "Shared by VLESS Reality Vision and VLESS Reality gRPC."
 	return f
 }
 

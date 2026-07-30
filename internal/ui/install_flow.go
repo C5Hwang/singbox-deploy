@@ -43,10 +43,10 @@ func installFields() []field {
 	}
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
-		{key: "domain", label: "Domain (must resolve to this server)", note: "Must be covered by a DNS credential in Certificate management; the hub issues its certificate via DNS-01. Also used for Nginx server_name, subscription URLs, and TLS SNI."},
-		{key: "email", label: "ACME account email (optional)", note: "Optional Let's Encrypt account contact used for certificate notices."},
-		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Select one or more protocols. At least one protocol must remain selected."},
-		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HML5 UP template deployed to /etc/singbox-deploy/www."},
+		{key: "domain", label: "Domain (must resolve to this server)", note: noteDNSCredential + " Also used for Nginx server_name and subscription URLs."},
+		{key: "email", label: labelACMEEmail, note: noteACMEEmail},
+		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "At least one protocol is required."},
+		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HTML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)
@@ -143,11 +143,11 @@ func newInstallFlow() *installFlow {
 	case err != nil:
 		flow.hosts = "Failed to detect host: " + err.Error()
 	case !host.IsRoot:
-		flow.hosts = "This installer must be run as root."
+		flow.hosts = "Setup must be run as root."
 	case !host.Supported():
 		flow.hosts = fmt.Sprintf("Unsupported system: family=%q arch=%q", host.OS.Family, host.Arch)
 	case host.SELinux:
-		flow.hosts = "SELinux is enforcing; installation is blocked. Set it permissive and retry."
+		flow.hosts = "SELinux is enforcing; setup is blocked. Set it permissive and retry."
 	default:
 		flow.hosts = fmt.Sprintf("Detected %s/%s, firewall=%s — ready.", host.OS.ID, host.Arch, firewallName(host.Firewall))
 	}
@@ -778,7 +778,7 @@ func (w *installFlow) View() string {
 		if !w.canProceed() {
 			body += "\n\n" + flowErr.Render("Cannot proceed.")
 		}
-		return flowTitle.Render("Install · Preflight") + "\n\n" + body
+		return flowTitle.Render("Setup · Preflight") + "\n\n" + body
 	case phaseForm:
 		return w.form.View()
 	case phaseConfirm:
@@ -789,13 +789,13 @@ func (w *installFlow) View() string {
 		if w.run.runErr != nil {
 			return w.failedView()
 		}
-		return flowOK.Render("Install complete") + "\n\n" + w.doneSummary()
+		return flowOK.Render("Setup complete") + "\n\n" + w.doneSummary()
 	}
 	return ""
 }
 
 func (w *installForm) View() string {
-	return w.parameterForm.View("Install · Configuration")
+	return w.parameterForm.View("Setup · Configuration")
 }
 
 func (w *installFlow) footerHints() []operationHint {
@@ -810,7 +810,7 @@ func (w *installFlow) footerHints() []operationHint {
 	case phaseConfirm:
 		return []operationHint{
 			hint(keyMoveMouse, "Scroll"),
-			hint(keyEnterYes, "Install"),
+			hint(keyEnterYes, "Setup"),
 			hint(keyBack, "Back"),
 			hint(keyConfirmNo, "Cancel"),
 		}
@@ -826,7 +826,7 @@ func (w *installFlow) footerHints() []operationHint {
 func (w *installForm) confirmView(host system.Host) string {
 	viewportHeight := w.confirmViewportHeight()
 	lines := w.visibleConfirmLines(viewportHeight, host)
-	return flowTitle.Render("Install · Confirm") + "\n\n" + strings.Join(lines, "\n")
+	return flowTitle.Render("Setup · Confirm") + "\n\n" + strings.Join(lines, "\n")
 }
 
 func (w *installForm) visibleConfirmLines(height int, host system.Host) []string {
@@ -880,11 +880,11 @@ func (w *installForm) confirmWrapWidth() int {
 }
 
 func (w *installFlow) runningView() string {
-	return commandRunningView(w, "Install · Running")
+	return commandRunningView(w, "Setup · Running")
 }
 
 func (w *installFlow) failedView() string {
-	return commandFailedView(w, "Install failed")
+	return commandFailedView(w, "Setup failed")
 }
 
 func (w *installForm) summary(host system.Host) string {
@@ -897,33 +897,33 @@ func (w *installForm) summary(host system.Host) string {
 		summaryRow("Domain", w.values["domain"]),
 		summaryRow("Email", or(w.values["email"], "not set")),
 		summaryRow("Protocols", protocolLabels(protocols)),
-		summaryRow("Display name", w.values["display_name"]),
+		summaryRow(uiparams.LabelDisplayName, w.values["display_name"]),
 		summaryRow("Masquerade site", or(w.values["site_template"], deploy.DefaultSiteTemplate)),
-		summaryRow("Subscription port", or(w.values["subscribe_port"], strconv.Itoa(deploy.DefaultSubscribePort))),
-		summaryRow("Subscription salt", summaryValueOrRandom(w.values["subscribe_salt"])),
-		summaryRow("Monitor", yesNoString(deployMonitor)),
+		summaryRow(uiparams.LabelSubscribePort, or(w.values["subscribe_port"], strconv.Itoa(deploy.DefaultSubscribePort))),
+		summaryRow(uiparams.LabelSubscribeSalt, summaryValueOrRandom(w.values["subscribe_salt"])),
+		summaryRow(uiparams.LabelMonitorEnabled, yesNoString(deployMonitor)),
 	}
 	if deployMonitor {
-		rows = append(rows, summaryRow("Monitor frontend", yesNoString(monitorFrontendEnabled(w.values))))
+		rows = append(rows, summaryRow(uiparams.LabelMonitorWebUI, yesNoString(monitorFrontendEnabled(w.values))))
 	}
 	rows = append(rows,
-		summaryRow("Operating system / architecture", host.OS.ID+" / "+host.Arch),
+		summaryRow("Platform", host.OS.ID+" / "+host.Arch),
 		summaryRow("Firewall", firewallName(host.Firewall)),
 	)
 	if deployMonitor {
 		rows = append(rows,
-			summaryRow("Monitor alias", or(w.values["monitor_alias"], deploy.DefaultMonitorAlias)),
-			summaryRow("Monitor public port", or(w.values["monitor_public_port"], strconv.Itoa(deploy.DefaultMonitorPublicPort))),
-			summaryRow("Monitor local port", or(w.values["monitor_port"], strconv.Itoa(deploy.DefaultMonitorPort))),
-			summaryRow("Sampling interval", or(w.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))+" seconds"),
-			summaryRow("Inbound traffic limit", trafficLimitSummary(w.values["traffic_in_limit"])),
-			summaryRow("Outbound traffic limit", trafficLimitSummary(w.values["traffic_out_limit"])),
-			summaryRow("Total traffic limit", trafficLimitSummary(w.values["traffic_total_limit"])),
+			summaryRow(uiparams.LabelMonitorAlias, or(w.values["monitor_alias"], deploy.DefaultMonitorAlias)),
+			summaryRow(uiparams.LabelMonitorPublic, or(w.values["monitor_public_port"], strconv.Itoa(deploy.DefaultMonitorPublicPort))),
+			summaryRow(uiparams.LabelMonitorPort, or(w.values["monitor_port"], strconv.Itoa(deploy.DefaultMonitorPort))),
+			summaryRow(uiparams.LabelMonitorInterval, or(w.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))),
+			summaryRow(uiparams.LabelTrafficIn, trafficLimitSummary(w.values["traffic_in_limit"])),
+			summaryRow(uiparams.LabelTrafficOut, trafficLimitSummary(w.values["traffic_out_limit"])),
+			summaryRow(uiparams.LabelTrafficTotal, trafficLimitSummary(w.values["traffic_total_limit"])),
 			summaryRow("Next reset", nextResetFromValues(w.values["reset_day"], w.values["reset_hour"])),
 		)
 	}
 	if needsRealityProtocol(protocols) {
-		rows = append(rows, summaryRow("Reality URL/SNI", w.values["reality_sni"]))
+		rows = append(rows, summaryRow(uiparams.LabelRealitySNI, w.values["reality_sni"]))
 	}
 	rows = append(rows, summaryText("Protocol parameters:"))
 	for _, proto := range protocols {

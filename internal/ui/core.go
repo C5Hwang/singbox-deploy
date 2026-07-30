@@ -388,20 +388,20 @@ func (cm *coreManager) View() string {
 	case corePhaseAction:
 		return cm.actionView()
 	case corePhaseStableLoading:
-		return flowTitle.Render("sing-box Core · Change Version") + "\n\n" + dimStyle.Render("Fetching the latest stable releases…")
+		return flowTitle.Render(titleCore+" · Change version") + "\n\n" + dimStyle.Render("Fetching the latest stable releases…")
 	case corePhaseStableSelect:
 		return cm.stableView()
 	case corePhaseConfirm:
 		return cm.confirmView()
 	case corePhaseRunning:
-		return commandRunningView(cm, "sing-box Core · Running")
+		return commandRunningView(cm, titleCore+" · Running")
 	case corePhaseDone:
 		if cm.runErr != nil {
-			return commandFailedView(cm, "sing-box core action failed")
+			return commandFailedView(cm, titleCore+" action failed")
 		}
-		return flowOK.Render("sing-box core action complete") + "\n\n" + cm.doneSummary()
+		return flowOK.Render(titleCore+" action complete") + "\n\n" + cm.doneSummary()
 	case corePhaseLogsLoading:
-		return flowTitle.Render("sing-box Core · Logs") + "\n\n" + dimStyle.Render("Loading service logs…")
+		return flowTitle.Render(titleCore+" · Logs") + "\n\n" + dimStyle.Render("Loading service logs…")
 	case corePhaseLogs:
 		return cm.logsView()
 	default:
@@ -411,7 +411,7 @@ func (cm *coreManager) View() string {
 
 func (cm *coreManager) actionView() string {
 	rows := []summaryLine{
-		summaryRow("Current version (Hub)", or(cm.currentVersion, "not installed")),
+		summaryRow("Current version (Hub)", or(cm.currentVersion, "not set up")),
 		summaryRow("Hub service", or(cm.serviceState, "unknown")),
 		summaryRow("Hub binary", coreUILayout().SingBoxBin),
 		summaryRow("Hub config", coreUILayout().ConfigJSON),
@@ -431,7 +431,7 @@ func (cm *coreManager) actionView() string {
 		}
 	}
 	var b strings.Builder
-	b.WriteString(flowTitle.Render("sing-box Core Management") + "\n\n")
+	b.WriteString(flowTitle.Render(titleCore) + "\n\n")
 	b.WriteString(renderSummary(rows) + "\n")
 	if cm.fieldErr != "" {
 		b.WriteString(flowErr.Render(cm.fieldErr) + "\n")
@@ -443,7 +443,7 @@ func (cm *coreManager) actionView() string {
 
 func (cm *coreManager) stableView() string {
 	var b strings.Builder
-	b.WriteString(flowTitle.Render("sing-box Core · Change Version") + "\n\n")
+	b.WriteString(flowTitle.Render(titleCore+" · Change version") + "\n\n")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("Choose one of the latest %d stable sing-box releases.", coreStableReleaseLimit)) + "\n\n")
 	for i, tag := range cm.stableTags {
 		row := "  " + tag
@@ -469,11 +469,11 @@ func (cm *coreManager) confirmView() string {
 	}
 	rows = append(rows, summaryBlank())
 	if cm.isReplaceAction() {
-		rows = append(rows, summaryText("Every installed Spoke is changed and verified first; the Hub commits last. A failure rolls changed nodes back to their exact preflight versions."))
+		rows = append(rows, summaryText("Spokes are upgraded and verified first, then the Hub. If any node fails, every changed node is rolled back to its previous version."))
 	} else {
-		rows = append(rows, summaryText("This will run systemctl "+cm.systemctlAction()+" sing-box.service."))
+		rows = append(rows, summaryText("Runs systemctl "+cm.systemctlAction()+" sing-box.service."))
 	}
-	return flowTitle.Render("sing-box Core · Confirm") + "\n\n" + renderSummary(rows)
+	return flowTitle.Render(titleCore+" · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (cm *coreManager) doneSummary() string {
@@ -489,7 +489,7 @@ func (cm *coreManager) doneSummary() string {
 }
 
 func (cm *coreManager) logsView() string {
-	body := flowTitle.Render("sing-box Core · Logs") + "\n\n"
+	body := flowTitle.Render(titleCore+" · Logs") + "\n\n"
 	if cm.svcLogs.logErr != nil {
 		body += flowErr.Render(cm.svcLogs.logErr.Error()) + "\n\n"
 	}

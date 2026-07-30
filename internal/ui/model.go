@@ -93,7 +93,7 @@ func NewModel() *Model {
 func defaultGroups() []MenuGroup {
 	return []MenuGroup{
 		{Title: "Deployment", Items: []MenuItem{
-			{Label: "Install / Reinstall", Activate: activateInstall},
+			{Label: "Setup", Activate: activateInstall},
 			{Label: "Certificate management", Activate: activateCertificates},
 		}},
 		{Title: "Proxy", Items: []MenuItem{
@@ -102,7 +102,7 @@ func defaultGroups() []MenuGroup {
 		}},
 		{Title: "Services", Items: []MenuItem{
 			{Label: "Subscription settings", Activate: activateSubscriptions},
-			{Label: "Monitor & quota", Activate: activateMonitor},
+			{Label: "Monitoring", Activate: activateMonitor},
 		}},
 		{Title: "Spoke", Items: []MenuItem{
 			{Label: "Spoke nodes", Activate: activateNodes},
@@ -549,7 +549,7 @@ func (m *Model) statusView() string {
 		summaryRow("singbox-deploy", or(s.ToolVersion, "dev")),
 		summaryRow("Domain", or(s.Domain, "unknown")),
 		summaryRow("Public IP", or(s.PublicIP, "unknown")),
-		summaryRow("OS/Arch", or(s.OSArch, "unknown")),
+		summaryRow("Platform", or(s.OSArch, "unknown")),
 		summaryRow("sing-box version", or(s.SingBoxVer, "not installed")),
 		summaryRow("sing-box service", or(s.SingBoxState, "unknown")),
 		summaryRow("Nginx service", or(s.NginxState, "unknown")),

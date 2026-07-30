@@ -161,7 +161,7 @@ func TestRenewCertificateRequiresExplicitYThenIssuesAndDistributes(t *testing.T)
 		t.Fatalf("renew picker phase = %d, want confirmation", m.phase)
 	}
 	confirm := m.View()
-	for _, want := range []string{domain, "forces a new ACME DNS-01 order", "rate limits", "Press y to force renew"} {
+	for _, want := range []string{domain, "a new ACME DNS-01 order", "rate limits", "Press y to force renew"} {
 		if !strings.Contains(confirm, want) {
 			t.Fatalf("renew confirmation missing %q:\n%s", want, confirm)
 		}

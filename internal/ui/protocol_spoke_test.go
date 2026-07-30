@@ -14,6 +14,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
+	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
 
 func TestProtocolManagementOffersSymmetricHubAndSpokeActions(t *testing.T) {
@@ -52,11 +53,11 @@ func TestProtocolManagementOffersSymmetricHubAndSpokeActions(t *testing.T) {
 	actionView := pm.View()
 	for _, want := range []string{
 		"Hub", "Spokes (WireGuard)", "Registered spokes: 2",
-		"Hub · Install / remove protocols",
-		"Hub · Edit installed protocol settings",
+		"Hub · Enabled protocols",
+		"Hub · Edit protocol settings",
 		"Hub · Edit Reality SNI",
-		"Spoke · Install / remove protocols",
-		"Spoke · Edit installed protocol settings",
+		"Spoke · Enabled protocols",
+		"Spoke · Edit protocol settings",
 		"Spoke · Edit Reality SNI",
 	} {
 		if !strings.Contains(actionView, want) {
@@ -104,7 +105,7 @@ func TestProtocolManagementChangesSpokeProtocolSetByStableID(t *testing.T) {
 		t.Fatalf("open spoke selector: done=%v phase=%v id=%q", done, pm.phase, pm.editNodeID)
 	}
 	selector := pm.View()
-	for _, want := range []string{"Choose Spoke", "Spoke to manage", "London UI", "10.90.0.2", "11111111", "stable node ID"} {
+	for _, want := range []string{"Choose spoke", "Spoke to manage", "London UI", "10.90.0.2", "11111111", "reaches every spoke over WireGuard"} {
 		if !strings.Contains(selector, want) {
 			t.Fatalf("spoke selector missing %q:\n%s", want, selector)
 		}
@@ -117,7 +118,7 @@ func TestProtocolManagementChangesSpokeProtocolSetByStableID(t *testing.T) {
 	if got := protocolSelectionValue(pm.targetProtocols()); got != "vless-reality-vision,hysteria2" {
 		t.Fatalf("seeded target protocols = %q", got)
 	}
-	for _, want := range []string{"Spoke · Install / Remove", "London UI", "Current:", "Target:"} {
+	for _, want := range []string{"Spoke · Enabled protocols", "London UI", "Current:", "Target:"} {
 		if !strings.Contains(pm.View(), want) {
 			t.Fatalf("spoke protocol selection missing %q:\n%s", want, pm.View())
 		}
@@ -141,9 +142,10 @@ func TestProtocolManagementChangesSpokeProtocolSetByStableID(t *testing.T) {
 	if len(pm.fields) != 1 || pm.fields[0].key != "tuic_port" {
 		t.Fatalf("spoke install fields = %+v, want only TUIC port", pm.fields)
 	}
-	if !strings.Contains(pm.fields[0].note, "credentials") ||
-		!strings.Contains(pm.fields[0].note, "preserved") {
-		t.Fatalf("credential-preservation note missing: %q", pm.fields[0].note)
+	// The note covers only the port. Credential preservation is stated once, in
+	// the confirmation summary asserted further down.
+	if pm.fields[0].note != uiparams.NotePortListen {
+		t.Fatalf("port note = %q, want the shared listen-port note", pm.fields[0].note)
 	}
 	for _, f := range pm.fields {
 		if f.key == "reality_sni" || strings.Contains(f.key, "uuid") || strings.Contains(f.key, "password") {
@@ -154,7 +156,7 @@ func TestProtocolManagementChangesSpokeProtocolSetByStableID(t *testing.T) {
 	pm.phase = protocolPhaseConfirm
 	confirm := pm.View()
 	for _, want := range []string{
-		list[0].ID, "Target", "Spoke", "Install / remove protocols",
+		list[0].ID, "Target", "Spoke", "Enabled protocols",
 		"Credentials", "preserve existing", "authenticated Agent over WireGuard",
 	} {
 		if !strings.Contains(confirm, want) {
@@ -193,7 +195,7 @@ func TestProtocolManagementEditsInstalledSpokeProtocolCredentialAndPort(t *testi
 	if pm.phase != protocolPhaseEditPick || pm.editNodeID != node.ID {
 		t.Fatalf("select spoke: phase=%v id=%q", pm.phase, pm.editNodeID)
 	}
-	for _, want := range []string{"Spoke · Edit", "same credential", "listen-port", "hysteria2"} {
+	for _, want := range []string{"Spoke · Edit", "Choose a protocol to edit", "credentials and port", "hysteria2"} {
 		if !strings.Contains(pm.View(), want) {
 			t.Fatalf("spoke edit picker missing %q:\n%s", want, pm.View())
 		}

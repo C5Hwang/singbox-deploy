@@ -286,9 +286,9 @@ func (um *uninstallManager) footerHints() []operationHint {
 
 func uninstallOptions(layout paths.Layout) []uninstallDataOption {
 	return []uninstallDataOption{
-		{key: uninstallRuntimeKey, label: "Runtime state/config", path: layout.StateDir + " and " + filepath.Dir(layout.SingBoxBin), defaultDelete: true},
+		{key: uninstallRuntimeKey, label: "Runtime state", path: layout.StateDir + " and " + filepath.Dir(layout.SingBoxBin), defaultDelete: true},
 		{key: uninstallCertificatesKey, label: "Certificates", path: layout.TLSDir},
-		{key: uninstallMonitorDBKey, label: "SQLite monitor database", path: layout.MonitorDB},
+		{key: uninstallMonitorDBKey, label: "Monitor database", path: layout.MonitorDB},
 		{key: uninstallSiteKey, label: "Masquerade site files", path: layout.WebRoot},
 		{key: uninstallSubscriptionsKey, label: "Subscription outputs", path: layout.SubscribeDir},
 	}

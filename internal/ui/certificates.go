@@ -369,8 +369,8 @@ func (m *certManager) beginCertFormWithSeed(domain, email string) {
 		seed["email"] = email
 	}
 	m.form.begin([]field{
-		{key: "domain", label: "Certificate domain", note: "Adds a new managed certificate using DNS-01. The domain must be covered by a DNS credential (longest suffix match). Existing managed domains must be renewed from Renew certificate."},
-		{key: "email", label: "ACME account email (optional)", note: "Let's Encrypt contact for expiry notices."},
+		{key: "domain", label: "Certificate domain", note: "Needs a matching DNS credential. To renew a domain already listed, use Renew certificate."},
+		{key: "email", label: labelACMEEmail, note: noteACMEEmail},
 	}, seed, validateCertField)
 	m.phase = certPhaseForm
 }
@@ -384,7 +384,7 @@ func (m *certManager) beginCredForm(seedDomain string) {
 		{key: "domain", label: "Base domain", note: "Authorizes this domain and every subdomain (e.g. example.com covers a.example.com)."},
 		{key: "provider", label: "DNS provider", def: certmgr.ProviderCloudflare, options: []string{certmgr.ProviderCloudflare, certmgr.ProviderAliyun}},
 		{key: "credential", label: "API credential", secret: true, noteFunc: credentialNote},
-		{key: "email", label: "ACME account email (optional)", note: "Used as the Let's Encrypt account contact when issuing under this domain."},
+		{key: "email", label: labelACMEEmail, note: noteACMEEmail},
 	}, seed, validateCredField)
 	m.phase = certPhaseCredForm
 }
@@ -585,11 +585,11 @@ func (m *certManager) renewConfirmView() string {
 		email = "DNS credential default"
 	}
 	return flowTitle.Render("Renew certificate · Confirm") + "\n\n" +
-		statusWarn.Render("This forces a new ACME DNS-01 order now, even if the current certificate is still valid.") + "\n" +
+		statusWarn.Render("Forces a new ACME DNS-01 order now, even if the current certificate is still valid.") + "\n" +
 		"Repeated renewal is subject to Let's Encrypt rate limits.\n\n" +
 		"Domain:     " + m.pendingRenew.Domain + "\n" +
 		"ACME email: " + email + "\n\n" +
-		"On success, the renewed certificate will be distributed to its Hub/Spoke consumers.\n\n" +
+		"On success, the renewed certificate is distributed to every node that uses it.\n\n" +
 		"Press y to force renew, or n/Esc to cancel."
 }
 
@@ -641,7 +641,7 @@ func renderCertRow(c certmgr.CertInfo, now time.Time) string {
 	switch {
 	case !c.Valid || days < 0:
 		status = statusBad
-		label = "expired/invalid"
+		label = "invalid"
 	case days < 14:
 		status = statusWarn
 	}

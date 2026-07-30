@@ -26,6 +26,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/protocol"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
+	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
 )
 
@@ -273,7 +274,7 @@ func TestViewKeepsFooterAtConfiguredBottom(t *testing.T) {
 		t.Fatalf("view height = %d, want 12:\n%s", got, view)
 	}
 	lines := strings.Split(view, "\n")
-	if !strings.Contains(lines[len(lines)-1], "Enter/Y: Install") {
+	if !strings.Contains(lines[len(lines)-1], "Enter/Y: Setup") {
 		t.Fatalf("footer should stay on final row:\n%s", view)
 	}
 }
@@ -317,7 +318,7 @@ func TestInstallFieldShowsUsageNote(t *testing.T) {
 	w.width = 80
 	w.startForm()
 	view := w.View()
-	if !strings.Contains(view, "covered by a DNS credential in Certificate management") {
+	if !strings.Contains(view, "Needs a matching DNS credential in Certificate management") {
 		t.Fatalf("field usage note missing:\n%s", view)
 	}
 }
@@ -332,7 +333,7 @@ func TestProtocolManagementMenuOpens(t *testing.T) {
 		t.Fatalf("protocol manager was not opened")
 	}
 	view := m.View()
-	if !strings.Contains(view, "Protocol Management") || !strings.Contains(view, "Current:") || !strings.Contains(view, "vless-reality-vision") {
+	if !strings.Contains(view, "Protocol settings") || !strings.Contains(view, "Current:") || !strings.Contains(view, "vless-reality-vision") {
 		t.Fatalf("protocol manager view missing expected content:\n%s", view)
 	}
 }
@@ -376,7 +377,7 @@ func TestSubscriptionMenuEntryOpens(t *testing.T) {
 		t.Fatalf("subscription manager was not opened")
 	}
 	view := m.View()
-	if !strings.Contains(view, "Manage Subscriptions") || !strings.Contains(view, "Spoke nodes") || !strings.Contains(view, "Edit hub display name") {
+	if !strings.Contains(view, "Subscription settings") || !strings.Contains(view, "Spoke nodes") || !strings.Contains(view, "Edit hub display name") {
 		t.Fatalf("subscription manager view missing expected content:\n%s", view)
 	}
 	if !strings.Contains(view, "WireGuard") || strings.Contains(view, "Add remote subscription") {
@@ -398,7 +399,7 @@ func TestMonitorMenuEntryOpens(t *testing.T) {
 	withMonitorDeps(t, layout)
 
 	m := NewModel()
-	setMenuCursor(t, m, "Monitor & quota")
+	setMenuCursor(t, m, "Monitoring")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.monitor == nil {
 		t.Fatalf("monitor manager was not opened")
@@ -422,7 +423,7 @@ func TestCoreManagementMenuEntryOpens(t *testing.T) {
 		t.Fatalf("core manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"sing-box Core Management", "Current version", "sing-box version 1.12.0", "Change sing-box version", "View sing-box.service logs"} {
+	for _, want := range []string{"sing-box core", "Current version", "sing-box version 1.12.0", "Change sing-box version", "View sing-box.service logs"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("core manager view missing %q:\n%s", want, view)
 		}
@@ -441,7 +442,7 @@ func TestUninstallMenuEntryOpens(t *testing.T) {
 		t.Fatalf("uninstall manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"Uninstall · Confirm", "sing-box.service", "singbox-deploy-monitor.service", "Certificates", "SQLite monitor database", "Masquerade site files", "Subscription outputs"} {
+	for _, want := range []string{"Uninstall · Confirm", "sing-box.service", "singbox-deploy-monitor.service", "Certificates", "Monitor database", "Masquerade site files", "Subscription outputs"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("uninstall view missing %q:\n%s", want, view)
 		}
@@ -536,7 +537,7 @@ func TestCoreChangeStableListsEightReleases(t *testing.T) {
 		t.Fatalf("stable tags = %v, want 8 releases", cm.stableTags)
 	}
 	view := cm.View()
-	for _, want := range []string{"Change Version", "latest 8 stable", "v1.12.9", "v1.12.2"} {
+	for _, want := range []string{"Change version", "latest 8 stable", "v1.12.9", "v1.12.2"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("stable selection view missing %q:\n%s", want, view)
 		}
@@ -613,9 +614,9 @@ func TestMenuUsesFunctionalGroups(t *testing.T) {
 		title string
 		items []string
 	}{
-		{title: "Deployment", items: []string{"Install / Reinstall", "Certificate management"}},
+		{title: "Deployment", items: []string{"Setup", "Certificate management"}},
 		{title: "Proxy", items: []string{"Protocol settings", "Routing rules"}},
-		{title: "Services", items: []string{"Subscription settings", "Monitor & quota"}},
+		{title: "Services", items: []string{"Subscription settings", "Monitoring"}},
 		{title: "Spoke", items: []string{"Spoke nodes"}},
 		{title: "System", items: []string{"sing-box core", "Self-update", "Uninstall"}},
 	}
@@ -662,7 +663,7 @@ func TestProtocolManagementAsksRealitySNIWhenEnablingReality(t *testing.T) {
 	if pm.phase != protocolPhaseForm {
 		t.Fatalf("phase = %v, want parameter form", pm.phase)
 	}
-	if !strings.Contains(pm.View(), "Reality URL/SNI") {
+	if !strings.Contains(pm.View(), uiparams.LabelRealitySNI) {
 		t.Fatalf("missing Reality SNI prompt:\n%s", pm.View())
 	}
 }

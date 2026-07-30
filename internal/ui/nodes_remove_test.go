@@ -41,7 +41,7 @@ func TestRemoveSpokeRequiresExplicitYConfirmation(t *testing.T) {
 	view := m.View()
 	for _, want := range []string{
 		"london (uk.example.com)",
-		"remotely uninstall",
+		"removes its proxy runtime",
 		"proxy runtime",
 		"Agent",
 		"WireGuard",

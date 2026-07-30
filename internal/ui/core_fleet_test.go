@@ -46,8 +46,8 @@ func TestCoreManagementShowsFleetAndRunsCoordinatedChange(t *testing.T) {
 	cm.phase = corePhaseConfirm
 	confirm := cm.View()
 	for _, want := range []string{
-		"v1.12.4", "Hub + 2 installed Spoke(s)", "Hub commits last",
-		"rolls changed nodes back",
+		"v1.12.4", "Hub + 2 installed Spoke(s)", "then the Hub",
+		"rolled back to its previous version",
 	} {
 		if !strings.Contains(confirm, want) {
 			t.Fatalf("fleet confirmation missing %q:\n%s", want, confirm)

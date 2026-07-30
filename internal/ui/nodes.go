@@ -299,17 +299,17 @@ func (m *nodeManager) beginForm() {
 	}
 	monitorDisabled := func(values map[string]string) bool { return !monitorEnabled(values) }
 	fields := []field{
-		{key: "alias", label: "Node alias", note: "Used in Hub management screens and operational messages."},
-		{key: "subscription_alias", label: "Subscription alias (optional)", note: "Names this spoke's client nodes. Blank uses the node alias."},
+		{key: "alias", label: "Node alias", note: "Names this node in the hub's management screens."},
+		{key: "subscription_alias", label: labelSpokeSubscriptionAlias + " (optional)", note: noteSpokeSubscriptionAlias},
 		{key: "ssh_host", label: "SSH host (public IP or hostname)"},
 		{key: "ssh_port", label: "SSH port", def: "22"},
 		{key: "ssh_user", label: "SSH user", def: "root"},
 		{key: "ssh_auth", label: "SSH auth method", def: "password", options: []string{"password", "key"}},
 		{key: "ssh_password", label: "SSH password", secret: true, skip: isPass},
-		{key: "ssh_key_path", label: "SSH private key path", skip: isKey, note: "Path on this hub to the private key file used to authenticate."},
+		{key: "ssh_key_path", label: "SSH private key path", skip: isKey, note: "Path to the private key file on this hub."},
 		{key: "ssh_key_passphrase", label: "SSH private key passphrase (optional)", secret: true, skip: isKey},
-		{key: "domain", label: "Node domain", note: "The spoke's proxy domain. Must be covered by a DNS credential in Certificate management."},
-		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Credentials are generated on the spoke and retained across later edits."},
+		{key: "domain", label: "Node domain", note: "The spoke's proxy domain. " + noteDNSCredential},
+		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Credentials are generated on the spoke."},
 	}
 	realitySNI := fieldFromParameter(uiparams.RealitySNIField())
 	realitySNI.skip = noReality
@@ -322,22 +322,22 @@ func (m *nodeManager) beginForm() {
 			}
 			portField := fieldFromParameter(parameter)
 			portField.def = strconv.Itoa(defaultSpokePort(protocol))
-			portField.note = "Public listen port on this spoke. Credentials are generated locally on first install."
+			portField.note = uiparams.NotePortListen
 			portField.skip = missingProtocol(protocol)
 			portField.badgeFunc = protocolParameterBadge(protocol)
 			fields = append(fields, portField)
 		}
 	}
 	fields = append(fields,
-		field{key: "monitor", label: "Enable monitor on spoke", def: "yes", options: []string{"yes", "no"}, note: "Monitor data is available only to the hub through the authenticated Agent API over WireGuard."},
-		field{key: "monitor_alias", label: "Spoke monitor alias (optional)", note: "Blank uses the node alias.", skip: monitorDisabled},
-		field{key: "monitor_interface", label: "Monitored network interface", def: "auto", note: "Use auto to detect the spoke's default egress interface.", skip: monitorDisabled},
-		field{key: "monitor_interval_seconds", label: "Sampling interval (seconds)", def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), skip: monitorDisabled},
-		field{key: "traffic_in_limit", label: "Inbound traffic limit", def: "0", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: monitorDisabled},
-		field{key: "traffic_out_limit", label: "Outbound traffic limit", def: "0", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: monitorDisabled},
-		field{key: "traffic_total_limit", label: "Total traffic limit", def: "0", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: monitorDisabled},
-		field{key: "reset_day", label: "Monthly reset day (1-28)", def: strconv.Itoa(deploy.DefaultResetDay), skip: monitorDisabled},
-		field{key: "reset_hour", label: "Monthly reset hour GMT (0-23)", def: strconv.Itoa(deploy.DefaultResetHour), skip: monitorDisabled},
+		field{key: "monitor", label: labelSpokeMonitorEnabled, def: "yes", options: []string{"yes", "no"}, note: "Choose no to skip the monitor on this spoke."},
+		field{key: "monitor_alias", label: labelSpokeMonitorAlias, note: uiparams.NoteSpokeMonitorAlias, skip: monitorDisabled},
+		field{key: "monitor_interface", label: uiparams.LabelMonitorInterface, def: "auto", note: uiparams.NoteMonitorInterface, skip: monitorDisabled},
+		field{key: "monitor_interval_seconds", label: uiparams.LabelMonitorInterval, def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), note: uiparams.NoteMonitorInterval, skip: monitorDisabled},
+		field{key: "traffic_in_limit", label: uiparams.LabelTrafficIn, def: "0", note: uiparams.NoteTrafficIn, skip: monitorDisabled},
+		field{key: "traffic_out_limit", label: uiparams.LabelTrafficOut, def: "0", note: uiparams.NoteTrafficOut, skip: monitorDisabled},
+		field{key: "traffic_total_limit", label: uiparams.LabelTrafficTotal, def: "0", note: uiparams.NoteTrafficTotal, skip: monitorDisabled},
+		field{key: "reset_day", label: uiparams.LabelResetDay, def: strconv.Itoa(deploy.DefaultResetDay), note: uiparams.NoteResetDay, skip: monitorDisabled},
+		field{key: "reset_hour", label: uiparams.LabelResetHour, def: strconv.Itoa(deploy.DefaultResetHour), note: uiparams.NoteResetHour, skip: monitorDisabled},
 	)
 	m.form.begin(fields, nil, m.validateForm)
 	m.phase = nodePhaseForm
@@ -635,7 +635,7 @@ func (m *nodeManager) View() string {
 
 func (m *nodeManager) removeConfirmView() string {
 	return flowTitle.Render("Remove spoke node") + "\n\n" +
-		statusWarn.Render("This will contact the spoke and remotely uninstall its proxy runtime, Agent, and WireGuard configuration.") + "\n" +
+		statusWarn.Render("Contacts the spoke and removes its proxy runtime, Agent, and WireGuard configuration.") + "\n" +
 		"The Hub will then revoke the peer and remove the spoke from its registry.\n\n" +
 		"Spoke: " + nodeLabel(m.pendingRemove) + "\n\n" +
 		"Press y to remove, or n/Esc to cancel."
@@ -679,7 +679,7 @@ func (m *nodeManager) listView() string {
 		b.WriteString(notice + "\n\n")
 	}
 	if !m.hubReady {
-		b.WriteString(statusWarn.Render("Install the hub first — spoke nodes join the hub's overlay.") + "\n\n")
+		b.WriteString(statusWarn.Render("Run Setup first — spoke nodes join the hub's overlay.") + "\n\n")
 	}
 	if len(m.list) == 0 {
 		b.WriteString(dimStyle.Render("No spoke nodes registered.") + "\n\n")

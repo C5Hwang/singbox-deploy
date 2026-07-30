@@ -425,7 +425,7 @@ func (sm *selfUpdateManager) confirmView() string {
 		summaryRow("Current version", or(sm.currentVersion, "dev")),
 		summaryRow("Target version", sm.latestTag),
 		summaryBlank(),
-		summaryText("This will download the new release and replace the current binary. After a committed update, this TUI will exit so the new binary can be relaunched."),
+		summaryText("Downloads the new release and replaces the current binary. The TUI exits afterwards so you can relaunch it."),
 	}
 	return flowTitle.Render("Self-update · Confirm") + "\n\n" + renderSummary(rows)
 }

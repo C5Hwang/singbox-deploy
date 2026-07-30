@@ -288,7 +288,7 @@ func (sm *subscriptionManager) editSpokeSelectField() []field {
 		key:     "edit_spoke_select",
 		label:   "Spoke subscription settings to edit",
 		options: options,
-		note:    "The hub talks to this node over WireGuard; no public subscription endpoint is used.",
+		note:    noteSpokeTransport,
 	}}
 }
 
@@ -298,8 +298,8 @@ func (sm *subscriptionManager) startEditSpokeForm() {
 	}
 	node := sm.nodes[sm.editNodeIndex]
 	fields := []field{
-		{key: "spoke_alias", label: "Spoke subscription alias (optional)", note: "Names this spoke's client nodes. Blank uses its management alias."},
-		{key: "include_subscription", label: "Include in hub subscription", options: []string{"yes", "no"}, note: "No subscription endpoint is exposed on the spoke; the hub fetches node data over WireGuard."},
+		{key: "spoke_alias", label: labelSpokeSubscriptionAlias + " (optional)", note: noteSpokeSubscriptionAlias},
+		{key: "include_subscription", label: "Include in hub subscription", options: []string{"yes", "no"}, note: "Choose no to drop this spoke's nodes from the hub subscription."},
 	}
 	sm.phase = subscriptionPhaseForm
 	if sm.parameterForm.begin(fields, map[string]string{
@@ -583,7 +583,7 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 		},
 		RunCommands: deploy.RunCommands,
 		CheckPorts: func(ctx context.Context, domain string, port int) error {
-			return system.CheckPorts(ctx, domain, []system.Port{{Number: port, Proto: "tcp", Label: "subscription/Nginx", Public: true}})
+			return system.CheckPorts(ctx, domain, []system.Port{{Number: port, Proto: "tcp", Label: "subscription", Public: true}})
 		},
 	}
 	if sm.action == subscriptionActionLocal {
@@ -629,19 +629,19 @@ func (sm *subscriptionManager) markRunFailed() { sm.phase = subscriptionPhaseDon
 
 func (sm *subscriptionManager) View() string {
 	if sm.loadErr != nil {
-		return flowTitle.Render("Manage Subscriptions") + "\n\n" + flowErr.Render(sm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run install first.")
+		return flowTitle.Render(titleSubscriptions) + "\n\n" + flowErr.Render(sm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run Setup first.")
 	}
 	switch sm.phase {
 	case subscriptionPhaseAction:
 		return sm.actionView()
 	case subscriptionPhaseForm:
-		return sm.parameterForm.View("Manage Subscriptions · Parameters")
+		return sm.parameterForm.View(titleSubscriptions + " · Parameters")
 	case subscriptionPhaseReorder:
-		return sm.reorder.View("Manage Subscriptions · Reorder")
+		return sm.reorder.View(titleSubscriptions + " · Reorder")
 	case subscriptionPhaseConfirm:
 		return sm.confirmView()
 	case subscriptionPhaseRunning:
-		return commandRunningView(sm, "Manage Subscriptions · Running")
+		return commandRunningView(sm, titleSubscriptions+" · Running")
 	case subscriptionPhaseDone:
 		if sm.runErr != nil {
 			return commandFailedView(sm, "Subscription update failed")
@@ -654,14 +654,14 @@ func (sm *subscriptionManager) View() string {
 
 func (sm *subscriptionManager) actionView() string {
 	rows := []summaryLine{
-		summaryRow("Subscription port", strconv.Itoa(sm.cfg.SubscribePort)),
-		summaryRow("Subscription salt", sm.cfg.Salt),
+		summaryRow(uiparams.LabelSubscribePort, strconv.Itoa(sm.cfg.SubscribePort)),
+		summaryRow(uiparams.LabelSubscribeSalt, sm.cfg.Salt),
 		summaryRow("Spoke nodes", strconv.Itoa(len(sm.nodes))),
 		summaryRow("Included spokes", strconv.Itoa(len(sm.includedNodes()))),
 		summaryRow("Control path", "WireGuard only"),
 	}
 	var b strings.Builder
-	b.WriteString(flowTitle.Render("Manage Subscriptions") + "\n\n")
+	b.WriteString(flowTitle.Render(titleSubscriptions) + "\n\n")
 	b.WriteString(renderSummary(rows) + "\n")
 	if !sm.canApply() {
 		b.WriteString(flowErr.Render(sm.applyBlocker()) + "\n")
@@ -713,11 +713,11 @@ func (sm *subscriptionManager) confirmView() string {
 	}
 	rows = append(rows, summaryBlank())
 	if sm.action == subscriptionActionDisplayName {
-		rows = append(rows, summaryText("This will regenerate sing-box config and subscription files."))
+		rows = append(rows, summaryText("Regenerates the sing-box config and subscription files."))
 	} else {
-		rows = append(rows, summaryText("This will regenerate subscription files."))
+		rows = append(rows, summaryText("Regenerates the subscription files."))
 	}
-	return flowTitle.Render("Manage Subscriptions · Confirm") + "\n\n" + renderSummary(rows)
+	return flowTitle.Render(titleSubscriptions+" · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (sm *subscriptionManager) doneSummary() string {
@@ -726,8 +726,8 @@ func (sm *subscriptionManager) doneSummary() string {
 		cfg = sm.cfg
 	}
 	return renderSummary([]summaryLine{
-		summaryRow("Display name", cfg.DisplayName),
-		summaryRow("Subscription port", strconv.Itoa(cfg.SubscribePort)),
+		summaryRow(uiparams.LabelDisplayName, cfg.DisplayName),
+		summaryRow(uiparams.LabelSubscribePort, strconv.Itoa(cfg.SubscribePort)),
 		summaryRow("Included spokes", strconv.Itoa(len(sm.includedNodes()))),
 		summaryRow("Spoke transport", "WireGuard"),
 		summaryRow("Subscriptions", "refreshed"),
@@ -760,7 +760,7 @@ func (sm *subscriptionManager) actions() []subscriptionActionItem {
 	return []subscriptionActionItem{
 		{separator: true, label: "Hub"},
 		{action: subscriptionActionDisplayName, label: "Edit hub display name"},
-		{action: subscriptionActionLocal, label: "Edit hub subscription salt & port"},
+		{action: subscriptionActionLocal, label: "Edit hub subscription settings"},
 		{separator: true, label: "Spokes (WireGuard)"},
 		{action: subscriptionActionEditSpoke, label: "Edit spoke subscription settings"},
 		{action: subscriptionActionReorder, label: "Reorder hub and spoke sources"},

@@ -45,7 +45,7 @@ func TestNodesMenuEntryGatedBeforeHubInstall(t *testing.T) {
 		t.Skip("a hub is installed on this host; gate test not applicable")
 	}
 	view := m.View()
-	if !strings.Contains(view, "Install the hub first") {
+	if !strings.Contains(view, "Run Setup first") {
 		t.Fatalf("node view should gate on hub install:\n%s", view)
 	}
 	// Selecting "Add spoke node" while gated surfaces the reason instead of a form.

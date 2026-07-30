@@ -445,7 +445,7 @@ func (tm *monitorManager) startSpokeTrafficSelector() {
 		key:     "adjust_spoke_traffic_select",
 		label:   "Spoke traffic counters to adjust",
 		options: spokeLabels(spokes),
-		note:    "The stable node ID identifies the spoke; fresh usage is read through its authenticated WireGuard Agent.",
+		note:    noteSpokeTransport,
 	}})
 }
 
@@ -510,7 +510,7 @@ func (tm *monitorManager) editSpokeMonitorSelectField() []field {
 		key:     "edit_spoke_monitor_select",
 		label:   "Spoke monitor settings to edit",
 		options: spokeLabels(tm.nodes),
-		note:    "Monitor configuration and data are exchanged only over the WireGuard overlay.",
+		note:    noteSpokeTransport,
 	}}
 }
 
@@ -533,15 +533,15 @@ func (tm *monitorManager) startEditSpokeMonitorForm() {
 		iface = "auto"
 	}
 	fields := []field{
-		{key: "monitor", label: "Enable monitor on spoke", options: []string{"yes", "no"}, note: "Monitor data is served only through the authenticated Agent API over WireGuard."},
-		{key: "monitor_alias", label: "Spoke monitor alias", skip: disabled},
-		{key: "monitor_interface", label: "Monitored network interface", note: "Use auto to detect the default egress interface.", skip: disabled},
-		{key: "monitor_interval_seconds", label: "Sampling interval (seconds)", skip: disabled},
-		{key: "traffic_in_limit", label: "Inbound traffic limit", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: disabled},
-		{key: "traffic_out_limit", label: "Outbound traffic limit", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: disabled},
-		{key: "traffic_total_limit", label: "Total traffic limit", note: uiparams.TrafficSizeNote("0 means unlimited."), skip: disabled},
-		{key: "reset_day", label: "Monthly reset day (1-28)", skip: disabled},
-		{key: "reset_hour", label: "Monthly reset hour GMT (0-23)", skip: disabled},
+		{key: "monitor", label: labelSpokeMonitorEnabled, options: []string{"yes", "no"}, note: "Choose no to stop the monitor on this spoke."},
+		{key: "monitor_alias", label: labelSpokeMonitorAlias, note: uiparams.NoteSpokeMonitorAlias, skip: disabled},
+		{key: "monitor_interface", label: uiparams.LabelMonitorInterface, note: uiparams.NoteMonitorInterface, skip: disabled},
+		{key: "monitor_interval_seconds", label: uiparams.LabelMonitorInterval, note: uiparams.NoteMonitorInterval, skip: disabled},
+		{key: "traffic_in_limit", label: uiparams.LabelTrafficIn, note: uiparams.NoteTrafficIn, skip: disabled},
+		{key: "traffic_out_limit", label: uiparams.LabelTrafficOut, note: uiparams.NoteTrafficOut, skip: disabled},
+		{key: "traffic_total_limit", label: uiparams.LabelTrafficTotal, note: uiparams.NoteTrafficTotal, skip: disabled},
+		{key: "reset_day", label: uiparams.LabelResetDay, note: uiparams.NoteResetDay, skip: disabled},
+		{key: "reset_hour", label: uiparams.LabelResetHour, note: uiparams.NoteResetHour, skip: disabled},
 	}
 	seed := map[string]string{
 		"monitor":                  yesNoString(node.Monitor),
@@ -847,7 +847,7 @@ func (tm *monitorManager) markRunFailed() { tm.phase = monitorPhaseDone }
 
 func (tm *monitorManager) View() string {
 	if tm.loadErr != nil {
-		return flowTitle.Render("Monitor") + "\n\n" + flowErr.Render(tm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run install first.")
+		return flowTitle.Render(titleMonitoring) + "\n\n" + flowErr.Render(tm.loadErr.Error()) + "\n\n" + dimStyle.Render("Run Setup first.")
 	}
 	switch tm.phase {
 	case monitorPhaseAction:
@@ -870,7 +870,7 @@ func (tm *monitorManager) View() string {
 	case monitorPhaseServiceConfirm:
 		return tm.serviceConfirmView()
 	case monitorPhaseLogsLoading:
-		return flowTitle.Render("Monitor · Logs") + "\n\n" + dimStyle.Render("Loading service logs…")
+		return flowTitle.Render(titleMonitoring+" · Logs") + "\n\n" + dimStyle.Render("Loading service logs…")
 	case monitorPhaseLogs:
 		return tm.serviceLogsView()
 	case monitorPhaseSpokeUsageLoading:
@@ -892,12 +892,12 @@ func (tm *monitorManager) loadingSpokeTrafficUsageView() string {
 func (tm *monitorManager) actionView() string {
 	rows := []summaryLine{
 		summaryRow("Target", "Hub"),
-		summaryRow("Monitor", yesNoString(tm.cfg.DeployMonitor)),
-		summaryRow("Monitor frontend", yesNoString(tm.cfg.DeployMonitorFrontend)),
-		summaryRow("Monitor alias", or(tm.cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
-		summaryRow("Monitor UI port", strconv.Itoa(tm.cfg.MonitorPublicPort)),
-		summaryRow("Monitor local port", strconv.Itoa(tm.cfg.MonitorPort)),
-		summaryRow("Monitor interface", or(tm.cfg.MonitorInterface, "auto/default")),
+		summaryRow(uiparams.LabelMonitorEnabled, yesNoString(tm.cfg.DeployMonitor)),
+		summaryRow(uiparams.LabelMonitorWebUI, yesNoString(tm.cfg.DeployMonitorFrontend)),
+		summaryRow(uiparams.LabelMonitorAlias, or(tm.cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
+		summaryRow(uiparams.LabelMonitorPublic, strconv.Itoa(tm.cfg.MonitorPublicPort)),
+		summaryRow(uiparams.LabelMonitorPort, strconv.Itoa(tm.cfg.MonitorPort)),
+		summaryRow(uiparams.LabelMonitorInterface, or(tm.cfg.MonitorInterface, "auto")),
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(tm.cfg), uiparams.DefaultResetHour(tm.cfg))),
 		summaryRow("Current inbound", byteSize(tm.totals.InBytes)),
 		summaryRow("Current outbound", byteSize(tm.totals.OutBytes)),
@@ -907,7 +907,7 @@ func (tm *monitorManager) actionView() string {
 		summaryRow("Hub monitor service", or(tm.serviceState, "unknown")),
 	}
 	var b strings.Builder
-	b.WriteString(flowTitle.Render("Monitor") + "\n\n")
+	b.WriteString(flowTitle.Render(titleMonitoring) + "\n\n")
 	b.WriteString(renderSummary(rows) + "\n")
 	if !tm.canApply() {
 		b.WriteString(flowErr.Render(tm.applyBlocker()) + "\n")
@@ -935,16 +935,16 @@ func (tm *monitorManager) confirmView() string {
 	switch tm.action {
 	case monitorActionLocal:
 		rows = append(rows,
-			summaryRow("Deploy monitor", tm.values["monitor"]),
-			summaryRow("Monitor frontend", tm.values["monitor_frontend"]),
-			summaryRow("Monitor alias", tm.values["monitor_alias"]),
-			summaryRow("Monitor UI port", tm.values["monitor_public_port"]),
-			summaryRow("Monitor local port", tm.values["monitor_port"]),
-			summaryRow("Monitor interface", tm.values["monitor_interface"]),
-			summaryRow("Sampling interval", tm.values["monitor_interval_seconds"]+" seconds"),
-			summaryRow("Inbound limit", tm.values["traffic_in_limit"]),
-			summaryRow("Outbound limit", tm.values["traffic_out_limit"]),
-			summaryRow("Total limit", tm.values["traffic_total_limit"]),
+			summaryRow(uiparams.LabelMonitorEnabled, tm.values["monitor"]),
+			summaryRow(uiparams.LabelMonitorWebUI, tm.values["monitor_frontend"]),
+			summaryRow(uiparams.LabelMonitorAlias, tm.values["monitor_alias"]),
+			summaryRow(uiparams.LabelMonitorPublic, tm.values["monitor_public_port"]),
+			summaryRow(uiparams.LabelMonitorPort, tm.values["monitor_port"]),
+			summaryRow(uiparams.LabelMonitorInterface, tm.values["monitor_interface"]),
+			summaryRow(uiparams.LabelMonitorInterval, tm.values["monitor_interval_seconds"]),
+			summaryRow(uiparams.LabelTrafficIn, tm.values["traffic_in_limit"]),
+			summaryRow(uiparams.LabelTrafficOut, tm.values["traffic_out_limit"]),
+			summaryRow(uiparams.LabelTrafficTotal, tm.values["traffic_total_limit"]),
 			summaryRow("Next reset", nextResetFromValues(tm.values["reset_day"], tm.values["reset_hour"])),
 		)
 	case monitorActionUsage:
@@ -966,24 +966,24 @@ func (tm *monitorManager) confirmView() string {
 			node := tm.nodes[tm.editNodeIndex]
 			rows = append(rows,
 				summaryRow("Spoke", spokeOptionLabel(node)),
-				summaryRow("Monitor enabled", tm.values["monitor"]),
-				summaryRow("Monitor alias", tm.values["monitor_alias"]),
-				summaryRow("Interface", tm.values["monitor_interface"]),
-				summaryRow("Sampling interval", tm.values["monitor_interval_seconds"]+" seconds"),
-				summaryRow("Inbound limit", tm.values["traffic_in_limit"]),
-				summaryRow("Outbound limit", tm.values["traffic_out_limit"]),
-				summaryRow("Total limit", tm.values["traffic_total_limit"]),
+				summaryRow(labelSpokeMonitorEnabled, tm.values["monitor"]),
+				summaryRow(uiparams.LabelMonitorAlias, tm.values["monitor_alias"]),
+				summaryRow(uiparams.LabelMonitorInterface, tm.values["monitor_interface"]),
+				summaryRow(uiparams.LabelMonitorInterval, tm.values["monitor_interval_seconds"]),
+				summaryRow(uiparams.LabelTrafficIn, tm.values["traffic_in_limit"]),
+				summaryRow(uiparams.LabelTrafficOut, tm.values["traffic_out_limit"]),
+				summaryRow(uiparams.LabelTrafficTotal, tm.values["traffic_total_limit"]),
 				summaryRow("Next reset", nextResetFromValues(tm.values["reset_day"], tm.values["reset_hour"])),
 			)
 		}
 	}
 	rows = append(rows, summaryBlank())
 	if tm.action == monitorActionSpokeUsage {
-		rows = append(rows, summaryText("This will replace the selected spoke's current quota-cycle counters and refresh /monitor data."))
+		rows = append(rows, summaryText("Replaces the selected spoke's current quota-cycle counters and refreshes /monitor data."))
 	} else {
-		rows = append(rows, summaryText("This will update monitor state and refresh /monitor data."))
+		rows = append(rows, summaryText("Updates the monitor state and refreshes /monitor data."))
 	}
-	return flowTitle.Render("Monitor · Confirm") + "\n\n" + renderSummary(rows)
+	return flowTitle.Render(titleMonitoring+" · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (tm *monitorManager) doneSummary() string {
@@ -1089,9 +1089,9 @@ func (tm *monitorManager) serviceConfirmView() string {
 		summaryRow("Target", "Hub"),
 		summaryRow("Service", or(tm.serviceState, "unknown")),
 		summaryBlank(),
-		summaryText("This will run systemctl " + tm.serviceSystemctlAction() + " " + system.MonitorService + "."),
+		summaryText("Runs systemctl " + tm.serviceSystemctlAction() + " " + system.MonitorService + "."),
 	}
-	return flowTitle.Render("Monitor · Confirm") + "\n\n" + renderSummary(rows)
+	return flowTitle.Render(titleMonitoring+" · Confirm") + "\n\n" + renderSummary(rows)
 }
 
 func (tm *monitorManager) serviceActionLabel() string {
@@ -1168,7 +1168,7 @@ func (tm *monitorManager) loadServiceLogsCmd() tea.Cmd {
 }
 
 func (tm *monitorManager) serviceLogsView() string {
-	body := flowTitle.Render("Monitor · Logs") + "\n\n"
+	body := flowTitle.Render(titleMonitoring+" · Logs") + "\n\n"
 	if tm.svcLogs.logErr != nil {
 		body += flowErr.Render(tm.svcLogs.logErr.Error()) + "\n\n"
 	}
