@@ -34,6 +34,10 @@ func fakeDownload(bodies map[string][]byte) func(context.Context, string, string
 
 func acceptCandidate(context.Context, string, string) error { return nil }
 
+func reportInstalled(version string) func(context.Context, string) (string, error) {
+	return func(context.Context, string) (string, error) { return version, nil }
+}
+
 func TestVerifyChecksumMatch(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
@@ -74,10 +78,12 @@ func TestRunRejectsTamperedBinary(t *testing.T) {
 		"SHA256SUMS":                 []byte(sha256Hex(good) + "  singbox-deploy-linux-amd64\n"),
 	}
 	m := &Manager{
-		Download:     fakeDownload(bodies),
-		LatestStable: func(context.Context) (string, error) { return "v9.9.9", nil },
-		GOARCH:       "amd64",
-		InstallBin:   filepath.Join(t.TempDir(), "singbox-deploy"),
+		Version:          "v1.0.0",
+		Download:         fakeDownload(bodies),
+		LatestStable:     func(context.Context) (string, error) { return "v9.9.9", nil },
+		GOARCH:           "amd64",
+		InstallBin:       filepath.Join(t.TempDir(), "singbox-deploy"),
+		InstalledVersion: reportInstalled("v1.0.0"),
 	}
 
 	_, err := m.Run(context.Background(), "v9.9.9")
@@ -165,8 +171,10 @@ func TestRunCallsReplaceFailureRollbackAfterSpokesPrepared(t *testing.T) {
 	rolledBack := false
 	activated := false
 	m := &Manager{
+		Version:          "v1.0.0",
 		Download:         fakeDownload(bodies),
 		InspectCandidate: acceptCandidate,
+		InstalledVersion: reportInstalled("v1.0.0"),
 		GOARCH:           "amd64",
 		InstallBin:       installPath,
 		BeforeReplace: func(_ context.Context, candidatePath, targetVersion string) error {
@@ -212,8 +220,10 @@ func TestRunCallsAfterReplaceForCommittedHub(t *testing.T) {
 	installPath := filepath.Join(root, "singbox-deploy")
 	activated := false
 	m := &Manager{
+		Version:          "v1.0.0",
 		Download:         fakeDownload(bodies),
 		InspectCandidate: acceptCandidate,
+		InstalledVersion: reportInstalled("v1.0.0"),
 		GOARCH:           "amd64",
 		InstallBin:       installPath,
 		AfterReplace: func(_ context.Context, targetVersion string) error {
@@ -250,8 +260,10 @@ func TestRunRejectsConcurrentUpdateBeforeDownloadOrSpokeMutation(t *testing.T) {
 	enteredSpokeStep := make(chan struct{})
 	releaseSpokeStep := make(chan struct{})
 	first := &Manager{
+		Version:          "v1.0.0",
 		Download:         fakeDownload(bodies),
 		InspectCandidate: acceptCandidate,
+		InstalledVersion: reportInstalled("v1.0.0"),
 		GOARCH:           "amd64",
 		InstallBin:       installPath,
 		BeforeReplace: func(context.Context, string, string) error {
@@ -269,11 +281,13 @@ func TestRunRejectsConcurrentUpdateBeforeDownloadOrSpokeMutation(t *testing.T) {
 
 	var secondDownloads atomic.Int32
 	second := &Manager{
+		Version: "v1.0.0",
 		Download: func(context.Context, string, string) error {
 			secondDownloads.Add(1)
 			return nil
 		},
 		InspectCandidate: acceptCandidate,
+		InstalledVersion: reportInstalled("v1.0.0"),
 		GOARCH:           "amd64",
 		InstallBin:       installPath,
 		BeforeReplace: func(context.Context, string, string) error {
@@ -301,6 +315,88 @@ func TestRunRejectsConcurrentUpdateBeforeDownloadOrSpokeMutation(t *testing.T) {
 	}
 }
 
+func TestRunOldProcessSkipsTransactionAlreadyCommittedByPeer(t *testing.T) {
+	root := t.TempDir()
+	installPath := filepath.Join(root, "singbox-deploy")
+	oldBinary := []byte("#!/bin/sh\nprintf '%s\\n' v1.0.0\n")
+	newBinary := []byte("#!/bin/sh\nprintf '%s\\n' v2.0.0\n")
+	if err := os.WriteFile(installPath, oldBinary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bodies := map[string][]byte{
+		"singbox-deploy-linux-amd64": newBinary,
+		"SHA256SUMS":                 []byte(sha256Hex(newBinary) + "  singbox-deploy-linux-amd64\n"),
+	}
+	firstSpokeCalls := 0
+	first := &Manager{
+		Version:    "v1.0.0",
+		Download:   fakeDownload(bodies),
+		GOARCH:     "amd64",
+		InstallBin: installPath,
+		BeforeReplace: func(context.Context, string, string) error {
+			firstSpokeCalls++
+			return nil
+		},
+	}
+	if _, err := first.Run(context.Background(), "v2.0.0"); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+
+	var secondDownloads atomic.Int32
+	secondSpokeCalls := 0
+	secondRollbackCalls := 0
+	staleProcess := &Manager{
+		Version: "v1.0.0",
+		Download: func(context.Context, string, string) error {
+			secondDownloads.Add(1)
+			return errors.New("stale process must not download")
+		},
+		GOARCH:     "amd64",
+		InstallBin: installPath,
+		BeforeReplace: func(context.Context, string, string) error {
+			secondSpokeCalls++
+			return nil
+		},
+		ReplaceFailed: func(context.Context, string) error {
+			secondRollbackCalls++
+			return nil
+		},
+	}
+	result, err := staleProcess.Run(context.Background(), "v2.0.0")
+	if err != nil {
+		t.Fatalf("stale process retry: %v", err)
+	}
+	if !result.UpToDate || result.Tag != "v2.0.0" {
+		t.Fatalf("stale process result = %+v, want target already installed", result)
+	}
+	if firstSpokeCalls != 1 || secondSpokeCalls != 0 || secondRollbackCalls != 0 {
+		t.Fatalf("spoke calls: first=%d second=%d rollback=%d", firstSpokeCalls, secondSpokeCalls, secondRollbackCalls)
+	}
+	if downloads := secondDownloads.Load(); downloads != 0 {
+		t.Fatalf("stale process downloads = %d, want 0", downloads)
+	}
+}
+
+func TestRunRejectsUnexpectedInstalledVersionAfterLock(t *testing.T) {
+	downloads := 0
+	m := &Manager{
+		Version: "v1.0.0",
+		Download: func(context.Context, string, string) error {
+			downloads++
+			return nil
+		},
+		InstalledVersion: reportInstalled("v1.5.0"),
+		InstallBin:       filepath.Join(t.TempDir(), "singbox-deploy"),
+	}
+	_, err := m.Run(context.Background(), "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "restart the Hub TUI") {
+		t.Fatalf("unexpected installed version error = %v", err)
+	}
+	if downloads != 0 {
+		t.Fatalf("downloads = %d, want 0", downloads)
+	}
+}
+
 func TestRunReturnsCommittedResultAndCleansUpWhenActivationFails(t *testing.T) {
 	body := []byte("verified-candidate")
 	bodies := map[string][]byte{
@@ -310,8 +406,10 @@ func TestRunReturnsCommittedResultAndCleansUpWhenActivationFails(t *testing.T) {
 	root := t.TempDir()
 	installPath := filepath.Join(root, "singbox-deploy")
 	m := &Manager{
+		Version:          "v1.0.0",
 		Download:         fakeDownload(bodies),
 		InspectCandidate: acceptCandidate,
+		InstalledVersion: reportInstalled("v1.0.0"),
 		GOARCH:           "amd64",
 		InstallBin:       installPath,
 		AfterReplace: func(context.Context, string) error {
@@ -356,9 +454,11 @@ func TestRunRejectsWrongCandidateVersionBeforeReplace(t *testing.T) {
 	}
 	beforeReplace := false
 	m := &Manager{
-		Download:   fakeDownload(bodies),
-		GOARCH:     "amd64",
-		InstallBin: installPath,
+		Version:          "v1.0.0",
+		Download:         fakeDownload(bodies),
+		GOARCH:           "amd64",
+		InstallBin:       installPath,
+		InstalledVersion: reportInstalled("v1.0.0"),
 		BeforeReplace: func(context.Context, string, string) error {
 			beforeReplace = true
 			return nil
@@ -394,9 +494,11 @@ func TestRunRejectsDamagedCandidateBeforeReplace(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &Manager{
-		Download:   fakeDownload(bodies),
-		GOARCH:     "amd64",
-		InstallBin: installPath,
+		Version:          "v1.0.0",
+		Download:         fakeDownload(bodies),
+		GOARCH:           "amd64",
+		InstallBin:       installPath,
+		InstalledVersion: reportInstalled("v1.0.0"),
 	}
 
 	_, err := m.Run(context.Background(), "v2.0.0")

@@ -58,6 +58,10 @@ type Manager struct {
 	// reports the requested release. It is injectable so tests do not need to
 	// manufacture platform-specific executables.
 	InspectCandidate func(ctx context.Context, candidatePath, targetVersion string) error
+	// InstalledVersion reads the executable currently present at InstallBin.
+	// The transaction rechecks it after taking the cross-process lock so an old
+	// TUI cannot repeat or roll back an update completed by another process.
+	InstalledVersion func(ctx context.Context, installPath string) (string, error)
 	Progress         func(deploy.Event)
 	Version          string
 	GOARCH           string
@@ -96,6 +100,9 @@ func (m *Manager) Defaults() {
 	if m.InspectCandidate == nil {
 		m.InspectCandidate = inspectCandidate
 	}
+	if m.InstalledVersion == nil {
+		m.InstalledVersion = inspectVersion
+	}
 	if m.GOARCH == "" {
 		m.GOARCH = "amd64"
 	}
@@ -126,6 +133,19 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 		return Result{}, err
 	}
 	defer unlock()
+	installedVersion, err := m.InstalledVersion(ctx, m.InstallBin)
+	if err != nil {
+		return Result{}, fmt.Errorf("inspect installed hub after locking self-update: %w", err)
+	}
+	if versionsEqual(installedVersion, tag) {
+		return Result{Tag: tag, UpToDate: true}, nil
+	}
+	if !versionsEqual(installedVersion, m.Version) {
+		return Result{}, fmt.Errorf(
+			"installed hub reports %q while this updater process reports %q; restart the Hub TUI before self-update",
+			installedVersion, m.Version,
+		)
+	}
 
 	asset := fmt.Sprintf("singbox-deploy-linux-%s", m.GOARCH)
 	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, asset)
@@ -247,6 +267,17 @@ func canonicalSemver(version string) string {
 	return ""
 }
 
+func versionsEqual(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	leftSemver := canonicalSemver(left)
+	rightSemver := canonicalSemver(right)
+	if leftSemver != "" && rightSemver != "" {
+		return semver.Compare(leftSemver, rightSemver) == 0
+	}
+	return left == right
+}
+
 func lockUpdate(installPath string) (func(), error) {
 	lockPath := filepath.Join(filepath.Dir(installPath), "."+filepath.Base(installPath)+"-update.lock")
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
@@ -271,16 +302,24 @@ func lockUpdate(installPath string) (func(), error) {
 }
 
 func inspectCandidate(ctx context.Context, path, expectedVersion string) error {
+	got, err := inspectVersion(ctx, path)
+	if err != nil {
+		return fmt.Errorf("run candidate --version: %w", err)
+	}
+	if got != expectedVersion {
+		return fmt.Errorf("candidate reports version %q, expected %q", got, expectedVersion)
+	}
+	return nil
+}
+
+func inspectVersion(ctx context.Context, path string) (string, error) {
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(checkCtx, path, "--version").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("run candidate --version: %w", err)
+		return "", err
 	}
-	if got := strings.TrimSpace(string(out)); got != expectedVersion {
-		return fmt.Errorf("candidate reports version %q, expected %q", got, expectedVersion)
-	}
-	return nil
+	return strings.TrimSpace(string(out)), nil
 }
 
 // verifyChecksum confirms the SHA-256 of binPath matches the entry for asset in
