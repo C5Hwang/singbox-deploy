@@ -90,6 +90,10 @@ func TestRunRejectsTamperedBinary(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected checksum mismatch failure, got %v", err)
 	}
+	updateDir := filepath.Join(filepath.Dir(m.InstallBin), ".singbox-deploy-update")
+	if _, statErr := os.Stat(updateDir); !os.IsNotExist(statErr) {
+		t.Fatalf("failed update staging directory remains: %v", statErr)
+	}
 }
 
 func TestValidateTransitionPreventsDowngradeAndRecognizesEquality(t *testing.T) {

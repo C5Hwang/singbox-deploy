@@ -213,6 +213,9 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 
 	if err := deploy.RunSteps(ctx, m.Progress, steps); err != nil {
 		if !committed {
+			if cleanupErr := os.RemoveAll(updateDir); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("cleanup failed update: %w", cleanupErr))
+			}
 			return Result{}, err
 		}
 		// RunSteps stops at the first error, so an activation failure would
