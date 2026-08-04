@@ -26,3 +26,21 @@ func TestPrintVersion(t *testing.T) {
 		t.Fatalf("interactive invocation wrote %q", out.String())
 	}
 }
+
+func TestCandidateInspectionAndAgentExportSkipHubMigration(t *testing.T) {
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{args: []string{"singbox-deploy"}, want: true},
+		{args: []string{"singbox-deploy", "monitor", "serve"}, want: true},
+		{args: []string{"singbox-deploy", "cert", "renew"}, want: true},
+		{args: []string{"singbox-deploy", "--version"}, want: false},
+		{args: []string{"singbox-deploy", "agent", "export", "--arch", "amd64"}, want: false},
+	}
+	for _, tt := range tests {
+		if got := shouldMigrateHubSubscriptions(tt.args); got != tt.want {
+			t.Errorf("shouldMigrateHubSubscriptions(%q) = %v, want %v", tt.args, got, tt.want)
+		}
+	}
+}

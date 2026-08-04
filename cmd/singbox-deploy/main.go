@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/ui"
 )
 
@@ -17,6 +20,17 @@ func main() {
 		return
 	}
 	ui.SetVersion(version)
+	if shouldMigrateHubSubscriptions(os.Args) {
+		migrationCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		_, err := migrateHubSubscriptions(migrationCtx, paths.DefaultLayout(), version)
+		cancel()
+		if err != nil {
+			// Leave the marker absent so the next Hub process retries. A stale
+			// subscription must not prevent an otherwise healthy control plane or
+			// monitor service from starting.
+			fmt.Fprintln(os.Stderr, "warning: migrate subscriptions:", err)
+		}
+	}
 	// The monitor subcommand runs the long-lived monitor service and is
 	// dispatched before the interactive UI. It is wired in the monitor task.
 	if len(os.Args) > 1 && os.Args[1] == "monitor" {

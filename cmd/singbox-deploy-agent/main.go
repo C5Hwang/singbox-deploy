@@ -42,6 +42,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if _, err := migrateAgentSubscriptions(context.Background(), layout); err != nil {
+		// Keep the authenticated control API available so the Hub can inspect or
+		// repair the spoke. The absent marker makes the next Agent start retry.
+		fmt.Fprintln(os.Stderr, "warning: migrate subscriptions:", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
