@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDynamicCountryDetection(t *testing.T) {
@@ -113,6 +114,49 @@ func TestFillProfilesProducesValidOutput(t *testing.T) {
 		}
 	}
 	t.Fatal("sing-box profile is missing its mixed inbound")
+}
+
+func TestFillProfilesURLTestIntervalDoesNotExceedIdleTimeout(t *testing.T) {
+	outbounds := []map[string]any{
+		{"type": "vless", "tag": "🇺🇸 US-vps1-VLESS"},
+	}
+	var out subscriptionOutputs
+	if err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"}, outbounds); err != nil {
+		t.Fatalf("fillProfiles error: %v", err)
+	}
+
+	var profile struct {
+		Outbounds []struct {
+			Type        string `json:"type"`
+			Tag         string `json:"tag"`
+			Interval    string `json:"interval"`
+			IdleTimeout string `json:"idle_timeout"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal([]byte(out.SingBoxProfile), &profile); err != nil {
+		t.Fatalf("sing-box profile not valid JSON: %v\n%s", err, out.SingBoxProfile)
+	}
+
+	const defaultIdleTimeout = 30 * time.Minute
+	for _, outbound := range profile.Outbounds {
+		if outbound.Type != "urltest" {
+			continue
+		}
+		interval, err := time.ParseDuration(outbound.Interval)
+		if err != nil {
+			t.Fatalf("urltest %q has invalid interval %q: %v", outbound.Tag, outbound.Interval, err)
+		}
+		idleTimeout := defaultIdleTimeout
+		if outbound.IdleTimeout != "" {
+			idleTimeout, err = time.ParseDuration(outbound.IdleTimeout)
+			if err != nil {
+				t.Fatalf("urltest %q has invalid idle_timeout %q: %v", outbound.Tag, outbound.IdleTimeout, err)
+			}
+		}
+		if interval > idleTimeout {
+			t.Errorf("urltest %q interval %s exceeds idle_timeout %s", outbound.Tag, interval, idleTimeout)
+		}
+	}
 }
 
 func TestFillProfilesRoutesAddressQueriesToFakeIP(t *testing.T) {
