@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -173,6 +174,68 @@ func TestRunCallsAfterReplaceForCommittedHub(t *testing.T) {
 	}
 	if !activated {
 		t.Fatal("post-replace activation was not called")
+	}
+}
+
+func TestRunRejectsConcurrentUpdateBeforeDownloadOrSpokeMutation(t *testing.T) {
+	body := []byte("verified-candidate")
+	bodies := map[string][]byte{
+		"singbox-deploy-linux-amd64": body,
+		"SHA256SUMS":                 []byte(sha256Hex(body) + "  singbox-deploy-linux-amd64\n"),
+	}
+	root := t.TempDir()
+	installPath := filepath.Join(root, "singbox-deploy")
+	enteredSpokeStep := make(chan struct{})
+	releaseSpokeStep := make(chan struct{})
+	first := &Manager{
+		Download:         fakeDownload(bodies),
+		InspectCandidate: acceptCandidate,
+		GOARCH:           "amd64",
+		InstallBin:       installPath,
+		BeforeReplace: func(context.Context, string, string) error {
+			close(enteredSpokeStep)
+			<-releaseSpokeStep
+			return nil
+		},
+	}
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := first.Run(context.Background(), "v2.0.0")
+		firstResult <- err
+	}()
+	<-enteredSpokeStep
+
+	var secondDownloads atomic.Int32
+	second := &Manager{
+		Download: func(context.Context, string, string) error {
+			secondDownloads.Add(1)
+			return nil
+		},
+		InspectCandidate: acceptCandidate,
+		GOARCH:           "amd64",
+		InstallBin:       installPath,
+		BeforeReplace: func(context.Context, string, string) error {
+			t.Fatal("concurrent update reached spoke mutation")
+			return nil
+		},
+	}
+	if _, err := second.Run(context.Background(), "v2.0.0"); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("concurrent update error = %v", err)
+	}
+	if calls := secondDownloads.Load(); calls != 0 {
+		t.Fatalf("concurrent update downloads = %d, want 0", calls)
+	}
+	close(releaseSpokeStep)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	lockPath := filepath.Join(root, ".singbox-deploy-update.lock")
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatalf("stat persistent lock: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("lock mode = %o, want 600", info.Mode().Perm())
 	}
 }
 

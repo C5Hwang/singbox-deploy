@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
@@ -115,6 +116,11 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 	if tag == "" {
 		return Result{}, fmt.Errorf("target release is required")
 	}
+	unlock, err := lockUpdate(m.InstallBin)
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
 
 	asset := fmt.Sprintf("singbox-deploy-linux-%s", m.GOARCH)
 	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, asset)
@@ -194,6 +200,29 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 		return Result{Tag: tag}, &CommittedError{Err: err}
 	}
 	return Result{Tag: tag}, nil
+}
+
+func lockUpdate(installPath string) (func(), error) {
+	lockPath := filepath.Join(filepath.Dir(installPath), "."+filepath.Base(installPath)+"-update.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open self-update lock: %w", err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("secure self-update lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, fmt.Errorf("another self-update is already running")
+		}
+		return nil, fmt.Errorf("lock self-update: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func inspectCandidate(ctx context.Context, path, expectedVersion string) error {
