@@ -7,6 +7,7 @@ package hubctl
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -46,6 +47,11 @@ type Controller struct {
 	// this so the Hub binary is not committed unless every installed spoke is
 	// already running the exact candidate Agent version.
 	RequireExactAgentVersion bool
+	// RequireOperationalAgent makes a health check prove that the managed
+	// deployment, sing-box core, configured domain, and enabled monitor are
+	// operational in addition to checking the Agent process/version. Coordinated
+	// self-update enables this before committing the Hub binary.
+	RequireOperationalAgent bool
 	// ExpectedCoreVersion pins a full spoke install to the exact sing-box
 	// release already running on the Hub. It is normally detected from the Hub
 	// binary; tests and recovery tooling may supply it explicitly.
@@ -893,12 +899,16 @@ func (c *Controller) syncCertificate(ctx context.Context, node nodes.Node, log i
 // probeAgent performs the authenticated liveness check shared by every health
 // path and folds the observed status back into both the registry and node.
 func (c *Controller) probeAgent(ctx context.Context, node *nodes.Node) (nodeapi.HealthResponse, error) {
-	health, err := c.NewClient(*node).Health(ctx)
+	client := c.NewClient(*node)
+	health, err := client.Health(ctx)
 	if err != nil {
 		return nodeapi.HealthResponse{}, err
 	}
 	if !health.OK {
 		return health, fmt.Errorf("agent %s reported unhealthy%s", node.EffectiveAlias(), healthErrorSuffix(health))
+	}
+	if err := c.validateOperationalAgent(ctx, *node, health, client); err != nil {
+		return health, err
 	}
 	if err := c.persistAgentHealth(node, health); err != nil {
 		return health, fmt.Errorf("persist agent health: %w", err)
@@ -947,23 +957,62 @@ func (c *Controller) reconcileAgentVersion(ctx context.Context, node *nodes.Node
 		}
 		health, err = client.Health(ctx)
 		if err == nil && health.OK && health.Version == expected {
-			if err := c.persistAgentHealth(node, health); err != nil {
-				return fmt.Errorf("persist reconciled agent health: %w", err)
+			if operationalErr := c.validateOperationalAgent(ctx, *node, health, client); operationalErr != nil {
+				lastErr = operationalErr
+			} else {
+				if err := c.persistAgentHealth(node, health); err != nil {
+					return fmt.Errorf("persist reconciled agent health: %w", err)
+				}
+				return nil
 			}
-			return nil
 		}
 		switch {
 		case err != nil:
 			lastErr = err
 		case !health.OK:
 			lastErr = fmt.Errorf("agent reported unhealthy%s", healthErrorSuffix(health))
-		default:
+		case health.Version != expected:
 			lastErr = fmt.Errorf("agent still reports version %q", health.Version)
 		}
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("agent %s did not return on version %s: %w", node.EffectiveAlias(), expected, lastErr)
 		}
 	}
+}
+
+func (c *Controller) validateOperationalAgent(
+	ctx context.Context,
+	node nodes.Node,
+	health nodeapi.HealthResponse,
+	client *nodeapi.Client,
+) error {
+	if !c.RequireOperationalAgent {
+		return nil
+	}
+	label := node.EffectiveAlias()
+	switch {
+	case !health.Installed:
+		return fmt.Errorf("agent %s reports that its managed deployment is not installed", label)
+	case !health.SingBoxActive:
+		return fmt.Errorf("agent %s reports that sing-box is inactive", label)
+	case strings.TrimSpace(health.SingBoxVersion) == "":
+		return fmt.Errorf("agent %s did not report its sing-box version", label)
+	case strings.TrimSpace(health.Domain) == "":
+		return fmt.Errorf("agent %s did not report its managed domain", label)
+	case !strings.EqualFold(strings.TrimSpace(health.Domain), strings.TrimSpace(node.Domain)):
+		return fmt.Errorf("agent %s reports managed domain %q, expected %q", label, health.Domain, node.Domain)
+	}
+	if !node.Monitor {
+		return nil
+	}
+	body, err := client.Monitor(ctx, nodeapi.MonitorSummary)
+	if err != nil {
+		return fmt.Errorf("agent %s monitor summary is unavailable: %w", label, err)
+	}
+	if len(body) == 0 || !json.Valid(body) {
+		return fmt.Errorf("agent %s monitor summary is not valid JSON", label)
+	}
+	return nil
 }
 
 // deliverPendingCertificate retries a certificate push the hub could not

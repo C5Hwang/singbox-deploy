@@ -342,6 +342,101 @@ func TestCheckHealthRejectsNewerAgentWhenExactVersionIsRequired(t *testing.T) {
 	}
 }
 
+func TestCoordinatedHealthRejectsMatchingAgentWithInactiveCore(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	node := nodes.Node{
+		Alias: "tokyo", SSHHost: "tokyo.example", Domain: "spoke.example.com",
+		WGIP: "10.90.0.2", Token: "tok", Arch: "arm64", Installed: true,
+	}
+	if err := nodes.Add(layout, node); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := nodes.Load(layout)
+	node = list[0]
+	h := &fixedHealthHandler{health: nodeapi.HealthResponse{
+		OK: true, Version: "v2.0.0", Installed: true,
+		SingBoxVersion: "v1.13.16", SingBoxActive: false, Domain: node.Domain,
+	}}
+	srv := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: h}).Mux())
+	defer srv.Close()
+	ctrl := &Controller{
+		Layout:                   layout,
+		ExpectedVersion:          "v2.0.0",
+		RequireExactAgentVersion: true,
+		RequireOperationalAgent:  true,
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	if _, err := ctrl.CheckHealth(context.Background(), node, io.Discard); err == nil || !strings.Contains(err.Error(), "sing-box is inactive") {
+		t.Fatalf("coordinated health error = %v", err)
+	}
+}
+
+func TestCoordinatedHealthValidatesInstalledDomainAndCoreVersion(t *testing.T) {
+	node := nodes.Node{Alias: "tokyo", Domain: "spoke.example.com"}
+	base := nodeapi.HealthResponse{
+		OK: true, Version: "v2.0.0", Installed: true,
+		SingBoxVersion: "v1.13.16", SingBoxActive: true, Domain: node.Domain,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*nodeapi.HealthResponse)
+		want   string
+	}{
+		{name: "not installed", mutate: func(h *nodeapi.HealthResponse) { h.Installed = false }, want: "not installed"},
+		{name: "missing core version", mutate: func(h *nodeapi.HealthResponse) { h.SingBoxVersion = "" }, want: "sing-box version"},
+		{name: "missing domain", mutate: func(h *nodeapi.HealthResponse) { h.Domain = "" }, want: "managed domain"},
+		{name: "wrong domain", mutate: func(h *nodeapi.HealthResponse) { h.Domain = "other.example.com" }, want: `expected "spoke.example.com"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			health := base
+			tt.mutate(&health)
+			ctrl := &Controller{RequireOperationalAgent: true}
+			err := ctrl.validateOperationalAgent(context.Background(), node, health, nil)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("operational validation error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCoordinatedHealthRequiresWorkingEnabledMonitor(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	node := nodes.Node{
+		Alias: "tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "tok", Installed: true, Monitor: true,
+	}
+	if err := nodes.Add(layout, node); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := nodes.Load(layout)
+	node = list[0]
+	h := &fixedHealthHandler{
+		health: nodeapi.HealthResponse{
+			OK: true, Version: "v2.0.0", Installed: true,
+			SingBoxVersion: "v1.13.16", SingBoxActive: true, Domain: node.Domain,
+		},
+		monitor: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, "not-json")
+		}),
+	}
+	srv := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: h}).Mux())
+	defer srv.Close()
+	ctrl := &Controller{
+		Layout:                  layout,
+		ExpectedVersion:         "v2.0.0",
+		RequireOperationalAgent: true,
+		NewClient: func(n nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
+		},
+	}
+	if _, err := ctrl.CheckHealth(context.Background(), node, io.Discard); err == nil || !strings.Contains(err.Error(), "monitor summary is not valid JSON") {
+		t.Fatalf("coordinated monitor health error = %v", err)
+	}
+}
+
 func TestCheckHealthAllowsExplicitRecoveryDowngrade(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	if err := nodes.Add(layout, nodes.Node{
@@ -1252,6 +1347,24 @@ type upgradeHealthHandler struct {
 	applyCount int
 	certErr    error
 }
+
+type fixedHealthHandler struct {
+	health  nodeapi.HealthResponse
+	monitor http.Handler
+}
+
+func (h *fixedHealthHandler) Health() nodeapi.HealthResponse { return h.health }
+func (*fixedHealthHandler) Install(context.Context, nodeapi.InstallRequest, io.Writer) error {
+	return nil
+}
+func (*fixedHealthHandler) ApplyCert(context.Context, nodeapi.CertRequest, io.Writer) error {
+	return nil
+}
+func (*fixedHealthHandler) Uninstall(context.Context, nodeapi.UninstallRequest, io.Writer) error {
+	return nil
+}
+func (*fixedHealthHandler) Subscription(string) ([]byte, error) { return nil, nil }
+func (h *fixedHealthHandler) MonitorHandler() http.Handler      { return h.monitor }
 
 func (h *upgradeHealthHandler) Health() nodeapi.HealthResponse {
 	h.mu.Lock()

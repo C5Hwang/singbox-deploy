@@ -291,6 +291,7 @@ func upgradeSpokeAgentsBeforeHub(ctx context.Context, candidatePath, targetVersi
 		Layout:                   layout,
 		ExpectedVersion:          targetVersion,
 		RequireExactAgentVersion: true,
+		RequireOperationalAgent:  true,
 		AgentBinary:              loadAgent,
 	}
 	return upgradeSelectedSpokeAgents(ctx, list, ctrl, logs, restoreSelectedSpokeAgents)
