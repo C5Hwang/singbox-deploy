@@ -353,13 +353,22 @@ func restoreSelectedSpokeAgents(ctx context.Context, list []nodes.Node, logs *lo
 		AllowAgentDowngrade: true,
 		AgentBinary:         agentbin.Binary,
 	}
+	return restoreSelectedSpokeAgentsWithController(ctx, list, ctrl, logs)
+}
+
+func restoreSelectedSpokeAgentsWithController(
+	ctx context.Context,
+	list []nodes.Node,
+	ctrl *hubctl.Controller,
+	logs *logWriter,
+) error {
 	var errs []error
 	for _, node := range list {
 		if !node.Installed {
 			continue
 		}
 		fmt.Fprintf(logs, "restoring %s agent to hub version %s...\n", node.EffectiveAlias(), toolVersion)
-		if _, err := ctrl.CheckHealth(ctx, node, logs); err != nil {
+		if _, err := ctrl.WaitHealthy(ctx, node, logs); err != nil {
 			errs = append(errs, fmt.Errorf("restore %s: %w", node.EffectiveAlias(), err))
 		}
 	}

@@ -828,10 +828,19 @@ func (c *Controller) rollbackAdd(target bootstrap.Target, identity nodes.HubIden
 	return errors.Join(errs...)
 }
 
+// WaitHealthy retries the full mutating health/reconciliation path while an
+// Agent is starting or restarting. Bootstrap and coordinated-update rollback
+// use it when a short control-plane outage is expected and a one-shot probe
+// could strand the Hub and Agent on different versions.
+func (c *Controller) WaitHealthy(ctx context.Context, node nodes.Node, log io.Writer) (nodes.Node, error) {
+	return c.waitHealthy(ctx, node, log)
+}
+
 func (c *Controller) waitHealthy(ctx context.Context, node nodes.Node, log io.Writer) (nodes.Node, error) {
 	deadline := time.Now().Add(60 * time.Second)
+	delay := 100 * time.Millisecond
 	var lastErr error
-	for attempt := 0; ; attempt++ {
+	for {
 		updated, err := c.CheckHealth(ctx, node, log)
 		if err == nil {
 			return updated, nil
@@ -844,8 +853,9 @@ func (c *Controller) waitHealthy(ctx context.Context, node nodes.Node, log io.Wr
 		select {
 		case <-ctx.Done():
 			return nodes.Node{}, ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-time.After(delay):
 		}
+		delay = min(delay*2, 2*time.Second)
 	}
 }
 

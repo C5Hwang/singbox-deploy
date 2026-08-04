@@ -22,6 +22,43 @@ type committedUpgradeErrorHandler struct {
 	upgradeErr   error
 }
 
+type transientRestoreHealthHandler struct {
+	mu      sync.Mutex
+	calls   int
+	version string
+	domain  string
+}
+
+func (h *transientRestoreHealthHandler) Health() nodeapi.HealthResponse {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls++
+	if h.calls == 1 {
+		return nodeapi.HealthResponse{OK: false, Version: h.version, Error: "Agent is restarting"}
+	}
+	return nodeapi.HealthResponse{
+		OK: true, Version: h.version, Installed: true,
+		SingBoxVersion: "v1.13.16", SingBoxActive: true, Domain: h.domain,
+	}
+}
+
+func (*transientRestoreHealthHandler) Install(context.Context, nodeapi.InstallRequest, io.Writer) error {
+	return nil
+}
+func (*transientRestoreHealthHandler) ApplyCert(context.Context, nodeapi.CertRequest, io.Writer) error {
+	return nil
+}
+func (*transientRestoreHealthHandler) Uninstall(context.Context, nodeapi.UninstallRequest, io.Writer) error {
+	return nil
+}
+func (*transientRestoreHealthHandler) Subscription(string) ([]byte, error) { return nil, nil }
+
+func (h *transientRestoreHealthHandler) healthCalls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.calls
+}
+
 func (h *committedUpgradeErrorHandler) Health() nodeapi.HealthResponse {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -114,5 +151,35 @@ func TestUpgradeSelectedSpokeAgentsRollsBackCurrentAfterCommittedRequestError(t 
 	}
 	if len(rollbackNodes) != 1 || rollbackNodes[0].ID != node.ID {
 		t.Fatalf("rollback nodes = %+v, want current possibly-committed node", rollbackNodes)
+	}
+}
+
+func TestRestoreSelectedSpokeAgentsWaitsThroughAgentRestart(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	node := nodes.Node{
+		ID: "11111111111111111111111111111111", Alias: "Tokyo",
+		Domain: "jp.example.com", WGIP: "10.90.0.2", Token: "token",
+		Arch: "amd64", Installed: true, AgentVersion: "v1.0.0",
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &transientRestoreHealthHandler{version: "v1.0.0", domain: node.Domain}
+	server := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: handler}).Mux())
+	t.Cleanup(server.Close)
+	ctrl := &hubctl.Controller{
+		Layout:              layout,
+		ExpectedVersion:     "v1.0.0",
+		AllowAgentDowngrade: true,
+		NewClient: func(current nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: server.URL, Token: current.Token, HTTP: server.Client()}
+		},
+	}
+	logs := &logWriter{ch: make(chan runMsg, 16)}
+	if err := restoreSelectedSpokeAgentsWithController(context.Background(), []nodes.Node{node}, ctrl, logs); err != nil {
+		t.Fatalf("restore after transient restart: %v", err)
+	}
+	if calls := handler.healthCalls(); calls < 2 {
+		t.Fatalf("health calls = %d, want a retry after the restart window", calls)
 	}
 }
