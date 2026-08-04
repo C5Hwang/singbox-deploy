@@ -35,16 +35,16 @@ are managed from the hub's terminal UI.
 curl -fsSL https://github.com/C5Hwang/singbox-deploy/releases/latest/download/install.sh | sudo bash
 ```
 
-Install a specific stable release with the current installer:
+To install a specific release, set `SINGBOX_DEPLOY_VERSION` to its tag:
 
 ```bash
 curl -fsSL https://github.com/C5Hwang/singbox-deploy/releases/latest/download/install.sh | \
   sudo env SINGBOX_DEPLOY_VERSION=v0.3.0 bash
 ```
 
-Installers attached to a release are pinned to that release by default, while
-`SINGBOX_DEPLOY_VERSION` can explicitly select another `vMAJOR.MINOR.PATCH` tag.
-The selected release must publish `SHA256SUMS` (v0.2.3 and later).
+Each installer is pinned to the release it ships with; setting
+`SINGBOX_DEPLOY_VERSION` to any `vMAJOR.MINOR.PATCH` tag overrides that. The tag
+must be v0.2.3 or later, as earlier releases ship no `SHA256SUMS`.
 
 The installer detects your platform and downloads the corresponding release
 binary to `/usr/bin/singbox-deploy`. Then run `sudo singbox-deploy` to start
