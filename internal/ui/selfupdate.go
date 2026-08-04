@@ -116,7 +116,12 @@ func (sm *selfUpdateManager) applyCheckResult(msg selfUpdateCheckedMsg) {
 		sm.checkErr = "fetch latest release: " + msg.err.Error()
 	} else {
 		sm.latestTag = msg.tag
-		sm.upToDate = sm.latestTag == sm.currentVersion || sm.latestTag == "v"+sm.currentVersion
+		upToDate, err := selfupdate.ValidateTransition(sm.currentVersion, sm.latestTag)
+		if err != nil {
+			sm.checkErr = err.Error()
+		} else {
+			sm.upToDate = upToDate
+		}
 	}
 	sm.phase = selfUpdatePhaseCheck
 }

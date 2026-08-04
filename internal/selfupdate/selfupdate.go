@@ -19,6 +19,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
+	"golang.org/x/mod/semver"
 )
 
 const (
@@ -113,8 +114,12 @@ func (m *Manager) CheckLatest(ctx context.Context) (string, error) {
 func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 	m.Defaults()
 	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		return Result{}, fmt.Errorf("target release is required")
+	upToDate, err := ValidateTransition(m.Version, tag)
+	if err != nil {
+		return Result{}, err
+	}
+	if upToDate {
+		return Result{Tag: tag, UpToDate: true}, nil
 	}
 	unlock, err := lockUpdate(m.InstallBin)
 	if err != nil {
@@ -200,6 +205,46 @@ func (m *Manager) Run(ctx context.Context, tag string) (Result, error) {
 		return Result{Tag: tag}, &CommittedError{Err: err}
 	}
 	return Result{Tag: tag}, nil
+}
+
+// ValidateTransition rejects malformed stable targets and a move from a newer
+// installed release to an older one. An empty or non-release current version
+// (for example a local "dev" build) remains eligible to install a stable tag.
+// The bool reports that current and target are the same semantic version.
+func ValidateTransition(current, target string) (bool, error) {
+	target = strings.TrimSpace(target)
+	targetSemver := canonicalSemver(target)
+	if targetSemver == "" {
+		if target == "" {
+			return false, fmt.Errorf("target release is required")
+		}
+		return false, fmt.Errorf("target release %q is not a stable semantic version", target)
+	}
+	currentSemver := canonicalSemver(strings.TrimSpace(current))
+	if currentSemver == "" {
+		return false, nil
+	}
+	switch semver.Compare(targetSemver, currentSemver) {
+	case 0:
+		return true, nil
+	case -1:
+		return false, fmt.Errorf("target release %s is older than installed version %s; refusing self-update downgrade", target, current)
+	default:
+		return false, nil
+	}
+}
+
+func canonicalSemver(version string) string {
+	if semver.IsValid(version) {
+		return version
+	}
+	if version != "" && !strings.HasPrefix(version, "v") {
+		version = "v" + version
+		if semver.IsValid(version) {
+			return version
+		}
+	}
+	return ""
 }
 
 func lockUpdate(installPath string) (func(), error) {

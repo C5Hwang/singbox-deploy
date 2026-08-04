@@ -86,6 +86,68 @@ func TestRunRejectsTamperedBinary(t *testing.T) {
 	}
 }
 
+func TestValidateTransitionPreventsDowngradeAndRecognizesEquality(t *testing.T) {
+	tests := []struct {
+		name, current, target string
+		upToDate              bool
+		wantErr               string
+	}{
+		{name: "upgrade", current: "v2.0.0", target: "v2.1.0"},
+		{name: "equal without v prefix", current: "2.0.0", target: "v2.0.0", upToDate: true},
+		{name: "downgrade", current: "v2.1.0", target: "v2.0.0", wantErr: "refusing self-update downgrade"},
+		{name: "dev to stable", current: "dev", target: "v2.0.0"},
+		{name: "invalid target", current: "v2.0.0", target: "latest", wantErr: "not a stable semantic version"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upToDate, err := ValidateTransition(tt.current, tt.target)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ValidateTransition error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || upToDate != tt.upToDate {
+				t.Fatalf("ValidateTransition = %v, %v; want %v, nil", upToDate, err, tt.upToDate)
+			}
+		})
+	}
+}
+
+func TestRunSkipsDownloadForSameVersionAndRejectsDowngrade(t *testing.T) {
+	for _, tt := range []struct {
+		name, current, target string
+		upToDate              bool
+		wantErr               string
+	}{
+		{name: "same", current: "v2.0.0", target: "2.0.0", upToDate: true},
+		{name: "older", current: "v2.1.0", target: "v2.0.0", wantErr: "older than installed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			downloads := 0
+			m := &Manager{
+				Version: tt.current,
+				Download: func(context.Context, string, string) error {
+					downloads++
+					return nil
+				},
+				InstallBin: filepath.Join(t.TempDir(), "singbox-deploy"),
+			}
+			result, err := m.Run(context.Background(), tt.target)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Run error = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil || result.UpToDate != tt.upToDate {
+				t.Fatalf("Run result = %+v, %v", result, err)
+			}
+			if downloads != 0 {
+				t.Fatalf("downloads = %d, want 0", downloads)
+			}
+		})
+	}
+}
+
 func TestRunCallsReplaceFailureRollbackAfterSpokesPrepared(t *testing.T) {
 	body := []byte("verified-candidate")
 	bodies := map[string][]byte{

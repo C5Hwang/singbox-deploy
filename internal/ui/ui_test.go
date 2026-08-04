@@ -75,6 +75,14 @@ func TestSelfUpdateChecksLatestAsynchronously(t *testing.T) {
 	}
 }
 
+func TestSelfUpdateCheckRefusesOlderLatestRelease(t *testing.T) {
+	sm := &selfUpdateManager{currentVersion: "v3.0.0"}
+	sm.applyCheckResult(selfUpdateCheckedMsg{tag: "v2.0.0"})
+	if sm.phase != selfUpdatePhaseCheck || !strings.Contains(sm.checkErr, "refusing self-update downgrade") {
+		t.Fatalf("older-release check phase=%d error=%q", sm.phase, sm.checkErr)
+	}
+}
+
 type selfUpdateRecordingRunner struct{ commands []string }
 
 func (r *selfUpdateRecordingRunner) Run(c system.Command) error {
