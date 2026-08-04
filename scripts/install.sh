@@ -2,12 +2,28 @@
 set -euo pipefail
 
 # Bootstrap installer for singbox-deploy. Detects OS/arch, downloads the
-# matching binary from the latest GitHub Release, and installs it to
-# /usr/bin/singbox-deploy. Interactive use only; no non-interactive mode.
+# matching binary from GitHub Releases, and installs it to
+# /usr/bin/singbox-deploy. Release artifacts replace DEFAULT_RELEASE with
+# their own tag; the source-tree copy defaults to the latest release.
+# SINGBOX_DEPLOY_VERSION can explicitly select another stable tag.
 
 REPO="C5Hwang/singbox-deploy"
 BIN="singbox-deploy"
 INSTALL_PATH="/usr/bin/${BIN}"
+DEFAULT_RELEASE="latest"
+
+release="${DEFAULT_RELEASE}"
+if [ "${SINGBOX_DEPLOY_VERSION+x}" = "x" ]; then
+  release="${SINGBOX_DEPLOY_VERSION}"
+  if [[ ! "${release}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    echo "Invalid SINGBOX_DEPLOY_VERSION: ${release} (expected vMAJOR.MINOR.PATCH)" >&2
+    exit 1
+  fi
+elif [ "${release}" != "latest" ] &&
+  [[ ! "${release}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Invalid packaged release: ${release}" >&2
+  exit 1
+fi
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -34,7 +50,11 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 asset="${BIN}-${os}-${arch}"
-base="https://github.com/${REPO}/releases/latest/download"
+if [ "${release}" = "latest" ]; then
+  base="https://github.com/${REPO}/releases/latest/download"
+else
+  base="https://github.com/${REPO}/releases/download/${release}"
+fi
 tmp="$(mktemp)"
 sums="$(mktemp)"
 trap 'rm -f "${tmp}" "${sums}"' EXIT
@@ -51,7 +71,7 @@ fetch() {
   fi
 }
 
-echo "Downloading ${asset} ..."
+echo "Downloading ${asset} from ${release} ..."
 fetch "${base}/${asset}" "${tmp}"
 
 echo "Verifying checksum ..."
@@ -75,6 +95,18 @@ if [ "${expected}" != "${actual}" ]; then
 fi
 
 chmod +x "${tmp}"
+if ! candidate_version="$("${tmp}" --version)"; then
+  echo "Downloaded ${asset} failed its version check" >&2
+  exit 1
+fi
+if [[ ! "${candidate_version}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Downloaded ${asset} reports invalid version: ${candidate_version}" >&2
+  exit 1
+fi
+if [ "${release}" != "latest" ] && [ "${candidate_version}" != "${release}" ]; then
+  echo "Downloaded ${asset} reports ${candidate_version}, expected ${release}" >&2
+  exit 1
+fi
 install -m 0755 "${tmp}" "${INSTALL_PATH}"
 echo "Installed ${BIN} to ${INSTALL_PATH}"
 echo "Run: sudo ${BIN}"

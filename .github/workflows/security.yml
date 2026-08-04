@@ -27,5 +27,8 @@ jobs:
           touch assets/agentbin/singbox-deploy-agent-linux-amd64
           touch assets/agentbin/singbox-deploy-agent-linux-arm64
 
+      - name: Test installer
+        run: scripts/install_test.sh
+
       - name: Run vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
