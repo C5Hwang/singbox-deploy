@@ -373,7 +373,7 @@ func restoreSelectedSpokeAgentsWithController(
 			continue
 		}
 		fmt.Fprintf(logs, "restoring %s agent to hub version %s...\n", node.EffectiveAlias(), toolVersion)
-		if _, err := ctrl.WaitHealthy(ctx, node, logs); err != nil {
+		if _, err := ctrl.RestoreAgentVersion(ctx, node, logs); err != nil {
 			errs = append(errs, fmt.Errorf("restore %s: %w", node.EffectiveAlias(), err))
 		}
 	}

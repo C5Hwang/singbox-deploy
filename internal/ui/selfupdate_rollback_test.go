@@ -23,10 +23,21 @@ type committedUpgradeErrorHandler struct {
 }
 
 type transientRestoreHealthHandler struct {
-	mu      sync.Mutex
-	calls   int
-	version string
-	domain  string
+	mu           sync.Mutex
+	calls        int
+	upgradeCalls int
+	version      string
+	domain       string
+}
+
+type delayedRestartRollbackHandler struct {
+	mu                 sync.Mutex
+	healthCalls        int
+	upgradeCalls       int
+	runningVersion     string
+	pendingVersion     string
+	rollbackVersion    string
+	firstRestoreFailed bool
 }
 
 func (h *transientRestoreHealthHandler) Health() nodeapi.HealthResponse {
@@ -53,10 +64,61 @@ func (*transientRestoreHealthHandler) Uninstall(context.Context, nodeapi.Uninsta
 }
 func (*transientRestoreHealthHandler) Subscription(string) ([]byte, error) { return nil, nil }
 
-func (h *transientRestoreHealthHandler) healthCalls() int {
+func (h *transientRestoreHealthHandler) Upgrade(_ context.Context, req nodeapi.UpgradeRequest, _ io.Writer) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.calls
+	h.upgradeCalls++
+	h.version = req.Version
+	return nil
+}
+
+func (h *transientRestoreHealthHandler) snapshot() (int, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.calls, h.upgradeCalls
+}
+
+func (h *delayedRestartRollbackHandler) Health() nodeapi.HealthResponse {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.healthCalls++
+	version := h.runningVersion
+	if h.upgradeCalls == 0 {
+		// Model the dangerous window: the old process answers one healthy
+		// request, then the already queued restart boots the candidate that is
+		// still on disk.
+		h.runningVersion = h.pendingVersion
+	}
+	return nodeapi.HealthResponse{OK: true, Version: version, Installed: true, SingBoxActive: true}
+}
+
+func (*delayedRestartRollbackHandler) Install(context.Context, nodeapi.InstallRequest, io.Writer) error {
+	return nil
+}
+func (*delayedRestartRollbackHandler) ApplyCert(context.Context, nodeapi.CertRequest, io.Writer) error {
+	return nil
+}
+func (*delayedRestartRollbackHandler) Uninstall(context.Context, nodeapi.UninstallRequest, io.Writer) error {
+	return nil
+}
+func (*delayedRestartRollbackHandler) Subscription(string) ([]byte, error) { return nil, nil }
+
+func (h *delayedRestartRollbackHandler) Upgrade(_ context.Context, req nodeapi.UpgradeRequest, _ io.Writer) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.upgradeCalls++
+	h.runningVersion = req.Version
+	h.pendingVersion = req.Version
+	if h.upgradeCalls == 1 && h.firstRestoreFailed {
+		return errors.New("an agent upgrade has already committed; restart is pending")
+	}
+	return nil
+}
+
+func (h *delayedRestartRollbackHandler) snapshot() (string, int, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.runningVersion, h.healthCalls, h.upgradeCalls
 }
 
 func (h *committedUpgradeErrorHandler) Health() nodeapi.HealthResponse {
@@ -171,6 +233,9 @@ func TestRestoreSelectedSpokeAgentsWaitsThroughAgentRestart(t *testing.T) {
 		Layout:              layout,
 		ExpectedVersion:     "v1.0.0",
 		AllowAgentDowngrade: true,
+		AgentBinary: func(string) ([]byte, error) {
+			return []byte("rollback-agent"), nil
+		},
 		NewClient: func(current nodes.Node) *nodeapi.Client {
 			return &nodeapi.Client{BaseURL: server.URL, Token: current.Token, HTTP: server.Client()}
 		},
@@ -179,7 +244,47 @@ func TestRestoreSelectedSpokeAgentsWaitsThroughAgentRestart(t *testing.T) {
 	if err := restoreSelectedSpokeAgentsWithController(context.Background(), []nodes.Node{node}, ctrl, logs); err != nil {
 		t.Fatalf("restore after transient restart: %v", err)
 	}
-	if calls := handler.healthCalls(); calls < 2 {
-		t.Fatalf("health calls = %d, want a retry after the restart window", calls)
+	if healthCalls, upgradeCalls := handler.snapshot(); healthCalls < 2 || upgradeCalls != 1 {
+		t.Fatalf("health calls = %d, upgrade calls = %d; want one forced restore and a health retry", healthCalls, upgradeCalls)
+	}
+}
+
+func TestRestoreSelectedSpokeAgentsDoesNotTrustOldProcessBeforeDelayedRestart(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	node := nodes.Node{
+		ID: "11111111111111111111111111111111", Alias: "Tokyo",
+		Domain: "jp.example.com", WGIP: "10.90.0.2", Token: "token",
+		Arch: "amd64", Installed: true, AgentVersion: "v1.0.0",
+	}
+	if err := nodes.Save(layout, []nodes.Node{node}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &delayedRestartRollbackHandler{
+		runningVersion: "v1.0.0", pendingVersion: "v2.0.0",
+		rollbackVersion: "v1.0.0", firstRestoreFailed: true,
+	}
+	server := httptest.NewServer((&nodeapi.Server{Token: node.Token, Handler: handler}).Mux())
+	t.Cleanup(server.Close)
+	ctrl := &hubctl.Controller{
+		Layout:              layout,
+		ExpectedVersion:     handler.rollbackVersion,
+		AllowAgentDowngrade: true,
+		AgentBinary: func(string) ([]byte, error) {
+			return []byte("rollback-agent"), nil
+		},
+		NewClient: func(current nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{BaseURL: server.URL, Token: current.Token, HTTP: server.Client()}
+		},
+	}
+	logs := &logWriter{ch: make(chan runMsg, 32)}
+	if err := restoreSelectedSpokeAgentsWithController(context.Background(), []nodes.Node{node}, ctrl, logs); err != nil {
+		t.Fatalf("restore across delayed restart window: %v", err)
+	}
+	version, healthCalls, upgradeCalls := handler.snapshot()
+	if version != handler.rollbackVersion {
+		t.Fatalf("running Agent version = %q, want rollback %q", version, handler.rollbackVersion)
+	}
+	if healthCalls == 0 || upgradeCalls != 2 {
+		t.Fatalf("health calls = %d, upgrade calls = %d; want health only after an acknowledged forced retry", healthCalls, upgradeCalls)
 	}
 }

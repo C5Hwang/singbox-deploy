@@ -836,6 +836,84 @@ func (c *Controller) WaitHealthy(ctx context.Context, node nodes.Node, log io.Wr
 	return c.waitHealthy(ctx, node, log)
 }
 
+// RestoreAgentVersion force-installs the expected Agent binary before accepting
+// a matching health response. A failed coordinated upgrade can leave a delayed
+// Agent restart queued after the candidate has already replaced the on-disk
+// executable. In that window the old process still reports the expected
+// rollback version, so a health-only recovery would return too early and the
+// queued restart would later boot the candidate. Requiring one acknowledged
+// restore request proves that the rollback binary is back on disk; ambiguous
+// transport failures are retried because the first request may have committed
+// immediately before its response was lost.
+func (c *Controller) RestoreAgentVersion(ctx context.Context, node nodes.Node, log io.Writer) (nodes.Node, error) {
+	c.defaults()
+	if log == nil {
+		log = io.Discard
+	}
+	expected := strings.TrimSpace(c.ExpectedVersion)
+	if expected == "" {
+		return nodes.Node{}, fmt.Errorf("expected Agent rollback version is required")
+	}
+	if strings.TrimSpace(node.Arch) == "" {
+		return nodes.Node{}, fmt.Errorf("cannot restore agent %s: node architecture is unknown", node.EffectiveAlias())
+	}
+	binary, err := c.AgentBinary(node.Arch)
+	if err != nil {
+		return nodes.Node{}, fmt.Errorf("load %s rollback Agent binary: %w", node.Arch, err)
+	}
+	request := nodeapi.NewUpgradeRequest(expected, binary)
+	client := c.NewClient(node)
+	fmt.Fprintf(log, "force-installing %s agent rollback version %s before accepting health...\n", node.EffectiveAlias(), expected)
+
+	deadline := time.Now().Add(60 * time.Second)
+	delay := 100 * time.Millisecond
+	var lastErr error
+	for {
+		if err := client.Upgrade(ctx, request, log); err == nil {
+			return c.waitForHealthyVersion(ctx, node, expected)
+		} else {
+			lastErr = err
+		}
+		if !time.Now().Before(deadline) {
+			return nodes.Node{}, fmt.Errorf("agent %s did not acknowledge rollback version %s: %w",
+				node.EffectiveAlias(), expected, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return nodes.Node{}, errors.Join(ctx.Err(), fmt.Errorf("last Agent rollback attempt: %w", lastErr))
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
+}
+
+func (c *Controller) waitForHealthyVersion(ctx context.Context, node nodes.Node, expected string) (nodes.Node, error) {
+	deadline := time.Now().Add(60 * time.Second)
+	delay := 100 * time.Millisecond
+	var lastErr error
+	for {
+		health, err := c.probeAgent(ctx, &node)
+		switch {
+		case err != nil:
+			lastErr = err
+		case health.Version != expected:
+			lastErr = fmt.Errorf("agent still reports version %q", health.Version)
+		default:
+			return node, nil
+		}
+		if !time.Now().Before(deadline) {
+			return nodes.Node{}, fmt.Errorf("agent %s did not return on rollback version %s: %w",
+				node.EffectiveAlias(), expected, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return nodes.Node{}, ctx.Err()
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
+}
+
 func (c *Controller) waitHealthy(ctx context.Context, node nodes.Node, log io.Writer) (nodes.Node, error) {
 	deadline := time.Now().Add(60 * time.Second)
 	delay := 100 * time.Millisecond
