@@ -22,7 +22,7 @@ const (
 	lockName   = ".subscription-schema.lock"
 	// currentVersion must be incremented whenever an embedded subscription
 	// template change requires already-persisted outputs to be regenerated.
-	currentVersion = 1
+	currentVersion = 2
 )
 
 // EnsureCurrent runs regenerate exactly once for an installed layout whose

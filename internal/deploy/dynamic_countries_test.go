@@ -196,3 +196,87 @@ func TestFillProfilesRoutesAddressQueriesToFakeIP(t *testing.T) {
 	}
 	t.Fatal("sing-box profile missing A/AAAA rule routed to fakeip")
 }
+
+func TestFillProfilesUsesNativeDirectDialerForDomesticDNS(t *testing.T) {
+	outbounds := []map[string]any{
+		{"type": "vless", "tag": "test-node"},
+	}
+	var out subscriptionOutputs
+	if err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"}, outbounds); err != nil {
+		t.Fatalf("fillProfiles error: %v", err)
+	}
+
+	var profile struct {
+		DNS struct {
+			Servers []struct {
+				Type   string `json:"type"`
+				Tag    string `json:"tag"`
+				Server string `json:"server"`
+				TLS    struct {
+					ServerName string `json:"server_name"`
+				} `json:"tls"`
+				Detour *string `json:"detour"`
+			} `json:"servers"`
+		} `json:"dns"`
+		Outbounds []struct {
+			Type string `json:"type"`
+			Tag  string `json:"tag"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal([]byte(out.SingBoxProfile), &profile); err != nil {
+		t.Fatalf("sing-box profile not valid JSON: %v\n%s", err, out.SingBoxProfile)
+	}
+
+	got := make(map[string]struct {
+		Type       string
+		Server     string
+		ServerName string
+		Detour     *string
+	}, len(profile.DNS.Servers))
+	for _, server := range profile.DNS.Servers {
+		got[server.Tag] = struct {
+			Type       string
+			Server     string
+			ServerName string
+			Detour     *string
+		}{server.Type, server.Server, server.TLS.ServerName, server.Detour}
+	}
+	for tag, want := range map[string]struct {
+		Server     string
+		ServerName string
+	}{
+		"dnspod": {Server: "1.12.12.12", ServerName: "doh.pub"},
+		"alidns": {Server: "223.5.5.5", ServerName: "dns.alidns.com"},
+	} {
+		server, ok := got[tag]
+		if !ok {
+			t.Errorf("sing-box profile is missing DNS server %q", tag)
+			continue
+		}
+		if server.Type != "https" || server.Server != want.Server || server.ServerName != want.ServerName {
+			t.Errorf("dns server %q = %+v, want HTTPS %s with TLS server_name %s", tag, server, want.Server, want.ServerName)
+		}
+		if server.Detour != nil {
+			t.Errorf("dns server %q contains detour %q, want field absent for native direct dialer", tag, *server.Detour)
+		}
+	}
+	for _, tag := range []string{"cloudflare", "google"} {
+		server, ok := got[tag]
+		if !ok {
+			t.Errorf("sing-box profile is missing DNS server %q", tag)
+		} else if server.Detour == nil {
+			t.Errorf("dns server %q is missing detour, want 全球代理", tag)
+		} else if *server.Detour != "全球代理" {
+			t.Errorf("dns server %q detour = %q, want 全球代理", tag, *server.Detour)
+		}
+	}
+	for _, outbound := range profile.Outbounds {
+		if outbound.Tag == "DIRECT" {
+			if outbound.Type != "direct" {
+				t.Fatalf("DIRECT outbound type = %q, want direct", outbound.Type)
+			}
+			return
+		}
+	}
+	t.Fatal("sing-box profile is missing the DIRECT outbound")
+}

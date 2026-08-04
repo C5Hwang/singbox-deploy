@@ -41,7 +41,30 @@ func TestEnsureCurrentRegeneratesOnceAndMarksSchema(t *testing.T) {
 		t.Fatalf("regenerator calls = %d, want 1", calls)
 	}
 	marker, err := state.NewStore(layout.StateDir).ReadValue(markerName, true)
-	if err != nil || marker != "1" {
+	if err != nil || marker != "2" {
+		t.Fatalf("schema marker = %q, %v", marker, err)
+	}
+}
+
+func TestEnsureCurrentMigratesPreviousSchema(t *testing.T) {
+	layout := installedLayout(t)
+	store := state.NewStore(layout.StateDir)
+	if err := store.WriteString(markerName, "1\n", 0o600); err != nil {
+		t.Fatalf("write previous schema marker: %v", err)
+	}
+	calls := 0
+	migrated, err := EnsureCurrent(context.Background(), layout, func(context.Context) error {
+		calls++
+		return nil
+	})
+	if err != nil || !migrated {
+		t.Fatalf("previous schema migration = %v, %v", migrated, err)
+	}
+	if calls != 1 {
+		t.Fatalf("regenerator calls = %d, want 1", calls)
+	}
+	marker, err := store.ReadValue(markerName, true)
+	if err != nil || marker != "2" {
 		t.Fatalf("schema marker = %q, %v", marker, err)
 	}
 }
