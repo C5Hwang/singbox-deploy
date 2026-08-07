@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -19,7 +20,11 @@ const hubCertificatePendingState = "hub_certificate_reload_pending"
 // every installed spoke using it receives the pair over WireGuard. Failed
 // spoke deliveries stay marked pending and CheckHealth retries them later, so
 // a successful ACME renewal cannot become a permanently hub-only update.
-func (c *Controller) DistributeCertificate(ctx context.Context, domain string, log io.Writer) error {
+//
+// progress, when set, reports one step per activation target — the hub reload
+// plus each spoke — with Total fixed to the number of targets. A caller that
+// prefixes its own steps must offset both fields.
+func (c *Controller) DistributeCertificate(ctx context.Context, domain string, log io.Writer, progress func(deploy.Event)) error {
 	c.defaults()
 	normalized, err := certmgr.NormalizeDomain(domain)
 	if err != nil {
@@ -60,30 +65,83 @@ func (c *Controller) DistributeCertificate(ctx context.Context, domain string, l
 		}
 	}
 
-	hubDomain, _ := state.NewStore(c.Layout.StateDir).ReadValue("domain", false)
-	if local, lerr := certmgr.NormalizeDomain(hubDomain); lerr == nil && local == normalized {
-		store := state.NewStore(c.Layout.StateDir)
-		if err := store.WriteString(hubCertificatePendingState, normalized+"\n", 0o600); err != nil {
-			errs = append(errs, fmt.Errorf("mark hub certificate reload pending: %w", err))
-		}
-		fmt.Fprintf(log, "reloading hub services for %s...\n", normalized)
-		if err := runCommands(c.Runner, []system.Command{
-			system.Systemctl("restart", system.SingBoxService),
-			system.Systemctl("restart", "nginx"),
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("reload hub certificate: %w", err))
-		} else if err := store.WriteString(hubCertificatePendingState, "", 0o600); err != nil {
-			errs = append(errs, fmt.Errorf("clear hub certificate reload state: %w", err))
+	store := state.NewStore(c.Layout.StateDir)
+	hubDomain, _ := store.ReadValue("domain", false)
+	local, lerr := certmgr.NormalizeDomain(hubDomain)
+	hubConsumes := lerr == nil && local == normalized
+
+	// Marking the spokes pending above is bookkeeping, not an activation; the
+	// reported steps are exactly the targets that receive the new pair.
+	total := len(matched)
+	if hubConsumes {
+		total++
+	}
+	index := 0
+
+	if hubConsumes {
+		index++
+		err := reportStep(progress, deploy.Event{
+			Index: index, Total: total, Label: "Reload hub services", Detail: normalized,
+		}, func() error {
+			return errors.Join(c.reloadHubCertificate(store, normalized, log)...)
+		})
+		if err != nil {
+			errs = append(errs, err)
 		}
 	}
 
 	for _, node := range matched {
-		fmt.Fprintf(log, "delivering certificate to %s over WireGuard...\n", node.EffectiveAlias())
-		if _, err := c.syncCertificate(ctx, node, log); err != nil {
+		index++
+		err := reportStep(progress, deploy.Event{
+			Index: index, Total: total, Label: "Deliver to " + node.EffectiveAlias(), Detail: normalized,
+		}, func() error {
+			fmt.Fprintf(log, "delivering certificate to %s over WireGuard...\n", node.EffectiveAlias())
+			_, err := c.syncCertificate(ctx, node, log)
+			return err
+		})
+		if err != nil {
 			errs = append(errs, fmt.Errorf("deliver certificate to %s: %w", node.EffectiveAlias(), err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// reloadHubCertificate restarts the hub-local services holding the certificate
+// open, bracketed by the pending marker so an interrupted reload is picked up
+// by RetryPendingCertificates. A failed marker write does not skip the reload,
+// so every failure is collected rather than returned at the first one.
+func (c *Controller) reloadHubCertificate(store state.Store, normalized string, log io.Writer) []error {
+	var errs []error
+	if err := store.WriteString(hubCertificatePendingState, normalized+"\n", 0o600); err != nil {
+		errs = append(errs, fmt.Errorf("mark hub certificate reload pending: %w", err))
+	}
+	fmt.Fprintf(log, "reloading hub services for %s...\n", normalized)
+	if err := runCommands(c.Runner, []system.Command{
+		system.Systemctl("restart", system.SingBoxService),
+		system.Systemctl("restart", "nginx"),
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("reload hub certificate: %w", err))
+	} else if err := store.WriteString(hubCertificatePendingState, "", 0o600); err != nil {
+		errs = append(errs, fmt.Errorf("clear hub certificate reload state: %w", err))
+	}
+	return errs
+}
+
+// reportStep brackets one activation target with running/ok/fail progress and
+// returns its error. Unlike deploy.RunSteps it does not stop the sequence: a
+// spoke that cannot be reached stays marked pending for a later retry, so the
+// remaining targets must still be attempted.
+func reportStep(progress func(deploy.Event), e deploy.Event, run func() error) error {
+	e.Status = "running"
+	deploy.EmitProgress(progress, e)
+	if err := run(); err != nil {
+		e.Status, e.Err = "fail", err
+		deploy.EmitProgress(progress, e)
+		return err
+	}
+	e.Status = "ok"
+	deploy.EmitProgress(progress, e)
+	return nil
 }
 
 // RetryPendingCertificates retries activation work left by an earlier partial

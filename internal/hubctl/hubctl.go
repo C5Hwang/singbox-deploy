@@ -446,7 +446,7 @@ func (c *Controller) installNode(ctx context.Context, node nodes.Node, log io.Wr
 		req = c.buildNodeRequest(node)
 	} else {
 		fmt.Fprintf(log, "ensuring certificate for %s...\n", node.Domain)
-		if _, issued, issueErr := c.CertManager.EnsureIssued(ctx, node.Domain, "", certmgr.DefaultRenewBefore); issueErr != nil {
+		if _, issued, issueErr := c.CertManager.EnsureIssued(ctx, node.Domain, certmgr.DefaultRenewBefore); issueErr != nil {
 			return fmt.Errorf("ensure certificate: %w", issueErr)
 		} else if issued {
 			fmt.Fprintf(log, "issued a fresh DNS-01 certificate for %s\n", node.Domain)

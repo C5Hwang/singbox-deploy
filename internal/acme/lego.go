@@ -29,12 +29,13 @@ var legoLoggerMu sync.Mutex
 
 // legoUser implements lego's registration.User.
 type legoUser struct {
-	email        string
 	key          crypto.PrivateKey
 	registration *registration.Resource
 }
 
-func (u *legoUser) GetEmail() string                        { return u.email }
+// GetEmail satisfies registration.User. Accounts are registered without a
+// contact address, which lego turns into an empty ACME contact list.
+func (u *legoUser) GetEmail() string                        { return "" }
 func (u *legoUser) GetRegistration() *registration.Resource { return u.registration }
 func (u *legoUser) GetPrivateKey() crypto.PrivateKey        { return u.key }
 
@@ -91,7 +92,7 @@ func (i *LegoIssuer) issue(ctx context.Context, r Request) (Certificate, error) 
 	if err != nil {
 		return Certificate{}, err
 	}
-	user := &legoUser{email: r.Email, key: accountKey}
+	user := &legoUser{key: accountKey}
 
 	cfg := lego.NewConfig(user)
 	if i.Staging {

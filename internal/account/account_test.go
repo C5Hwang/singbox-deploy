@@ -30,7 +30,6 @@ func testConfig(t *testing.T) deploy.Config {
 	}
 	return deploy.Config{
 		Domain:                 "example.com",
-		Email:                  "admin@example.com",
 		Ports:                  config.Ports{RealityVision: 443, RealityGRPC: 8443, Hysteria2: 9443, TUIC: 10443, AnyTLS: 11443},
 		DisplayName:            "US-vps1",
 		Salt:                   "testsalt",

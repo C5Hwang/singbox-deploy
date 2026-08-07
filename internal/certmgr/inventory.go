@@ -20,7 +20,6 @@ import (
 // live state parsed from disk.
 type CertInfo struct {
 	Domain string
-	Email  string
 	// NeedsDNSCredential is true when no configured DNS-01 credential covers
 	// Domain. Legacy HTTP-01 certificates therefore remain visible in the
 	// inventory while clearly indicating what is needed for their next renewal.
@@ -57,7 +56,6 @@ func (c CertInfo) RemainingDays(now time.Time) int {
 // registeredCert is the persisted registry entry for a managed certificate.
 type registeredCert struct {
 	Domain string
-	Email  string
 }
 
 func certsPath(layout paths.Layout) string {
@@ -69,10 +67,7 @@ func certsPath(layout paths.Layout) string {
 
 func loadRegistered(layout paths.Layout) ([]registeredCert, error) {
 	certs, err := state.LoadEntryDirs(certsPath(layout), func(root string) registeredCert {
-		return registeredCert{
-			Domain: state.ReadEntryValue(root, "domain", ""),
-			Email:  state.ReadEntryValue(root, "email", ""),
-		}
+		return registeredCert{Domain: state.ReadEntryValue(root, "domain", "")}
 	})
 	if err != nil {
 		return nil, err
@@ -87,35 +82,37 @@ func loadRegistered(layout paths.Layout) ([]registeredCert, error) {
 	return certs, nil
 }
 
-// Register adds or updates a managed certificate's registry entry.
-func Register(layout paths.Layout, domain, email string) error {
+// Register adds a managed certificate's registry entry, and is a no-op when the
+// domain is already registered.
+func Register(layout paths.Layout, domain string) error {
 	var err error
 	domain, err = NormalizeDomain(domain)
 	if err != nil {
 		return err
 	}
-	_, err = state.TransactEntryDirs(certsPath(layout), func(root string) registeredCert {
-		return registeredCert{
-			Domain: state.ReadEntryValue(root, "domain", ""),
-			Email:  state.ReadEntryValue(root, "email", ""),
-		}
-	}, func(c registeredCert) map[string]string {
-		return map[string]string{"domain": c.Domain, "email": c.Email}
-	}, func(certs []registeredCert) ([]registeredCert, error) {
-		for i := range certs {
-			normalized, normalizeErr := NormalizeDomain(certs[i].Domain)
-			if normalizeErr != nil {
-				return nil, normalizeErr
+	_, err = state.TransactEntryDirs(certsPath(layout), decodeRegisteredCert, encodeRegisteredCert,
+		func(certs []registeredCert) ([]registeredCert, error) {
+			for i := range certs {
+				normalized, normalizeErr := NormalizeDomain(certs[i].Domain)
+				if normalizeErr != nil {
+					return nil, normalizeErr
+				}
+				certs[i].Domain = normalized
+				if normalized == domain {
+					return certs, nil
+				}
 			}
-			certs[i].Domain = normalized
-			if normalized == domain {
-				certs[i].Email = strings.TrimSpace(email)
-				return certs, nil
-			}
-		}
-		return append(certs, registeredCert{Domain: domain, Email: strings.TrimSpace(email)}), nil
-	})
+			return append(certs, registeredCert{Domain: domain}), nil
+		})
 	return err
+}
+
+func decodeRegisteredCert(root string) registeredCert {
+	return registeredCert{Domain: state.ReadEntryValue(root, "domain", "")}
+}
+
+func encodeRegisteredCert(c registeredCert) map[string]string {
+	return map[string]string{"domain": c.Domain}
 }
 
 // Deregister removes a domain from the registry and deletes its cert/key files.
@@ -132,27 +129,21 @@ func Deregister(layout paths.Layout, domain string) error {
 		return err
 	}
 	defer unlock()
-	_, err = state.TransactEntryDirs(certsPath(layout), func(root string) registeredCert {
-		return registeredCert{
-			Domain: state.ReadEntryValue(root, "domain", ""),
-			Email:  state.ReadEntryValue(root, "email", ""),
-		}
-	}, func(c registeredCert) map[string]string {
-		return map[string]string{"domain": c.Domain, "email": c.Email}
-	}, func(certs []registeredCert) ([]registeredCert, error) {
-		kept := make([]registeredCert, 0, len(certs))
-		for _, cert := range certs {
-			normalized, normalizeErr := NormalizeDomain(cert.Domain)
-			if normalizeErr != nil {
-				return nil, normalizeErr
+	_, err = state.TransactEntryDirs(certsPath(layout), decodeRegisteredCert, encodeRegisteredCert,
+		func(certs []registeredCert) ([]registeredCert, error) {
+			kept := make([]registeredCert, 0, len(certs))
+			for _, cert := range certs {
+				normalized, normalizeErr := NormalizeDomain(cert.Domain)
+				if normalizeErr != nil {
+					return nil, normalizeErr
+				}
+				if normalized != domain {
+					cert.Domain = normalized
+					kept = append(kept, cert)
+				}
 			}
-			if normalized != domain {
-				cert.Domain = normalized
-				kept = append(kept, cert)
-			}
-		}
-		return kept, nil
-	})
+			return kept, nil
+		})
 	if err != nil {
 		return err
 	}
@@ -182,25 +173,20 @@ func Inventory(layout paths.Layout) ([]CertInfo, error) {
 	}
 	byDomain := map[string]*CertInfo{}
 	order := []string{}
-	add := func(domain, email string) *CertInfo {
+	add := func(domain string) {
 		domain = normalizeDomain(domain)
-		if info, ok := byDomain[domain]; ok {
-			if info.Email == "" {
-				info.Email = email
-			}
-			return info
+		if _, ok := byDomain[domain]; ok {
+			return
 		}
-		info := &CertInfo{Domain: domain, Email: email}
-		byDomain[domain] = info
+		byDomain[domain] = &CertInfo{Domain: domain}
 		order = append(order, domain)
-		return info
 	}
 	for _, r := range registered {
-		add(r.Domain, r.Email)
+		add(r.Domain)
 	}
 	// Fold in any on-disk certs not tracked in the registry (imported/legacy).
 	for _, domain := range certFileDomains(layout) {
-		add(domain, "")
+		add(domain)
 	}
 	for _, domain := range order {
 		info := byDomain[domain]

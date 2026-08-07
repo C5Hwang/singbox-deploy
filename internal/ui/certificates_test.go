@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 )
 
@@ -59,17 +60,17 @@ func TestCertificateActionsSeparateAddAndRenew(t *testing.T) {
 func TestAddCertificateRejectsManagedDomainAndPointsToRenew(t *testing.T) {
 	m := newCertificateManagerForTest(t)
 	const domain = "vpn.example.com"
-	if err := certmgr.Register(m.layout, domain, "admin@example.com"); err != nil {
+	if err := certmgr.Register(m.layout, domain); err != nil {
 		t.Fatalf("register managed certificate: %v", err)
 	}
 	m.reload()
 
 	issued := false
-	m.issueCertificate = func(context.Context, string, string, io.Writer) error {
+	m.issueCertificate = func(context.Context, string, io.Writer) error {
 		issued = true
 		return nil
 	}
-	m.beginCertFormWithSeed(domain, "new@example.com")
+	m.beginCertFormWithSeed(domain)
 	m.completeForm()
 
 	if m.phase != certPhaseList {
@@ -87,10 +88,7 @@ func TestAddCertificateRejectsManagedDomainAndPointsToRenew(t *testing.T) {
 
 func TestAddCertificateIssuesAndDistributesWithDistinctResult(t *testing.T) {
 	m := newCertificateManagerForTest(t)
-	const (
-		domain = "new.example.com"
-		email  = "admin@example.com"
-	)
+	const domain = "new.example.com"
 	if err := certmgr.UpsertCredential(m.layout, certmgr.DNSCredential{
 		Domain: "example.com", Provider: certmgr.ProviderCloudflare, Credential: "token",
 	}); err != nil {
@@ -99,16 +97,16 @@ func TestAddCertificateIssuesAndDistributesWithDistinctResult(t *testing.T) {
 	m.reload()
 
 	var calls []string
-	m.issueCertificate = func(_ context.Context, gotDomain, gotEmail string, _ io.Writer) error {
-		calls = append(calls, "issue:"+gotDomain+":"+gotEmail)
+	m.issueCertificate = func(_ context.Context, gotDomain string, _ io.Writer) error {
+		calls = append(calls, "issue:"+gotDomain)
 		return nil
 	}
-	m.distributeCertificate = func(_ context.Context, gotDomain string, _ io.Writer) error {
+	m.distributeCertificate = func(_ context.Context, gotDomain string, _ io.Writer, _ func(deploy.Event)) error {
 		calls = append(calls, "distribute:"+gotDomain)
 		return nil
 	}
 
-	m.beginCertFormWithSeed(domain, email)
+	m.beginCertFormWithSeed(domain)
 	m.completeForm()
 	if m.phase != certPhaseRunning || m.startCmd == nil {
 		t.Fatalf("new certificate did not start: phase=%d cmd=%v", m.phase, m.startCmd != nil)
@@ -118,7 +116,7 @@ func TestAddCertificateIssuesAndDistributesWithDistinctResult(t *testing.T) {
 	}
 	drainCertificateRun(t, m, m.startCmd)
 
-	wantCalls := []string{"issue:" + domain + ":" + email, "distribute:" + domain}
+	wantCalls := []string{"issue:" + domain, "distribute:" + domain}
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("add calls = %v, want %v", calls, wantCalls)
 	}
@@ -132,21 +130,18 @@ func TestAddCertificateIssuesAndDistributesWithDistinctResult(t *testing.T) {
 
 func TestRenewCertificateRequiresExplicitYThenIssuesAndDistributes(t *testing.T) {
 	m := newCertificateManagerForTest(t)
-	const (
-		domain = "managed.example.com"
-		email  = "renew@example.com"
-	)
-	if err := certmgr.Register(m.layout, domain, email); err != nil {
+	const domain = "managed.example.com"
+	if err := certmgr.Register(m.layout, domain); err != nil {
 		t.Fatalf("register managed certificate: %v", err)
 	}
 	m.reload()
 
 	var calls []string
-	m.issueCertificate = func(_ context.Context, gotDomain, gotEmail string, _ io.Writer) error {
-		calls = append(calls, "issue:"+gotDomain+":"+gotEmail)
+	m.issueCertificate = func(_ context.Context, gotDomain string, _ io.Writer) error {
+		calls = append(calls, "issue:"+gotDomain)
 		return nil
 	}
-	m.distributeCertificate = func(_ context.Context, gotDomain string, _ io.Writer) error {
+	m.distributeCertificate = func(_ context.Context, gotDomain string, _ io.Writer, _ func(deploy.Event)) error {
 		calls = append(calls, "distribute:"+gotDomain)
 		return nil
 	}
@@ -192,7 +187,7 @@ func TestRenewCertificateRequiresExplicitYThenIssuesAndDistributes(t *testing.T)
 	}
 	drainCertificateRun(t, m, cmd)
 
-	wantCalls := []string{"issue:" + domain + ":" + email, "distribute:" + domain}
+	wantCalls := []string{"issue:" + domain, "distribute:" + domain}
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("renew calls = %v, want %v", calls, wantCalls)
 	}
@@ -206,15 +201,15 @@ func TestRenewCertificateRequiresExplicitYThenIssuesAndDistributes(t *testing.T)
 
 func TestRenewCertificateFailureHasRenewalTitleAndSkipsDistribution(t *testing.T) {
 	m := newCertificateManagerForTest(t)
-	m.distributeCertificate = func(context.Context, string, io.Writer) error {
+	m.distributeCertificate = func(context.Context, string, io.Writer, func(deploy.Event)) error {
 		t.Fatal("distribution ran after failed renewal issuance")
 		return nil
 	}
-	m.issueCertificate = func(context.Context, string, string, io.Writer) error {
+	m.issueCertificate = func(context.Context, string, io.Writer) error {
 		return fmt.Errorf("ACME order failed")
 	}
 
-	m.startCertificateRun(certOperationRenew, "managed.example.com", "renew@example.com")
+	m.startCertificateRun(certOperationRenew, "managed.example.com")
 	drainCertificateRun(t, m, m.startCmd)
 	view := m.View()
 	for _, want := range []string{"Certificate renewal failed", "ACME order failed"} {
@@ -224,5 +219,131 @@ func TestRenewCertificateFailureHasRenewalTitleAndSkipsDistribution(t *testing.T
 	}
 	if strings.Contains(view, "Certificate addition failed") {
 		t.Fatalf("renew failure used the add title:\n%s", view)
+	}
+}
+
+func TestCertificateFormsDoNotCollectAnACMEEmail(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	forms := map[string]func(){
+		"certificate":    func() { m.beginCertForm() },
+		"DNS credential": func() { m.beginCredForm("") },
+	}
+	for name, begin := range forms {
+		begin()
+		for _, f := range m.form.fields {
+			if f.key == "email" {
+				t.Fatalf("%s form still collects an ACME email", name)
+			}
+		}
+		if view := m.View(); strings.Contains(strings.ToLower(view), "acme account email") {
+			t.Fatalf("%s form still prompts for an ACME email:\n%s", name, view)
+		}
+	}
+}
+
+func TestCertificateRunAdvancesProgressBarPerDistributionTarget(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	const domain = "new.example.com"
+	if err := certmgr.UpsertCredential(m.layout, certmgr.DNSCredential{
+		Domain: "example.com", Provider: certmgr.ProviderCloudflare, Credential: "token",
+	}); err != nil {
+		t.Fatalf("save DNS credential: %v", err)
+	}
+	m.reload()
+
+	// A hub reload plus one spoke, so distribution owns two of the three steps.
+	m.countDistributionTargets = func(string) int { return 2 }
+	m.issueCertificate = func(context.Context, string, io.Writer) error { return nil }
+	m.distributeCertificate = func(_ context.Context, _ string, _ io.Writer, progress func(deploy.Event)) error {
+		for i, label := range []string{"Reload hub services", "Deliver to tokyo"} {
+			for _, status := range []string{"running", "ok"} {
+				progress(deploy.Event{Index: i + 1, Total: 2, Label: label, Status: status})
+			}
+		}
+		return nil
+	}
+
+	m.beginCertFormWithSeed(domain)
+	m.completeForm()
+	cmd := m.startCmd
+	if cmd == nil {
+		t.Fatal("certificate run did not start")
+	}
+
+	// Collect the percentages the bar actually renders, collapsing the repeats
+	// that the running/ok pair of each step produces.
+	var progression []float64
+	for steps := 0; cmd != nil && steps < 20; steps++ {
+		var done bool
+		cmd, done = m.Update(cmd())
+		if done {
+			t.Fatal("certificate run unexpectedly closed its parent flow")
+		}
+		if percent := m.run.percent(); len(progression) == 0 || progression[len(progression)-1] != percent {
+			progression = append(progression, percent)
+		}
+	}
+	if m.phase != certPhaseDone {
+		t.Fatalf("certificate run did not finish: phase=%d", m.phase)
+	}
+
+	// Without progress events every one of these would be 0: the ACME order is
+	// step 1 of 3 and the fan-out carries the bar the rest of the way to 100%.
+	want := []float64{0, 1.0 / 3, 2.0 / 3, 1}
+	if len(progression) != len(want) {
+		t.Fatalf("progress = %v, want %v", progression, want)
+	}
+	for i := range want {
+		if progression[i] != want[i] {
+			t.Fatalf("progress = %v, want %v", progression, want)
+		}
+	}
+}
+
+func TestAddCertificateWithNoConsumersHoldsTheBarUntilIssuanceFinishes(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	const domain = "new.example.com"
+	if err := certmgr.UpsertCredential(m.layout, certmgr.DNSCredential{
+		Domain: "example.com", Provider: certmgr.ProviderCloudflare, Credential: "token",
+	}); err != nil {
+		t.Fatalf("save DNS credential: %v", err)
+	}
+	m.reload()
+
+	// The common Add case: nothing uses the domain yet, so the ACME order is
+	// the whole run. The bar must stay empty until it actually completes.
+	m.countDistributionTargets = func(string) int { return 0 }
+	// Sentinel: a run that never reports an in-flight issuance step fails the
+	// assertion below rather than passing by default.
+	duringIssuance := -1.0
+	m.issueCertificate = func(context.Context, string, io.Writer) error { return nil }
+	m.distributeCertificate = func(context.Context, string, io.Writer, func(deploy.Event)) error { return nil }
+
+	m.beginCertFormWithSeed(domain)
+	m.completeForm()
+	cmd := m.startCmd
+	if cmd == nil {
+		t.Fatal("certificate run did not start")
+	}
+	for steps := 0; cmd != nil && steps < 20; steps++ {
+		var done bool
+		cmd, done = m.Update(cmd())
+		if done {
+			t.Fatal("certificate run unexpectedly closed its parent flow")
+		}
+		// Sample once the issuance step has been reported but before it is
+		// acknowledged as finished.
+		if len(m.run.events) == 1 && m.run.events[0].Status == "running" {
+			duringIssuance = m.run.percent()
+		}
+	}
+	if m.phase != certPhaseDone {
+		t.Fatalf("certificate run did not finish: phase=%d", m.phase)
+	}
+	if duringIssuance != 0 {
+		t.Fatalf("bar during ACME order = %v, want 0", duringIssuance)
+	}
+	if got := m.run.percent(); got != 1 {
+		t.Fatalf("bar after a completed run = %v, want 1", got)
 	}
 }

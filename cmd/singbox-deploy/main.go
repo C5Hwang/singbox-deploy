@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/ui"
 )
@@ -21,6 +22,11 @@ func main() {
 	}
 	ui.SetVersion(version)
 	if shouldMigrateHubSubscriptions(os.Args) {
+		if err := certmgr.SeedLegacyCredentials(paths.DefaultLayout()); err != nil {
+			// Keep the control plane available and retry from the next process or
+			// certificate operation; the migration marker advances only on success.
+			fmt.Fprintln(os.Stderr, "warning: migrate certificate state:", err)
+		}
 		migrationCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		_, err := migrateHubSubscriptions(migrationCtx, paths.DefaultLayout(), version)
 		cancel()

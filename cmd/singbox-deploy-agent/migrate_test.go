@@ -59,6 +59,23 @@ func TestAgentStartupMigratesPersistedSubscriptionTemplate(t *testing.T) {
 	}
 }
 
+func TestAgentStartupRemovesLegacyACMEEmail(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	emailPath := filepath.Join(layout.StateDir, "email")
+	if err := state.WriteFileAtomic(emailPath, []byte("op@example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeLegacyAgentACMEEmail(layout); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(emailPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy ACME email was not removed: %v", err)
+	}
+	if err := removeLegacyAgentACMEEmail(layout); err != nil {
+		t.Fatalf("repeat cleanup: %v", err)
+	}
+}
+
 func assertAgentDomesticDNSUsesNativeDirectDialer(t *testing.T, body []byte) {
 	t.Helper()
 	var profile struct {

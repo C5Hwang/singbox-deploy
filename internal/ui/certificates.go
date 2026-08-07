@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -61,7 +62,6 @@ type certManager struct {
 
 	// Issuance continuation after adding a credential mid-flow.
 	pendingDomain        string
-	pendingEmail         string
 	resumeIssueAfterCred bool
 	// returnAfterIssue is set when another form (hub install / add spoke)
 	// redirected here because its domain was not managed yet. After issuance,
@@ -74,8 +74,11 @@ type certManager struct {
 
 	// Per-instance hooks keep certificate-flow tests deterministic while the
 	// production defaults below remain the concrete certmgr/hubctl operations.
-	issueCertificate      func(context.Context, string, string, io.Writer) error
-	distributeCertificate func(context.Context, string, io.Writer) error
+	issueCertificate      func(context.Context, string, io.Writer) error
+	distributeCertificate func(context.Context, string, io.Writer, func(deploy.Event)) error
+	// countDistributionTargets reports how many activation steps the
+	// distribution stage will report, so the bar is sized before issuance.
+	countDistributionTargets func(string) int
 }
 
 var certActions = []string{"Add certificate", "Renew certificate", "Delete certificate", "Manage DNS credentials"}
@@ -92,10 +95,10 @@ func newCertManager() *certManager {
 	return m
 }
 
-func newCertManagerForDomain(domain, email string) *certManager {
+func newCertManagerForDomain(domain string) *certManager {
 	m := newCertManager()
 	m.returnAfterIssue = true
-	m.beginCertFormWithSeed(domain, email)
+	m.beginCertFormWithSeed(domain)
 	return m
 }
 
@@ -275,7 +278,7 @@ func (m *certManager) updateRenewConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
 	case "y":
 		target := m.pendingRenew
 		m.pendingRenew = certmgr.CertInfo{}
-		m.startCertificateRun(certOperationRenew, target.Domain, target.Email)
+		m.startCertificateRun(certOperationRenew, target.Domain)
 		return m.startCmd, false
 	case "n", "esc":
 		m.pendingRenew = certmgr.CertInfo{}
@@ -356,21 +359,17 @@ func (m *certManager) updateForm(key tea.KeyMsg) (tea.Cmd, bool) {
 }
 
 func (m *certManager) beginCertForm() {
-	m.beginCertFormWithSeed("", "")
+	m.beginCertFormWithSeed("")
 }
 
-func (m *certManager) beginCertFormWithSeed(domain, email string) {
+func (m *certManager) beginCertFormWithSeed(domain string) {
 	m.operation = certOperationAdd
 	seed := map[string]string{}
 	if domain != "" {
 		seed["domain"] = domain
 	}
-	if email != "" {
-		seed["email"] = email
-	}
 	m.form.begin([]field{
 		{key: "domain", label: "Certificate domain", note: "Needs a matching DNS credential. To renew a domain already listed, use Renew certificate."},
-		{key: "email", label: labelACMEEmail, note: noteACMEEmail},
 	}, seed, validateCertField)
 	m.phase = certPhaseForm
 }
@@ -384,7 +383,6 @@ func (m *certManager) beginCredForm(seedDomain string) {
 		{key: "domain", label: "Base domain", note: "Authorizes this domain and every subdomain (e.g. example.com covers a.example.com)."},
 		{key: "provider", label: "DNS provider", def: certmgr.ProviderCloudflare, options: []string{certmgr.ProviderCloudflare, certmgr.ProviderAliyun}},
 		{key: "credential", label: "API credential", secret: true, noteFunc: credentialNote},
-		{key: "email", label: labelACMEEmail, note: noteACMEEmail},
 	}, seed, validateCredField)
 	m.phase = certPhaseCredForm
 }
@@ -394,12 +392,10 @@ func (m *certManager) completeForm() {
 		m.completeCredForm()
 		return
 	}
-	domain := strings.TrimSpace(m.form.values["domain"])
-	email := strings.TrimSpace(m.form.values["email"])
-	m.continueAdd(domain, email)
+	m.continueAdd(strings.TrimSpace(m.form.values["domain"]))
 }
 
-func (m *certManager) continueAdd(domain, email string) {
+func (m *certManager) continueAdd(domain string) {
 	managed, err := certmgr.IsManaged(m.layout, domain)
 	if managed {
 		m.notice.setError(fmt.Sprintf("%s is already managed; use Renew certificate instead", domain))
@@ -415,13 +411,12 @@ func (m *certManager) continueAdd(domain, email string) {
 	if !certmgr.CredentialCovers(m.creds, domain) {
 		// Redirect to add a covering credential, then resume issuance.
 		m.pendingDomain = domain
-		m.pendingEmail = email
 		m.resumeIssueAfterCred = true
 		m.notice.setError("no DNS credential covers " + domain + "; add one to continue")
 		m.beginCredForm(domain)
 		return
 	}
-	m.startCertificateRun(certOperationAdd, domain, email)
+	m.startCertificateRun(certOperationAdd, domain)
 }
 
 func (m *certManager) completeCredForm() {
@@ -429,7 +424,6 @@ func (m *certManager) completeCredForm() {
 		Domain:     strings.TrimSpace(m.form.values["domain"]),
 		Provider:   strings.TrimSpace(m.form.values["provider"]),
 		Credential: strings.TrimSpace(m.form.values["credential"]),
-		Email:      strings.TrimSpace(m.form.values["email"]),
 	}
 	if err := certmgr.UpsertCredential(m.layout, cred); err != nil {
 		m.notice.setError("save credential failed: " + err.Error())
@@ -441,7 +435,7 @@ func (m *certManager) completeCredForm() {
 	if m.resumeIssueAfterCred {
 		m.resumeIssueAfterCred = false
 		if certmgr.CredentialCovers(m.creds, m.pendingDomain) {
-			m.continueAdd(m.pendingDomain, m.pendingEmail)
+			m.continueAdd(m.pendingDomain)
 			return
 		}
 	}
@@ -449,43 +443,76 @@ func (m *certManager) completeCredForm() {
 	m.phase = certPhaseCredList
 }
 
-func (m *certManager) startCertificateRun(operation certOperation, domain, email string) {
+func (m *certManager) startCertificateRun(operation certOperation, domain string) {
 	m.operation = operation
 	m.notice.clear()
 	m.phase = certPhaseRunning
 	ch := make(chan runMsg, 64)
 	m.run.resetRun(ch)
 	logs := &logWriter{ch: ch}
+	progress := runProgressSender(ch)
+
+	// The ACME order is step one and each activation target — the hub reload
+	// plus every spoke holding this domain — is a step of its own. Emitting
+	// them is what drives the progress bar: with no events at all it reports
+	// 0% for the entire run. The target count is taken before issuance to size
+	// the bar; distribution then reports the authoritative total, so a node
+	// added or removed in between recalibrates it instead of overflowing it.
+	issue := deploy.Event{Index: 1, Total: 1 + m.distributionTargets(domain), Label: "Issue certificate", Detail: domain}
+	if operation == certOperationRenew {
+		issue.Label = "Renew certificate"
+	}
 	go func() {
 		if operation == certOperationRenew {
 			fmt.Fprintf(logs, "force renewing certificate for %s via DNS-01...\n", domain)
 		} else {
 			fmt.Fprintf(logs, "adding certificate for %s via DNS-01...\n", domain)
 		}
-		err := m.issue(context.Background(), domain, email, logs)
-		if err == nil {
-			err = m.distribute(context.Background(), domain, logs)
+		issue.Status = "running"
+		deploy.EmitProgress(progress, issue)
+		if err := m.issue(context.Background(), domain, logs); err != nil {
+			issue.Status, issue.Err = "fail", err
+			deploy.EmitProgress(progress, issue)
+			ch <- runMsg{done: true, err: err}
+			return
 		}
+		issue.Status = "ok"
+		deploy.EmitProgress(progress, issue)
+		err := m.distribute(context.Background(), domain, logs, shiftRunProgress(progress, 1))
 		ch <- runMsg{done: true, err: err}
 	}()
 	m.startCmd = m.run.waitForRun()
 }
 
-func (m *certManager) issue(ctx context.Context, domain, email string, log io.Writer) error {
+// distributionTargets counts the activation steps distribution will report. A
+// lookup failure is deliberately not surfaced: it only costs bar precision
+// during issuance, and distribution reports the real count once it starts.
+func (m *certManager) distributionTargets(domain string) int {
+	if m.countDistributionTargets != nil {
+		return m.countDistributionTargets(domain)
+	}
+	consumers, err := (&hubctl.Controller{Layout: m.layout}).CertificateConsumers(domain)
+	if err != nil {
+		return 0
+	}
+	return len(consumers)
+}
+
+func (m *certManager) issue(ctx context.Context, domain string, log io.Writer) error {
 	if m.issueCertificate != nil {
-		return m.issueCertificate(ctx, domain, email, log)
+		return m.issueCertificate(ctx, domain, log)
 	}
 	mgr := &certmgr.Manager{Layout: m.layout, Output: log}
-	_, err := mgr.Issue(ctx, domain, email)
+	_, err := mgr.Issue(ctx, domain)
 	return err
 }
 
-func (m *certManager) distribute(ctx context.Context, domain string, log io.Writer) error {
+func (m *certManager) distribute(ctx context.Context, domain string, log io.Writer, progress func(deploy.Event)) error {
 	if m.distributeCertificate != nil {
-		return m.distributeCertificate(ctx, domain, log)
+		return m.distributeCertificate(ctx, domain, log, progress)
 	}
 	ctrl := &hubctl.Controller{Layout: m.layout, Runner: system.NewExecRunner(log), ExpectedVersion: toolVersion}
-	return ctrl.DistributeCertificate(ctx, domain, log)
+	return ctrl.DistributeCertificate(ctx, domain, log, progress)
 }
 
 func (m *certManager) View() string {
@@ -580,15 +607,10 @@ func (m *certManager) pickView(title string, labels []string) string {
 }
 
 func (m *certManager) renewConfirmView() string {
-	email := m.pendingRenew.Email
-	if email == "" {
-		email = "DNS credential default"
-	}
 	return flowTitle.Render("Renew certificate · Confirm") + "\n\n" +
 		statusWarn.Render("Forces a new ACME DNS-01 order now, even if the current certificate is still valid.") + "\n" +
 		"Repeated renewal is subject to Let's Encrypt rate limits.\n\n" +
-		"Domain:     " + m.pendingRenew.Domain + "\n" +
-		"ACME email: " + email + "\n\n" +
+		"Domain: " + m.pendingRenew.Domain + "\n\n" +
 		"On success, the renewed certificate is distributed to every node that uses it.\n\n" +
 		"Press y to force renew, or n/Esc to cancel."
 }

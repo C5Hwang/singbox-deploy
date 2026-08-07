@@ -37,8 +37,6 @@ type DNSCredential struct {
 	// Credential is the flattened secret: a Cloudflare API token, or
 	// "accessKey:secretKey" for Aliyun.
 	Credential string
-	// Email is the ACME account email used when issuing certs under this domain.
-	Email string
 }
 
 // Validate checks a credential is well-formed.
@@ -93,16 +91,25 @@ func dnsCredentialsPath(layout paths.Layout) string {
 	return filepath.Join(layout.StateDir, dnsCredentialsDir)
 }
 
+func decodeDNSCredential(root string) DNSCredential {
+	return DNSCredential{
+		Domain:     state.ReadEntryValue(root, "domain", ""),
+		Provider:   strings.TrimSpace(state.ReadEntryValue(root, "provider", "")),
+		Credential: state.ReadEntryValue(root, "credential", ""),
+	}
+}
+
+func encodeDNSCredential(c DNSCredential) map[string]string {
+	return map[string]string{
+		"domain":     c.Domain,
+		"provider":   c.Provider,
+		"credential": c.Credential,
+	}
+}
+
 // LoadCredentials reads the stored DNS credentials in saved order.
 func LoadCredentials(layout paths.Layout) ([]DNSCredential, error) {
-	creds, err := state.LoadEntryDirs(dnsCredentialsPath(layout), func(root string) DNSCredential {
-		return DNSCredential{
-			Domain:     state.ReadEntryValue(root, "domain", ""),
-			Provider:   strings.TrimSpace(state.ReadEntryValue(root, "provider", "")),
-			Credential: state.ReadEntryValue(root, "credential", ""),
-			Email:      state.ReadEntryValue(root, "email", ""),
-		}
-	})
+	creds, err := state.LoadEntryDirs(dnsCredentialsPath(layout), decodeDNSCredential)
 	if err != nil {
 		return nil, err
 	}
@@ -130,17 +137,9 @@ func SaveCredentials(layout paths.Layout, creds []DNSCredential) error {
 		c.Domain = domain
 		c.Provider = strings.TrimSpace(c.Provider)
 		c.Credential = strings.TrimSpace(c.Credential)
-		c.Email = strings.TrimSpace(c.Email)
 		normalized[i] = c
 	}
-	return state.SaveEntryDirs(dnsCredentialsPath(layout), normalized, func(c DNSCredential) map[string]string {
-		return map[string]string{
-			"domain":     c.Domain,
-			"provider":   c.Provider,
-			"credential": c.Credential,
-			"email":      c.Email,
-		}
-	})
+	return state.SaveEntryDirs(dnsCredentialsPath(layout), normalized, encodeDNSCredential)
 }
 
 // UpsertCredential adds or replaces one base-domain credential under the
@@ -203,19 +202,7 @@ func DeleteCredential(layout paths.Layout, domain string) error {
 }
 
 func transactCredentials(layout paths.Layout, mutate func([]DNSCredential) ([]DNSCredential, error)) ([]DNSCredential, error) {
-	return state.TransactEntryDirs(dnsCredentialsPath(layout), func(root string) DNSCredential {
-		return DNSCredential{
-			Domain:     state.ReadEntryValue(root, "domain", ""),
-			Provider:   strings.TrimSpace(state.ReadEntryValue(root, "provider", "")),
-			Credential: state.ReadEntryValue(root, "credential", ""),
-			Email:      state.ReadEntryValue(root, "email", ""),
-		}
-	}, func(c DNSCredential) map[string]string {
-		return map[string]string{
-			"domain": c.Domain, "provider": c.Provider,
-			"credential": c.Credential, "email": c.Email,
-		}
-	}, func(current []DNSCredential) ([]DNSCredential, error) {
+	return state.TransactEntryDirs(dnsCredentialsPath(layout), decodeDNSCredential, encodeDNSCredential, func(current []DNSCredential) ([]DNSCredential, error) {
 		for i := range current {
 			normalized, err := normalizeCredential(current[i])
 			if err != nil {
@@ -235,7 +222,6 @@ func normalizeCredential(c DNSCredential) (DNSCredential, error) {
 	c.Domain = domain
 	c.Provider = strings.TrimSpace(c.Provider)
 	c.Credential = strings.TrimSpace(c.Credential)
-	c.Email = strings.TrimSpace(c.Email)
 	return c, nil
 }
 

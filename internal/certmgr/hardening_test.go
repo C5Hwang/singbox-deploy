@@ -141,7 +141,7 @@ func TestManagerRejectsUnusableACMEResultBeforeSaving(t *testing.T) {
 			}
 			issuer := &staticIssuer{certificate: acme.Certificate{CertificatePEM: tt.cert, PrivateKeyPEM: tt.key}}
 			manager := &Manager{Layout: layout, ACME: acme.NewManager(issuer), Now: func() time.Time { return now }}
-			if _, err := manager.Issue(context.Background(), "example.com", ""); err == nil {
+			if _, err := manager.Issue(context.Background(), "example.com"); err == nil {
 				t.Fatal("expected issuance validation error")
 			}
 			gotCert, _ := os.ReadFile(certPath)
@@ -169,7 +169,7 @@ func TestManagerRejectsUnusableACMEResultBeforeSaving(t *testing.T) {
 		ACME:   acme.NewManager(&staticIssuer{certificate: acme.Certificate{CertificatePEM: validCert, PrivateKeyPEM: validKey}}),
 		Now:    func() time.Time { return now },
 	}
-	info, err := manager.Issue(context.Background(), "EXAMPLE.COM.", "admin@example.com")
+	info, err := manager.Issue(context.Background(), "EXAMPLE.COM.")
 	if err != nil {
 		t.Fatalf("valid issuance failed: %v", err)
 	}
@@ -203,12 +203,12 @@ func TestEnsureIssuedSerializesConcurrentHubProcesses(t *testing.T) {
 	}
 	results := make(chan result, 2)
 	go func() {
-		_, issued, err := manager.EnsureIssued(context.Background(), "example.com", "", DefaultRenewBefore)
+		_, issued, err := manager.EnsureIssued(context.Background(), "example.com", DefaultRenewBefore)
 		results <- result{issued: issued, err: err}
 	}()
 	<-issuer.started
 	go func() {
-		_, issued, err := manager.EnsureIssued(context.Background(), "example.com", "", DefaultRenewBefore)
+		_, issued, err := manager.EnsureIssued(context.Background(), "example.com", DefaultRenewBefore)
 		results <- result{issued: issued, err: err}
 	}()
 	close(issuer.release)
@@ -242,6 +242,8 @@ func TestLegacyMigrationMergesAndUsesSchemaMarker(t *testing.T) {
 	writeState(t, layout, "dns_provider", ProviderCloudflare)
 	writeState(t, layout, "dns_credential", "legacy-token")
 	writeState(t, layout, "domain", "legacy.example.com")
+	// A legacy install may still carry an ACME account email on disk. Version 2
+	// removes it instead of merely leaving the retired personal data unread.
 	writeState(t, layout, "email", "op@example.com")
 
 	if err := SeedLegacyCredentials(layout); err != nil {
@@ -261,6 +263,9 @@ func TestLegacyMigrationMergesAndUsesSchemaMarker(t *testing.T) {
 	if err != nil || marker != legacyMigrationVersion {
 		t.Fatalf("migration marker = %q, err=%v", marker, err)
 	}
+	if _, err := os.Lstat(filepath.Join(layout.StateDir, "email")); !os.IsNotExist(err) {
+		t.Fatalf("legacy flat ACME email was not removed: %v", err)
+	}
 
 	// The marker makes subsequent runs a no-op even if legacy flat state is
 	// later edited; it must neither duplicate nor overwrite merged credentials.
@@ -271,6 +276,55 @@ func TestLegacyMigrationMergesAndUsesSchemaMarker(t *testing.T) {
 	creds, _ = LoadCredentials(layout)
 	if len(creds) != 2 || creds[1].Credential != "legacy-token" {
 		t.Fatalf("migration was not idempotent: %+v", creds)
+	}
+}
+
+func TestLegacyMigrationV2RemovesEmailsFromVersion1State(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := SaveCredentials(layout, []DNSCredential{{
+		Domain: "example.com", Provider: ProviderCloudflare, Credential: "token",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register(layout, "vpn.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	writeState(t, layout, legacyMigrationMarker, "1")
+
+	emailPaths := []string{
+		filepath.Join(layout.StateDir, "email"),
+		filepath.Join(dnsCredentialsPath(layout), "001", "email"),
+		filepath.Join(certsPath(layout), "001", "email"),
+	}
+	for _, path := range emailPaths {
+		if err := state.WriteFileAtomic(path, []byte("op@example.com\n"), 0o600); err != nil {
+			t.Fatalf("write legacy email %s: %v", path, err)
+		}
+	}
+
+	if err := SeedLegacyCredentials(layout); err != nil {
+		t.Fatalf("upgrade version 1 state: %v", err)
+	}
+	for _, path := range emailPaths {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Errorf("legacy ACME email still exists at %s: %v", path, err)
+		}
+	}
+	creds, err := LoadCredentials(layout)
+	if err != nil || len(creds) != 1 || creds[0].Domain != "example.com" || creds[0].Credential != "token" {
+		t.Fatalf("DNS credential changed during email cleanup: creds=%+v err=%v", creds, err)
+	}
+	if managed, err := IsManaged(layout, "vpn.example.com"); err != nil || !managed {
+		t.Fatalf("certificate registry changed during email cleanup: managed=%v err=%v", managed, err)
+	}
+	marker, err := state.NewStore(layout.StateDir).ReadValue(legacyMigrationMarker, true)
+	if err != nil || marker != legacyMigrationVersion {
+		t.Fatalf("migration marker = %q, err=%v", marker, err)
+	}
+
+	// The completed migration remains safe to call repeatedly.
+	if err := SeedLegacyCredentials(layout); err != nil {
+		t.Fatalf("repeat version 2 migration: %v", err)
 	}
 }
 
@@ -302,7 +356,6 @@ func TestLegacyHTTP01CertificateIsRegisteredAsNeedingDNSCredential(t *testing.T)
 	layout := paths.LayoutForRoot(t.TempDir())
 	writeState(t, layout, "acme_challenge", "http-01")
 	writeState(t, layout, "domain", "legacy.example.com")
-	writeState(t, layout, "email", "op@example.com")
 
 	if err := SeedLegacyCredentials(layout); err != nil {
 		t.Fatalf("SeedLegacyCredentials: %v", err)
@@ -311,7 +364,7 @@ func TestLegacyHTTP01CertificateIsRegisteredAsNeedingDNSCredential(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inv) != 1 || inv[0].Domain != "legacy.example.com" || inv[0].Email != "op@example.com" || !inv[0].NeedsDNSCredential {
+	if len(inv) != 1 || inv[0].Domain != "legacy.example.com" || !inv[0].NeedsDNSCredential {
 		t.Fatalf("unexpected migrated HTTP-01 inventory: %+v", inv)
 	}
 	if err := SaveCredentials(layout, []DNSCredential{{Domain: "example.com", Provider: ProviderCloudflare, Credential: "token"}}); err != nil {
@@ -342,7 +395,7 @@ func TestIsManagedUsesCertificateInventoryNotCredentialCoverage(t *testing.T) {
 		t.Fatalf("expected UnmanagedDomainError, got %T %v", err, err)
 	}
 
-	if err := Register(layout, "managed.example.com", ""); err != nil {
+	if err := Register(layout, "managed.example.com"); err != nil {
 		t.Fatal(err)
 	}
 	managed, err = IsManaged(layout, " MANAGED.EXAMPLE.COM. ")

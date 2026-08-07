@@ -106,7 +106,6 @@ func TestRootModelSuspendsAndRestoresInstallFormForCertificate(t *testing.T) {
 	root := NewModel()
 	flow := newInstallFlow()
 	flow.phase = phaseForm
-	flow.form.values["email"] = "admin@example.com"
 	flow.certificateDomainRequest = "hub.example.com"
 	root.install = flow
 
@@ -114,7 +113,7 @@ func TestRootModelSuspendsAndRestoresInstallFormForCertificate(t *testing.T) {
 	if root.install != nil || root.suspendedInstall != flow || root.certificates == nil {
 		t.Fatalf("install form was not suspended")
 	}
-	if root.certificates.form.values["domain"] != "hub.example.com" || root.certificates.form.values["email"] != "admin@example.com" {
+	if root.certificates.form.values["domain"] != "hub.example.com" {
 		t.Fatalf("certificate flow seed = %v", root.certificates.form.values)
 	}
 	root.certificates.phase = certPhaseDone
@@ -128,7 +127,7 @@ func TestRootModelSuspendsAndRestoresInstallFormForCertificate(t *testing.T) {
 func TestCertificateDeleteRefusesInstalledSpokeConsumer(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	const domain = "spoke.example.com"
-	if err := certmgr.Register(layout, domain, "admin@example.com"); err != nil {
+	if err := certmgr.Register(layout, domain); err != nil {
 		t.Fatalf("register certificate: %v", err)
 	}
 	if err := nodes.Add(layout, nodes.Node{

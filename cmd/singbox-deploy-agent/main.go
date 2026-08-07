@@ -38,6 +38,11 @@ func main() {
 
 func run() error {
 	layout := paths.DefaultLayout()
+	if err := removeLegacyAgentACMEEmail(layout); err != nil {
+		// Keep the authenticated repair surface available. The cleanup is
+		// idempotent and will be retried on the next Agent start.
+		fmt.Fprintln(os.Stderr, "warning: remove legacy ACME email:", err)
+	}
 	cfg, err := loadAgentConfig(layout)
 	if err != nil {
 		return err

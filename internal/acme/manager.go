@@ -30,10 +30,11 @@ func SupportedDNSProvider(name string) bool {
 	}
 }
 
-// Request describes a certificate request.
+// Request describes a certificate request. No account email is carried: the
+// ACME account is identified by the persisted account key alone, and Let's
+// Encrypt treats the contact address as optional.
 type Request struct {
 	Domain      string
-	Email       string
 	Challenge   Challenge
 	DNSProvider string
 	// Credentials carries provider-specific secrets (e.g. CF_API_TOKEN,

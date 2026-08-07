@@ -1377,9 +1377,8 @@ func TestDomainValidationCapturesPublicIP(t *testing.T) {
 func TestInstallFormSelectsSingleChoiceFields(t *testing.T) {
 	w := installFormForTest()
 	w.startForm()
-	// domain → email → protocols (multi) → site_template (single choice).
+	// domain → protocols (multi) → site_template (single choice).
 	w.input.SetValue("example.com")
-	w.commitField()
 	w.commitField()
 	w.setField(fieldIndex(t, w.fields, "site_template"))
 	if !w.currentFieldHasOptions() || w.currentFieldIsMulti() {

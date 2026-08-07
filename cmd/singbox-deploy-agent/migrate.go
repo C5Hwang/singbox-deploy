@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -16,4 +19,16 @@ func migrateAgentSubscriptions(ctx context.Context, layout paths.Layout) (bool, 
 		}
 		return deploy.WriteSubscriptions(layout, cfg)
 	})
+}
+
+// removeLegacyAgentACMEEmail cleans the flat contact file that older
+// standalone installs could leave behind after they had become spokes.
+func removeLegacyAgentACMEEmail(layout paths.Layout) error {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	if err := os.Remove(filepath.Join(layout.StateDir, "email")); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove legacy ACME email: %w", err)
+	}
+	return nil
 }

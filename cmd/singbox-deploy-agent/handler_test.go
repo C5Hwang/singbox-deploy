@@ -1614,6 +1614,7 @@ func TestLegacyHubArtifactsAreRemovedWhenConvertingToSpoke(t *testing.T) {
 		"/etc/systemd/system/" + system.CertRenewTimer,
 		filepath.Join(layout.StateDir, "dns_credentials"),
 		filepath.Join(layout.StateDir, "dns_credential"),
+		filepath.Join(layout.StateDir, "email"),
 		filepath.Join(layout.StateDir, "remotes"),
 		filepath.Join(layout.StateDir, "monitor_sources"),
 		filepath.Join(layout.StateDir, "spoke_subscriptions"),

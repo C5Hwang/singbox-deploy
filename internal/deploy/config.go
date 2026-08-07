@@ -68,11 +68,10 @@ func GenerateCredentials() (Credentials, error) {
 }
 
 // Config is the complete input to an installation. Certificates are issued
-// centrally via DNS-01 (see internal/certmgr), so no per-install challenge or
-// DNS-provider fields live here.
+// centrally via DNS-01 (see internal/certmgr), so no per-install challenge,
+// account-email, or DNS-provider fields live here.
 type Config struct {
 	Domain   string
-	Email    string
 	PublicIP string // public address verified during the interactive domain check
 
 	Ports   config.Ports

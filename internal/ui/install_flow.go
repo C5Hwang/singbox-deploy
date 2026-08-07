@@ -44,7 +44,6 @@ func installFields() []field {
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
 		{key: "domain", label: "Domain (must resolve to this server)", note: noteDNSCredential + " Also used for Nginx server_name and subscription URLs."},
-		{key: "email", label: labelACMEEmail, note: noteACMEEmail},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "At least one protocol is required."},
 		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HTML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
@@ -608,7 +607,6 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 
 	return deploy.Config{
 		Domain:                 vals["domain"],
-		Email:                  vals["email"],
 		PublicIP:               w.form.publicIP,
 		Ports:                  ports,
 		Enabled:                enabled,
@@ -895,7 +893,6 @@ func (w *installForm) summary(host system.Host) string {
 	deployMonitor := monitorEnabled(w.values)
 	rows := []summaryLine{
 		summaryRow("Domain", w.values["domain"]),
-		summaryRow("Email", or(w.values["email"], "not set")),
 		summaryRow("Protocols", protocolLabels(protocols)),
 		summaryRow(uiparams.LabelDisplayName, w.values["display_name"]),
 		summaryRow("Masquerade site", or(w.values["site_template"], deploy.DefaultSiteTemplate)),

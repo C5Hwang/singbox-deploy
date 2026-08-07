@@ -808,9 +808,31 @@ func TestDistributeCertificateLeavesFailurePendingAndRetryClearsIt(t *testing.T)
 		},
 	}
 
-	err := ctrl.DistributeCertificate(context.Background(), domain, io.Discard)
+	var events []deploy.Event
+	err := ctrl.DistributeCertificate(context.Background(), domain, io.Discard, func(e deploy.Event) {
+		events = append(events, e)
+	})
 	if err == nil || !strings.Contains(err.Error(), "spoke reload failed") {
 		t.Fatalf("expected delivery failure, got %v", err)
+	}
+	// The single spoke is the only activation target, and the caller's bar must
+	// reach it: a run reporting no events would sit at 0% throughout.
+	wantSteps := []deploy.Event{
+		{Index: 1, Total: 1, Label: "Deliver to tokyo", Detail: domain, Status: "running"},
+		{Index: 1, Total: 1, Label: "Deliver to tokyo", Detail: domain, Status: "fail"},
+	}
+	if len(events) != len(wantSteps) {
+		t.Fatalf("distribution progress = %+v, want %d steps", events, len(wantSteps))
+	}
+	for i, want := range wantSteps {
+		got := events[i]
+		got.Err = nil
+		if got != want {
+			t.Fatalf("distribution progress[%d] = %+v, want %+v", i, got, want)
+		}
+	}
+	if events[1].Err == nil {
+		t.Fatalf("failed step did not carry its error: %+v", events[1])
 	}
 	persisted, err := nodes.Load(layout)
 	if err != nil {

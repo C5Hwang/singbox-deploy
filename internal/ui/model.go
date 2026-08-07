@@ -238,7 +238,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			flow.certificateDomainRequest = ""
 			m.suspendedInstall = flow
 			m.install = nil
-			certs := newCertManagerForDomain(domain, flow.form.values["email"])
+			certs := newCertManagerForDomain(domain)
 			certs.setSize(m.width, m.height)
 			m.certificates = certs
 			return m, cmd
@@ -320,7 +320,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			nodeFlow.certificateDomainRequest = ""
 			m.suspendedNodes = nodeFlow
 			m.nodes = nil
-			certs := newCertManagerForDomain(domain, "")
+			certs := newCertManagerForDomain(domain)
 			certs.setSize(m.width, m.height)
 			m.certificates = certs
 			return m, cmd

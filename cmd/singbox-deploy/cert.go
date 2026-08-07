@@ -52,7 +52,9 @@ func runCert(args []string) error {
 		RenewBefore: time.Duration(*thresholdDays) * 24 * time.Hour,
 		Output:      os.Stdout,
 		AfterRenew: func(domain string) error {
-			return ctrl.DistributeCertificate(ctx, domain, os.Stdout)
+			// No progress callback: this path narrates itself to stdout and has
+			// no bar to drive.
+			return ctrl.DistributeCertificate(ctx, domain, os.Stdout, nil)
 		},
 	}
 	pendingErr := ctrl.RetryPendingCertificates(ctx, os.Stdout)
@@ -64,31 +66,30 @@ func forceRenew(ctx context.Context, layout paths.Layout, manager *certmgr.Manag
 	if err := certmgr.SeedLegacyCredentials(layout); err != nil {
 		return err
 	}
-	type target struct{ domain, email string }
-	var targets []target
+	var domains []string
 	if onlyDomain != "" {
-		targets = append(targets, target{domain: onlyDomain})
+		domains = append(domains, onlyDomain)
 	} else {
 		inventory, err := certmgr.Inventory(layout)
 		if err != nil {
 			return err
 		}
 		for _, info := range inventory {
-			targets = append(targets, target{domain: info.Domain, email: info.Email})
+			domains = append(domains, info.Domain)
 		}
 	}
-	if len(targets) == 0 {
+	if len(domains) == 0 {
 		return fmt.Errorf("no managed certificates to renew")
 	}
 	var errs []error
-	for _, target := range targets {
-		fmt.Fprintf(os.Stdout, "force renewing certificate for %s via DNS-01\n", target.domain)
-		if _, err := manager.Issue(ctx, target.domain, target.email); err != nil {
-			errs = append(errs, fmt.Errorf("renew %s: %w", target.domain, err))
+	for _, domain := range domains {
+		fmt.Fprintf(os.Stdout, "force renewing certificate for %s via DNS-01\n", domain)
+		if _, err := manager.Issue(ctx, domain); err != nil {
+			errs = append(errs, fmt.Errorf("renew %s: %w", domain, err))
 			continue
 		}
-		if err := ctrl.DistributeCertificate(ctx, target.domain, os.Stdout); err != nil {
-			errs = append(errs, fmt.Errorf("activate %s: %w", target.domain, err))
+		if err := ctrl.DistributeCertificate(ctx, domain, os.Stdout, nil); err != nil {
+			errs = append(errs, fmt.Errorf("activate %s: %w", domain, err))
 		}
 	}
 	return errors.Join(errs...)

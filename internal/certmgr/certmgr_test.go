@@ -89,7 +89,7 @@ func TestCredentialEnv(t *testing.T) {
 func TestCredentialsRoundTrip(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	want := []DNSCredential{
-		{Domain: "example.com", Provider: "cloudflare", Credential: "tok", Email: "a@example.com"},
+		{Domain: "example.com", Provider: "cloudflare", Credential: "tok"},
 		{Domain: "other.net", Provider: "aliyun", Credential: "k:s"},
 	}
 	if err := SaveCredentials(layout, want); err != nil {
@@ -102,7 +102,7 @@ func TestCredentialsRoundTrip(t *testing.T) {
 	if len(got) != len(want) {
 		t.Fatalf("got %d creds want %d", len(got), len(want))
 	}
-	if got[0].Domain != "example.com" || got[0].Credential != "tok" || got[0].Email != "a@example.com" {
+	if got[0].Domain != "example.com" || got[0].Provider != "cloudflare" || got[0].Credential != "tok" {
 		t.Fatalf("first credential mismatch: %+v", got[0])
 	}
 }
@@ -141,11 +141,12 @@ func TestConcurrentCredentialUpsertsDoNotLoseDomains(t *testing.T) {
 
 func TestRegisterAndInventory(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
-	if err := Register(layout, "example.com", "a@example.com"); err != nil {
+	if err := Register(layout, "example.com"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := Register(layout, "example.com", "b@example.com"); err != nil {
-		t.Fatalf("Register update: %v", err)
+	// Re-registering a managed domain must not create a second entry.
+	if err := Register(layout, "EXAMPLE.COM."); err != nil {
+		t.Fatalf("Register repeat: %v", err)
 	}
 	inv, err := Inventory(layout)
 	if err != nil {
@@ -154,8 +155,8 @@ func TestRegisterAndInventory(t *testing.T) {
 	if len(inv) != 1 {
 		t.Fatalf("expected 1 cert, got %d", len(inv))
 	}
-	if inv[0].Email != "b@example.com" {
-		t.Fatalf("email not updated: %+v", inv[0])
+	if inv[0].Domain != "example.com" {
+		t.Fatalf("unexpected inventory entry: %+v", inv[0])
 	}
 	if inv[0].Present {
 		t.Fatalf("no cert file exists yet, Present should be false")
@@ -175,7 +176,6 @@ func TestSeedLegacyCredentials(t *testing.T) {
 	writeState(t, layout, "dns_provider", "cloudflare")
 	writeState(t, layout, "dns_credential", "legacy-token")
 	writeState(t, layout, "domain", "legacy.example.com")
-	writeState(t, layout, "email", "op@example.com")
 
 	if err := SeedLegacyCredentials(layout); err != nil {
 		t.Fatalf("SeedLegacyCredentials: %v", err)

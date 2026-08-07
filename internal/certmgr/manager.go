@@ -65,10 +65,9 @@ func (m *Manager) defaults() {
 }
 
 // Issue obtains (or reissues) a certificate for domain now, selecting the DNS
-// credential by suffix match. emailOverride, when non-empty, overrides the
-// credential's ACME account email. It returns a NoCredentialError when no
-// stored credential covers the domain.
-func (m *Manager) Issue(ctx context.Context, domain, emailOverride string) (CertInfo, error) {
+// credential by suffix match. It returns a NoCredentialError when no stored
+// credential covers the domain.
+func (m *Manager) Issue(ctx context.Context, domain string) (CertInfo, error) {
 	m.defaults()
 	var err error
 	domain, err = NormalizeDomain(domain)
@@ -80,14 +79,14 @@ func (m *Manager) Issue(ctx context.Context, domain, emailOverride string) (Cert
 		return CertInfo{}, err
 	}
 	defer unlock()
-	return m.issueLocked(ctx, domain, emailOverride)
+	return m.issueLocked(ctx, domain)
 }
 
 // issueLocked performs one forced order while the cross-process issuance lock
 // is held. All domains share the lock because lego also shares one persisted
 // ACME account key; serializing creation prevents two Hub processes from
 // racing account initialization or writing the same certificate pair.
-func (m *Manager) issueLocked(ctx context.Context, domain, emailOverride string) (CertInfo, error) {
+func (m *Manager) issueLocked(ctx context.Context, domain string) (CertInfo, error) {
 	creds, err := LoadCredentials(m.Layout)
 	if err != nil {
 		return CertInfo{}, err
@@ -96,13 +95,8 @@ func (m *Manager) issueLocked(ctx context.Context, domain, emailOverride string)
 	if !ok {
 		return CertInfo{}, &NoCredentialError{Domain: domain}
 	}
-	email := emailOverride
-	if email == "" {
-		email = cred.Email
-	}
 	cert, err := m.ACME.Obtain(ctx, acme.Request{
 		Domain:      domain,
-		Email:       email,
 		Challenge:   acme.ChallengeDNS01,
 		DNSProvider: cred.Provider,
 		Credentials: cred.Env(),
@@ -121,7 +115,7 @@ func (m *Manager) issueLocked(ctx context.Context, domain, emailOverride string)
 	if err := state.WriteFilePair(keyPath, cert.PrivateKeyPEM, 0o600, certPath, cert.CertificatePEM, 0o644); err != nil {
 		return CertInfo{}, err
 	}
-	if err := Register(m.Layout, domain, email); err != nil {
+	if err := Register(m.Layout, domain); err != nil {
 		return CertInfo{}, err
 	}
 	return inspectAt(m.Layout, domain, now), nil
@@ -130,7 +124,7 @@ func (m *Manager) issueLocked(ctx context.Context, domain, emailOverride string)
 // EnsureIssued issues a certificate for domain only when it is missing or due
 // for renewal; a currently-valid certificate is left untouched. It reports
 // whether issuance ran.
-func (m *Manager) EnsureIssued(ctx context.Context, domain, emailOverride string, renewBefore time.Duration) (CertInfo, bool, error) {
+func (m *Manager) EnsureIssued(ctx context.Context, domain string, renewBefore time.Duration) (CertInfo, bool, error) {
 	m.defaults()
 	var err error
 	domain, err = NormalizeDomain(domain)
@@ -149,7 +143,7 @@ func (m *Manager) EnsureIssued(ctx context.Context, domain, emailOverride string
 	if due, _ := renewalDue(info, m.Now(), renewBefore); !due {
 		return info, false, nil
 	}
-	issued, err := m.issueLocked(ctx, domain, emailOverride)
+	issued, err := m.issueLocked(ctx, domain)
 	if err != nil {
 		return CertInfo{}, false, err
 	}
@@ -176,7 +170,7 @@ func (m *Manager) RenewDue(ctx context.Context, renewBefore time.Duration) ([]st
 		if !due {
 			continue
 		}
-		_, issued, err := m.EnsureIssued(ctx, info.Domain, info.Email, renewBefore)
+		_, issued, err := m.EnsureIssued(ctx, info.Domain, renewBefore)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("renew %s: %w", info.Domain, err))
 			continue

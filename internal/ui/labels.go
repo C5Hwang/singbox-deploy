@@ -7,12 +7,10 @@ package ui
 // Monitor, subscription, and protocol parameters are defined alongside their
 // fields in internal/ui/parameters instead.
 const (
-	labelACMEEmail              = "ACME account email (optional)"
 	labelSpokeSubscriptionAlias = "Spoke subscription alias"
 	labelSpokeMonitorEnabled    = "Enable monitor on spoke"
 	labelSpokeMonitorAlias      = "Spoke monitor alias"
 
-	noteACMEEmail     = "Let's Encrypt contact for expiry notices."
 	noteDNSCredential = "Needs a matching DNS credential in Certificate management."
 	// noteSpokeTransport replaces the four differently-worded explanations the
 	// spoke pickers used to carry.

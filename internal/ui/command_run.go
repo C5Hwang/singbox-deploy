@@ -52,6 +52,18 @@ func offsetRunProgress(progress func(deploy.Event), offset, total int) func(depl
 	}
 }
 
+// shiftRunProgress also reserves the first offset steps for work the caller has
+// already reported, but keeps the callee's own step count by shifting Total
+// alongside Index. Use it instead of offsetRunProgress when the callee's fan-out
+// size is only known once it starts, so the bar still lands on 100%.
+func shiftRunProgress(progress func(deploy.Event), offset int) func(deploy.Event) {
+	return func(event deploy.Event) {
+		event.Index += offset
+		event.Total += offset
+		deploy.EmitProgress(progress, event)
+	}
+}
+
 func (r *commandRun) setSize(width, height int) {
 	r.width = width
 	r.height = height
@@ -254,6 +266,11 @@ func (r *commandRun) doneLogHeight() int {
 	return max(1, r.height-7)
 }
 
+// percent is the fraction of the run that has finished, not the fraction it
+// has reached: a step that is still running counts the steps before it. A run
+// whose slowest step is also its last would otherwise sit at 100% for its whole
+// duration. Every flow's terminal event carries ok/fail/done/warn, so this
+// still reaches 100%.
 func (r *commandRun) percent() float64 {
 	if len(r.events) == 0 {
 		return 0
@@ -262,5 +279,9 @@ func (r *commandRun) percent() float64 {
 	if last.Total == 0 {
 		return 0
 	}
-	return float64(last.Index) / float64(last.Total)
+	done := last.Index
+	if last.Status == "running" {
+		done--
+	}
+	return max(0, float64(done)/float64(last.Total))
 }

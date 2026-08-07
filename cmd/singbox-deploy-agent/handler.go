@@ -441,6 +441,7 @@ func legacyHubArtifactPaths(layout paths.Layout) []string {
 		filepath.Join(layout.StateDir, "dns_provider"),
 		filepath.Join(layout.StateDir, "dns_credential"),
 		filepath.Join(layout.StateDir, "acme_challenge"),
+		filepath.Join(layout.StateDir, "email"),
 		filepath.Join(layout.StateDir, "certmgr_schema_version"),
 		filepath.Join(layout.StateDir, "remotes"),
 		filepath.Join(layout.StateDir, "monitor_sources"),

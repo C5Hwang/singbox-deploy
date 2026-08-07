@@ -313,7 +313,7 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 	// and shown alongside the spokes'. Spoke certificates are registered on the
 	// hub when the node is added, not here.
 	if !cfg.SpokeMode {
-		if err := certmgr.Register(o.Layout, cfg.Domain, cfg.Email); err != nil {
+		if err := certmgr.Register(o.Layout, cfg.Domain); err != nil {
 			return err
 		}
 	}
@@ -347,7 +347,7 @@ func (o *Orchestrator) ensureCertificate(ctx context.Context, cfg Config) error 
 	if o.CertManager == nil {
 		return fmt.Errorf("no certificate manager configured")
 	}
-	if _, err := o.CertManager.Issue(ctx, cfg.Domain, cfg.Email); err != nil {
+	if _, err := o.CertManager.Issue(ctx, cfg.Domain); err != nil {
 		return err
 	}
 	return nil

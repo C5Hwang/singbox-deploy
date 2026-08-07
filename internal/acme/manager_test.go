@@ -24,23 +24,19 @@ func TestSupportedDNSProviders(t *testing.T) {
 }
 
 func TestRequestValidate(t *testing.T) {
-	valid := Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeDNS01, DNSProvider: "cloudflare"}
+	valid := Request{Domain: "example.com", Challenge: ChallengeDNS01, DNSProvider: "cloudflare"}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
 	}
-	withoutEmail := Request{Domain: "example.com", Challenge: ChallengeDNS01, DNSProvider: "cloudflare"}
-	if err := withoutEmail.Validate(); err != nil {
-		t.Fatalf("request without email rejected: %v", err)
-	}
-	emptyChallenge := Request{Domain: "example.com", Email: "a@b.com"}
+	emptyChallenge := Request{Domain: "example.com"}
 	if err := emptyChallenge.Validate(); err == nil {
 		t.Fatalf("empty challenge should be invalid (only dns-01 is supported)")
 	}
-	dnsNoProvider := Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeDNS01}
+	dnsNoProvider := Request{Domain: "example.com", Challenge: ChallengeDNS01}
 	if err := dnsNoProvider.Validate(); err == nil {
 		t.Fatalf("dns-01 without provider should be invalid")
 	}
-	dnsBadProvider := Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeDNS01, DNSProvider: "route53"}
+	dnsBadProvider := Request{Domain: "example.com", Challenge: ChallengeDNS01, DNSProvider: "route53"}
 	if err := dnsBadProvider.Validate(); err == nil {
 		t.Fatalf("unsupported dns provider should be invalid")
 	}
@@ -59,7 +55,7 @@ func (f *fakeIssuer) Issue(_ context.Context, r Request) (Certificate, error) {
 func TestManagerObtainDelegatesToIssuer(t *testing.T) {
 	fake := &fakeIssuer{ret: Certificate{CertificatePEM: []byte("CERT"), PrivateKeyPEM: []byte("KEY")}}
 	m := NewManager(fake)
-	cert, err := m.Obtain(context.Background(), Request{Domain: "example.com", Email: "a@b.com", Challenge: ChallengeDNS01, DNSProvider: "cloudflare"})
+	cert, err := m.Obtain(context.Background(), Request{Domain: "example.com", Challenge: ChallengeDNS01, DNSProvider: "cloudflare"})
 	if err != nil {
 		t.Fatalf("Obtain error: %v", err)
 	}
