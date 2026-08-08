@@ -1012,7 +1012,9 @@ func TestSubscriptionSpokeFormContainsOnlySubscriptionSettings(t *testing.T) {
 	sm.editNodeIndex = 0
 	sm.startEditSpokeForm()
 
-	if len(sm.fields) != 2 || sm.fields[0].key != "spoke_alias" || sm.fields[1].key != "include_subscription" {
+	// Whether a spoke is published is decided by subscription-group
+	// membership, so this form owns only the alias its nodes are named with.
+	if len(sm.fields) != 1 || sm.fields[0].key != "spoke_alias" {
 		t.Fatalf("subscription spoke fields = %+v", sm.fields)
 	}
 	for _, f := range sm.fields {

@@ -25,6 +25,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/protocol"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
+	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
@@ -804,7 +805,14 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	writeStatusState(t, layout.StateDir, "subscribe_token", "tok")
 	writeStatusState(t, layout.StateDir, "enabled_protocols", "vless-reality-vision,tuic")
 	writeStatusState(t, layout.StateDir, "subscribe_salt", "abcd1234deadbeef")
+	writeStatusState(t, layout.StateDir, "display_name", "US-hub")
 	writeStatusState(t, layout.StateDir, "monitor", "yes")
+	if err := subgroups.Save(layout, []subgroups.Group{
+		{ID: "aa11", Alias: "Default", Salt: "abcd1234deadbeef", Members: []string{subgroups.HubMemberID}},
+		{ID: "bb22", Alias: "Family", Salt: "familysalt", Members: []string{subgroups.HubMemberID}},
+	}); err != nil {
+		t.Fatalf("save subscription groups: %v", err)
+	}
 	writeStatusState(t, layout.StateDir, "traffic_in_limit_bytes", fmt.Sprintf("%d", uint64(40)<<30))
 	writeStatusState(t, layout.StateDir, "traffic_out_limit_bytes", fmt.Sprintf("%d", uint64(50)<<30))
 	writeStatusState(t, layout.StateDir, "traffic_total_limit_bytes", fmt.Sprintf("%d", uint64(100)<<30))
@@ -870,20 +878,29 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	if status.Protocols != "vless-reality-vision, tuic" {
 		t.Fatalf("Protocols = %q", status.Protocols)
 	}
-	if status.Salt != "abcd1234deadbeef" {
-		t.Fatalf("Salt = %q", status.Salt)
+	if len(status.Groups) != 2 {
+		t.Fatalf("Groups = %#v", status.Groups)
 	}
-	if status.Subscription != "https://example.com:2096/s/default/tok" {
-		t.Fatalf("Subscription = %q", status.Subscription)
+	first := status.Groups[0]
+	token := deploy.SubscriptionToken("abcd1234deadbeef")
+	if first.Alias != "Default" || first.Salt != "abcd1234deadbeef" || first.Members != "US-hub" {
+		t.Fatalf("first group = %#v", first)
 	}
-	if status.ClashMetaSub != "https://example.com:2096/s/clashMetaProfiles/tok" {
-		t.Fatalf("ClashMetaSub = %q", status.ClashMetaSub)
+	if first.Subscription != "https://example.com:2096/s/default/"+token {
+		t.Fatalf("Subscription = %q", first.Subscription)
 	}
-	if status.SingBoxSub != "https://example.com:2096/s/singboxProfiles/tok" {
-		t.Fatalf("SingBoxSub = %q", status.SingBoxSub)
+	if first.ClashMetaSub != "https://example.com:2096/s/clashMetaProfiles/"+token {
+		t.Fatalf("ClashMetaSub = %q", first.ClashMetaSub)
 	}
-	if status.SurgeSub != "https://example.com:2096/s/surgeProfiles/tok" {
-		t.Fatalf("SurgeSub = %q", status.SurgeSub)
+	if first.SingBoxSub != "https://example.com:2096/s/singboxProfiles/"+token {
+		t.Fatalf("SingBoxSub = %q", first.SingBoxSub)
+	}
+	if first.SurgeSub != "https://example.com:2096/s/surgeProfiles/"+token {
+		t.Fatalf("SurgeSub = %q", first.SurgeSub)
+	}
+	// Each group publishes at its own token, never a shared one.
+	if status.Groups[1].Subscription == first.Subscription {
+		t.Fatalf("groups share a subscription URL: %q", first.Subscription)
 	}
 	if status.MonitorUI != "https://example.com:2097/monitor/" {
 		t.Fatalf("MonitorUI = %q", status.MonitorUI)
@@ -1087,10 +1104,13 @@ func withUninstallDeps(t *testing.T, layout paths.Layout) {
 	uninstallRun = func(context.Context, uninstall.Options) error { return nil }
 }
 
+// subscriptionActionCursor finds the action list index of one action.
+// Separators are skipped: they leave action at its zero value, which is also
+// the first action constant.
 func subscriptionActionCursor(t *testing.T, sm *subscriptionManager, action subscriptionAction) int {
 	t.Helper()
 	for i, item := range sm.actions() {
-		if item.action == action {
+		if !item.separator && item.action == action {
 			return i
 		}
 	}

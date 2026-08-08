@@ -13,6 +13,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
@@ -35,6 +36,9 @@ const (
 	subscriptionActionDisplayName subscriptionAction = iota
 	subscriptionActionLocal
 	subscriptionActionEditSpoke
+	subscriptionActionAddGroup
+	subscriptionActionEditGroup
+	subscriptionActionDeleteGroup
 	subscriptionActionReorder
 	subscriptionActionRefresh
 )
@@ -60,10 +64,16 @@ type subscriptionManager struct {
 	hostErr error
 	cfg     deploy.Config
 	nodes   []nodes.Node
+	groups  []subgroups.Group
 	loadErr error
 
-	cursor        int
-	editNodeIndex int
+	cursor         int
+	editNodeIndex  int
+	editGroupIndex int
+	// members is the member option set the active group form was built from.
+	// It is captured when the form opens so a label selected then still maps to
+	// the same node after the registry is reloaded.
+	members       []groupMember
 	localPosition int
 	reorder       reorderForm
 	parameterForm
@@ -73,11 +83,12 @@ type subscriptionManager struct {
 
 func newSubscriptionManager() *subscriptionManager {
 	sm := &subscriptionManager{
-		phase:         subscriptionPhaseAction,
-		cursor:        1,
-		editNodeIndex: -1,
-		parameterForm: newParameterForm(nil),
-		commandRun:    newCommandRun(),
+		phase:          subscriptionPhaseAction,
+		cursor:         1,
+		editNodeIndex:  -1,
+		editGroupIndex: -1,
+		parameterForm:  newParameterForm(nil),
+		commandRun:     newCommandRun(),
 	}
 	host, err := detectSubscriptionHost()
 	sm.host = host
@@ -95,6 +106,12 @@ func newSubscriptionManager() *subscriptionManager {
 		return sm
 	}
 	sm.nodes = list
+	groups, err := subgroups.Load(layout)
+	if err != nil {
+		sm.loadErr = err
+		return sm
+	}
+	sm.groups = groups
 	sm.localPosition = deploy.LoadLocalSubscriptionPosition(layout)
 	return sm
 }
@@ -160,6 +177,11 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 					sm.startEditSpokeForm()
 					return
 				}
+				if sm.action == subscriptionActionEditGroup && sm.editGroupIndex < 0 {
+					sm.editGroupIndex = sm.selectedGroupIndex("edit_group_select")
+					sm.startEditGroupForm()
+					return
+				}
 				sm.phase = subscriptionPhaseConfirm
 			},
 			Back: func() {
@@ -167,6 +189,11 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 					if sm.action == subscriptionActionEditSpoke && sm.editNodeIndex >= 0 {
 						sm.editNodeIndex = -1
 						sm.startForm(sm.editSpokeSelectField())
+						return
+					}
+					if sm.action == subscriptionActionEditGroup && sm.editGroupIndex >= 0 {
+						sm.editGroupIndex = -1
+						sm.startForm(sm.groupSelectField("edit_group_select", "Subscription group to edit"))
 						return
 					}
 					sm.phase = subscriptionPhaseAction
@@ -214,6 +241,9 @@ func (sm *subscriptionManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			if list, err := nodes.Load(layout); err == nil {
 				sm.nodes = list
 			}
+			if groups, err := subgroups.Load(layout); err == nil {
+				sm.groups = groups
+			}
 			sm.localPosition = deploy.LoadLocalSubscriptionPosition(layout)
 			sm.phase = subscriptionPhaseDone
 		} else {
@@ -238,6 +268,7 @@ func (sm *subscriptionManager) moveAction(delta int) {
 func (sm *subscriptionManager) activateAction() {
 	sm.fieldErr = ""
 	sm.editNodeIndex = -1
+	sm.editGroupIndex = -1
 	actions := sm.actions()
 	idx, ok := selectedIndex(sm.cursor, len(actions))
 	if !ok {
@@ -255,6 +286,25 @@ func (sm *subscriptionManager) activateAction() {
 			return
 		}
 		sm.startForm(sm.editSpokeSelectField())
+	case subscriptionActionAddGroup:
+		sm.members = groupMemberOptions(sm.cfg.DisplayName, sm.nodes)
+		// A new group starts with everything selected: the common case is a
+		// second view of the same fleet, narrowed from there.
+		sm.startFormWith(
+			groupFields(sm.members, groupMemberValue(sm.members, allGroupMemberIDs(sm.members))),
+			sm.validateGroupField)
+	case subscriptionActionEditGroup:
+		if len(sm.groups) == 0 {
+			sm.fieldErr = "no subscription groups exist yet; add one first"
+			return
+		}
+		sm.startForm(sm.groupSelectField("edit_group_select", "Subscription group to edit"))
+	case subscriptionActionDeleteGroup:
+		if len(sm.groups) <= 1 {
+			sm.fieldErr = "the last subscription group cannot be deleted; add another one first"
+			return
+		}
+		sm.startForm(sm.groupSelectField("delete_group_select", "Subscription group to delete"))
 	case subscriptionActionReorder:
 		sm.reorder = newReorderForm(sm.buildReorderItems())
 		sm.phase = subscriptionPhaseReorder
@@ -268,8 +318,12 @@ func (sm *subscriptionManager) activateAction() {
 }
 
 func (sm *subscriptionManager) startForm(fields []field) {
+	sm.startFormWith(fields, validateSubscriptionField)
+}
+
+func (sm *subscriptionManager) startFormWith(fields []field, validate func(field, string, map[string]string) error) {
 	sm.phase = subscriptionPhaseForm
-	if sm.parameterForm.begin(fields, nil, validateSubscriptionField) {
+	if sm.parameterForm.begin(fields, nil, validate) {
 		sm.phase = subscriptionPhaseConfirm
 	}
 }
@@ -297,17 +351,109 @@ func (sm *subscriptionManager) startEditSpokeForm() {
 		return
 	}
 	node := sm.nodes[sm.editNodeIndex]
+	// Whether a spoke is published is decided by subscription-group membership,
+	// so this form owns only how its nodes are named.
 	fields := []field{
 		{key: "spoke_alias", label: labelSpokeSubscriptionAlias + " (optional)", note: noteSpokeSubscriptionAlias},
-		{key: "include_subscription", label: "Include in hub subscription", options: []string{"yes", "no"}, note: "Choose no to drop this spoke's nodes from the hub subscription."},
 	}
 	sm.phase = subscriptionPhaseForm
 	if sm.parameterForm.begin(fields, map[string]string{
-		"spoke_alias":          node.SubscriptionAlias,
-		"include_subscription": yesNoString(node.IncludeInSubscription),
+		"spoke_alias": node.SubscriptionAlias,
 	}, sm.validateSpokeField) {
 		sm.phase = subscriptionPhaseConfirm
 	}
+}
+
+// groupSelectField is the single-choice picker shared by the edit and delete
+// group flows.
+func (sm *subscriptionManager) groupSelectField(key, label string) []field {
+	return []field{{
+		key:     key,
+		label:   label,
+		options: groupLabels(sm.groups, sm.nodes),
+		note:    "Each group publishes its own subscription URL.",
+	}}
+}
+
+// selectedGroupIndex resolves a group picker's value back to a registry index.
+func (sm *subscriptionManager) selectedGroupIndex(key string) int {
+	selected := sm.values[key]
+	for i, g := range sm.groups {
+		if groupOptionLabel(g, sm.nodes) == selected {
+			return i
+		}
+	}
+	return -1
+}
+
+func (sm *subscriptionManager) selectedGroup(key string) (subgroups.Group, bool) {
+	idx := sm.selectedGroupIndex(key)
+	if idx < 0 || idx >= len(sm.groups) {
+		return subgroups.Group{}, false
+	}
+	return sm.groups[idx], true
+}
+
+// startEditGroupForm opens the group form seeded with the selected group.
+func (sm *subscriptionManager) startEditGroupForm() {
+	if sm.editGroupIndex < 0 || sm.editGroupIndex >= len(sm.groups) {
+		return
+	}
+	group := sm.groups[sm.editGroupIndex]
+	sm.members = groupMemberOptions(sm.cfg.DisplayName, sm.nodes)
+	sm.phase = subscriptionPhaseForm
+	if sm.parameterForm.begin(groupFields(sm.members, groupMemberValue(sm.members, group.Members)), map[string]string{
+		"group_alias":   group.Alias,
+		"group_salt":    group.Salt,
+		"group_members": groupMemberValue(sm.members, group.Members),
+	}, sm.validateGroupField) {
+		sm.phase = subscriptionPhaseConfirm
+	}
+}
+
+// formGroup assembles the group described by the active form.
+func (sm *subscriptionManager) formGroup() subgroups.Group {
+	group := subgroups.Group{
+		Alias:   strings.TrimSpace(sm.values["group_alias"]),
+		Salt:    strings.TrimSpace(sm.values["group_salt"]),
+		Members: groupMemberIDs(sm.members, sm.values["group_members"]),
+	}
+	if sm.action == subscriptionActionEditGroup && sm.editGroupIndex >= 0 && sm.editGroupIndex < len(sm.groups) {
+		group.ID = sm.groups[sm.editGroupIndex].ID
+	}
+	return group
+}
+
+// validateGroupField adds registry-wide alias and salt uniqueness to the shared
+// validation, so a collision is caught before anything is published.
+func (sm *subscriptionManager) validateGroupField(f field, val string, vals map[string]string) error {
+	exempt := ""
+	if sm.action == subscriptionActionEditGroup && sm.editGroupIndex >= 0 && sm.editGroupIndex < len(sm.groups) {
+		exempt = sm.groups[sm.editGroupIndex].ID
+	}
+	switch f.key {
+	case "group_alias":
+		if existing, clash := subgroups.AliasConflict(sm.groups, val, exempt); clash {
+			return fmt.Errorf("subscription group name is already used by %s", existing.EffectiveAlias())
+		}
+	case "group_salt":
+		// A blank salt is generated at apply time and cannot collide.
+		if strings.TrimSpace(val) == "" {
+			return nil
+		}
+		if existing, clash := subgroups.SaltConflict(sm.groups, val, exempt); clash {
+			return fmt.Errorf("salt is already used by %s; each group needs its own subscription URL", existing.EffectiveAlias())
+		}
+	}
+	return validateSubscriptionField(f, val, vals)
+}
+
+func allGroupMemberIDs(members []groupMember) []string {
+	ids := make([]string, len(members))
+	for i, member := range members {
+		ids[i] = member.id
+	}
+	return ids
 }
 
 func (sm *subscriptionManager) buildReorderItems() []reorderItem {
@@ -421,6 +567,15 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 		}()
 		return sm.waitForRun()
 	}
+	if sm.action == subscriptionActionAddGroup || sm.action == subscriptionActionEditGroup ||
+		sm.action == subscriptionActionDeleteGroup {
+		action := sm.action
+		go func() {
+			err := sm.applyGroupAction(context.Background(), action, progress)
+			ch <- runMsg{done: true, err: err}
+		}()
+		return sm.waitForRun()
+	}
 	if sm.action == subscriptionActionReorder {
 		go func() {
 			err := sm.applySourceOrder(context.Background(), logs)
@@ -476,21 +631,58 @@ func (sm *subscriptionManager) applySpokeSubscription(ctx context.Context, logs 
 			Generation: spokeRegistryGenerationSubscription,
 			Apply: func(current *nodes.Node) error {
 				current.SubscriptionAlias = strings.TrimSpace(sm.values["spoke_alias"])
-				current.IncludeInSubscription = sm.values["include_subscription"] != "no"
 				return nil
 			},
 			Restore: func(current *nodes.Node, original, applied nodes.Node) {
 				if current.SubscriptionAlias == applied.SubscriptionAlias {
 					current.SubscriptionAlias = original.SubscriptionAlias
 				}
-				if current.IncludeInSubscription == applied.IncludeInSubscription {
-					current.IncludeInSubscription = original.IncludeInSubscription
-				}
 			},
 		},
 		ctrl.Reconfigure,
 		rollbackCtrl.Reconfigure,
 	)
+}
+
+// applyGroupAction persists one subscription-group registry change and
+// republishes every group.
+func (sm *subscriptionManager) applyGroupAction(ctx context.Context, action subscriptionAction, progress func(deploy.Event)) error {
+	layout := subscriptionUILayout()
+	switch action {
+	case subscriptionActionAddGroup:
+		group := sm.formGroup()
+		salt, err := resolveGroupSalt(group.Salt)
+		if err != nil {
+			return err
+		}
+		group.Salt = salt
+		return applyGroupChange(ctx, layout, "Subscription group", "register the new subscription group", progress,
+			func() error {
+				_, err := subgroups.Add(layout, group)
+				return err
+			})
+	case subscriptionActionEditGroup:
+		group := sm.formGroup()
+		salt, err := resolveGroupSalt(group.Salt)
+		if err != nil {
+			return err
+		}
+		group.Salt = salt
+		if group.ID == "" {
+			return fmt.Errorf("selected subscription group no longer exists")
+		}
+		return applyGroupChange(ctx, layout, "Subscription group", "save the requested subscription group settings", progress,
+			func() error { return subgroups.Update(layout, group) })
+	case subscriptionActionDeleteGroup:
+		group, ok := sm.selectedGroup("delete_group_select")
+		if !ok {
+			return fmt.Errorf("selected subscription group no longer exists")
+		}
+		return applyGroupChange(ctx, layout, "Subscription group", "remove the subscription group and its published files", progress,
+			func() error { return subgroups.Remove(layout, group.ID) })
+	default:
+		return fmt.Errorf("unsupported subscription group action")
+	}
 }
 
 func (sm *subscriptionManager) applySourceOrder(ctx context.Context, logs *logWriter) error {
@@ -587,7 +779,6 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 		},
 	}
 	if sm.action == subscriptionActionLocal {
-		opts.Salt = strings.TrimSpace(sm.values["subscribe_salt"])
 		if port, err := strconv.Atoi(strings.TrimSpace(sm.values["subscribe_port"])); err == nil {
 			opts.SubscribePort = port
 		}
@@ -595,11 +786,20 @@ func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.Upd
 	return opts
 }
 
+// includedNodes lists the installed spokes at least one subscription group
+// publishes. A spoke no group names is registered and managed, but absent from
+// every subscription.
 func (sm *subscriptionManager) includedNodes() []nodes.Node {
 	out := make([]nodes.Node, 0, len(sm.nodes))
 	for _, node := range sm.nodes {
-		if node.IncludeInSubscription && node.Installed {
-			out = append(out, node)
+		if !node.Installed {
+			continue
+		}
+		for _, g := range sm.groups {
+			if g.HasMember(node.ID) {
+				out = append(out, node)
+				break
+			}
 		}
 	}
 	return out
@@ -610,7 +810,7 @@ func spokeOptionLabel(node nodes.Node) string {
 	if len(id) > 8 {
 		id = id[:8]
 	}
-	return fmt.Sprintf("%s (%s · %s)", node.EffectiveAlias(), node.WGIP, id)
+	return optionLabel(fmt.Sprintf("%s (%s · %s)", node.EffectiveAlias(), node.WGIP, id))
 }
 
 func spokeLabels(list []nodes.Node) []string {
@@ -655,10 +855,13 @@ func (sm *subscriptionManager) View() string {
 func (sm *subscriptionManager) actionView() string {
 	rows := []summaryLine{
 		summaryRow(uiparams.LabelSubscribePort, strconv.Itoa(sm.cfg.SubscribePort)),
-		summaryRow(uiparams.LabelSubscribeSalt, sm.cfg.Salt),
+		summaryRow("Subscription groups", strconv.Itoa(len(sm.groups))),
 		summaryRow("Spoke nodes", strconv.Itoa(len(sm.nodes))),
-		summaryRow("Included spokes", strconv.Itoa(len(sm.includedNodes()))),
+		summaryRow("Published spokes", strconv.Itoa(len(sm.includedNodes()))),
 		summaryRow("Control path", "WireGuard only"),
+	}
+	for _, g := range sm.groups {
+		rows = append(rows, summaryIndentedRow(2, g.EffectiveAlias(), groupMemberSummary(g, sm.nodes)))
 	}
 	var b strings.Builder
 	b.WriteString(flowTitle.Render(titleSubscriptions) + "\n\n")
@@ -684,8 +887,6 @@ func (sm *subscriptionManager) confirmView() string {
 		)
 	case subscriptionActionLocal:
 		rows = append(rows,
-			summaryRow("Current salt", sm.cfg.Salt),
-			summaryRow("New salt", sm.values["subscribe_salt"]),
 			summaryRow("Current port", strconv.Itoa(sm.cfg.SubscribePort)),
 			summaryRow("New port", sm.values["subscribe_port"]),
 		)
@@ -697,7 +898,27 @@ func (sm *subscriptionManager) confirmView() string {
 				summaryRow("Management alias", old.EffectiveAlias()),
 				summaryRow("Current subscription alias", old.EffectiveSubscriptionAlias()),
 				summaryRow("New subscription alias", or(sm.values["spoke_alias"], old.EffectiveAlias())),
-				summaryRow("Include in hub subscription", sm.values["include_subscription"]),
+			)
+		}
+	case subscriptionActionAddGroup, subscriptionActionEditGroup:
+		group := sm.formGroup()
+		if sm.action == subscriptionActionEditGroup && sm.editGroupIndex >= 0 && sm.editGroupIndex < len(sm.groups) {
+			rows = append(rows, summaryRow("Current name", sm.groups[sm.editGroupIndex].EffectiveAlias()))
+		}
+		rows = append(rows,
+			summaryRow(uiparams.LabelGroupAlias, group.Alias),
+			summaryRow(uiparams.LabelGroupSalt, or(group.Salt, "random")),
+			summaryRow(uiparams.LabelGroupMembers, ""),
+		)
+		for _, name := range groupMemberNames(group, sm.cfg.DisplayName, sm.nodes) {
+			rows = append(rows, summaryIndentedRow(2, "·", name))
+		}
+	case subscriptionActionDeleteGroup:
+		if group, ok := sm.selectedGroup("delete_group_select"); ok {
+			rows = append(rows,
+				summaryRow("Subscription group", group.EffectiveAlias()),
+				summaryRow("Members", groupMemberSummary(group, sm.nodes)),
+				summaryRow("Published URL", "removed from /s once applied"),
 			)
 		}
 	case subscriptionActionReorder:
@@ -708,13 +929,17 @@ func (sm *subscriptionManager) confirmView() string {
 	case subscriptionActionRefresh:
 		rows = append(rows,
 			summaryRow("Refresh spoke subscriptions", strconv.Itoa(len(sm.includedNodes()))),
+			summaryRow("Subscription groups", strconv.Itoa(len(sm.groups))),
 			summaryRow("Transport", "WireGuard overlay"),
 		)
 	}
 	rows = append(rows, summaryBlank())
-	if sm.action == subscriptionActionDisplayName {
+	switch sm.action {
+	case subscriptionActionDisplayName:
 		rows = append(rows, summaryText("Regenerates the sing-box config and subscription files."))
-	} else {
+	case subscriptionActionDeleteGroup:
+		rows = append(rows, summaryText("Clients still using this group's URL stop receiving nodes."))
+	default:
 		rows = append(rows, summaryText("Regenerates the subscription files."))
 	}
 	return flowTitle.Render(titleSubscriptions+" · Confirm") + "\n\n" + renderSummary(rows)
@@ -725,13 +950,18 @@ func (sm *subscriptionManager) doneSummary() string {
 	if cfg.Domain == "" {
 		cfg = sm.cfg
 	}
-	return renderSummary([]summaryLine{
+	rows := []summaryLine{
 		summaryRow(uiparams.LabelDisplayName, cfg.DisplayName),
 		summaryRow(uiparams.LabelSubscribePort, strconv.Itoa(cfg.SubscribePort)),
-		summaryRow("Included spokes", strconv.Itoa(len(sm.includedNodes()))),
+		summaryRow("Published spokes", strconv.Itoa(len(sm.includedNodes()))),
 		summaryRow("Spoke transport", "WireGuard"),
 		summaryRow("Subscriptions", "refreshed"),
-	})
+	}
+	for _, g := range sm.groups {
+		rows = append(rows, summaryIndentedRow(2, g.EffectiveAlias(),
+			groupSubscriptionURLs(cfg.Domain, cfg.SubscribePort, g.Salt)["default"]))
+	}
+	return renderSummary(rows)
 }
 
 func (sm *subscriptionManager) footerHints() []operationHint {
@@ -763,6 +993,10 @@ func (sm *subscriptionManager) actions() []subscriptionActionItem {
 		{action: subscriptionActionLocal, label: "Edit hub subscription settings"},
 		{separator: true, label: "Spokes"},
 		{action: subscriptionActionEditSpoke, label: "Edit spoke subscription settings"},
+		{separator: true, label: "Subscription groups"},
+		{action: subscriptionActionAddGroup, label: "Add subscription group"},
+		{action: subscriptionActionEditGroup, label: "Edit subscription group"},
+		{action: subscriptionActionDeleteGroup, label: "Delete subscription group"},
 		{separator: true, label: "Sources"},
 		{action: subscriptionActionReorder, label: "Reorder nodes"},
 		{action: subscriptionActionRefresh, label: "Refresh from spokes"},

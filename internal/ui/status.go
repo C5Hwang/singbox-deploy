@@ -16,8 +16,10 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
+	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -32,6 +34,8 @@ var (
 	defaultStatusLayout = paths.DefaultLayout
 	detectStatusHost    = system.DetectHost
 	statusNow           = time.Now
+	loadStatusGroups    = subgroups.Load
+	loadStatusNodes     = nodes.Load
 	resolveStatusIPs    = func(ctx context.Context, domain string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip", domain)
 	}
@@ -78,14 +82,42 @@ func loadStatus() Status {
 		MonitorState: monitorState,
 		CertState:    certificateState(layout, domain),
 		Protocols:    protocolStrings(protocolsFromValue(readStatusState(store, "enabled_protocols"))),
-		Subscription: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "default"),
-		ClashMetaSub: subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "clashMetaProfiles"),
-		SingBoxSub:   subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "singboxProfiles"),
-		SurgeSub:     subscriptionStatus(domain, subscribePort, readStatusState(store, "subscribe_token"), "surgeProfiles"),
 		MonitorUI:    monitorUIStatus(domain, monitorPublicPort, monitorEnabled),
 		TrafficQuota: trafficQuotaStatus(store),
-		Salt:         readStatusState(store, "subscribe_salt"),
+		Groups: subscriptionGroupStatuses(layout, domain, subscribePort,
+			readStatusState(store, "display_name")),
 	}
+}
+
+// subscriptionGroupStatuses renders one status entry per published
+// subscription group. Groups own every subscription URL the hub serves, so an
+// installation with no group yet reports none rather than falling back to a
+// salt that nothing publishes.
+func subscriptionGroupStatuses(layout paths.Layout, domain, port, displayName string) []SubscriptionGroupStatus {
+	groups, err := loadStatusGroups(layout)
+	if err != nil || len(groups) == 0 {
+		return nil
+	}
+	list, err := loadStatusNodes(layout)
+	if err != nil {
+		list = nil
+	}
+	out := make([]SubscriptionGroupStatus, 0, len(groups))
+	for _, g := range groups {
+		token := deploy.SubscriptionToken(g.Salt)
+		members := groupMemberNames(g, displayName, list)
+		out = append(out, SubscriptionGroupStatus{
+			Alias:        g.EffectiveAlias(),
+			Salt:         g.Salt,
+			Members:      strings.Join(members, ", "),
+			MemberCount:  len(members),
+			Subscription: subscriptionStatus(domain, port, token, "default"),
+			ClashMetaSub: subscriptionStatus(domain, port, token, "clashMetaProfiles"),
+			SingBoxSub:   subscriptionStatus(domain, port, token, "singboxProfiles"),
+			SurgeSub:     subscriptionStatus(domain, port, token, "surgeProfiles"),
+		})
+	}
+	return out
 }
 
 // loadStatusPublicIP is normally a state-only read. New installations persist

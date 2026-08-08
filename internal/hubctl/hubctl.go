@@ -23,6 +23,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
 	"github.com/C5Hwang/singbox-deploy/internal/wgnet"
@@ -227,6 +228,11 @@ type AddNodeParams struct {
 	// are filled in by AddNode. Alias, Domain, protocol/monitor params are taken
 	// as provided.
 	Registry nodes.Node
+	// SubscriptionGroups lists the stable IDs of the subscription groups the
+	// new spoke joins. Membership is recorded only once the spoke is installed,
+	// so a rolled-back provisioning attempt leaves no group naming a node that
+	// never existed. An empty list registers the spoke without publishing it.
+	SubscriptionGroups []string
 }
 
 // AddNode provisions a new spoke: allocate overlay identity, bootstrap the agent
@@ -422,7 +428,10 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 	completeProgress()
 
 	// Fold the new spoke's nodes into the hub's published subscription.
-	beginProgress(7, "Subscriptions", "publish the new spoke in the aggregated outputs")
+	beginProgress(7, "Subscriptions", "publish the new spoke in the selected subscription groups")
+	if err := subgroups.AddMember(c.Layout, node.ID, params.SubscriptionGroups); err != nil {
+		fmt.Fprintf(log, "warning: could not record subscription group membership: %v\n", err)
+	}
 	if err := c.RefreshSubscriptions(ctx); err != nil {
 		fmt.Fprintf(log, "warning: subscription refresh had issues: %v\n", err)
 	}
@@ -759,6 +768,11 @@ func (c *Controller) detachNode(ctx context.Context, node nodes.Node, log io.Wri
 	}
 	if err := nodes.Remove(c.Layout, identifier); err != nil {
 		return fmt.Errorf("remove %s from node registry after overlay revocation: %w", node.EffectiveAlias(), err)
+	}
+	// A group naming a node that no longer exists would keep it listed in the
+	// TUI and could hand its membership to a later node reusing the ID.
+	if err := subgroups.DropMember(c.Layout, identifier); err != nil {
+		fmt.Fprintf(log, "warning: could not drop %s from subscription groups: %v\n", node.EffectiveAlias(), err)
 	}
 	// Drop the removed spoke's nodes from the hub's published subscription.
 	if err := c.RefreshSubscriptions(ctx); err != nil {

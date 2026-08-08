@@ -11,6 +11,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
+	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 )
 
 // spokeSubscriptionCacheDir holds the last successfully fetched subscription
@@ -25,18 +26,20 @@ var subscriptionFormats = []string{
 	nodeapi.FormatSurge,
 }
 
-// RefreshSubscriptions regenerates the hub's combined subscription outputs from
-// its own nodes plus every installed spoke's, fetched over the WireGuard
-// overlay (never the public internet). It is called after a spoke is added,
-// removed, or reconfigured, and after the hub itself is (re)installed.
+// RefreshSubscriptions regenerates every subscription group the hub publishes.
+// A group aggregates the hub's own nodes and/or installed spokes it names as
+// members, fetched over the WireGuard overlay (never the public internet). It
+// is called after a spoke is added, removed, or reconfigured, after a group is
+// edited, and after the hub itself is (re)installed.
 //
-// A spoke that cannot be reached contributes the bodies cached from its last
+// Each spoke is fetched once and reused across every group that publishes it. A
+// spoke that cannot be reached contributes the bodies cached from its last
 // successful fetch, so a transient outage never silently drops that spoke's
 // nodes from every subscribed client. Only a spoke that has never been fetched
 // is omitted. Cached bodies are re-labeled with the node's current alias, and
-// the cache is dropped as soon as the node leaves the registry or is excluded
-// from aggregation. The aggregated per-spoke error is returned after the
-// combined output is written, so callers can surface it as a warning.
+// the cache is dropped as soon as the node leaves the registry or every group.
+// The aggregated per-spoke error is returned after the outputs are written, so
+// callers can surface it as a warning.
 func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 	c.defaults()
 	localCfg, err := deploy.LoadProtocolConfig(c.Layout)
@@ -48,12 +51,16 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var sources []deploy.SubscriptionSource
+	groups, err := c.subscriptionGroups(localCfg, list)
+	if err != nil {
+		return err
+	}
+
 	var errs []error
+	fetched := make(map[string]deploy.SubscriptionSource, len(list))
 	aggregated := make(map[string]struct{}, len(list))
-	labels := newAliasLabeler(localCfg.DisplayName)
 	for _, n := range list {
-		if !n.Installed || !n.IncludeInSubscription {
+		if !n.Installed || !memberOfAnyGroup(groups, n.ID) {
 			continue
 		}
 		aggregated[n.ID] = struct{}{}
@@ -69,21 +76,109 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 		} else if err := c.cacheNodeSubscription(n, src); err != nil {
 			errs = append(errs, err)
 		}
-		if distinct := labels.distinct(src.Alias); distinct != src.Alias {
-			errs = append(errs, fmt.Errorf("alias %q is already in use; publishing %s nodes as %q instead",
-				src.Alias, n.EffectiveAlias(), distinct))
-			src.Alias = distinct
-		}
-		sources = append(sources, src)
+		fetched[n.ID] = src
 	}
+
 	pos := deploy.LoadLocalSubscriptionPosition(c.Layout)
-	if err := deploy.WriteSubscriptionsWithSources(c.Layout, localCfg, sources, pos); err != nil {
+	specs := make([]deploy.SubscriptionGroupSpec, 0, len(groups))
+	// One node renamed for a clash is one fact about the fleet, not one per
+	// group it appears in, so the warning is reported once.
+	warned := make(map[string]struct{}, len(list))
+	for _, g := range groups {
+		spec := deploy.SubscriptionGroupSpec{
+			Salt:          g.Salt,
+			IncludeLocal:  g.HasMember(subgroups.HubMemberID),
+			LocalPosition: pos,
+		}
+		// Aliases only have to be distinct within one published subscription,
+		// so each group gets its own labeler.
+		labels := newAliasLabeler(localCfg.DisplayName)
+		for _, n := range list {
+			if !g.HasMember(n.ID) {
+				continue
+			}
+			src, ok := fetched[n.ID]
+			if !ok {
+				continue
+			}
+			if distinct := labels.distinct(src.Alias); distinct != src.Alias {
+				if _, seen := warned[n.ID]; !seen {
+					warned[n.ID] = struct{}{}
+					errs = append(errs, fmt.Errorf("alias %q is already in use; publishing %s nodes as %q instead",
+						src.Alias, n.EffectiveAlias(), distinct))
+				}
+				src.Alias = distinct
+			}
+			spec.Sources = append(spec.Sources, src)
+		}
+		specs = append(specs, spec)
+	}
+	if err := deploy.WriteSubscriptionGroups(c.Layout, localCfg, specs); err != nil {
 		return err
 	}
 	if err := c.pruneSubscriptionCache(aggregated); err != nil {
 		errs = append(errs, err)
 	}
 	return joinErrors(errs)
+}
+
+// EnsureSubscriptionGroups returns the hub's subscription groups, seeding the
+// first one for an installation upgraded from the single-salt layout. A hub
+// that is not installed yet has no salt to carry over and returns no groups.
+// Callers that only read groups use this so the seeding happens exactly once,
+// at a known point, rather than as a side effect of rendering.
+func (c *Controller) EnsureSubscriptionGroups() ([]subgroups.Group, error) {
+	c.defaults()
+	localCfg, err := deploy.LoadProtocolConfig(c.Layout)
+	if err != nil {
+		return nil, nil
+	}
+	list, err := nodes.Load(c.Layout)
+	if err != nil {
+		return nil, err
+	}
+	return c.subscriptionGroups(localCfg, list)
+}
+
+// subscriptionGroups loads the group registry, seeding the first group for an
+// installation upgraded from the single-salt layout. The seed carries the salt
+// already published, so URLs handed out before the upgrade keep resolving.
+func (c *Controller) subscriptionGroups(localCfg deploy.Config, list []nodes.Node) ([]subgroups.Group, error) {
+	groups, err := subgroups.Load(c.Layout)
+	if err != nil {
+		return nil, fmt.Errorf("load subscription groups: %w", err)
+	}
+	if len(groups) > 0 {
+		return groups, nil
+	}
+	groups, _, err = subgroups.EnsureSeeded(c.Layout, localCfg.Salt, seedGroupMembers(list))
+	if err != nil {
+		return nil, fmt.Errorf("seed the first subscription group: %w", err)
+	}
+	return groups, nil
+}
+
+// seedGroupMembers reproduces the pre-groups aggregation rule — the hub plus
+// every spoke not explicitly excluded — so the seeded group publishes exactly
+// what the single-salt installation published.
+func seedGroupMembers(list []nodes.Node) []string {
+	members := make([]string, 0, len(list)+1)
+	members = append(members, subgroups.HubMemberID)
+	for _, n := range list {
+		if n.IncludeInSubscription {
+			members = append(members, n.ID)
+		}
+	}
+	return members
+}
+
+func memberOfAnyGroup(groups []subgroups.Group, id string) bool {
+	for _, g := range groups {
+		if g.HasMember(id) {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchNodeSubscription confirms the agent is reachable, then pulls its four

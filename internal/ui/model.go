@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -38,13 +39,25 @@ type Status struct {
 	MonitorState string
 	CertState    string
 	Protocols    string
+	MonitorUI    string
+	TrafficQuota string
+	// Groups holds every published subscription group. They are rendered in
+	// their own panel, one at a time, rather than in the status list: a fleet
+	// with several groups has more subscription URLs than the panel can show.
+	Groups []SubscriptionGroupStatus
+}
+
+// SubscriptionGroupStatus is one subscription group as shown in the
+// subscription-groups panel.
+type SubscriptionGroupStatus struct {
+	Alias        string
+	Salt         string
+	Members      string
+	MemberCount  int
 	Subscription string
 	ClashMetaSub string
 	SingBoxSub   string
 	SurgeSub     string
-	MonitorUI    string
-	TrafficQuota string
-	Salt         string
 }
 
 // MenuItem is a single selectable action within a group. Each item carries its
@@ -63,11 +76,15 @@ type MenuGroup struct {
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	width        int
-	height       int
-	status       Status
-	groups       []MenuGroup
-	cursor       int // flat index across all items
+	width  int
+	height int
+	status Status
+	groups []MenuGroup
+	cursor int // flat index across all items
+	// groupIndex selects which subscription group the bottom-right panel
+	// shows. It is clamped on every read so a group deleted behind the UI
+	// cannot leave the panel pointing past the end of the list.
+	groupIndex   int
 	install      *installFlow
 	protocols    *protocolManager
 	subscribe    *subscriptionManager
@@ -186,7 +203,20 @@ func activatePlaceholder(title string) func(*Model) tea.Cmd {
 }
 
 // RefreshStatus reloads the status panel from the current host and state files.
-func (m *Model) RefreshStatus() { m.status = loadStatus() }
+func (m *Model) RefreshStatus() {
+	m.status = loadStatus()
+	m.groupIndex = clampGroupIndex(m.groupIndex, len(m.status.Groups))
+}
+
+func clampGroupIndex(index, count int) int {
+	if count <= 0 || index < 0 {
+		return 0
+	}
+	if index >= count {
+		return count - 1
+	}
+	return index
+}
 
 // SetSize records the terminal dimensions.
 func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
@@ -369,6 +399,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = moveSelection(m.cursor, len(m.flatItems()), -1)
 		case isSelectionNextKey(msg):
 			m.cursor = moveSelection(m.cursor, len(m.flatItems()), 1)
+		// The subscription-groups panel is only on screen here, so its keys are
+		// bound here too and can never swallow a character typed into a form.
+		case msg.String() == "[":
+			m.groupIndex = moveSelection(m.groupIndex, len(m.status.Groups), -1)
+		case msg.String() == "]":
+			m.groupIndex = moveSelection(m.groupIndex, len(m.status.Groups), 1)
 		case isSelectionConfirmKey(msg):
 			return m, m.activate()
 		}
@@ -422,8 +458,8 @@ func (m *Model) frameSize() (int, int) {
 
 func (m *Model) bodyView(width, height int) string {
 	panelFrameY := panelStyle.GetVerticalFrameSize()
-	contentHeight := max(1, height-panelFrameY)
 	if m.LayoutMode() == LayoutWide {
+		contentHeight := max(1, height-panelFrameY)
 		available := max(48, width-8-panelGap)
 		menuWidth := min(sidebarWidth, max(28, available/3))
 		contentWidth := max(24, available-menuWidth)
@@ -432,20 +468,60 @@ func (m *Model) bodyView(width, height int) string {
 			menuBody = fitViewHeight(menuBody, contentHeight)
 		}
 		menu := panelStyle.Width(menuWidth).Render(menuBody)
-		contentBody := m.contentView(contentWidth-4, contentHeight)
-		contentBody = lipgloss.NewStyle().Width(contentWidth - 4).MaxHeight(contentHeight).Render(contentBody)
-		content := panelStyle.Width(contentWidth).Height(contentHeight).Render(contentBody)
+		content := m.contentColumn(contentWidth, height)
 		return lipgloss.JoinHorizontal(lipgloss.Top, menu, strings.Repeat(" ", panelGap), content)
 	}
 	panelWidth := max(24, width-4)
 	menuBody := m.menuView(panelWidth - 4)
 	menuHeight := min(lipgloss.Height(menuBody), max(1, height-panelFrameY-3))
 	menu := panelStyle.Width(panelWidth).Height(menuHeight).Render(fitViewHeight(menuBody, menuHeight))
-	contentHeight = max(1, height-lipgloss.Height(menu)-panelFrameY)
-	contentBody := m.contentView(panelWidth-4, contentHeight)
-	contentBody = lipgloss.NewStyle().Width(panelWidth - 4).MaxHeight(contentHeight).Render(contentBody)
-	content := panelStyle.Width(panelWidth).Height(contentHeight).Render(contentBody)
+	content := m.contentColumn(panelWidth, max(1, height-lipgloss.Height(menu)))
 	return lipgloss.JoinVertical(lipgloss.Left, menu, content)
+}
+
+const (
+	// statusPanelMinBody is the number of status rows kept visible before the
+	// subscription-groups panel is dropped entirely: a groups panel that
+	// squeezes the status list down to a couple of lines helps nobody.
+	statusPanelMinBody = 8
+	// groupsPanelMinBody is the smallest useful groups panel: a title plus at
+	// least one subscription URL.
+	groupsPanelMinBody = 3
+)
+
+// contentColumn renders everything to the right of the menu (below it in the
+// narrow layout). An active sub-flow owns the whole column; the main screen
+// splits it into the status panel and a dedicated subscription-groups panel.
+func (m *Model) contentColumn(width, height int) string {
+	panelFrameY := panelStyle.GetVerticalFrameSize()
+	singlePanel := func(body string) string {
+		panelHeight := max(1, height-panelFrameY)
+		body = lipgloss.NewStyle().Width(width - 4).MaxHeight(panelHeight).Render(body)
+		return panelStyle.Width(width).Height(panelHeight).Render(body)
+	}
+	if !m.showsStatus() {
+		return singlePanel(m.contentView(width-4, max(1, height-panelFrameY)))
+	}
+	groupsBody := m.subscriptionGroupsView(width - 4)
+	budget := height - 2*panelFrameY
+	if groupsBody == "" || budget < statusPanelMinBody+groupsPanelMinBody {
+		return singlePanel(m.statusView())
+	}
+	groupsHeight := min(lipgloss.Height(groupsBody), budget-statusPanelMinBody)
+	groups := panelStyle.Width(width).Height(groupsHeight).
+		Render(lipgloss.NewStyle().Width(width - 4).Render(fitViewHeight(groupsBody, groupsHeight)))
+	statusHeight := max(1, height-lipgloss.Height(groups)-panelFrameY)
+	status := panelStyle.Width(width).Height(statusHeight).
+		Render(lipgloss.NewStyle().Width(width - 4).MaxHeight(statusHeight).Render(m.statusView()))
+	return lipgloss.JoinVertical(lipgloss.Left, status, groups)
+}
+
+// showsStatus reports whether the main status screen is on display, meaning no
+// sub-flow has taken over the content column.
+func (m *Model) showsStatus() bool {
+	return m.install == nil && m.protocols == nil && m.subscribe == nil && m.monitor == nil &&
+		m.core == nil && m.certificates == nil && m.nodes == nil && m.selfupdate == nil &&
+		m.uninstall == nil && m.placeholder == nil
 }
 
 func (m *Model) contentView(width, height int) string {
@@ -494,8 +570,11 @@ func (m *Model) contentView(width, height int) string {
 func (m *Model) footerView() string {
 	var parts []operationHint
 	if m.install == nil {
-		if m.protocols == nil && m.subscribe == nil && m.monitor == nil && m.core == nil && m.certificates == nil && m.nodes == nil && m.selfupdate == nil && m.uninstall == nil && m.placeholder == nil {
+		if m.showsStatus() {
 			parts = append(parts, menuFooterHints()...)
+			if len(m.status.Groups) > 1 {
+				parts = append(parts, hint("[ / ]", "Subscription group"))
+			}
 		} else if m.protocols != nil {
 			parts = append(parts, m.protocols.footerHints()...)
 		} else if m.subscribe != nil {
@@ -556,15 +635,49 @@ func (m *Model) statusView() string {
 		summaryRow("Monitor service", or(s.MonitorState, "unknown")),
 		summaryRow("Certificate", or(s.CertState, "unknown")),
 		summaryRow("Protocols", or(s.Protocols, "none")),
-		summaryRow("Salt", or(s.Salt, "not set")),
-		summaryRow("Subscription (universal)", or(s.Subscription, "none")),
-		summaryRow("Subscription (Clash Meta)", or(s.ClashMetaSub, "none")),
-		summaryRow("Subscription (sing-box)", or(s.SingBoxSub, "none")),
-		summaryRow("Subscription (Surge)", or(s.SurgeSub, "none")),
 		summaryRow("Monitor URL", or(s.MonitorUI, "none")),
 		summaryRow("Traffic quota", or(s.TrafficQuota, "unknown")),
 	}
 	return titleStyle.Render("Status") + "\n" + renderSummary(rows)
+}
+
+// subscriptionGroupsView renders the currently selected subscription group.
+// Every subscription URL the hub serves belongs to a group, so this panel — not
+// the status list — is where they are read. It returns "" when there is nothing
+// to show, and the caller then gives the whole column to the status panel.
+func (m *Model) subscriptionGroupsView(width int) string {
+	total := len(m.status.Groups)
+	title := titleStyle.Render("Subscription groups")
+	if total == 0 {
+		if m.status.Domain == "" {
+			return ""
+		}
+		return title + "\n" + dimStyle.Render("None published yet.")
+	}
+	index := clampGroupIndex(m.groupIndex, total)
+	g := m.status.Groups[index]
+	header := title + "  " + dimStyle.Render(fmt.Sprintf("[%d/%d]", index+1, total))
+	if total > 1 {
+		header += "  " + dimStyle.Render("[ / ] switch")
+	}
+	return header + "\n" + renderSummary([]summaryLine{
+		summaryRow("Name", or(g.Alias, "unnamed")),
+		summaryRow("Salt", or(g.Salt, "not set")),
+		summaryRow("Members", or(truncateSummaryValue(g.Members, width-12), "none")),
+		summaryRow("universal", or(g.Subscription, "none")),
+		summaryRow("Clash Meta", or(g.ClashMetaSub, "none")),
+		summaryRow("sing-box", or(g.SingBoxSub, "none")),
+		summaryRow("Surge", or(g.SurgeSub, "none")),
+	})
+}
+
+// truncateSummaryValue shortens a one-line value that would otherwise wrap and
+// push the panel's remaining rows out of view.
+func truncateSummaryValue(value string, width int) string {
+	if width < 8 || len(value) <= width {
+		return value
+	}
+	return value[:width-1] + "…"
 }
 
 func (m *Model) menuView(width int) string {

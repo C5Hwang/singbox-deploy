@@ -320,7 +320,10 @@ func TestRefreshSubscriptionsSkipsUnreachableSpoke(t *testing.T) {
 	}
 }
 
-func TestRefreshSubscriptionsHonorsNodeInclusionFlag(t *testing.T) {
+// A spoke excluded under the pre-groups inclusion flag must stay out of the
+// group seeded from that installation, so upgrading publishes exactly what the
+// single-salt layout published.
+func TestSeededGroupHonorsLegacyNodeInclusionFlag(t *testing.T) {
 	hubLayout := paths.LayoutForRoot(t.TempDir())
 	hubCfg := hysteriaConfig(t, "hub.example.com", "HUB", "hubsalt", 9443)
 	if err := deploy.WriteInstallState(hubLayout.StateDir, hubCfg); err != nil {

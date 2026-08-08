@@ -18,6 +18,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
+	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
@@ -958,18 +959,13 @@ func summaryValueOrRandom(value string) string {
 }
 
 func (w *installFlow) doneSummary() string {
-	token := deploy.SubscriptionToken(w.cfg.Salt)
-	subscriptionBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.SubscribePort)
 	rows := []summaryLine{
 		summaryRow("Account", w.cfg.DisplayName),
 		summaryRow("Protocols", protocolLabels(w.cfg.Enabled)),
 		summaryRow("Masquerade site", or(w.cfg.SiteTemplate, deploy.DefaultSiteTemplate)),
 		summaryRow("Ports", installedPortsSummary(w.cfg.Enabled, w.cfg.Ports)),
-		summaryRow("Subscription", subscriptionBase+"/s/default/"+token),
-		summaryRow("Clash", subscriptionBase+"/s/clashMetaProfiles/"+token),
-		summaryRow("sing-box", subscriptionBase+"/s/singboxProfiles/"+token),
-		summaryRow("Surge", subscriptionBase+"/s/surgeProfiles/"+token),
 	}
+	rows = append(rows, installedSubscriptionRows(w.cfg)...)
 	if w.cfg.DeployMonitor {
 		monitorBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.MonitorPublicPort)
 		if w.cfg.DeployMonitorFrontend {
@@ -978,6 +974,36 @@ func (w *installFlow) doneSummary() string {
 		rows = append(rows, summaryRow("Monitor API", monitorBase+"/monitor/api/summary"))
 	}
 	return renderSummary(rows)
+}
+
+// installedSubscriptionRows lists the URL of every subscription group the hub
+// now publishes. A first install has exactly one, seeded from the salt entered
+// in the form; reinstalling a hub that already had groups keeps all of them, so
+// reading the salt directly would name a subscription no group publishes.
+func installedSubscriptionRows(cfg deploy.Config) []summaryLine {
+	groups, err := subgroups.Load(paths.DefaultLayout())
+	if err != nil || len(groups) == 0 {
+		token := deploy.SubscriptionToken(cfg.Salt)
+		base := fmt.Sprintf("https://%s:%d/s", cfg.Domain, cfg.SubscribePort)
+		return []summaryLine{
+			summaryRow("Subscription", base+"/default/"+token),
+			summaryRow("Clash", base+"/clashMetaProfiles/"+token),
+			summaryRow("sing-box", base+"/singboxProfiles/"+token),
+			summaryRow("Surge", base+"/surgeProfiles/"+token),
+		}
+	}
+	rows := make([]summaryLine, 0, len(groups)*5)
+	for _, g := range groups {
+		urls := groupSubscriptionURLs(cfg.Domain, cfg.SubscribePort, g.Salt)
+		rows = append(rows,
+			summaryRow("Subscription group", g.EffectiveAlias()),
+			summaryIndentedRow(2, "universal", urls["default"]),
+			summaryIndentedRow(2, "Clash", urls["clashMetaProfiles"]),
+			summaryIndentedRow(2, "sing-box", urls["singboxProfiles"]),
+			summaryIndentedRow(2, "Surge", urls["surgeProfiles"]),
+		)
+	}
+	return rows
 }
 
 func yesNoString(v bool) string {

@@ -74,8 +74,11 @@ type Node struct {
 	SingBoxVersion string
 	LastSeen       time.Time
 
-	// IncludeInSubscription controls whether this spoke contributes entries to
-	// the hub's aggregate subscription. Legacy entries default to true.
+	// IncludeInSubscription is the pre-subscription-groups inclusion flag.
+	// Publishing is now decided by subscription-group membership, so nothing
+	// consults this field at aggregation time; it survives only to decide which
+	// spokes join the group seeded from a single-salt installation. Legacy
+	// entries default to true.
 	IncludeInSubscription bool
 	// PendingCertificate marks a certificate that could not yet be delivered;
 	// a later health check or reconfigure retries it over the overlay.

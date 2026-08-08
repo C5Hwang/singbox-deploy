@@ -16,6 +16,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 )
@@ -60,6 +61,7 @@ type nodeManager struct {
 	layout     paths.Layout
 	phase      nodePhase
 	list       []nodes.Node
+	groups     []subgroups.Group
 	hubReady   bool
 	actionCur  int
 	pickCursor int
@@ -75,8 +77,11 @@ type nodeManager struct {
 	// the spoke registry.
 	pendingTarget   bootstrap.Target
 	pendingRegistry nodes.Node
-	hostKeyInfo     bootstrap.HostKeyInfo
-	pendingRemove   nodes.Node
+	// pendingGroups holds the subscription groups the spoke being added joins
+	// once it is installed.
+	pendingGroups []string
+	hostKeyInfo   bootstrap.HostKeyInfo
+	pendingRemove nodes.Node
 }
 
 type nodeHostKeyScanMsg struct {
@@ -108,6 +113,11 @@ func (m *nodeManager) reload() {
 		m.notice.setError("load nodes failed: " + err.Error())
 	}
 	m.list = list
+	groups, err := subgroups.Load(m.layout)
+	if err != nil {
+		m.notice.setError("load subscription groups failed: " + err.Error())
+	}
+	m.groups = groups
 }
 
 func (m *nodeManager) runState() *commandRun { return &m.run }
@@ -339,6 +349,20 @@ func (m *nodeManager) beginForm() {
 		field{key: "reset_day", label: uiparams.LabelResetDay, def: strconv.Itoa(deploy.DefaultResetDay), note: uiparams.NoteResetDay, skip: monitorDisabled},
 		field{key: "reset_hour", label: uiparams.LabelResetHour, def: strconv.Itoa(deploy.DefaultResetHour), note: uiparams.NoteResetHour, skip: monitorDisabled},
 	)
+	// A spoke reaches clients only through the subscription groups that name
+	// it, so the choice is made here rather than left as a second trip through
+	// Subscription settings. Everything is preselected: the usual intent when
+	// adding a node is to publish it everywhere.
+	if labels := groupLabels(m.groups, m.list); len(labels) > 0 {
+		fields = append(fields, field{
+			key:     "subscription_groups",
+			label:   "Subscription groups to join",
+			def:     strings.Join(labels, ","),
+			options: labels,
+			multi:   true,
+			note:    "Deselect a group to keep this spoke out of its subscription. Groups are edited under Services → Subscription settings.",
+		})
+	}
 	m.form.begin(fields, nil, m.validateForm)
 	m.phase = nodePhaseForm
 }
@@ -478,6 +502,7 @@ func (m *nodeManager) completeForm() {
 	}
 	m.pendingTarget = target
 	m.pendingRegistry = registry
+	m.pendingGroups = m.selectedGroupIDs(vals["subscription_groups"])
 	m.hostKeyInfo = bootstrap.HostKeyInfo{}
 	m.phase = nodePhaseHostKeyScan
 	scanTarget := target
@@ -486,6 +511,21 @@ func (m *nodeManager) completeForm() {
 		info, err := scanSpokeHostKey(context.Background(), scanTarget)
 		return nodeHostKeyScanMsg{info: info, err: err}
 	}
+}
+
+// selectedGroupIDs maps the subscription-group form value back to registry IDs.
+func (m *nodeManager) selectedGroupIDs(value string) []string {
+	byLabel := make(map[string]string, len(m.groups))
+	for _, g := range m.groups {
+		byLabel[groupOptionLabel(g, m.list)] = g.ID
+	}
+	var ids []string
+	for _, label := range strings.Split(value, ",") {
+		if id, ok := byLabel[strings.TrimSpace(label)]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func defaultSpokePort(protocol config.Protocol) int {
@@ -525,12 +565,14 @@ func (m *nodeManager) updateHostKeyConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
 		target := m.pendingTarget
 		target.HostKeyFingerprint = m.hostKeyInfo.Fingerprint
 		registry := m.pendingRegistry
+		groups := m.pendingGroups
 		// Drop the manager's copy without wiping the key slice still needed by
 		// startAdd. That goroutine wipes the last application-owned copy.
 		m.pendingTarget = bootstrap.Target{}
 		m.pendingRegistry = nodes.Node{}
+		m.pendingGroups = nil
 		m.hostKeyInfo = bootstrap.HostKeyInfo{}
-		m.startAdd(target, registry)
+		m.startAdd(target, registry, groups)
 		return m.startCmd, false
 	case "n", "esc":
 		m.clearPendingTarget()
@@ -544,6 +586,7 @@ func (m *nodeManager) clearPendingTarget() {
 	wipeBootstrapAuth(&m.pendingTarget.Auth)
 	m.pendingTarget = bootstrap.Target{}
 	m.pendingRegistry = nodes.Node{}
+	m.pendingGroups = nil
 	m.hostKeyInfo = bootstrap.HostKeyInfo{}
 }
 
@@ -554,7 +597,7 @@ func wipeBootstrapAuth(auth *bootstrap.Auth) {
 	*auth = bootstrap.Auth{}
 }
 
-func (m *nodeManager) startAdd(target bootstrap.Target, registry nodes.Node) {
+func (m *nodeManager) startAdd(target bootstrap.Target, registry nodes.Node, groupIDs []string) {
 	m.action = "Adding node"
 	m.phase = nodePhaseRunning
 	ch := make(chan runMsg, 64)
@@ -566,7 +609,9 @@ func (m *nodeManager) startAdd(target bootstrap.Target, registry nodes.Node) {
 	}
 	go func() {
 		defer wipeBootstrapAuth(&target.Auth)
-		_, err := ctrl.AddNode(context.Background(), hubctl.AddNodeParams{Node: target, Registry: registry}, logs)
+		_, err := ctrl.AddNode(context.Background(), hubctl.AddNodeParams{
+			Node: target, Registry: registry, SubscriptionGroups: groupIDs,
+		}, logs)
 		ch <- runMsg{done: true, err: err}
 	}()
 	m.startCmd = m.run.waitForRun()

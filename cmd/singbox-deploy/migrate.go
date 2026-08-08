@@ -14,6 +14,15 @@ func migrateHubSubscriptions(ctx context.Context, layout paths.Layout, expectedV
 	})
 }
 
+// seedSubscriptionGroups gives an installation upgraded from the single-salt
+// layout its first subscription group before anything reads the registry, so
+// the status page and the subscription screens never have to render a hub that
+// publishes a subscription belonging to no group.
+func seedSubscriptionGroups(layout paths.Layout, expectedVersion string) error {
+	_, err := (&hubctl.Controller{Layout: layout, ExpectedVersion: expectedVersion}).EnsureSubscriptionGroups()
+	return err
+}
+
 // Candidate inspection and Agent export run a not-yet-installed Hub binary.
 // They must remain read-only so a later update failure can still roll back the
 // whole transaction without having published target-version output early.

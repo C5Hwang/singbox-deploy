@@ -298,11 +298,22 @@ func (c Config) localSubscriptionParts(out subscriptionOutputs) (subscriptionSou
 // assembleCombinedSubscriptions merges the local node's parts with the remote
 // parts at localPosition and rebuilds every output format.
 func (c Config) assembleCombinedSubscriptions(out subscriptionOutputs, remoteParts []subscriptionSourceParts, localPosition int) (subscriptionOutputs, error) {
-	local, err := c.localSubscriptionParts(out)
-	if err != nil {
-		return subscriptionOutputs{}, err
+	return c.assembleSourceSubscriptions(out, remoteParts, localPosition, true)
+}
+
+// assembleSourceSubscriptions rebuilds every output format from the remote
+// parts, optionally splicing this node's own parts in at localPosition. A
+// subscription group that does not include the hub passes includeLocal=false
+// and publishes spoke nodes only.
+func (c Config) assembleSourceSubscriptions(out subscriptionOutputs, remoteParts []subscriptionSourceParts, localPosition int, includeLocal bool) (subscriptionOutputs, error) {
+	ordered := remoteParts
+	if includeLocal {
+		local, err := c.localSubscriptionParts(out)
+		if err != nil {
+			return subscriptionOutputs{}, err
+		}
+		ordered = mergeSourceParts(local, remoteParts, localPosition)
 	}
-	ordered := mergeSourceParts(local, remoteParts, localPosition)
 
 	var defaultParts []string
 	var clashParts, surgeParts []string
@@ -338,11 +349,28 @@ func mergeSourceParts(local subscriptionSourceParts, remotes []subscriptionSourc
 	return ordered
 }
 
+// subscriptionFormatDirs are the published endpoint directories under
+// SubscribeDir. Every token owns one file in each of them.
+var subscriptionFormatDirs = []string{
+	"default", "clashMeta", "clashMetaProfiles", "singboxProfiles", "surge", "surgeProfiles",
+}
+
 func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionOutputs) error {
 	if err := ensurePublicLayoutRoot(layout); err != nil {
 		return err
 	}
 	token := SubscriptionToken(cfg.Salt)
+	if err := writeSubscriptionFiles(layout, token, out); err != nil {
+		return err
+	}
+	if err := removeStaleSubscriptionFiles(layout.SubscribeDir, map[string]struct{}{token: {}}); err != nil {
+		return err
+	}
+	return writeStateFile(layout.StateDir, "subscribe_salt", cfg.Salt+"\n")
+}
+
+// writeSubscriptionFiles publishes one token's file in every format directory.
+func writeSubscriptionFiles(layout paths.Layout, token string, out subscriptionOutputs) error {
 	pathsByDir := map[string]string{
 		"default":           out.DefaultBase64,
 		"clashMeta":         out.ClashFragment,
@@ -356,14 +384,14 @@ func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionO
 			return err
 		}
 	}
-	if err := removeStaleSubscriptionFiles(layout.SubscribeDir, token); err != nil {
-		return err
-	}
-	return writeStateFile(layout.StateDir, "subscribe_salt", cfg.Salt+"\n")
+	return nil
 }
 
-func removeStaleSubscriptionFiles(subscribeDir, token string) error {
-	for _, dir := range []string{"default", "clashMeta", "clashMetaProfiles", "singboxProfiles", "surge", "surgeProfiles"} {
+// removeStaleSubscriptionFiles deletes every published file whose token is no
+// longer live. The hub publishes one token per subscription group, so the set
+// is what keeps the other groups' files from being swept away.
+func removeStaleSubscriptionFiles(subscribeDir string, tokens map[string]struct{}) error {
+	for _, dir := range subscriptionFormatDirs {
 		entries, err := os.ReadDir(filepath.Join(subscribeDir, dir))
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -372,7 +400,10 @@ func removeStaleSubscriptionFiles(subscribeDir, token string) error {
 			return err
 		}
 		for _, entry := range entries {
-			if entry.IsDir() || entry.Name() == token {
+			if entry.IsDir() {
+				continue
+			}
+			if _, live := tokens[entry.Name()]; live {
 				continue
 			}
 			if err := os.Remove(filepath.Join(subscribeDir, dir, entry.Name())); err != nil && !os.IsNotExist(err) {

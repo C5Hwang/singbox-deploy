@@ -27,6 +27,11 @@ func main() {
 			// certificate operation; the migration marker advances only on success.
 			fmt.Fprintln(os.Stderr, "warning: migrate certificate state:", err)
 		}
+		if err := seedSubscriptionGroups(paths.DefaultLayout(), version); err != nil {
+			// Publishing continues from the previously generated files; the next
+			// process or subscription operation retries the seed.
+			fmt.Fprintln(os.Stderr, "warning: seed subscription groups:", err)
+		}
 		migrationCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		_, err := migrateHubSubscriptions(migrationCtx, paths.DefaultLayout(), version)
 		cancel()
