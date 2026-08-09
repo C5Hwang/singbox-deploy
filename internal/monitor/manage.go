@@ -97,11 +97,6 @@ type UpdateOptions struct {
 	SystemdDir    string
 	DeployBin     string
 
-	// EnsureCertificate obtains and registers a managed certificate for a
-	// domain. It is called before Nginx is rewritten onto a new monitor domain,
-	// whose certificate does not exist yet.
-	EnsureCertificate func(context.Context, string) error
-
 	// Deploy callbacks — wired by the caller to concrete deploy functions.
 	LoadConfig              func(paths.Layout) (ManageConfig, error)
 	LoadMonitorSources      func(paths.Layout) ([]ManageMonitorSource, error)
@@ -286,16 +281,10 @@ func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, sources []Mana
 			}})
 		}
 	}
-	// The rewritten Nginx config points at the monitor domain's certificate, so
-	// a move to a new name must obtain that pair before nginx -t runs.
-	if opts.SetLocal && manageCertificateNeeded(old, cfg) {
-		steps = append(steps, manageUpdateStep{label: "Certificate", detail: "obtain the monitor domain certificate", run: func(ctx context.Context, cfg ManageConfig) error {
-			if opts.EnsureCertificate == nil {
-				return fmt.Errorf("no certificate manager configured")
-			}
-			return opts.EnsureCertificate(ctx, cfg.MonitorDomain)
-		}})
-	}
+	// No issuance step: a monitor domain only reaches this point after the
+	// caller has accepted it, and acceptance already requires the name to be in
+	// the certificate inventory. The pair is therefore always on disk before the
+	// rewritten config points at it, and nginx -t is what catches it if it is not.
 	if opts.SetLocal && manageNginxChanged(old, cfg) {
 		steps = append(steps, manageUpdateStep{label: "Nginx", detail: "rewrite monitor reverse proxy", run: func(_ context.Context, cfg ManageConfig) error {
 			if err := opts.WriteManagedNginxConfig(opts.Layout, cfg, opts.NginxConfPath); err != nil {
@@ -358,16 +347,6 @@ func manageNginxChanged(old, cfg ManageConfig) bool {
 	return old.DeployMonitor != cfg.DeployMonitor || old.DeployMonitorFrontend != cfg.DeployMonitorFrontend ||
 		old.MonitorPublicPort != cfg.MonitorPublicPort || old.MonitorPort != cfg.MonitorPort ||
 		old.MonitorDomain != cfg.MonitorDomain
-}
-
-// manageCertificateNeeded reports whether the monitor is about to be served
-// under a name whose certificate the previous configuration did not already
-// keep on disk.
-func manageCertificateNeeded(old, cfg ManageConfig) bool {
-	if !cfg.DeployMonitor {
-		return false
-	}
-	return old.MonitorDomain != cfg.MonitorDomain
 }
 
 func applyManageMonitorService(opts UpdateOptions, cfg ManageConfig) error {

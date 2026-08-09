@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -297,9 +298,10 @@ func monitorDomainUpdateOptions(t *testing.T, root string, layout paths.Layout, 
 		LoadMonitorSources:     func(paths.Layout) ([]monitor.ManageMonitorSource, error) { return nil, nil },
 		ValidateMonitorSources: func([]monitor.ManageMonitorSource) error { return nil },
 		SaveMonitorSources:     func(paths.Layout, []monitor.ManageMonitorSource) error { return nil },
-		EnsureCertificate: func(_ context.Context, domain string) error {
-			*record = append(*record, "certificate:"+domain)
-			return nil
+		Progress: func(e monitor.ManageEvent) {
+			if e.Status == "running" {
+				*record = append(*record, "step:"+e.Label)
+			}
 		},
 		WriteManagedNginxConfig: func(l paths.Layout, mcfg monitor.ManageConfig, confPath string) error {
 			*record = append(*record, "nginx:"+mcfg.MonitorDomain)
@@ -334,10 +336,10 @@ func monitorDomainUpdateOptions(t *testing.T, root string, layout paths.Layout, 
 	}
 }
 
-// The rewritten Nginx config points at the monitor domain's certificate, so a
-// move to a new name must obtain that pair first — otherwise nginx -t fails on
-// a file that does not exist yet.
-func TestUpdateSettingsObtainsMonitorCertificateBeforeRewritingNginx(t *testing.T) {
+// Moving the monitor to a new name rewrites Nginx onto that name's certificate
+// and persists it. Issuance is the caller's precondition, not a step here, so
+// the run must not carry one.
+func TestUpdateSettingsRewritesNginxOnAMonitorDomainMove(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
@@ -355,7 +357,7 @@ func TestUpdateSettingsObtainsMonitorCertificateBeforeRewritingNginx(t *testing.
 	if updated.MonitorDomain != "monitor.example.com" {
 		t.Fatalf("updated monitor domain = %q", updated.MonitorDomain)
 	}
-	want := []string{"certificate:monitor.example.com", "nginx:monitor.example.com"}
+	want := []string{"step:Nginx", "nginx:monitor.example.com", "step:Monitor service", "step:State"}
 	if strings.Join(record, ",") != strings.Join(want, ",") {
 		t.Fatalf("steps = %v, want %v", record, want)
 	}
@@ -381,9 +383,9 @@ func TestUpdateSettingsObtainsMonitorCertificateBeforeRewritingNginx(t *testing.
 	}
 }
 
-// Editing any other monitor setting must not re-run issuance for a name whose
-// certificate is already on disk.
-func TestUpdateSettingsSkipsCertificateWhenMonitorDomainUnchanged(t *testing.T) {
+// Editing any other monitor setting rewrites Nginx too, and likewise reaches no
+// certificate step.
+func TestUpdateSettingsRunsNoCertificateStepForAnUnchangedMonitorDomain(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
 	cfg := testConfig(t)
@@ -400,8 +402,11 @@ func TestUpdateSettingsSkipsCertificateWhenMonitorDomainUnchanged(t *testing.T) 
 		t.Fatalf("UpdateSettings error: %v", err)
 	}
 	for _, step := range record {
-		if strings.HasPrefix(step, "certificate:") {
-			t.Fatalf("unchanged monitor domain should not reissue: %v", record)
+		if step == "step:Certificate" {
+			t.Fatalf("the monitor update must not issue certificates: %v", record)
 		}
+	}
+	if !slices.Contains(record, "step:Nginx") {
+		t.Fatalf("a changed monitor port should still rewrite Nginx: %v", record)
 	}
 }

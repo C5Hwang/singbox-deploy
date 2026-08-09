@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
@@ -83,22 +81,12 @@ var (
 	monitorServiceSnapshot    = func() string { return serviceState(system.MonitorService) }
 	monitorServiceRun         = runMonitorServiceAction
 	monitorLogOutput          = defaultMonitorLogOutput
-	validateMonitorDomain     = func(domain string) error {
+	// validateMonitorDomain is the whole certificate precondition for the monitor
+	// domain: a name the hub cannot already serve is refused here and the
+	// operator is handed to Certificate management, so by the time the update
+	// runs its pair is on disk.
+	validateMonitorDomain = func(domain string) error {
 		return ensureDomainManaged(monitorUILayout(), domain)
-	}
-	// ensureMonitorCertificate issues and registers the monitor domain's pair
-	// through the same central manager that owns every other certificate, so
-	// the cert-renew timer picks it up without any extra wiring.
-	ensureMonitorCertificate = func(ctx context.Context, domain string, output io.Writer) error {
-		layout := monitorUILayout()
-		if err := ensureDomainManaged(layout, domain); err != nil {
-			return err
-		}
-		manager := &certmgr.Manager{Layout: layout, Output: output}
-		if _, _, err := manager.EnsureIssued(ctx, domain, 0); err != nil {
-			return err
-		}
-		return certmgr.Register(layout, domain)
 	}
 )
 
@@ -636,9 +624,6 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	opts.Layout = monitorUILayout()
 	opts.Runner = system.NewExecRunner(logs)
 	opts.Firewall = tm.host.Firewall
-	opts.EnsureCertificate = func(ctx context.Context, domain string) error {
-		return ensureMonitorCertificate(ctx, domain, logs)
-	}
 	opts.Progress = func(e monitor.ManageEvent) {
 		de := deploy.Event{Index: e.Index, Total: e.Total, Label: e.Label, Detail: e.Detail, Status: e.Status, Err: e.Err}
 		ch <- runMsg{event: &de}
