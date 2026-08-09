@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
@@ -81,6 +83,23 @@ var (
 	monitorServiceSnapshot    = func() string { return serviceState(system.MonitorService) }
 	monitorServiceRun         = runMonitorServiceAction
 	monitorLogOutput          = defaultMonitorLogOutput
+	validateMonitorDomain     = func(domain string) error {
+		return ensureDomainManaged(monitorUILayout(), domain)
+	}
+	// ensureMonitorCertificate issues and registers the monitor domain's pair
+	// through the same central manager that owns every other certificate, so
+	// the cert-renew timer picks it up without any extra wiring.
+	ensureMonitorCertificate = func(ctx context.Context, domain string, output io.Writer) error {
+		layout := monitorUILayout()
+		if err := ensureDomainManaged(layout, domain); err != nil {
+			return err
+		}
+		manager := &certmgr.Manager{Layout: layout, Output: output}
+		if _, _, err := manager.EnsureIssued(ctx, domain, 0); err != nil {
+			return err
+		}
+		return certmgr.Register(layout, domain)
+	}
 )
 
 type monitorActionItem = actionItem[monitorAction]
@@ -107,6 +126,10 @@ type monitorManager struct {
 	cursor        int
 	editNodeIndex int
 	editNodeID    string
+
+	// certificateDomainRequest asks the root model to suspend this screen and
+	// open Certificate management for the monitor domain just entered.
+	certificateDomainRequest string
 
 	spokeUsage       nodeapi.TrafficUsage
 	spokeUsageUpdate nodeapi.TrafficUsageUpdate
@@ -244,6 +267,9 @@ func (tm *monitorManager) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			},
 			Cancel: func() (tea.Cmd, bool) { return nil, true },
 		})
+		if domain := certificateRedirectDomain(tm.parameterForm.validationErr); domain != "" {
+			tm.certificateDomainRequest = domain
+		}
 		if handled {
 			if completeCmd != nil {
 				return completeCmd, done
@@ -561,7 +587,15 @@ func (tm *monitorManager) startEditSpokeMonitorForm() {
 }
 
 func validateMonitorField(f field, val string, _ map[string]string) error {
-	return uiparams.ValidateMonitorParameterValue(f.key, val)
+	if err := uiparams.ValidateMonitorParameterValue(f.key, val); err != nil {
+		return err
+	}
+	if f.key == "monitor_domain" {
+		// Same gate as setup: the hub can only publish the monitor under a name
+		// it is able to issue a certificate for.
+		return validateMonitorDomain(val)
+	}
+	return nil
 }
 
 func (tm *monitorManager) canApply() bool { return hostCanApply(tm.host, tm.hostErr) }
@@ -602,6 +636,9 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	opts.Layout = monitorUILayout()
 	opts.Runner = system.NewExecRunner(logs)
 	opts.Firewall = tm.host.Firewall
+	opts.EnsureCertificate = func(ctx context.Context, domain string) error {
+		return ensureMonitorCertificate(ctx, domain, logs)
+	}
 	opts.Progress = func(e monitor.ManageEvent) {
 		de := deploy.Event{Index: e.Index, Total: e.Total, Label: e.Label, Detail: e.Detail, Status: e.Status, Err: e.Err}
 		ch <- runMsg{event: &de}
@@ -827,6 +864,7 @@ func (tm *monitorManager) localUpdateOptions() monitor.UpdateOptions {
 	opts.DeployMonitor = monitorEnabled(tm.values)
 	opts.DeployMonitorFrontend = monitorFrontendEnabled(tm.values)
 	opts.MonitorAlias = strings.TrimSpace(tm.values["monitor_alias"])
+	opts.MonitorDomain = strings.TrimSpace(tm.values["monitor_domain"])
 	opts.MonitorPublicPort = monitorPublicPort
 	opts.MonitorPort = monitorPort
 	opts.Interface = strings.TrimSpace(tm.values["monitor_interface"])
@@ -895,6 +933,7 @@ func (tm *monitorManager) actionView() string {
 		summaryRow(uiparams.LabelMonitorEnabled, yesNoString(tm.cfg.DeployMonitor)),
 		summaryRow(uiparams.LabelMonitorWebUI, yesNoString(tm.cfg.DeployMonitorFrontend)),
 		summaryRow(uiparams.LabelMonitorAlias, or(tm.cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
+		summaryRow(uiparams.LabelMonitorDomain, or(tm.cfg.MonitorHost(), "unknown")),
 		summaryRow(uiparams.LabelMonitorPublic, strconv.Itoa(tm.cfg.MonitorPublicPort)),
 		summaryRow(uiparams.LabelMonitorPort, strconv.Itoa(tm.cfg.MonitorPort)),
 		summaryRow(uiparams.LabelMonitorInterface, or(tm.cfg.MonitorInterface, "auto")),
@@ -938,6 +977,7 @@ func (tm *monitorManager) confirmView() string {
 			summaryRow(uiparams.LabelMonitorEnabled, tm.values["monitor"]),
 			summaryRow(uiparams.LabelMonitorWebUI, tm.values["monitor_frontend"]),
 			summaryRow(uiparams.LabelMonitorAlias, tm.values["monitor_alias"]),
+			summaryRow(uiparams.LabelMonitorDomain, tm.values["monitor_domain"]),
 			summaryRow(uiparams.LabelMonitorPublic, tm.values["monitor_public_port"]),
 			summaryRow(uiparams.LabelMonitorPort, tm.values["monitor_port"]),
 			summaryRow(uiparams.LabelMonitorInterface, tm.values["monitor_interface"]),
@@ -1025,6 +1065,7 @@ func (tm *monitorManager) doneSummary() string {
 		summaryRow("Monitor", yesNoString(cfg.DeployMonitor)),
 		summaryRow("Monitor frontend", yesNoString(cfg.DeployMonitorFrontend)),
 		summaryRow("Monitor alias", or(cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
+		summaryRow(uiparams.LabelMonitorDomain, or(cfg.MonitorHost(), "unknown")),
 		summaryRow("Monitor UI port", strconv.Itoa(cfg.MonitorPublicPort)),
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
 		summaryRow("Monitored spokes", strconv.Itoa(tm.monitoredSpokeCount())),
@@ -1193,6 +1234,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			}
 			return monitor.ManageConfig{
 				Domain:                 dcfg.Domain,
+				MonitorDomain:          dcfg.MonitorHost(),
 				DeployMonitor:          dcfg.DeployMonitor,
 				DeployMonitorFrontend:  dcfg.DeployMonitorFrontend,
 				MonitorAlias:           dcfg.MonitorAlias,
@@ -1220,6 +1262,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			dcfg.DeployMonitor = mcfg.DeployMonitor
 			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
 			dcfg.MonitorAlias = mcfg.MonitorAlias
+			dcfg.MonitorDomain = mcfg.MonitorDomain
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort
 			dcfg.MonitorInterface = mcfg.MonitorInterface
@@ -1238,6 +1281,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			}
 			dcfg.DeployMonitor = mcfg.DeployMonitor
 			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
+			dcfg.MonitorDomain = mcfg.MonitorDomain
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort
 			dcfg.SubscribePort = mcfg.SubscribePort

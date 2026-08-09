@@ -8,7 +8,9 @@ package deploy
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -88,6 +90,12 @@ type Config struct {
 	MonitorPublicPort int
 	MonitorPort       int
 
+	// MonitorDomain is the hostname Nginx serves the monitor under. It is kept
+	// separate from Domain so the monitor is not reachable through the
+	// masquerade site's name; an empty value means "the install domain", which
+	// is what installations made before the split recorded.
+	MonitorDomain string
+
 	DeployMonitor          bool
 	DeployMonitorFrontend  bool
 	MonitorAlias           string
@@ -114,6 +122,37 @@ type Config struct {
 	WGListenPort int
 
 	Creds Credentials
+}
+
+// MonitorHost returns the hostname the monitor is published under, falling back
+// to the install domain when no separate monitor domain is configured.
+func (c Config) MonitorHost() string {
+	if domain := strings.TrimSpace(c.MonitorDomain); domain != "" {
+		return domain
+	}
+	return strings.TrimSpace(c.Domain)
+}
+
+// MonitorCertificateDomain returns the extra hostname that needs its own
+// managed certificate because the monitor is published under a name of its
+// own. It is empty when the monitor shares the install domain's certificate,
+// when the monitor is disabled, or on a spoke (which publishes no monitor).
+func (c Config) MonitorCertificateDomain() (string, error) {
+	if c.SpokeMode || !c.DeployMonitor {
+		return "", nil
+	}
+	monitorDomain, err := certmgr.NormalizeDomain(c.MonitorHost())
+	if err != nil {
+		return "", fmt.Errorf("monitor domain: %w", err)
+	}
+	domain, err := certmgr.NormalizeDomain(c.Domain)
+	if err != nil {
+		return "", err
+	}
+	if monitorDomain == domain {
+		return "", nil
+	}
+	return monitorDomain, nil
 }
 
 // EnabledProtocols returns the protocols to install, defaulting to all supported.

@@ -50,6 +50,9 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 	if monitorAlias == "" {
 		monitorAlias = readProtocolStateDefault(store, "traffic_alias", DefaultMonitorAlias)
 	}
+	// An installation made before the monitor got its own name served it under
+	// the install domain, so that is what a missing key means.
+	monitorDomain := readProtocolStateDefault(store, "monitor_domain", domain)
 
 	cfg := Config{
 		Domain:                 domain,
@@ -63,6 +66,7 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		SubscribePort:          subscribePort,
 		MonitorPublicPort:      monitorPublicPort,
 		MonitorPort:            readProtocolStateIntDefault(store, "monitor_port", DefaultMonitorPort),
+		MonitorDomain:          monitorDomain,
 		DeployMonitor:          monitorStateValue != "no",
 		DeployMonitorFrontend:  monitorFrontendValue != "no",
 		MonitorAlias:           monitorAlias,

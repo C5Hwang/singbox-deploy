@@ -20,7 +20,7 @@ server {
         charset utf-8;
     }
 {{ end }}
-{{ if and .PublicMonitor .EnableMonitor (eq .MonitorPublicPort 443) }}
+{{ if and .PublicMonitor .EnableMonitor .MonitorSharesSiteBlock }}
 {{ if .EnableMonitorFrontend }}
     location /monitor/ {
         proxy_pass http://127.0.0.1:{{ .MonitorPort }}/;
@@ -63,14 +63,14 @@ server {
     }
 }
 {{ end }}
-{{ if and .PublicMonitor .EnableMonitor (ne .MonitorPublicPort 443) }}
+{{ if and .PublicMonitor .EnableMonitor (not .MonitorSharesSiteBlock) }}
 server {
     listen {{ .MonitorPublicPort }} ssl;
     http2 on;
-    server_name {{ .Domain }};
+    server_name {{ .MonitorDomain }};
 
-    ssl_certificate {{ .CertificatePath }};
-    ssl_certificate_key {{ .KeyPath }};
+    ssl_certificate {{ .MonitorCertificatePath }};
+    ssl_certificate_key {{ .MonitorKeyPath }};
 {{ if .EnableMonitorFrontend }}
     location = / {
         return 302 /monitor/;
@@ -89,5 +89,19 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Real-IP $remote_addr;
     }
+}
+{{ end }}
+{{ if and .PublicMonitor .EnableMonitor (ne .MonitorPublicPort 443) }}
+# The monitor port answers only to the monitor's own name. Any other SNI (or
+# none, such as a bare-address probe) is dropped during the handshake, so the
+# monitor cannot be reached through the masquerade site's name and the port
+# reveals no certificate. On 443 this block is unnecessary: the camouflage
+# server is already that port's default server.
+server {
+    listen {{ .MonitorPublicPort }} ssl default_server;
+    server_name _;
+
+    ssl_reject_handshake on;
+    return 444;
 }
 {{ end }}

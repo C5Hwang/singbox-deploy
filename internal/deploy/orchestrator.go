@@ -306,7 +306,7 @@ func (o *Orchestrator) stepFirewall(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
-	if err := o.ensureCertificate(ctx, cfg); err != nil {
+	if err := o.ensureCertificate(ctx, cfg, cfg.Domain); err != nil {
 		return err
 	}
 	// Track the hub's own certificate in the central inventory so it is renewed
@@ -317,7 +317,16 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 			return err
 		}
 	}
-	return nil
+	// A monitor published under its own name needs a second pair, issued and
+	// renewed through the same central manager as every other certificate.
+	monitorDomain, err := cfg.MonitorCertificateDomain()
+	if err != nil || monitorDomain == "" {
+		return err
+	}
+	if err := o.ensureCertificate(ctx, cfg, monitorDomain); err != nil {
+		return err
+	}
+	return certmgr.Register(o.Layout, monitorDomain)
 }
 
 // ensureCertificate guarantees a usable certificate pair exists on disk for the
@@ -325,9 +334,9 @@ func (o *Orchestrator) stepCertificates(ctx context.Context, cfg Config) error {
 // otherwise issues one via DNS-01 through the central certificate manager. A
 // spoke never issues: the hub pushes its pair before install, so a missing pair
 // is a provisioning error.
-func (o *Orchestrator) ensureCertificate(ctx context.Context, cfg Config) error {
-	certPath, keyPath := o.certPaths(cfg)
-	if ok, err := certificatePairUsable(certPath, keyPath, cfg.Domain, time.Now()); err != nil {
+func (o *Orchestrator) ensureCertificate(ctx context.Context, cfg Config, domain string) error {
+	certPath, keyPath := CertificatePaths(o.Layout, domain)
+	if ok, err := certificatePairUsable(certPath, keyPath, domain, time.Now()); err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("check existing certificate: %w", err)
 		}
@@ -335,9 +344,9 @@ func (o *Orchestrator) ensureCertificate(ctx context.Context, cfg Config) error 
 		return nil
 	}
 	if cfg.SpokeMode {
-		return fmt.Errorf("certificate for %s was not provisioned by the hub", cfg.Domain)
+		return fmt.Errorf("certificate for %s was not provisioned by the hub", domain)
 	}
-	if ok, err := o.importExistingCertificate(cfg, certPath, keyPath); err != nil {
+	if ok, err := o.importExistingCertificate(domain, certPath, keyPath); err != nil {
 		return err
 	} else if ok {
 		return nil
@@ -347,7 +356,7 @@ func (o *Orchestrator) ensureCertificate(ctx context.Context, cfg Config) error 
 	if o.CertManager == nil {
 		return fmt.Errorf("no certificate manager configured")
 	}
-	if _, err := o.CertManager.Issue(ctx, cfg.Domain); err != nil {
+	if _, err := o.CertManager.Issue(ctx, domain); err != nil {
 		return err
 	}
 	return nil
@@ -535,6 +544,7 @@ func WriteInstallState(stateDir string, cfg Config) error {
 		"subscribe_port":         itoa(cfg.SubscribePort),
 		"monitor_public_port":    itoa(cfg.MonitorPublicPort),
 		"monitor_port":           itoa(cfg.MonitorPort),
+		"monitor_domain":         cfg.MonitorHost(),
 		"monitor_interface":      cfg.MonitorInterface,
 		"monitor":                yesNoString(cfg.DeployMonitor),
 		"monitor_frontend":       yesNoString(cfg.DeployMonitorFrontend),

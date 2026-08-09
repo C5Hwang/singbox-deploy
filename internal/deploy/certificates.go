@@ -20,12 +20,12 @@ type certificatePair struct {
 	key  string
 }
 
-func (o *Orchestrator) importExistingCertificate(cfg Config, certPath, keyPath string) (bool, error) {
-	for _, candidate := range existingCertificateCandidates(cfg.Domain) {
+func (o *Orchestrator) importExistingCertificate(domain, certPath, keyPath string) (bool, error) {
+	for _, candidate := range existingCertificateCandidates(domain) {
 		if candidate.cert == certPath && candidate.key == keyPath {
 			continue
 		}
-		ok, err := certificatePairUsable(candidate.cert, candidate.key, cfg.Domain, time.Now())
+		ok, err := certificatePairUsable(candidate.cert, candidate.key, domain, time.Now())
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue

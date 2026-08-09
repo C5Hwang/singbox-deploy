@@ -13,9 +13,13 @@ import (
 
 // Field describes one UI parameter without depending on the ui package.
 type Field struct {
-	Key       string
-	Label     string
-	Def       string
+	Key   string
+	Label string
+	Def   string
+	// DefFunc derives the default from the values already collected, for a
+	// parameter whose sensible default is another answer in the same form. It
+	// takes precedence over Def.
+	DefFunc   func(vals map[string]string) string
 	Note      string
 	Options   []string
 	Multi     bool

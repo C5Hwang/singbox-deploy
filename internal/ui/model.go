@@ -38,9 +38,12 @@ type Status struct {
 	NginxState   string
 	MonitorState string
 	CertState    string
-	Protocols    string
-	MonitorUI    string
-	TrafficQuota string
+	// MonitorCertState is set only when the monitor is published under its own
+	// name and therefore carries a second managed certificate.
+	MonitorCertState string
+	Protocols        string
+	MonitorUI        string
+	TrafficQuota     string
 	// Groups holds every published subscription group. They are rendered in
 	// their own panel, one at a time, rather than in the status list: a fleet
 	// with several groups has more subscription URLs than the panel can show.
@@ -101,6 +104,7 @@ type Model struct {
 	// certificate flow finishes or is cancelled.
 	suspendedInstall *installFlow
 	suspendedNodes   *nodeManager
+	suspendedMonitor *monitorManager
 	selfupdate       *selfUpdateManager
 	uninstall        *uninstallManager
 	placeholder      *placeholderManager
@@ -272,9 +276,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			flow.certificateDomainRequest = ""
 			m.suspendedInstall = flow
 			m.install = nil
-			certs := newCertManagerForDomain(domain)
-			certs.setSize(m.width, m.height)
-			m.certificates = certs
+			m.openCertificateManagerFor(domain)
 			return m, cmd
 		}
 		if done {
@@ -310,6 +312,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.monitor != nil {
 		flow := m.monitor
 		cmd, done := m.monitor.Update(msg)
+		if domain := flow.certificateDomainRequest; domain != "" {
+			flow.certificateDomainRequest = ""
+			m.suspendedMonitor = flow
+			m.monitor = nil
+			m.openCertificateManagerFor(domain)
+			return m, cmd
+		}
 		if done {
 			if flow.phase == monitorPhaseDone && flow.runErr == nil {
 				m.RefreshStatus()
@@ -333,17 +342,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd, done := m.certificates.Update(msg)
 		if done {
 			m.certificates = nil
-			if m.suspendedInstall != nil {
-				m.install = m.suspendedInstall
-				m.suspendedInstall = nil
-				m.install.form.fieldErr = ""
-				m.install.form.validationErr = nil
-			} else if m.suspendedNodes != nil {
-				m.nodes = m.suspendedNodes
-				m.suspendedNodes = nil
-				m.nodes.form.fieldErr = ""
-				m.nodes.form.validationErr = nil
-			}
+			m.resumeSuspendedFlow()
 		}
 		return m, cmd
 	}
@@ -354,9 +353,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			nodeFlow.certificateDomainRequest = ""
 			m.suspendedNodes = nodeFlow
 			m.nodes = nil
-			certs := newCertManagerForDomain(domain)
-			certs.setSize(m.width, m.height)
-			m.certificates = certs
+			m.openCertificateManagerFor(domain)
 			return m, cmd
 		}
 		if done {
@@ -619,6 +616,38 @@ func fitViewHeight(view string, height int) string {
 	return strings.Join(lines, "\n")
 }
 
+// openCertificateManagerFor hands control to Certificate management for a
+// domain the caller could not accept. The caller stores itself in the matching
+// suspended field first; resumeSuspendedFlow puts it back afterwards.
+func (m *Model) openCertificateManagerFor(domain string) {
+	certs := newCertManagerForDomain(domain)
+	certs.setSize(m.width, m.height)
+	m.certificates = certs
+}
+
+// resumeSuspendedFlow returns to whichever screen handed control to Certificate
+// management, clearing the rejected-domain error so the operator can retry the
+// field with the credential they just added.
+func (m *Model) resumeSuspendedFlow() {
+	switch {
+	case m.suspendedInstall != nil:
+		m.install = m.suspendedInstall
+		m.suspendedInstall = nil
+		m.install.form.fieldErr = ""
+		m.install.form.validationErr = nil
+	case m.suspendedNodes != nil:
+		m.nodes = m.suspendedNodes
+		m.suspendedNodes = nil
+		m.nodes.form.fieldErr = ""
+		m.nodes.form.validationErr = nil
+	case m.suspendedMonitor != nil:
+		m.monitor = m.suspendedMonitor
+		m.suspendedMonitor = nil
+		m.monitor.parameterForm.fieldErr = ""
+		m.monitor.parameterForm.validationErr = nil
+	}
+}
+
 func or(v, fallback string) string {
 	if v == "" {
 		return fallback
@@ -638,10 +667,15 @@ func (m *Model) statusView() string {
 		summaryRow("Nginx service", or(s.NginxState, "unknown")),
 		summaryRow("Monitor service", or(s.MonitorState, "unknown")),
 		summaryRow("Certificate", or(s.CertState, "unknown")),
+	}
+	if s.MonitorCertState != "" {
+		rows = append(rows, summaryRow("Monitor certificate", s.MonitorCertState))
+	}
+	rows = append(rows,
 		summaryRow("Protocols", or(s.Protocols, "none")),
 		summaryRow("Monitor URL", or(s.MonitorUI, "none")),
 		summaryRow("Traffic quota", or(s.TrafficQuota, "unknown")),
-	}
+	)
 	return titleStyle.Render("Status") + "\n" + renderSummary(rows)
 }
 

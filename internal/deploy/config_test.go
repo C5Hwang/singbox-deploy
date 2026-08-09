@@ -100,3 +100,72 @@ func TestValidatePorts(t *testing.T) {
 		})
 	}
 }
+
+func TestMonitorHostAndCertificateDomain(t *testing.T) {
+	base := Config{Domain: "example.com", DeployMonitor: true}
+	cases := []struct {
+		name           string
+		mutate         func(*Config)
+		wantHost       string
+		wantCertDomain string
+		wantErr        bool
+	}{
+		{
+			name:           "unset falls back to the install domain",
+			mutate:         func(*Config) {},
+			wantHost:       "example.com",
+			wantCertDomain: "",
+		},
+		{
+			name:           "own name needs its own certificate",
+			mutate:         func(c *Config) { c.MonitorDomain = "monitor.example.com" },
+			wantHost:       "monitor.example.com",
+			wantCertDomain: "monitor.example.com",
+		},
+		{
+			name:           "same name shares the install certificate",
+			mutate:         func(c *Config) { c.MonitorDomain = "Example.COM." },
+			wantHost:       "Example.COM.",
+			wantCertDomain: "",
+		},
+		{
+			name:           "a disabled monitor needs no certificate",
+			mutate:         func(c *Config) { c.MonitorDomain, c.DeployMonitor = "monitor.example.com", false },
+			wantHost:       "monitor.example.com",
+			wantCertDomain: "",
+		},
+		{
+			name:           "a spoke publishes no monitor",
+			mutate:         func(c *Config) { c.MonitorDomain, c.SpokeMode = "monitor.example.com", true },
+			wantHost:       "monitor.example.com",
+			wantCertDomain: "",
+		},
+		{
+			name:    "an unusable name is reported, not silently skipped",
+			mutate:  func(c *Config) { c.MonitorDomain = "not a domain" },
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.mutate(&cfg)
+			certDomain, err := cfg.MonitorCertificateDomain()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %q", certDomain)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("MonitorCertificateDomain error: %v", err)
+			}
+			if cfg.MonitorHost() != tc.wantHost {
+				t.Fatalf("MonitorHost = %q, want %q", cfg.MonitorHost(), tc.wantHost)
+			}
+			if certDomain != tc.wantCertDomain {
+				t.Fatalf("MonitorCertificateDomain = %q, want %q", certDomain, tc.wantCertDomain)
+			}
+		})
+	}
+}

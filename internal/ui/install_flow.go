@@ -263,6 +263,17 @@ func (f *installForm) validateField(field field, val string, vals map[string]str
 		}
 		f.publicIP = strings.TrimSpace(publicIP)
 		return nil
+	case "monitor_domain":
+		if err := uiparams.ValidateMonitorParameterValue(field.key, val); err != nil {
+			return err
+		}
+		// The monitor name only has to be issuable: it is served by this host's
+		// Nginx but may point at a proxy in front of it, so it is deliberately
+		// not checked against this server's public address.
+		if f.validateDomainCovered != nil {
+			return f.validateDomainCovered(val)
+		}
+		return nil
 	case "protocols":
 		if len(protocolsFromValue(val)) == 0 {
 			return fmt.Errorf("select at least one protocol")
@@ -594,6 +605,10 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 	if monitorAlias == "" {
 		monitorAlias = deploy.DefaultMonitorAlias
 	}
+	monitorDomain := strings.TrimSpace(vals["monitor_domain"])
+	if !deployMonitor {
+		monitorDomain = ""
+	}
 
 	iface := ""
 	if deployMonitor {
@@ -620,6 +635,7 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		SubscribePort:          subscribePort,
 		MonitorPublicPort:      monitorPublicPort,
 		MonitorPort:            monitorPort,
+		MonitorDomain:          monitorDomain,
 		DeployMonitor:          deployMonitor,
 		DeployMonitorFrontend:  deployMonitorFrontend,
 		MonitorAlias:           monitorAlias,
@@ -912,6 +928,7 @@ func (w *installForm) summary(host system.Host) string {
 	if deployMonitor {
 		rows = append(rows,
 			summaryRow(uiparams.LabelMonitorAlias, or(w.values["monitor_alias"], deploy.DefaultMonitorAlias)),
+			summaryRow(uiparams.LabelMonitorDomain, or(w.values["monitor_domain"], w.values["domain"])),
 			summaryRow(uiparams.LabelMonitorPublic, or(w.values["monitor_public_port"], strconv.Itoa(deploy.DefaultMonitorPublicPort))),
 			summaryRow(uiparams.LabelMonitorPort, or(w.values["monitor_port"], strconv.Itoa(deploy.DefaultMonitorPort))),
 			summaryRow(uiparams.LabelMonitorInterval, or(w.values["monitor_interval_seconds"], strconv.Itoa(deploy.DefaultMonitorIntervalSeconds))),
@@ -968,7 +985,7 @@ func (w *installFlow) doneSummary() string {
 	}
 	rows = append(rows, installedSubscriptionRows(w.cfg)...)
 	if w.cfg.DeployMonitor {
-		monitorBase := fmt.Sprintf("https://%s:%d", w.cfg.Domain, w.cfg.MonitorPublicPort)
+		monitorBase := fmt.Sprintf("https://%s:%d", w.cfg.MonitorHost(), w.cfg.MonitorPublicPort)
 		if w.cfg.DeployMonitorFrontend {
 			rows = append(rows, summaryRow("Monitor UI", monitorBase+"/monitor/"))
 		}

@@ -952,3 +952,118 @@ var errBoom = &boomError{}
 type boomError struct{}
 
 func (*boomError) Error() string { return "boom" }
+
+// A monitor published under its own name carries a second certificate, issued
+// and registered through the same central manager so the hub's renewal sweep
+// picks it up without any extra wiring.
+func TestStepCertificatesIssuesAndRegistersMonitorDomain(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorDomain = "monitor.example.com"
+	o := &Orchestrator{Runner: &recordingRunner{}, Layout: layout, CertManager: certManagerFor(t, layout, fakeIssuer{})}
+
+	if err := o.stepCertificates(context.Background(), cfg); err != nil {
+		t.Fatalf("stepCertificates error: %v", err)
+	}
+	for _, domain := range []string{cfg.Domain, cfg.MonitorDomain} {
+		certPath, keyPath := CertificatePaths(layout, domain)
+		if _, err := os.Stat(certPath); err != nil {
+			t.Fatalf("certificate for %s missing: %v", domain, err)
+		}
+		if _, err := os.Stat(keyPath); err != nil {
+			t.Fatalf("key for %s missing: %v", domain, err)
+		}
+	}
+	inventory, err := certmgr.Inventory(layout)
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	registered := map[string]bool{}
+	for _, info := range inventory {
+		registered[info.Domain] = true
+	}
+	if !registered[cfg.Domain] || !registered[cfg.MonitorDomain] {
+		t.Fatalf("inventory = %#v, want both the install and monitor domains", inventory)
+	}
+}
+
+// Sharing the install domain means sharing its certificate: no second order.
+func TestStepCertificatesIssuesOnceWhenMonitorSharesInstallDomain(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorDomain = cfg.Domain
+	issuedCert, issuedKey, err := generateTestCertificatePair(cfg.Domain)
+	if err != nil {
+		t.Fatalf("generate issued pair: %v", err)
+	}
+	issuer := &countingIssuer{cert: acme.Certificate{CertificatePEM: issuedCert, PrivateKeyPEM: issuedKey}}
+	o := &Orchestrator{Runner: &recordingRunner{}, Layout: layout, CertManager: certManagerFor(t, layout, issuer)}
+
+	if err := o.stepCertificates(context.Background(), cfg); err != nil {
+		t.Fatalf("stepCertificates error: %v", err)
+	}
+	if issuer.calls != 1 {
+		t.Fatalf("expected exactly one order, got %d", issuer.calls)
+	}
+}
+
+// A spoke publishes no monitor, so it never issues a monitor certificate — and
+// must not fail the step trying to.
+func TestStepCertificatesSkipsMonitorDomainOnSpoke(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.SpokeMode = true
+	cfg.MonitorDomain = "monitor.example.com"
+	issuer := &countingIssuer{}
+	o := &Orchestrator{Runner: &recordingRunner{}, Layout: layout, CertManager: &certmgr.Manager{Layout: layout, ACME: acme.NewManager(issuer)}}
+	certPath, keyPath := CertificatePaths(layout, cfg.Domain)
+	writeTestCertificatePair(t, certPath, keyPath, cfg.Domain)
+
+	if err := o.stepCertificates(context.Background(), cfg); err != nil {
+		t.Fatalf("stepCertificates error: %v", err)
+	}
+	if issuer.calls != 0 {
+		t.Fatalf("a spoke must never issue, got %d calls", issuer.calls)
+	}
+}
+
+func TestInstallStateRoundTripsMonitorDomain(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorDomain = "monitor.example.com"
+	if err := WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	loaded, err := LoadProtocolConfig(layout)
+	if err != nil {
+		t.Fatalf("LoadProtocolConfig: %v", err)
+	}
+	if loaded.MonitorDomain != "monitor.example.com" {
+		t.Fatalf("monitor domain = %q", loaded.MonitorDomain)
+	}
+}
+
+// An installation made before the monitor got its own name has no
+// monitor_domain key and must keep being served under the install domain.
+func TestLoadProtocolConfigDefaultsMonitorDomainToInstallDomain(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	if err := WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	if err := os.Remove(filepath.Join(layout.StateDir, "monitor_domain")); err != nil {
+		t.Fatalf("remove monitor_domain: %v", err)
+	}
+	loaded, err := LoadProtocolConfig(layout)
+	if err != nil {
+		t.Fatalf("LoadProtocolConfig: %v", err)
+	}
+	if loaded.MonitorHost() != cfg.Domain {
+		t.Fatalf("monitor host = %q, want %q", loaded.MonitorHost(), cfg.Domain)
+	}
+}

@@ -26,7 +26,10 @@ type ManageEvent struct {
 // ManageConfig holds the subset of install state relevant to monitor management.
 // It is a local type to avoid importing deploy (which already imports monitor).
 type ManageConfig struct {
-	Domain                 string
+	Domain string
+	// MonitorDomain is the hostname the monitor is published under. It is
+	// normalized to Domain when unset, matching deploy.Config.MonitorHost.
+	MonitorDomain          string
 	DeployMonitor          bool
 	DeployMonitorFrontend  bool
 	MonitorAlias           string
@@ -67,6 +70,7 @@ type UpdateOptions struct {
 	DeployMonitor         bool
 	DeployMonitorFrontend bool
 	MonitorAlias          string
+	MonitorDomain         string
 	MonitorPublicPort     int
 	MonitorPort           int
 	Interface             string
@@ -92,6 +96,11 @@ type UpdateOptions struct {
 	NginxConfPath string
 	SystemdDir    string
 	DeployBin     string
+
+	// EnsureCertificate obtains and registers a managed certificate for a
+	// domain. It is called before Nginx is rewritten onto a new monitor domain,
+	// whose certificate does not exist yet.
+	EnsureCertificate func(context.Context, string) error
 
 	// Deploy callbacks — wired by the caller to concrete deploy functions.
 	LoadConfig              func(paths.Layout) (ManageConfig, error)
@@ -123,6 +132,8 @@ func UpdateSettings(ctx context.Context, opts UpdateOptions) (ManageConfig, erro
 		}
 		cfg.MonitorInterface = iface
 	}
+	old.MonitorDomain = monitorDomainOrDefault(old)
+	cfg.MonitorDomain = monitorDomainOrDefault(cfg)
 	if err := validateManageConfig(cfg); err != nil {
 		return ManageConfig{}, err
 	}
@@ -200,6 +211,9 @@ func applyUpdateOptions(cfg *ManageConfig, opts UpdateOptions) {
 	if strings.TrimSpace(opts.MonitorAlias) != "" {
 		cfg.MonitorAlias = strings.TrimSpace(opts.MonitorAlias)
 	}
+	if strings.TrimSpace(opts.MonitorDomain) != "" {
+		cfg.MonitorDomain = strings.TrimSpace(opts.MonitorDomain)
+	}
 	if opts.MonitorPublicPort > 0 {
 		cfg.MonitorPublicPort = opts.MonitorPublicPort
 	}
@@ -221,12 +235,24 @@ func applyUpdateOptions(cfg *ManageConfig, opts UpdateOptions) {
 	cfg.ResetHour = opts.ResetHour
 }
 
+// monitorDomainOrDefault resolves the hostname the monitor is published under,
+// falling back to the install domain exactly as deploy.Config.MonitorHost does.
+func monitorDomainOrDefault(cfg ManageConfig) string {
+	if domain := strings.TrimSpace(cfg.MonitorDomain); domain != "" {
+		return domain
+	}
+	return strings.TrimSpace(cfg.Domain)
+}
+
 func validateManageConfig(cfg ManageConfig) error {
 	if !cfg.DeployMonitor {
 		return nil
 	}
 	if strings.TrimSpace(cfg.MonitorAlias) == "" {
 		return fmt.Errorf("monitor alias is required")
+	}
+	if strings.TrimSpace(cfg.MonitorDomain) == "" {
+		return fmt.Errorf("monitor domain is required")
 	}
 	if cfg.MonitorPublicPort <= 0 || cfg.MonitorPublicPort > 65535 {
 		return fmt.Errorf("monitor public port must be between 1 and 65535")
@@ -259,6 +285,16 @@ func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, sources []Mana
 				return opts.RunCommands(opts.Runner, cmds...)
 			}})
 		}
+	}
+	// The rewritten Nginx config points at the monitor domain's certificate, so
+	// a move to a new name must obtain that pair before nginx -t runs.
+	if opts.SetLocal && manageCertificateNeeded(old, cfg) {
+		steps = append(steps, manageUpdateStep{label: "Certificate", detail: "obtain the monitor domain certificate", run: func(ctx context.Context, cfg ManageConfig) error {
+			if opts.EnsureCertificate == nil {
+				return fmt.Errorf("no certificate manager configured")
+			}
+			return opts.EnsureCertificate(ctx, cfg.MonitorDomain)
+		}})
 	}
 	if opts.SetLocal && manageNginxChanged(old, cfg) {
 		steps = append(steps, manageUpdateStep{label: "Nginx", detail: "rewrite monitor reverse proxy", run: func(_ context.Context, cfg ManageConfig) error {
@@ -319,7 +355,19 @@ func managePublicPortChanged(old, cfg ManageConfig) bool {
 }
 
 func manageNginxChanged(old, cfg ManageConfig) bool {
-	return old.DeployMonitor != cfg.DeployMonitor || old.DeployMonitorFrontend != cfg.DeployMonitorFrontend || old.MonitorPublicPort != cfg.MonitorPublicPort || old.MonitorPort != cfg.MonitorPort
+	return old.DeployMonitor != cfg.DeployMonitor || old.DeployMonitorFrontend != cfg.DeployMonitorFrontend ||
+		old.MonitorPublicPort != cfg.MonitorPublicPort || old.MonitorPort != cfg.MonitorPort ||
+		old.MonitorDomain != cfg.MonitorDomain
+}
+
+// manageCertificateNeeded reports whether the monitor is about to be served
+// under a name whose certificate the previous configuration did not already
+// keep on disk.
+func manageCertificateNeeded(old, cfg ManageConfig) bool {
+	if !cfg.DeployMonitor {
+		return false
+	}
+	return old.MonitorDomain != cfg.MonitorDomain
 }
 
 func applyManageMonitorService(opts UpdateOptions, cfg ManageConfig) error {

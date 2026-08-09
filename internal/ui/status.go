@@ -62,28 +62,41 @@ func loadStatus() Status {
 	if monitorPublicPort == "" {
 		monitorPublicPort = subscribePort
 	}
+	// An install made before the monitor got its own name served it under the
+	// install domain, so that is what a missing key means.
+	monitorDomain := readStatusState(store, "monitor_domain")
+	if monitorDomain == "" {
+		monitorDomain = domain
+	}
 	monitorEnabled := readMonitorState(store) != "no"
 	monitorState := "disabled"
 	if monitorEnabled {
 		monitorState = serviceState(system.MonitorService)
+	}
+	// The monitor's own certificate is reported only when it is a second pair;
+	// sharing the install domain means the Certificate row already covers it.
+	monitorCertState := ""
+	if monitorEnabled && monitorDomain != domain {
+		monitorCertState = certificateState(layout, monitorDomain)
 	}
 
 	singBoxVer := singBoxVersion(layout.SingBoxBin)
 	singBoxState := singBoxServiceState(singBoxVer, store, layout, monitorEnabled)
 
 	return Status{
-		ToolVersion:  toolVersion,
-		Domain:       domain,
-		PublicIP:     loadStatusPublicIP(store, domain),
-		OSArch:       osArchStatus(),
-		SingBoxVer:   singBoxVer,
-		SingBoxState: singBoxState,
-		NginxState:   serviceState("nginx.service"),
-		MonitorState: monitorState,
-		CertState:    certificateState(layout, domain),
-		Protocols:    protocolStrings(protocolsFromValue(readStatusState(store, "enabled_protocols"))),
-		MonitorUI:    monitorUIStatus(domain, monitorPublicPort, monitorEnabled),
-		TrafficQuota: trafficQuotaStatus(store),
+		ToolVersion:      toolVersion,
+		Domain:           domain,
+		PublicIP:         loadStatusPublicIP(store, domain),
+		OSArch:           osArchStatus(),
+		SingBoxVer:       singBoxVer,
+		SingBoxState:     singBoxState,
+		NginxState:       serviceState("nginx.service"),
+		MonitorState:     monitorState,
+		CertState:        certificateState(layout, domain),
+		MonitorCertState: monitorCertState,
+		Protocols:        protocolStrings(protocolsFromValue(readStatusState(store, "enabled_protocols"))),
+		MonitorUI:        monitorUIStatus(monitorDomain, monitorPublicPort, monitorEnabled),
+		TrafficQuota:     trafficQuotaStatus(store),
 		Groups: subscriptionGroupStatuses(layout, domain, subscribePort,
 			readStatusState(store, "display_name")),
 	}

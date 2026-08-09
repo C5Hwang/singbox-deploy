@@ -1,5 +1,12 @@
 package ui
 
+import uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
+
+// noteDNSCredential is defined next to the monitor domain field that also
+// states it, so the precondition is worded once for every domain the hub
+// issues a certificate for.
+const noteDNSCredential = uiparams.NoteDNSCredential
+
 // Labels and notes shared by more than one screen. Anything collected or
 // reported in two places lives here so the same input always reads the same
 // way — during setup, when editing the hub, and when editing a spoke.
@@ -11,7 +18,6 @@ const (
 	labelSpokeMonitorEnabled    = "Enable monitor on spoke"
 	labelSpokeMonitorAlias      = "Spoke monitor alias"
 
-	noteDNSCredential = "Needs a matching DNS credential in Certificate management."
 	// noteSpokeTransport replaces the four differently-worded explanations the
 	// spoke pickers used to carry.
 	noteSpokeTransport         = "The hub reaches every spoke over WireGuard."

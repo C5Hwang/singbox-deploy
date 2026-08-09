@@ -18,9 +18,13 @@ const (
 
 // field describes one parameter collected by the shared parameter form.
 type field struct {
-	key       string
-	label     string
-	def       string
+	key   string
+	label string
+	def   string
+	// defFunc derives the default from the values already collected, for a
+	// parameter whose sensible default is another answer in the same form. It
+	// takes precedence over def.
+	defFunc   func(vals map[string]string) string
 	note      string
 	options   []string
 	multi     bool
@@ -35,6 +39,7 @@ func fieldFromParameter(f uiparams.Field) field {
 		key:       f.Key,
 		label:     f.Label,
 		def:       f.Def,
+		defFunc:   f.DefFunc,
 		note:      f.Note,
 		options:   append([]string(nil), f.Options...),
 		multi:     f.Multi,
@@ -58,6 +63,7 @@ func parameterFromField(f field) uiparams.Field {
 		Key:       f.key,
 		Label:     f.label,
 		Def:       f.def,
+		DefFunc:   f.defFunc,
 		Note:      f.note,
 		Options:   append([]string(nil), f.options...),
 		Multi:     f.multi,
@@ -133,10 +139,11 @@ func (f *parameterForm) setField(index int) {
 		f.input.EchoMode = textinput.EchoPassword
 		f.input.EchoCharacter = '•'
 	}
+	def := f.fieldDefault(field)
 	if len(field.options) > 0 {
 		value := f.values[field.key]
 		if value == "" {
-			value = field.def
+			value = def
 		}
 		if field.multi {
 			f.optionSelected = selectedOptions(value)
@@ -151,11 +158,24 @@ func (f *parameterForm) setField(index int) {
 	}
 	f.optionSelected = nil
 	f.input.SetValue(f.values[field.key])
-	f.input.Placeholder = field.def
-	if field.secret && field.def != "" {
+	f.input.Placeholder = def
+	if field.secret && def != "" {
 		f.input.Placeholder = "••••••••"
 	}
 	f.input.Focus()
+}
+
+// fieldDefault resolves a field's default against the values collected so far,
+// so a parameter can default to an earlier answer in the same form.
+func (f *parameterForm) fieldDefault(field field) string {
+	if field.defFunc == nil {
+		return field.def
+	}
+	f.ensureValues()
+	if def := strings.TrimSpace(field.defFunc(f.values)); def != "" {
+		return def
+	}
+	return field.def
 }
 
 func (f *parameterForm) startForm() {
@@ -250,7 +270,7 @@ func (f *parameterForm) fieldValue(field field) string {
 	}
 	val := strings.TrimSpace(f.input.Value())
 	if val == "" {
-		return field.def
+		return f.fieldDefault(field)
 	}
 	return val
 }
@@ -379,8 +399,8 @@ func (f *parameterForm) View(title string) string {
 			b.WriteString(dimStyle.Render(line) + "\n")
 		}
 	}
-	if field.def != "" {
-		value := field.def
+	if def := f.fieldDefault(field); def != "" {
+		value := def
 		if field.secret {
 			value = "•••••••• (set)"
 		}

@@ -53,6 +53,7 @@ func testConfig(t *testing.T) deploy.Config {
 func toManageConfig(cfg deploy.Config) monitor.ManageConfig {
 	return monitor.ManageConfig{
 		Domain:                 cfg.Domain,
+		MonitorDomain:          cfg.MonitorHost(),
 		DeployMonitor:          cfg.DeployMonitor,
 		MonitorAlias:           cfg.MonitorAlias,
 		MonitorPublicPort:      cfg.MonitorPublicPort,
@@ -270,6 +271,137 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 	for _, want := range []string{"ufw allow 24447/tcp", "nginx -t", "systemctl restart nginx", "systemctl restart singbox-deploy-monitor.service"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing command %q in:\n%s", want, joined)
+		}
+	}
+}
+
+// monitorDomainUpdateOptions is a minimal local-settings update: every callback
+// is a stub except the ones the monitor-domain path depends on.
+func monitorDomainUpdateOptions(t *testing.T, root string, layout paths.Layout, record *[]string) monitor.UpdateOptions {
+	t.Helper()
+	return monitor.UpdateOptions{
+		Layout:        layout,
+		Runner:        &recordingRunner{},
+		SetLocal:      true,
+		NginxConfPath: filepath.Join(root, "nginx", "singbox-deploy.conf"),
+		SystemdDir:    filepath.Join(root, "systemd"),
+		DeployBin:     "/usr/bin/singbox-deploy",
+		CheckPorts:    func(context.Context, monitor.ManageConfig, []system.Port) error { return nil },
+		LoadConfig: func(l paths.Layout) (monitor.ManageConfig, error) {
+			dcfg, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return monitor.ManageConfig{}, err
+			}
+			return toManageConfig(dcfg), nil
+		},
+		LoadMonitorSources:     func(paths.Layout) ([]monitor.ManageMonitorSource, error) { return nil, nil },
+		ValidateMonitorSources: func([]monitor.ManageMonitorSource) error { return nil },
+		SaveMonitorSources:     func(paths.Layout, []monitor.ManageMonitorSource) error { return nil },
+		EnsureCertificate: func(_ context.Context, domain string) error {
+			*record = append(*record, "certificate:"+domain)
+			return nil
+		},
+		WriteManagedNginxConfig: func(l paths.Layout, mcfg monitor.ManageConfig, confPath string) error {
+			*record = append(*record, "nginx:"+mcfg.MonitorDomain)
+			dcfg, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return err
+			}
+			dcfg.DeployMonitor = mcfg.DeployMonitor
+			dcfg.MonitorDomain = mcfg.MonitorDomain
+			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
+			dcfg.MonitorPort = mcfg.MonitorPort
+			return deploy.WriteManagedNginxConfig(l, dcfg, confPath)
+		},
+		RenderMonitorUnit: func(l paths.Layout, deployBin string, mcfg monitor.ManageConfig) (string, error) {
+			dcfg, err := deploy.LoadProtocolConfig(l)
+			if err != nil {
+				return "", err
+			}
+			return deploy.RenderMonitorUnit(l, deployBin, dcfg)
+		},
+		WriteState: func(stateDir string, mcfg monitor.ManageConfig) error {
+			dcfg, err := deploy.LoadProtocolConfig(layout)
+			if err != nil {
+				return err
+			}
+			dcfg.MonitorDomain = mcfg.MonitorDomain
+			return deploy.WriteInstallState(stateDir, dcfg)
+		},
+		RunCommands: func(r system.Runner, cmds ...system.Command) error {
+			return deploy.RunCommands(r, cmds...)
+		},
+	}
+}
+
+// The rewritten Nginx config points at the monitor domain's certificate, so a
+// move to a new name must obtain that pair first — otherwise nginx -t fails on
+// a file that does not exist yet.
+func TestUpdateSettingsObtainsMonitorCertificateBeforeRewritingNginx(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	var record []string
+	opts := monitorDomainUpdateOptions(t, root, layout, &record)
+	opts.MonitorDomain = "monitor.example.com"
+
+	updated, err := monitor.UpdateSettings(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("UpdateSettings error: %v", err)
+	}
+	if updated.MonitorDomain != "monitor.example.com" {
+		t.Fatalf("updated monitor domain = %q", updated.MonitorDomain)
+	}
+	want := []string{"certificate:monitor.example.com", "nginx:monitor.example.com"}
+	if strings.Join(record, ",") != strings.Join(want, ",") {
+		t.Fatalf("steps = %v, want %v", record, want)
+	}
+	stored, err := deploy.LoadProtocolConfig(layout)
+	if err != nil {
+		t.Fatalf("LoadProtocolConfig: %v", err)
+	}
+	if stored.MonitorHost() != "monitor.example.com" {
+		t.Fatalf("persisted monitor domain = %q", stored.MonitorHost())
+	}
+	nginx, err := os.ReadFile(opts.NginxConfPath)
+	if err != nil {
+		t.Fatalf("read nginx config: %v", err)
+	}
+	for _, wantLine := range []string{
+		"server_name monitor.example.com;",
+		filepath.Join(layout.TLSDir, "monitor.example.com.crt"),
+		"ssl_reject_handshake on;",
+	} {
+		if !strings.Contains(string(nginx), wantLine) {
+			t.Fatalf("nginx config missing %q:\n%s", wantLine, nginx)
+		}
+	}
+}
+
+// Editing any other monitor setting must not re-run issuance for a name whose
+// certificate is already on disk.
+func TestUpdateSettingsSkipsCertificateWhenMonitorDomainUnchanged(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorDomain = "monitor.example.com"
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	var record []string
+	opts := monitorDomainUpdateOptions(t, root, layout, &record)
+	opts.MonitorDomain = "monitor.example.com"
+	opts.MonitorPort = 19099
+
+	if _, err := monitor.UpdateSettings(context.Background(), opts); err != nil {
+		t.Fatalf("UpdateSettings error: %v", err)
+	}
+	for _, step := range record {
+		if strings.HasPrefix(step, "certificate:") {
+			t.Fatalf("unchanged monitor domain should not reissue: %v", record)
 		}
 	}
 }

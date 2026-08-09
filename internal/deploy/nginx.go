@@ -56,17 +56,27 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 		return err
 	}
 	certPath, keyPath := CertificatePaths(layout, cfg.Domain)
+	monitorDomain := cfg.MonitorHost()
+	monitorCertPath, monitorKeyPath := CertificatePaths(layout, monitorDomain)
+	// The monitor only folds into the camouflage server block when it answers
+	// on 443 under the same name. Given its own name it gets its own block,
+	// selected by SNI, so the two never share a certificate or a server_name.
+	sharesSiteBlock := cfg.MonitorPublicPort == 443 && monitorDomain == cfg.Domain
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
-		"SubscribePort":         cfg.SubscribePort,
-		"MonitorPublicPort":     cfg.MonitorPublicPort,
-		"Domain":                cfg.Domain,
-		"CertificatePath":       certPath,
-		"KeyPath":               keyPath,
-		"WebRoot":               layout.WebRoot,
-		"SubscribeDir":          layout.SubscribeDir,
-		"EnableMonitor":         cfg.DeployMonitor,
-		"EnableMonitorFrontend": cfg.DeployMonitorFrontend,
-		"MonitorPort":           cfg.MonitorPort,
+		"SubscribePort":          cfg.SubscribePort,
+		"MonitorPublicPort":      cfg.MonitorPublicPort,
+		"Domain":                 cfg.Domain,
+		"CertificatePath":        certPath,
+		"KeyPath":                keyPath,
+		"MonitorDomain":          monitorDomain,
+		"MonitorCertificatePath": monitorCertPath,
+		"MonitorKeyPath":         monitorKeyPath,
+		"MonitorSharesSiteBlock": sharesSiteBlock,
+		"WebRoot":                layout.WebRoot,
+		"SubscribeDir":           layout.SubscribeDir,
+		"EnableMonitor":          cfg.DeployMonitor,
+		"EnableMonitorFrontend":  cfg.DeployMonitorFrontend,
+		"MonitorPort":            cfg.MonitorPort,
 		// A spoke serves only the camouflage site; the hub also serves the public
 		// subscription and monitor endpoints.
 		"PublicSubscription": !cfg.SpokeMode,

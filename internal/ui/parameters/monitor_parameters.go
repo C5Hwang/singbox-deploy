@@ -15,6 +15,7 @@ const (
 	LabelMonitorEnabled   = "Enable monitor"
 	LabelMonitorWebUI     = "Enable monitor web UI"
 	LabelMonitorAlias     = "Monitor alias"
+	LabelMonitorDomain    = "Monitor domain"
 	LabelMonitorPublic    = "Monitor public HTTPS port"
 	LabelMonitorPort      = "Monitor local port"
 	LabelMonitorInterface = "Monitored network interface"
@@ -25,15 +26,22 @@ const (
 	LabelResetDay         = "Monthly reset day (1-28)"
 	LabelResetHour        = "Monthly reset hour GMT (0-23)"
 
+	// NoteDNSCredential states the one precondition every certificate-bearing
+	// domain shares, so setup, spoke creation, and the monitor domain all word
+	// it the same way.
+	NoteDNSCredential = "Needs a matching DNS credential in Certificate management."
+
 	NoteMonitorWebUI      = "Choose no to serve the API only."
 	NoteMonitorAlias      = "Names the hub on the monitor dashboard."
 	NoteSpokeMonitorAlias = "Blank uses the node alias."
-	NoteMonitorPublic     = "Nginx listens on this public HTTPS port for /monitor."
-	NoteMonitorPort       = "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port."
-	NoteMonitorInterface  = "Use auto to detect the default egress interface."
-	NoteMonitorInterval   = "Lower values write more samples."
-	NoteResetDay          = "Day of month when the traffic quota cycle resets."
-	NoteResetHour         = "Hour of day in GMT when the traffic quota cycle resets."
+	NoteMonitorDomain     = "Serves the monitor under its own name, so it is not reachable through the masquerade site's domain. " +
+		NoteDNSCredential + " It is not required to resolve to this server."
+	NoteMonitorPublic    = "Nginx listens on this public HTTPS port for /monitor."
+	NoteMonitorPort      = "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port."
+	NoteMonitorInterface = "Use auto to detect the default egress interface."
+	NoteMonitorInterval  = "Lower values write more samples."
+	NoteResetDay         = "Day of month when the traffic quota cycle resets."
+	NoteResetHour        = "Hour of day in GMT when the traffic quota cycle resets."
 )
 
 // The quota consequence is stated once, on the first limit, rather than
@@ -44,11 +52,18 @@ var (
 	NoteTrafficTotal = TrafficSizeNote("0 means unlimited.")
 )
 
+// installDomainDefault prefills a setup field with the install domain already
+// entered in the same form.
+func installDomainDefault(vals map[string]string) string {
+	return strings.TrimSpace(vals["domain"])
+}
+
 func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
 		{Key: "monitor", Label: LabelMonitorEnabled, Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to skip the monitor service."},
 		{Key: "monitor_frontend", Label: LabelMonitorWebUI, Def: "yes", Options: []string{"yes", "no"}, Note: NoteMonitorWebUI, Skip: monitorDisabled},
 		{Key: "monitor_alias", Label: LabelMonitorAlias, Def: deploy.DefaultMonitorAlias, Note: NoteMonitorAlias, Skip: monitorDisabled},
+		{Key: "monitor_domain", Label: LabelMonitorDomain, DefFunc: installDomainDefault, Note: NoteMonitorDomain, Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: LabelMonitorPublic, Def: strconv.Itoa(deploy.DefaultMonitorPublicPort), Note: NoteMonitorPublic, Skip: monitorDisabled},
 		{Key: "monitor_port", Label: LabelMonitorPort, Def: strconv.Itoa(deploy.DefaultMonitorPort), Note: NoteMonitorPort, Skip: monitorDisabled},
 		{Key: "monitor_interval_seconds", Label: LabelMonitorInterval, Def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), Note: NoteMonitorInterval, Skip: monitorDisabled},
@@ -65,6 +80,7 @@ func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]strin
 		{Key: "monitor", Label: LabelMonitorEnabled, Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: "Choose no to stop the monitor service."},
 		{Key: "monitor_frontend", Label: LabelMonitorWebUI, Def: YesNoString(cfg.DeployMonitorFrontend), Options: []string{"yes", "no"}, Note: NoteMonitorWebUI, Skip: monitorDisabled},
 		{Key: "monitor_alias", Label: LabelMonitorAlias, Def: StringDefault(cfg.MonitorAlias, deploy.DefaultMonitorAlias), Note: NoteMonitorAlias, Skip: monitorDisabled},
+		{Key: "monitor_domain", Label: LabelMonitorDomain, Def: cfg.MonitorHost(), Note: NoteMonitorDomain, Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: LabelMonitorPublic, Def: strconv.Itoa(cfg.MonitorPublicPort), Note: NoteMonitorPublic, Skip: monitorDisabled},
 		{Key: "monitor_port", Label: LabelMonitorPort, Def: strconv.Itoa(cfg.MonitorPort), Note: NoteMonitorPort, Skip: monitorDisabled},
 		{Key: "monitor_interface", Label: LabelMonitorInterface, Def: cfg.MonitorInterface, Note: NoteMonitorInterface, Skip: monitorDisabled},
@@ -89,6 +105,10 @@ func ValidateMonitorParameterValue(key, val string) error {
 	case key == "monitor_alias":
 		if strings.TrimSpace(val) == "" {
 			return fmt.Errorf("monitor alias is required")
+		}
+	case key == "monitor_domain":
+		if strings.TrimSpace(val) == "" {
+			return fmt.Errorf("monitor domain is required")
 		}
 	case key == "monitor_public_port" || key == "monitor_port" || strings.HasPrefix(key, "remote_monitor_public_port_"):
 		return ValidateRequiredPort(val)
