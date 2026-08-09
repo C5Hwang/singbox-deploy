@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/ui"
 )
@@ -26,6 +27,11 @@ func main() {
 			// Keep the control plane available and retry from the next process or
 			// certificate operation; the migration marker advances only on success.
 			fmt.Fprintln(os.Stderr, "warning: migrate certificate state:", err)
+		}
+		if err := deploy.RemoveLegacySubscribeToken(paths.DefaultLayout()); err != nil {
+			// A leftover token file changes nothing about what is published; the
+			// cleanup is idempotent and retried by the next process.
+			fmt.Fprintln(os.Stderr, "warning: remove legacy subscription token:", err)
 		}
 		if err := seedSubscriptionGroups(paths.DefaultLayout(), version); err != nil {
 			// Publishing continues from the previously generated files; the next

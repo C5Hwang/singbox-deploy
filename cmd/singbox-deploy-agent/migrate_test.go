@@ -104,3 +104,19 @@ func assertAgentDomesticDNSUsesNativeDirectDialer(t *testing.T, body []byte) {
 		}
 	}
 }
+
+// A spoke upgraded from an older release carries the derived token too, and the
+// Agent has to clear it without the Hub being involved.
+func TestAgentStartupRemovesLegacySubscribeToken(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	tokenPath := filepath.Join(layout.StateDir, "subscribe_token")
+	if err := state.WriteFileAtomic(tokenPath, []byte("deadbeef\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := deploy.RemoveLegacySubscribeToken(layout); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(tokenPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy subscription token was not removed: %v", err)
+	}
+}

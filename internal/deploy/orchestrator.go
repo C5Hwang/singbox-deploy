@@ -532,7 +532,6 @@ func WriteInstallState(stateDir string, cfg Config) error {
 		"hysteria2_port":         itoa(cfg.Ports.Hysteria2),
 		"tuic_port":              itoa(cfg.Ports.TUIC),
 		"anytls_port":            itoa(cfg.Ports.AnyTLS),
-		"subscribe_token":        SubscriptionToken(cfg.Salt),
 		"subscribe_port":         itoa(cfg.SubscribePort),
 		"monitor_public_port":    itoa(cfg.MonitorPublicPort),
 		"monitor_port":           itoa(cfg.MonitorPort),

@@ -802,7 +802,6 @@ func TestLoadStatusUsesPersistedStateAndServiceStates(t *testing.T) {
 	writeStatusState(t, layout.StateDir, "public_ip", "203.0.113.10")
 	writeStatusState(t, layout.StateDir, "subscribe_port", "2096")
 	writeStatusState(t, layout.StateDir, "monitor_public_port", "2097")
-	writeStatusState(t, layout.StateDir, "subscribe_token", "tok")
 	writeStatusState(t, layout.StateDir, "enabled_protocols", "vless-reality-vision,tuic")
 	writeStatusState(t, layout.StateDir, "subscribe_salt", "abcd1234deadbeef")
 	writeStatusState(t, layout.StateDir, "display_name", "US-hub")

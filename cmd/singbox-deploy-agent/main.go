@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -42,6 +43,9 @@ func run() error {
 		// Keep the authenticated repair surface available. The cleanup is
 		// idempotent and will be retried on the next Agent start.
 		fmt.Fprintln(os.Stderr, "warning: remove legacy ACME email:", err)
+	}
+	if err := deploy.RemoveLegacySubscribeToken(layout); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: remove legacy subscription token:", err)
 	}
 	cfg, err := loadAgentConfig(layout)
 	if err != nil {
