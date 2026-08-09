@@ -106,16 +106,22 @@ func subscriptionGroupStatuses(layout paths.Layout, domain, port, displayName st
 	for _, g := range groups {
 		token := deploy.SubscriptionToken(g.Salt)
 		members := groupMemberNames(g, displayName, list)
-		out = append(out, SubscriptionGroupStatus{
-			Alias:        g.EffectiveAlias(),
-			Salt:         g.Salt,
-			Members:      strings.Join(members, ", "),
-			MemberCount:  len(members),
-			Subscription: subscriptionStatus(domain, port, token, "default"),
-			ClashMetaSub: subscriptionStatus(domain, port, token, "clashMetaProfiles"),
-			SingBoxSub:   subscriptionStatus(domain, port, token, "singboxProfiles"),
-			SurgeSub:     subscriptionStatus(domain, port, token, "surgeProfiles"),
-		})
+		status := SubscriptionGroupStatus{
+			Alias:       g.EffectiveAlias(),
+			Salt:        g.Salt,
+			Members:     strings.Join(members, ", "),
+			MemberCount: len(members),
+			Published:   groupPublishes(g, list),
+		}
+		// A group with no nodes left is not served at all, so it reports no URLs
+		// rather than four that answer 404.
+		if status.Published {
+			status.Subscription = subscriptionStatus(domain, port, token, "default")
+			status.ClashMetaSub = subscriptionStatus(domain, port, token, "clashMetaProfiles")
+			status.SingBoxSub = subscriptionStatus(domain, port, token, "singboxProfiles")
+			status.SurgeSub = subscriptionStatus(domain, port, token, "surgeProfiles")
+		}
+		out = append(out, status)
 	}
 	return out
 }

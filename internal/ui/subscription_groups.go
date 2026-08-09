@@ -117,6 +117,26 @@ func groupMemberSummary(g subgroups.Group, list []nodes.Node) string {
 	return strings.Join(parts, " + ")
 }
 
+// labelGroupNotPublished stands in for a subscription URL that is not served.
+const labelGroupNotPublished = "not published"
+
+// groupPublishes reports whether a group currently has nodes to publish. It
+// mirrors deploy.SubscriptionGroupSpec.PublishesNodes: the hub always
+// contributes its own nodes, and a spoke contributes only while the registry
+// still knows it. A group with neither is skipped by the publisher, so quoting
+// its URL would send the operator to a 404.
+func groupPublishes(g subgroups.Group, list []nodes.Node) bool {
+	if g.HasMember(subgroups.HubMemberID) {
+		return true
+	}
+	for _, node := range list {
+		if g.HasMember(node.ID) {
+			return true
+		}
+	}
+	return false
+}
+
 // groupMemberNames lists a group's members by the name their nodes carry in
 // generated subscriptions.
 func groupMemberNames(g subgroups.Group, displayName string, list []nodes.Node) []string {

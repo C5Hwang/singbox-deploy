@@ -50,10 +50,14 @@ type Status struct {
 // SubscriptionGroupStatus is one subscription group as shown in the
 // subscription-groups panel.
 type SubscriptionGroupStatus struct {
-	Alias        string
-	Salt         string
-	Members      string
-	MemberCount  int
+	Alias       string
+	Salt        string
+	Members     string
+	MemberCount int
+	// Published reports whether the hub serves this group's URLs. A group that
+	// lost its last node keeps its registry entry and salt, but nothing is
+	// written for its token, so the URL fields stay empty.
+	Published    bool
 	Subscription string
 	ClashMetaSub string
 	SingBoxSub   string
@@ -664,11 +668,21 @@ func (m *Model) subscriptionGroupsView(width int) string {
 		summaryRow("Name", or(g.Alias, "unnamed")),
 		summaryRow("Salt", or(g.Salt, "not set")),
 		summaryRow("Members", or(truncateSummaryValue(g.Members, width-12), "none")),
-		summaryRow("universal", or(g.Subscription, "none")),
-		summaryRow("Clash Meta", or(g.ClashMetaSub, "none")),
-		summaryRow("sing-box", or(g.SingBoxSub, "none")),
-		summaryRow("Surge", or(g.SurgeSub, "none")),
+		summaryRow("universal", groupURLValue(g, g.Subscription)),
+		summaryRow("Clash Meta", groupURLValue(g, g.ClashMetaSub)),
+		summaryRow("sing-box", groupURLValue(g, g.SingBoxSub)),
+		summaryRow("Surge", groupURLValue(g, g.SurgeSub)),
 	})
+}
+
+// groupURLValue renders one subscription URL, naming the reason it is absent:
+// a group with no nodes is deliberately not served, which is a different state
+// from a URL the status page merely could not assemble.
+func groupURLValue(g SubscriptionGroupStatus, url string) string {
+	if !g.Published {
+		return labelGroupNotPublished
+	}
+	return or(url, "none")
 }
 
 // truncateSummaryValue shortens a one-line value that would otherwise wrap and

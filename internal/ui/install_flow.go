@@ -16,6 +16,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/credentials"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
@@ -992,11 +993,21 @@ func installedSubscriptionRows(cfg deploy.Config) []summaryLine {
 			summaryRow("Surge", base+"/surgeProfiles/"+token),
 		}
 	}
+	// A reinstall keeps groups whose spokes have since been removed. Those are
+	// not served, so they are named without a URL that would answer 404.
+	list, err := nodes.Load(paths.DefaultLayout())
+	if err != nil {
+		list = nil
+	}
 	rows := make([]summaryLine, 0, len(groups)*5)
 	for _, g := range groups {
+		rows = append(rows, summaryRow("Subscription group", g.EffectiveAlias()))
+		if !groupPublishes(g, list) {
+			rows = append(rows, summaryIndentedRow(2, "status", labelGroupNotPublished))
+			continue
+		}
 		urls := groupSubscriptionURLs(cfg.Domain, cfg.SubscribePort, g.Salt)
 		rows = append(rows,
-			summaryRow("Subscription group", g.EffectiveAlias()),
 			summaryIndentedRow(2, "universal", urls["default"]),
 			summaryIndentedRow(2, "Clash", urls["clashMetaProfiles"]),
 			summaryIndentedRow(2, "sing-box", urls["singboxProfiles"]),

@@ -216,9 +216,9 @@ func statusWithGroups(groups ...SubscriptionGroupStatus) Status {
 
 func TestSubscriptionGroupPanelShowsSelectedGroup(t *testing.T) {
 	m := &Model{groups: defaultGroups(), status: statusWithGroups(
-		SubscriptionGroupStatus{Alias: "Family", Salt: "familysalt", Members: "HUB, JP",
+		SubscriptionGroupStatus{Alias: "Family", Salt: "familysalt", Members: "HUB, JP", Published: true,
 			Subscription: "https://hub.example.com:443/s/default/aaa"},
-		SubscriptionGroupStatus{Alias: "Work", Salt: "worksalt", Members: "UK",
+		SubscriptionGroupStatus{Alias: "Work", Salt: "worksalt", Members: "UK", Published: true,
 			Subscription: "https://hub.example.com:443/s/default/bbb"},
 	)}
 	m.SetSize(120, 40)
@@ -323,5 +323,81 @@ func TestOptionLabelStripsCommas(t *testing.T) {
 	members := []groupMember{{id: node.ID, label: label}}
 	if ids := groupMemberIDs(members, label); len(ids) != 1 || ids[0] != node.ID {
 		t.Fatalf("label did not round-trip to its node: %v", ids)
+	}
+}
+
+// A group whose last node left keeps its registry entry, but the hub writes no
+// files for its token. The panel must say so instead of quoting four URLs that
+// answer 404.
+func TestSubscriptionGroupPanelReportsAnUnpublishedGroup(t *testing.T) {
+	m := &Model{groups: defaultGroups(), status: statusWithGroups(
+		SubscriptionGroupStatus{Alias: "Emptied", Salt: "emptiedsalt"},
+	)}
+	m.SetSize(120, 40)
+
+	view := m.subscriptionGroupsView(60)
+	if strings.Contains(view, "/s/default/") {
+		t.Fatalf("panel quoted a URL for a group with no nodes:\n%s", view)
+	}
+	if strings.Count(view, labelGroupNotPublished) != 4 {
+		t.Fatalf("every format should report %q:\n%s", labelGroupNotPublished, view)
+	}
+	// The salt still identifies the group, so it stays visible.
+	if !strings.Contains(view, "emptiedsalt") {
+		t.Fatalf("panel dropped the group salt:\n%s", view)
+	}
+}
+
+// loadStatus derives Published from the registry, so a group naming only nodes
+// that no longer exist reports no URLs at all.
+func TestSubscriptionGroupStatusesOmitURLsForAGroupWithNoNodes(t *testing.T) {
+	list := []nodes.Node{{ID: "aaaa1111", Alias: "UK"}}
+	groups := []subgroups.Group{
+		{ID: "g1", Alias: "Live", Salt: "livesalt", Members: []string{subgroups.HubMemberID}},
+		{ID: "g2", Alias: "Spokes", Salt: "spokesalt", Members: []string{"aaaa1111"}},
+		{ID: "g3", Alias: "Emptied", Salt: "emptiedsalt", Members: []string{"deadbeef"}},
+	}
+	for _, tc := range []struct {
+		group     subgroups.Group
+		published bool
+	}{
+		{groups[0], true},
+		{groups[1], true},
+		{groups[2], false},
+	} {
+		if got := groupPublishes(tc.group, list); got != tc.published {
+			t.Errorf("groupPublishes(%s) = %v, want %v", tc.group.Alias, got, tc.published)
+		}
+	}
+
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := subgroups.Save(layout, groups); err != nil {
+		t.Fatalf("save groups: %v", err)
+	}
+	if err := nodes.Save(layout, list); err != nil {
+		t.Fatalf("save nodes: %v", err)
+	}
+	oldGroups, oldNodes := loadStatusGroups, loadStatusNodes
+	t.Cleanup(func() { loadStatusGroups, loadStatusNodes = oldGroups, oldNodes })
+	loadStatusGroups = func(paths.Layout) ([]subgroups.Group, error) { return subgroups.Load(layout) }
+	loadStatusNodes = func(paths.Layout) ([]nodes.Node, error) { return nodes.Load(layout) }
+
+	statuses := subscriptionGroupStatuses(layout, "hub.example.com", "2096", "HUB")
+	if len(statuses) != 3 {
+		t.Fatalf("statuses = %d, want 3", len(statuses))
+	}
+	for _, s := range statuses[:2] {
+		if !s.Published || s.Subscription == "" || s.SingBoxSub == "" {
+			t.Fatalf("live group %q lost its URLs: %+v", s.Alias, s)
+		}
+	}
+	emptied := statuses[2]
+	if emptied.Published {
+		t.Fatalf("group naming only a departed node reported as published: %+v", emptied)
+	}
+	for _, url := range []string{emptied.Subscription, emptied.ClashMetaSub, emptied.SingBoxSub, emptied.SurgeSub} {
+		if url != "" {
+			t.Fatalf("unpublished group still carries %q", url)
+		}
 	}
 }
