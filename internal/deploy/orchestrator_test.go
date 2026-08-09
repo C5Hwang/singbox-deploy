@@ -189,7 +189,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		"check -c " + layout.ConfigJSON,
 		"nginx -t",
 		"systemctl enable --now singbox-deploy-monitor.service",
-		"ufw allow 2097/tcp",
+		fmt.Sprintf("ufw allow %d/tcp", DefaultMonitorPublicPort),
 		"ufw allow 9443/udp",
 	} {
 		if !strings.Contains(joined, want) {
@@ -371,7 +371,11 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read nginx config: %v", err)
 	}
-	for _, want := range []string{"listen 2096 ssl;", "listen 2097 ssl;", "http2 on;", "proxy_pass http://127.0.0.1:19090/"} {
+	for _, want := range []string{
+		fmt.Sprintf("listen %d ssl;", DefaultSubscribePort),
+		fmt.Sprintf("listen %d ssl;", DefaultMonitorPublicPort),
+		"http2 on;", "proxy_pass http://127.0.0.1:19090/",
+	} {
 		if !strings.Contains(string(nginxConf), want) {
 			t.Fatalf("nginx config missing %q:\n%s", want, nginxConf)
 		}
@@ -516,7 +520,7 @@ func TestOrchestratorSpokeMode(t *testing.T) {
 	if strings.Contains(conf, "/s/") || strings.Contains(conf, "/monitor/") {
 		t.Fatalf("spoke nginx must not expose subscription/monitor:\n%s", conf)
 	}
-	if strings.Contains(conf, "listen 2096 ssl;") || strings.Contains(conf, "listen 2097 ssl;") {
+	if strings.Contains(conf, fmt.Sprintf("listen %d ssl;", DefaultSubscribePort)) || strings.Contains(conf, fmt.Sprintf("listen %d ssl;", DefaultMonitorPublicPort)) {
 		t.Fatalf("spoke nginx must not open public subscription/monitor ports:\n%s", conf)
 	}
 	if !strings.Contains(conf, "listen 443 ssl default_server;") {
@@ -524,7 +528,7 @@ func TestOrchestratorSpokeMode(t *testing.T) {
 	}
 
 	// Firewall opens protocol ports and 80/443 but not the public web ports.
-	if strings.Contains(joined, "ufw allow 2096/tcp") || strings.Contains(joined, "ufw allow 2097/tcp") {
+	if strings.Contains(joined, fmt.Sprintf("ufw allow %d/tcp", DefaultSubscribePort)) || strings.Contains(joined, fmt.Sprintf("ufw allow %d/tcp", DefaultMonitorPublicPort)) {
 		t.Fatalf("spoke must not open public subscription/monitor ports in the firewall:\n%s", joined)
 	}
 	if !strings.Contains(joined, "ufw allow 9443/udp") {

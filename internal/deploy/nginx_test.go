@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,11 +52,12 @@ func TestWriteManagedNginxConfigSeparatesTheMonitorDomain(t *testing.T) {
 		t.Fatalf("read nginx config: %v", err)
 	}
 	monitorCert, monitorKey := CertificatePaths(layout, cfg.MonitorDomain)
+	monitorListen := fmt.Sprintf("listen %d ssl;", DefaultMonitorPublicPort)
 	for _, want := range []string{
 		"server_name monitor.example.com;",
 		"ssl_certificate " + monitorCert + ";",
 		"ssl_certificate_key " + monitorKey + ";",
-		"listen 2097 ssl default_server;",
+		fmt.Sprintf("listen %d ssl default_server;", DefaultMonitorPublicPort),
 		"ssl_reject_handshake on;",
 	} {
 		if !strings.Contains(string(conf), want) {
@@ -63,7 +65,7 @@ func TestWriteManagedNginxConfigSeparatesTheMonitorDomain(t *testing.T) {
 		}
 	}
 	siteCert, _ := CertificatePaths(layout, cfg.Domain)
-	monitorBlock := string(conf)[strings.Index(string(conf), "listen 2097 ssl;"):]
+	monitorBlock := string(conf)[strings.Index(string(conf), monitorListen):]
 	if strings.Contains(monitorBlock, siteCert) || strings.Contains(monitorBlock, "server_name example.com;") {
 		t.Fatalf("the monitor block must not carry the masquerade site's name or certificate:\n%s", monitorBlock)
 	}

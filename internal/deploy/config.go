@@ -17,9 +17,14 @@ import (
 )
 
 const (
-	DefaultDisplayName            = "Node"
-	DefaultSubscribePort          = 2096
-	DefaultMonitorPublicPort      = 2097
+	DefaultDisplayName   = "Node"
+	DefaultSubscribePort = 2096
+	// DefaultMonitorPublicPort is one of the ports a CDN in front of the monitor
+	// will proxy. Publishing the monitor under a name of its own is usually done
+	// to keep this server's address out of reach, which means putting a proxy in
+	// front of it — and the neighbouring 2097 is not a port those proxy, so it
+	// would quietly defeat the arrangement.
+	DefaultMonitorPublicPort      = 2087
 	DefaultMonitorPort            = 19090
 	DefaultResetDay               = 1
 	DefaultResetHour              = 0
