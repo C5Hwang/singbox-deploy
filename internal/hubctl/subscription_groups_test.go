@@ -182,3 +182,35 @@ func TestRefreshSubscriptionsSkipsSpokesNoGroupPublishes(t *testing.T) {
 		t.Fatalf("expected hub-only group, got %d links", got)
 	}
 }
+
+// Removing a group's last spoke leaves it with nothing to aggregate. The refresh
+// must retire that group's published files and say so, rather than serving a
+// profile whose selectors have no members.
+func TestRefreshSubscriptionsRetiresAGroupLeftWithoutNodes(t *testing.T) {
+	hubLayout, _ := installedHub(t)
+	tokyo := spokeFixture(t, hubLayout, "tokyo", "tokyo.example.com", "10.90.0.2", "tokyosalt", 8443)
+	if _, err := subgroups.Add(hubLayout, subgroups.Group{
+		Alias: "Spoke only", Salt: "spokeonly", Members: []string{tokyo.ID},
+	}); err != nil {
+		t.Fatalf("add spoke-only group: %v", err)
+	}
+	ctrl := groupTestController(hubLayout)
+	if err := ctrl.RefreshSubscriptions(context.Background()); err != nil {
+		t.Fatalf("RefreshSubscriptions: %v", err)
+	}
+	published := filepath.Join(hubLayout.SubscribeDir, "singboxProfiles", deploy.SubscriptionToken("spokeonly"))
+	if _, err := os.Stat(published); err != nil {
+		t.Fatalf("spoke-only group was not published: %v", err)
+	}
+
+	if err := subgroups.DropMember(hubLayout, tokyo.ID); err != nil {
+		t.Fatalf("drop the spoke from every group: %v", err)
+	}
+	err := ctrl.RefreshSubscriptions(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "no nodes to publish") {
+		t.Fatalf("emptied group was not reported: %v", err)
+	}
+	if _, statErr := os.Stat(published); !os.IsNotExist(statErr) {
+		t.Fatalf("emptied group kept serving its sing-box profile: %v", statErr)
+	}
+}

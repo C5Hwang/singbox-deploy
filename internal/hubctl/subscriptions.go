@@ -111,6 +111,13 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 			}
 			spec.Sources = append(spec.Sources, src)
 		}
+		if !spec.PublishesNodes() {
+			// The files are not written at all (see deploy.WriteSubscriptionGroups),
+			// so say so here rather than leaving the operator to discover a URL
+			// that has quietly stopped resolving.
+			errs = append(errs, fmt.Errorf("subscription group %q has no nodes to publish; its URL is not served until it gains a member",
+				g.EffectiveAlias()))
+		}
 		specs = append(specs, spec)
 	}
 	if err := deploy.WriteSubscriptionGroups(c.Layout, localCfg, specs); err != nil {

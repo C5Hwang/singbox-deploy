@@ -48,17 +48,31 @@ type SubscriptionGroupSpec struct {
 	LocalPosition int
 }
 
+// PublishesNodes reports whether this group contributes at least one node.
+// A group that contributes none cannot be published: the Clash and sing-box
+// profiles both wrap the node list in selectors, and a selector with no members
+// is rejected by the client outright ("missing tags" in sing-box), so writing
+// the files would hand every subscriber a profile that fails to load.
+func (s SubscriptionGroupSpec) PublishesNodes() bool {
+	return s.IncludeLocal || len(s.Sources) > 0
+}
+
 // WriteSubscriptionGroups publishes one set of subscription files per group and
-// then deletes every file whose token no longer belongs to a group. Groups are
-// written before the sweep, so a token shared by two specs (rejected by the
-// registry, but possible in a hand-edited state tree) keeps the last write
-// rather than leaving a hole.
+// then deletes every file whose token no longer belongs to a published group.
+// Groups are written before the sweep, so a token shared by two specs (rejected
+// by the registry, but possible in a hand-edited state tree) keeps the last
+// write rather than leaving a hole. A group with nothing to publish is skipped
+// and its token swept, so its URL stops resolving instead of serving a profile
+// no client can load.
 func WriteSubscriptionGroups(layout paths.Layout, cfg Config, specs []SubscriptionGroupSpec) error {
 	if err := ensurePublicLayoutRoot(layout); err != nil {
 		return err
 	}
 	tokens := make(map[string]struct{}, len(specs))
 	for _, spec := range specs {
+		if !spec.PublishesNodes() {
+			continue
+		}
 		out, err := cfg.buildSubscriptionGroup(spec)
 		if err != nil {
 			return err

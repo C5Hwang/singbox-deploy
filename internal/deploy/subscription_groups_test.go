@@ -154,3 +154,72 @@ func TestWriteSubscriptionGroupsPrunesOnlyRetiredTokens(t *testing.T) {
 		}
 	}
 }
+
+// A group left with no members — every spoke it named has since been removed —
+// must publish nothing. Rendering it anyway emits a sing-box profile whose node
+// list is a bare JSON null and whose selectors have no members, which the client
+// rejects with "unknown outbound type" before it ever reaches the node list.
+func TestWriteSubscriptionGroupsSkipsAGroupWithNoNodes(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	cfg := groupTestConfig(t)
+	if err := deploy.WriteSubscriptionGroups(layout, cfg, []deploy.SubscriptionGroupSpec{
+		{Salt: "populated", IncludeLocal: true},
+		{Salt: "emptied"},
+	}); err != nil {
+		t.Fatalf("WriteSubscriptionGroups: %v", err)
+	}
+	for _, dir := range []string{"default", "clashMeta", "clashMetaProfiles", "singboxProfiles", "surge", "surgeProfiles"} {
+		if _, err := os.Stat(filepath.Join(layout.SubscribeDir, dir, deploy.SubscriptionToken("populated"))); err != nil {
+			t.Fatalf("populated group lost its %s file: %v", dir, err)
+		}
+		if _, err := os.Stat(filepath.Join(layout.SubscribeDir, dir, deploy.SubscriptionToken("emptied"))); !os.IsNotExist(err) {
+			t.Fatalf("group with no nodes published a %s file: %v", dir, err)
+		}
+	}
+}
+
+// Losing its last member must also retire a group's already-published files,
+// rather than leaving the previous node list served under the same URL.
+func TestWriteSubscriptionGroupsRetiresAGroupThatLosesItsLastNode(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	cfg := groupTestConfig(t)
+	tokyo := spokeSource(t, "tokyo", "tokyo.example.com", "tokyosalt", 8443)
+	if err := deploy.WriteSubscriptionGroups(layout, cfg, []deploy.SubscriptionGroupSpec{
+		{Salt: "spokeonly", Sources: []deploy.SubscriptionSource{tokyo}},
+	}); err != nil {
+		t.Fatalf("WriteSubscriptionGroups: %v", err)
+	}
+	if body := groupDefaultBody(t, layout, "spokeonly"); !strings.Contains(body, "tokyo") {
+		t.Fatalf("spoke-only group did not publish its spoke:\n%s", body)
+	}
+	if err := deploy.WriteSubscriptionGroups(layout, cfg, []deploy.SubscriptionGroupSpec{
+		{Salt: "spokeonly"},
+	}); err != nil {
+		t.Fatalf("WriteSubscriptionGroups after the spoke left: %v", err)
+	}
+	for _, dir := range []string{"default", "singboxProfiles"} {
+		if _, err := os.Stat(filepath.Join(layout.SubscribeDir, dir, deploy.SubscriptionToken("spokeonly"))); !os.IsNotExist(err) {
+			t.Fatalf("emptied group kept serving its %s file: %v", dir, err)
+		}
+	}
+}
+
+// The hub's own nodes are enough to publish a group; only a group with neither
+// the hub nor a reachable spoke is skipped.
+func TestSubscriptionGroupSpecPublishesNodes(t *testing.T) {
+	tokyo := deploy.SubscriptionSource{Alias: "tokyo"}
+	for _, tc := range []struct {
+		name string
+		spec deploy.SubscriptionGroupSpec
+		want bool
+	}{
+		{"hub only", deploy.SubscriptionGroupSpec{IncludeLocal: true}, true},
+		{"spoke only", deploy.SubscriptionGroupSpec{Sources: []deploy.SubscriptionSource{tokyo}}, true},
+		{"hub and spoke", deploy.SubscriptionGroupSpec{IncludeLocal: true, Sources: []deploy.SubscriptionSource{tokyo}}, true},
+		{"nothing", deploy.SubscriptionGroupSpec{}, false},
+	} {
+		if got := tc.spec.PublishesNodes(); got != tc.want {
+			t.Errorf("%s: PublishesNodes() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
