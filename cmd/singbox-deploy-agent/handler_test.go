@@ -1618,9 +1618,39 @@ func TestLegacyHubArtifactsAreRemovedWhenConvertingToSpoke(t *testing.T) {
 		filepath.Join(layout.StateDir, "remotes"),
 		filepath.Join(layout.StateDir, "monitor_sources"),
 		filepath.Join(layout.StateDir, "spoke_subscriptions"),
+		filepath.Join(layout.StateDir, "subscription_groups"),
+		filepath.Join(layout.StateDir, "subscription_groups.lock"),
 	} {
 		if !pathsToRemove[want] {
 			t.Errorf("spoke migration does not remove %s", want)
+		}
+	}
+}
+
+// A spoke never publishes subscriptions of its own, so a machine demoted from
+// hub to spoke must not keep its group registry — it names nodes this host no
+// longer manages and stores the salt behind every URL the old hub served.
+func TestLegacyHubArtifactRemovalDropsTheSubscriptionGroupRegistry(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	groups := filepath.Join(layout.StateDir, "subscription_groups")
+	if err := os.MkdirAll(filepath.Join(groups, "001"), 0o700); err != nil {
+		t.Fatalf("seed group registry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(groups, "001", "salt"), []byte("hubsalt\n"), 0o600); err != nil {
+		t.Fatalf("seed group salt: %v", err)
+	}
+	lock := filepath.Join(layout.StateDir, "subscription_groups.lock")
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatalf("seed group lock: %v", err)
+	}
+
+	if err := removeLegacyHubArtifacts(layout); err != nil {
+		t.Fatalf("removeLegacyHubArtifacts: %v", err)
+	}
+
+	for _, path := range []string{groups, lock} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Errorf("%s survived the conversion to a spoke: %v", path, err)
 		}
 	}
 }
