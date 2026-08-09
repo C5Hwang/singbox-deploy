@@ -5,7 +5,78 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 )
+
+// writeHubState seeds the install-state keys that decide which certificates the
+// hub's own Nginx holds open.
+func writeHubState(t *testing.T, layout paths.Layout, values map[string]string) {
+	t.Helper()
+	store := state.NewStore(layout.StateDir)
+	for name, value := range values {
+		if err := store.WriteString(name, value+"\n", 0o600); err != nil {
+			t.Fatalf("write state %s: %v", name, err)
+		}
+	}
+}
+
+// The monitor's own name is a second certificate the hub's Nginx holds open, so
+// deleting it must be refused exactly as deleting the install domain's is.
+func TestCertificateConsumersReportsTheMonitorDomain(t *testing.T) {
+	cases := []struct {
+		name         string
+		state        map[string]string
+		domain       string
+		wantConsumed bool
+	}{
+		{
+			name:         "monitor domain is in use",
+			state:        map[string]string{"domain": "vpn.example.com", "monitor": "yes", "monitor_domain": "monitor.example.com"},
+			domain:       "monitor.example.com",
+			wantConsumed: true,
+		},
+		{
+			name:         "install domain is still in use",
+			state:        map[string]string{"domain": "vpn.example.com", "monitor": "yes", "monitor_domain": "monitor.example.com"},
+			domain:       "vpn.example.com",
+			wantConsumed: true,
+		},
+		{
+			name:         "a disabled monitor holds nothing open",
+			state:        map[string]string{"domain": "vpn.example.com", "monitor": "no", "monitor_domain": "monitor.example.com"},
+			domain:       "monitor.example.com",
+			wantConsumed: false,
+		},
+		{
+			name:         "an unrelated name is not in use",
+			state:        map[string]string{"domain": "vpn.example.com", "monitor": "yes", "monitor_domain": "monitor.example.com"},
+			domain:       "other.example.com",
+			wantConsumed: false,
+		},
+		{
+			name:         "an install predating the monitor domain still protects its own",
+			state:        map[string]string{"domain": "vpn.example.com", "monitor": "yes"},
+			domain:       "vpn.example.com",
+			wantConsumed: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			layout := paths.LayoutForRoot(t.TempDir())
+			writeHubState(t, layout, tc.state)
+			consumers, err := (&Controller{Layout: layout}).CertificateConsumers(tc.domain)
+			if err != nil {
+				t.Fatalf("CertificateConsumers: %v", err)
+			}
+			if got := len(consumers) > 0; got != tc.wantConsumed {
+				t.Fatalf("consumed = %v, want %v (%+v)", got, tc.wantConsumed, consumers)
+			}
+			if tc.wantConsumed && consumers[0].ID != "hub" {
+				t.Fatalf("consumer = %+v, want the hub", consumers[0])
+			}
+		})
+	}
+}
 
 func TestCertificateConsumersKeepStableIDSeparateFromDisplayLabel(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())

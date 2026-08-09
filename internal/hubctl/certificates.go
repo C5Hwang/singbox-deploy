@@ -182,6 +182,41 @@ func (c *Controller) RetryPendingCertificates(ctx context.Context, log io.Writer
 	return errors.Join(errs...)
 }
 
+// hubConsumesDomain reports whether the hub's own Nginx serves normalized. The
+// hub holds one certificate per name it answers to, which since the monitor got
+// a name of its own is the install domain *and* the monitor domain — checking
+// only the install domain would treat the monitor's pair as unused.
+func hubConsumesDomain(store state.Store, normalized string) bool {
+	for _, name := range hubCertificateDomains(store) {
+		if name == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+// hubCertificateDomains returns every normalized name the hub's Nginx holds a
+// certificate for. A monitor that shares the install domain, is disabled, or
+// predates the monitor domain adds nothing.
+func hubCertificateDomains(store state.Store) []string {
+	var domains []string
+	installDomain, _ := store.ReadValue("domain", false)
+	install, err := certmgr.NormalizeDomain(installDomain)
+	if err != nil {
+		return nil
+	}
+	domains = append(domains, install)
+	if monitor, _ := store.ReadValue("monitor", false); monitor == "no" {
+		return domains
+	}
+	monitorDomain, _ := store.ReadValue("monitor_domain", false)
+	monitor, err := certmgr.NormalizeDomain(monitorDomain)
+	if err != nil || monitor == install {
+		return domains
+	}
+	return append(domains, monitor)
+}
+
 // CertificateConsumer identifies one installed Hub/Spoke that uses a
 // certificate. ID is the stable identity used by deletion safeguards; Label is
 // deliberately presentation-only so renaming a spoke cannot change whether the
@@ -216,8 +251,7 @@ func (c *Controller) CertificateConsumers(domain string) (CertificateConsumerLis
 		return nil, err
 	}
 	var consumers CertificateConsumerList
-	hubDomain, _ := state.NewStore(c.Layout.StateDir).ReadValue("domain", false)
-	if hd, err := certmgr.NormalizeDomain(hubDomain); err == nil && hd == normalized {
+	if hubConsumesDomain(state.NewStore(c.Layout.StateDir), normalized) {
 		consumers = append(consumers, CertificateConsumer{
 			ID:    "hub",
 			Label: fmt.Sprintf("Hub (%s)", normalized),
