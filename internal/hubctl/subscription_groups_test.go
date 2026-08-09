@@ -214,3 +214,30 @@ func TestRefreshSubscriptionsRetiresAGroupLeftWithoutNodes(t *testing.T) {
 		t.Fatalf("emptied group kept serving its sing-box profile: %v", statErr)
 	}
 }
+
+// The hub's display name only collides with a spoke alias inside a group that
+// publishes the hub. A group that excludes the hub must publish the spoke under
+// its own alias rather than a numbered variant.
+func TestRefreshSubscriptionsKeepsTheSpokeAliasInAGroupWithoutTheHub(t *testing.T) {
+	hubLayout, hubCfg := installedHub(t)
+	// The spoke's subscription alias is the hub's display name, which no
+	// registry constraint prevents.
+	spoke := spokeFixture(t, hubLayout, hubCfg.DisplayName, "spoke.example.com", "10.90.0.2", "spokesalt", 8443)
+	if _, err := subgroups.Add(hubLayout, subgroups.Group{
+		Alias: "Spoke only", Salt: "spokeonly", Members: []string{spoke.ID},
+	}); err != nil {
+		t.Fatalf("add spoke-only group: %v", err)
+	}
+
+	if err := groupTestController(hubLayout).RefreshSubscriptions(context.Background()); err != nil {
+		t.Fatalf("RefreshSubscriptions: %v", err)
+	}
+
+	body := combinedDefault(t, hubLayout, "spokeonly")
+	if strings.Contains(body, hubCfg.DisplayName+"-2") {
+		t.Fatalf("spoke was renamed against a hub that this group does not publish:\n%s", body)
+	}
+	if !strings.Contains(body, hubCfg.DisplayName+"-Hysteria2") {
+		t.Fatalf("spoke did not keep its own alias:\n%s", body)
+	}
+}

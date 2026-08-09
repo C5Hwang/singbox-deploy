@@ -90,9 +90,16 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 			IncludeLocal:  g.HasMember(subgroups.HubMemberID),
 			LocalPosition: pos,
 		}
-		// Aliases only have to be distinct within one published subscription,
-		// so each group gets its own labeler.
-		labels := newAliasLabeler(localCfg.DisplayName)
+		// Aliases only have to be distinct within one published subscription, so
+		// each group gets its own labeler. The hub's display name is reserved
+		// only where the hub's nodes actually appear: a group that excludes the
+		// hub has no clash to avoid, and renaming a spoke there would publish it
+		// under a numbered alias for no reason.
+		var reserved []string
+		if spec.IncludeLocal {
+			reserved = append(reserved, localCfg.DisplayName)
+		}
+		labels := newAliasLabeler(reserved...)
 		for _, n := range list {
 			if !g.HasMember(n.ID) {
 				continue
