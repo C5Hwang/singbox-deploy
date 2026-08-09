@@ -578,19 +578,14 @@ func (sm *subscriptionManager) startRun() tea.Cmd {
 	}
 	if sm.action == subscriptionActionReorder {
 		go func() {
-			err := sm.applySourceOrder(context.Background(), logs)
+			err := sm.applySourceOrder(context.Background(), progress)
 			ch <- runMsg{done: true, err: err}
 		}()
 		return sm.waitForRun()
 	}
 	if sm.action == subscriptionActionRefresh {
 		go func() {
-			// Remove obsolete public remote definitions before publishing only
-			// hub + registered spoke data fetched through WireGuard.
-			err := deploy.SaveRemoteSubscriptions(subscriptionUILayout(), nil)
-			if err == nil {
-				err = (&hubctl.Controller{Layout: subscriptionUILayout(), ExpectedVersion: toolVersion}).RefreshSubscriptions(context.Background())
-			}
+			err := refreshSubscriptionSources(context.Background(), subscriptionUILayout(), progress)
 			ch <- runMsg{done: true, err: err}
 		}()
 		return sm.waitForRun()
@@ -685,7 +680,11 @@ func (sm *subscriptionManager) applyGroupAction(ctx context.Context, action subs
 	}
 }
 
-func (sm *subscriptionManager) applySourceOrder(ctx context.Context, logs *logWriter) error {
+// applySourceOrder saves the new node ordering and republishes every group.
+// Both halves report progress: republishing fetches each spoke over the overlay
+// and is much the slower of the two, so a run without events would leave the
+// bar empty for its whole duration.
+func (sm *subscriptionManager) applySourceOrder(ctx context.Context, progress func(deploy.Event)) error {
 	byID := make(map[string]nodes.Node, len(sm.nodes))
 	for _, node := range sm.nodes {
 		byID[node.ID] = node
@@ -715,13 +714,32 @@ func (sm *subscriptionManager) applySourceOrder(ctx context.Context, logs *logWr
 	for i := range ordered {
 		orderedIDs[i] = ordered[i].ID
 	}
-	if err := nodes.Reorder(layout, orderedIDs); err != nil {
-		return err
-	}
-	if err := deploy.SaveLocalSubscriptionPosition(layout, localPosition); err != nil {
-		return err
-	}
-	return (&hubctl.Controller{Layout: layout, ExpectedVersion: toolVersion}).RefreshSubscriptions(ctx)
+	return deploy.RunSteps(ctx, progress, []deploy.Step{
+		{Label: "Node order", Detail: "save the requested node ordering", Run: func(context.Context) error {
+			if err := nodes.Reorder(layout, orderedIDs); err != nil {
+				return err
+			}
+			return deploy.SaveLocalSubscriptionPosition(layout, localPosition)
+		}},
+		{Label: "Subscriptions", Detail: "republish every subscription group", Run: func(ctx context.Context) error {
+			return (&hubctl.Controller{Layout: layout, ExpectedVersion: toolVersion}).RefreshSubscriptions(ctx)
+		}},
+	})
+}
+
+// refreshSubscriptionSources re-fetches every published spoke over the overlay
+// and republishes each group, dropping the obsolete public remote definitions
+// an older release could still have on disk first.
+func refreshSubscriptionSources(ctx context.Context, layout paths.Layout, progress func(deploy.Event)) error {
+	return deploy.RunSteps(ctx, progress, []deploy.Step{
+		{Label: "Sources", Detail: "drop obsolete public subscription sources", Run: func(context.Context) error {
+			return deploy.SaveRemoteSubscriptions(layout, nil)
+		}},
+		{Label: "Subscriptions", Detail: "fetch every published spoke over WireGuard and republish each group",
+			Run: func(ctx context.Context) error {
+				return (&hubctl.Controller{Layout: layout, ExpectedVersion: toolVersion}).RefreshSubscriptions(ctx)
+			}},
+	})
 }
 
 func (sm *subscriptionManager) buildSubscriptionUpdateOptions() subscription.UpdateOptions {
