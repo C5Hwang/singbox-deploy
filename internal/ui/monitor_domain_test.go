@@ -2,9 +2,19 @@ package ui
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -235,5 +245,99 @@ func TestLoadStatusReportsTheMonitorDomain(t *testing.T) {
 	status := loadStatus()
 	if status.MonitorUI != "https://monitor.example.com:2097/monitor/" {
 		t.Fatalf("MonitorUI = %q", status.MonitorUI)
+	}
+}
+
+// writeStatusCertificate drops a self-signed pair under the name the status
+// panel looks certificates up by, so its certificate rows have something to
+// report.
+func writeStatusCertificate(t *testing.T, layout paths.Layout, domain string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: domain},
+		DNSNames:     []string{domain},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(30 * 24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	if err := os.MkdirAll(layout.TLSDir, 0o700); err != nil {
+		t.Fatalf("create tls dir: %v", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(filepath.Join(layout.TLSDir, domain+".crt"), pemBytes, 0o600); err != nil {
+		t.Fatalf("write certificate: %v", err)
+	}
+}
+
+// The status panel decides whether the monitor carries a second certificate by
+// the name Nginx serves it under, so the install domain spelled differently on
+// the monitor field is still one certificate — and the URL it reports is the
+// one that selects the monitor's server block.
+func TestLoadStatusComparesMonitorAndInstallDomainsAsServed(t *testing.T) {
+	cases := []struct {
+		name          string
+		domain        string
+		monitorDomain string
+		wantURL       string
+		wantCertRow   bool
+	}{
+		{
+			name:          "the same name spelled differently is one certificate",
+			domain:        "vpn.example.com",
+			monitorDomain: "VPN.example.com.",
+			wantURL:       "https://vpn.example.com:2097/monitor/",
+		},
+		{
+			name:          "a genuinely separate name carries its own",
+			domain:        "vpn.example.com",
+			monitorDomain: "Monitor.Example.COM",
+			wantURL:       "https://monitor.example.com:2097/monitor/",
+			wantCertRow:   true,
+		},
+		{
+			name:          "an idn is reported as it is served",
+			domain:        "vpn.example.com",
+			monitorDomain: "监控.example.com",
+			wantURL:       "https://xn--izun04b.example.com:2097/monitor/",
+			wantCertRow:   true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			layout := paths.LayoutForRoot(t.TempDir())
+			writeStatusState(t, layout.StateDir, "domain", tc.domain)
+			writeStatusState(t, layout.StateDir, "public_ip", "203.0.113.10")
+			writeStatusState(t, layout.StateDir, "monitor_domain", tc.monitorDomain)
+			writeStatusState(t, layout.StateDir, "monitor_public_port", "2097")
+			writeStatusState(t, layout.StateDir, "monitor", "yes")
+			// The pairs exist under the names they were issued for — the served
+			// ones — so a row that stays empty did so by folding the two names,
+			// not by looking up a spelling nothing was ever written under.
+			writeStatusCertificate(t, layout, deploy.ServerName(tc.domain))
+			writeStatusCertificate(t, layout, deploy.ServerName(tc.monitorDomain))
+
+			oldLayout, oldOutput := defaultStatusLayout, statusCommandOutput
+			t.Cleanup(func() { defaultStatusLayout, statusCommandOutput = oldLayout, oldOutput })
+			defaultStatusLayout = func() paths.Layout { return layout }
+			statusCommandOutput = func(name string, args ...string) (string, error) {
+				return "", fmt.Errorf("unexpected command: %s %v", name, args)
+			}
+
+			status := loadStatus()
+			if status.MonitorUI != tc.wantURL {
+				t.Fatalf("MonitorUI = %q, want %q", status.MonitorUI, tc.wantURL)
+			}
+			if got := status.MonitorCertState != ""; got != tc.wantCertRow {
+				t.Fatalf("monitor certificate row = %v (%q), want %v", got, status.MonitorCertState, tc.wantCertRow)
+			}
+		})
 	}
 }

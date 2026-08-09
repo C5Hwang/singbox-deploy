@@ -63,10 +63,12 @@ func loadStatus() Status {
 		monitorPublicPort = subscribePort
 	}
 	// An install made before the monitor got its own name served it under the
-	// install domain, so that is what a missing key means.
-	monitorDomain := readStatusState(store, "monitor_domain")
+	// install domain, so that is what a missing key means. Both names are read
+	// back in the form Nginx serves them under, so the URL reported here is one
+	// that actually selects the monitor's server block.
+	monitorDomain := deploy.ServerName(readStatusState(store, "monitor_domain"))
 	if monitorDomain == "" {
-		monitorDomain = domain
+		monitorDomain = deploy.ServerName(domain)
 	}
 	monitorEnabled := readMonitorState(store) != "no"
 	monitorState := "disabled"
@@ -74,9 +76,10 @@ func loadStatus() Status {
 		monitorState = serviceState(system.MonitorService)
 	}
 	// The monitor's own certificate is reported only when it is a second pair;
-	// sharing the install domain means the Certificate row already covers it.
+	// sharing the install domain — however either was spelled — means the
+	// Certificate row already covers it.
 	monitorCertState := ""
-	if monitorEnabled && monitorDomain != domain {
+	if monitorEnabled && monitorDomain != deploy.ServerName(domain) {
 		monitorCertState = certificateState(layout, monitorDomain)
 	}
 

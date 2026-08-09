@@ -62,8 +62,8 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 	// normalized form: lowercase, no trailing dot, punycode for an IDN. Emitting
 	// what the operator typed would leave a block Nginx can never select, so
 	// both names go through the same normalization the certificate uses.
-	siteDomain := serverName(cfg.Domain)
-	monitorDomain := serverName(cfg.MonitorHost())
+	siteDomain := ServerName(cfg.Domain)
+	monitorDomain := ServerName(cfg.MonitorHost())
 	monitorCertPath, monitorKeyPath := CertificatePaths(layout, monitorDomain)
 	// The monitor only folds into the camouflage server block when it answers
 	// on 443 under the same name. Given its own name it gets its own block,
@@ -95,11 +95,14 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 	return WriteFile(nginxConfPath, []byte(conf), 0o644)
 }
 
-// serverName returns the form of domain that Nginx matches an incoming SNI or
-// Host against. A name that cannot be normalized is passed through untouched so
+// ServerName returns the form of domain that Nginx matches an incoming SNI or
+// Host against: lowercase, no trailing dot, punycode for an IDN. It is also the
+// form to compare two configured names by, and the only form worth reporting to
+// an operator, since a URL spelled any other way will not select the block that
+// serves it. A name that cannot be normalized is passed through untouched so
 // rendering still reports the operator's own value back to them, and the
 // configuration test — not a silent rewrite — is what rejects it.
-func serverName(domain string) string {
+func ServerName(domain string) string {
 	normalized, err := certmgr.NormalizeDomain(domain)
 	if err != nil {
 		return strings.TrimSpace(domain)
