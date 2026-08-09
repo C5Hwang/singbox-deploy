@@ -66,9 +66,7 @@ func (c *Controller) DistributeCertificate(ctx context.Context, domain string, l
 	}
 
 	store := state.NewStore(c.Layout.StateDir)
-	hubDomain, _ := store.ReadValue("domain", false)
-	local, lerr := certmgr.NormalizeDomain(hubDomain)
-	hubConsumes := lerr == nil && local == normalized
+	hubConsumes := hubConsumesDomain(store, normalized)
 
 	// Marking the spokes pending above is bookkeeping, not an activation; the
 	// reported steps are exactly the targets that receive the new pair.

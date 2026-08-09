@@ -1,8 +1,12 @@
 package hubctl
 
 import (
+	"context"
+	"io"
+	"strings"
 	"testing"
 
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
@@ -17,6 +21,40 @@ func writeHubState(t *testing.T, layout paths.Layout, values map[string]string) 
 		if err := store.WriteString(name, value+"\n", 0o600); err != nil {
 			t.Fatalf("write state %s: %v", name, err)
 		}
+	}
+}
+
+// A renewed monitor certificate only reaches clients once Nginx is restarted:
+// without the reload the new pair sits on disk while the old one stays open,
+// and the monitor serves an expired certificate from the day it lapses.
+func TestDistributeCertificateReloadsForTheMonitorDomain(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	writeHubState(t, layout, map[string]string{
+		"domain": "vpn.example.com", "monitor": "yes", "monitor_domain": "monitor.example.com",
+	})
+	runner := &hubCommandRunner{}
+	ctrl := &Controller{Layout: layout, Runner: runner}
+
+	var events []deploy.Event
+	if err := ctrl.DistributeCertificate(context.Background(), "monitor.example.com", io.Discard, func(e deploy.Event) {
+		events = append(events, e)
+	}); err != nil {
+		t.Fatalf("DistributeCertificate: %v", err)
+	}
+	restarted := false
+	for _, cmd := range runner.commands {
+		if cmd.Name == "systemctl" && strings.Join(cmd.Args, " ") == "restart nginx" {
+			restarted = true
+		}
+	}
+	if !restarted {
+		t.Fatalf("a renewed monitor certificate never reached Nginx: %+v", runner.commands)
+	}
+	if len(events) == 0 {
+		t.Fatalf("the hub reload reported no progress")
+	}
+	if events[0].Label != "Reload hub services" || events[0].Total != 1 {
+		t.Fatalf("distribution progress = %+v", events[0])
 	}
 }
 
