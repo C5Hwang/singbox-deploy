@@ -2,7 +2,9 @@ package deploy
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
@@ -56,16 +58,21 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 		return err
 	}
 	certPath, keyPath := CertificatePaths(layout, cfg.Domain)
-	monitorDomain := cfg.MonitorHost()
+	// server_name is matched against the name the client offers, which is the
+	// normalized form: lowercase, no trailing dot, punycode for an IDN. Emitting
+	// what the operator typed would leave a block Nginx can never select, so
+	// both names go through the same normalization the certificate uses.
+	siteDomain := serverName(cfg.Domain)
+	monitorDomain := serverName(cfg.MonitorHost())
 	monitorCertPath, monitorKeyPath := CertificatePaths(layout, monitorDomain)
 	// The monitor only folds into the camouflage server block when it answers
 	// on 443 under the same name. Given its own name it gets its own block,
 	// selected by SNI, so the two never share a certificate or a server_name.
-	sharesSiteBlock := cfg.MonitorPublicPort == 443 && monitorDomain == cfg.Domain
+	sharesSiteBlock := cfg.MonitorPublicPort == 443 && monitorDomain == siteDomain
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
 		"SubscribePort":          cfg.SubscribePort,
 		"MonitorPublicPort":      cfg.MonitorPublicPort,
-		"Domain":                 cfg.Domain,
+		"Domain":                 siteDomain,
 		"CertificatePath":        certPath,
 		"KeyPath":                keyPath,
 		"MonitorDomain":          monitorDomain,
@@ -86,4 +93,16 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 		return err
 	}
 	return WriteFile(nginxConfPath, []byte(conf), 0o644)
+}
+
+// serverName returns the form of domain that Nginx matches an incoming SNI or
+// Host against. A name that cannot be normalized is passed through untouched so
+// rendering still reports the operator's own value back to them, and the
+// configuration test — not a silent rewrite — is what rejects it.
+func serverName(domain string) string {
+	normalized, err := certmgr.NormalizeDomain(domain)
+	if err != nil {
+		return strings.TrimSpace(domain)
+	}
+	return normalized
 }

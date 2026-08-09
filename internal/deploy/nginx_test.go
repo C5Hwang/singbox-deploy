@@ -97,3 +97,85 @@ func TestWriteManagedNginxConfigKeepsSharedMonitorDomain(t *testing.T) {
 		t.Fatalf("443 already has a default server; no reject block should be emitted:\n%s", conf)
 	}
 }
+
+// Nginx matches server_name against the name the client offers, which is always
+// the normalized one. A monitor domain typed with a trailing dot, in capitals,
+// or as an IDN must still produce a block that can actually be selected — and
+// the same spelling must not be mistaken for a second name.
+func TestWriteManagedNginxConfigNormalizesServerNames(t *testing.T) {
+	cases := []struct {
+		name          string
+		domain        string
+		monitorDomain string
+		wantServer    string
+	}{
+		{name: "trailing dot", domain: "example.com", monitorDomain: "monitor.example.com.", wantServer: "monitor.example.com"},
+		{name: "capitals", domain: "example.com", monitorDomain: "Monitor.Example.COM", wantServer: "monitor.example.com"},
+		{name: "idn", domain: "example.com", monitorDomain: "监控.example.com", wantServer: "xn--izun04b.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			layout := paths.LayoutForRoot(root)
+			confPath := filepath.Join(root, "nginx", "singbox-deploy.conf")
+			cfg := Config{
+				Domain:                tc.domain,
+				MonitorDomain:         tc.monitorDomain,
+				SubscribePort:         DefaultSubscribePort,
+				MonitorPublicPort:     DefaultMonitorPublicPort,
+				MonitorPort:           DefaultMonitorPort,
+				DeployMonitor:         true,
+				DeployMonitorFrontend: true,
+			}
+			certDomain, err := cfg.MonitorCertificateDomain()
+			if err != nil {
+				t.Fatalf("MonitorCertificateDomain: %v", err)
+			}
+			if err := WriteManagedNginxConfig(layout, cfg, confPath); err != nil {
+				t.Fatalf("WriteManagedNginxConfig: %v", err)
+			}
+			conf, err := os.ReadFile(confPath)
+			if err != nil {
+				t.Fatalf("read nginx config: %v", err)
+			}
+			if !strings.Contains(string(conf), "server_name "+tc.wantServer+";") {
+				t.Fatalf("nginx config missing server_name %q:\n%s", tc.wantServer, conf)
+			}
+			// The certificate manager writes the pair under the normalized name,
+			// so that is the only path Nginx may reference.
+			issuedCert, issuedKey := CertificatePaths(layout, certDomain)
+			for _, want := range []string{"ssl_certificate " + issuedCert + ";", "ssl_certificate_key " + issuedKey + ";"} {
+				if !strings.Contains(string(conf), want) {
+					t.Fatalf("nginx config missing %q:\n%s", want, conf)
+				}
+			}
+		})
+	}
+}
+
+// The install domain spelled differently on the monitor field is still the same
+// name: it shares the install certificate and must not gain a second block.
+func TestWriteManagedNginxConfigFoldsTheSameNameSpelledDifferently(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	confPath := filepath.Join(root, "nginx", "singbox-deploy.conf")
+	cfg := Config{
+		Domain:                "example.com",
+		MonitorDomain:         "EXAMPLE.com.",
+		SubscribePort:         DefaultSubscribePort,
+		MonitorPublicPort:     443,
+		MonitorPort:           DefaultMonitorPort,
+		DeployMonitor:         true,
+		DeployMonitorFrontend: true,
+	}
+	if err := WriteManagedNginxConfig(layout, cfg, confPath); err != nil {
+		t.Fatalf("WriteManagedNginxConfig: %v", err)
+	}
+	conf, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("read nginx config: %v", err)
+	}
+	if strings.Count(string(conf), "listen 443") != 1 {
+		t.Fatalf("the monitor should fold into the camouflage block on 443:\n%s", conf)
+	}
+}
