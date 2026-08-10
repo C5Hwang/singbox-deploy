@@ -1,0 +1,308 @@
+package monitor
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fakeNFT records the commands issued and answers set listings from a scripted
+// sequence of per-set byte counters.
+type fakeNFT struct {
+	commands []string
+	// rounds[i] maps set name to address -> cumulative bytes for the i-th read
+	// of each set; the last round repeats once exhausted.
+	rounds []map[string]map[string]uint64
+	reads  int
+	// failSet makes every listing fail, standing in for a flushed table.
+	failSet bool
+}
+
+func (f *fakeNFT) run(_ context.Context, stdin string, args ...string) ([]byte, error) {
+	f.commands = append(f.commands, strings.Join(args, " "))
+	if len(args) >= 2 && args[0] == "-f" {
+		if !strings.Contains(stdin, "table inet "+ipAcctTable) {
+			return nil, fmt.Errorf("ruleset does not define the accounting table")
+		}
+		return nil, nil
+	}
+	if len(args) < 5 || args[1] != "list" {
+		return nil, nil
+	}
+	if f.failSet {
+		return nil, fmt.Errorf("No such file or directory")
+	}
+	name := args[len(args)-1]
+	round := f.rounds[min(f.reads/len(ipAcctSets), len(f.rounds)-1)]
+	f.reads++
+	return marshalNFTSet(name, round[name]), nil
+}
+
+func marshalNFTSet(name string, counters map[string]uint64) []byte {
+	type counter struct {
+		Bytes uint64 `json:"bytes"`
+	}
+	type elemBody struct {
+		Val     string  `json:"val"`
+		Counter counter `json:"counter"`
+	}
+	type elem struct {
+		Elem elemBody `json:"elem"`
+	}
+	elems := make([]elem, 0, len(counters))
+	for address, bytes := range counters {
+		elems = append(elems, elem{Elem: elemBody{Val: address, Counter: counter{Bytes: bytes}}})
+	}
+	payload := map[string]any{
+		"nftables": []any{
+			map[string]any{"metainfo": map[string]any{"version": "1.0.9"}},
+			map[string]any{"set": map[string]any{"name": name, "elem": elems}},
+		},
+	}
+	out, _ := json.Marshal(payload)
+	return out
+}
+
+func newFakeIPAccounting(nft *fakeNFT) *IPAccounting {
+	return &IPAccounting{run: nft.run, previous: map[string]uint64{}}
+}
+
+func TestIPAccountingReportsDeltasPerDirection(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{
+		{
+			"peer_in4":  {"203.0.113.7": 1000},
+			"peer_out4": {"203.0.113.7": 500},
+		},
+		{
+			"peer_in4":  {"203.0.113.7": 1800, "198.51.100.4": 60},
+			"peer_out4": {"203.0.113.7": 500},
+			"peer_in6":  {"2001:db8::1": 40},
+		},
+	}}
+	acct := newFakeIPAccounting(nft)
+
+	first, err := acct.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	// The table is created empty, so the first read is itself the delta.
+	if got := first["203.0.113.7"]; got.InBytes != 1000 || got.OutBytes != 500 {
+		t.Fatalf("first round = %#v", got)
+	}
+
+	second, err := acct.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := second["203.0.113.7"]; got.InBytes != 800 || got.OutBytes != 0 {
+		t.Fatalf("second round = %#v, want only the 800 bytes since the first read", got)
+	}
+	if got := second["198.51.100.4"]; got.InBytes != 60 {
+		t.Fatalf("new address = %#v", got)
+	}
+	if got := second["2001:db8::1"]; got.InBytes != 40 {
+		t.Fatalf("IPv6 address = %#v", got)
+	}
+}
+
+// nftables evicts an idle element and re-adds it from zero on the next packet,
+// which must read as new traffic rather than as a negative delta.
+func TestIPAccountingTreatsCounterRestartAsNewTraffic(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{
+		{"peer_in4": {"203.0.113.7": 5000}},
+		{"peer_in4": {"203.0.113.7": 120}},
+	}}
+	acct := newFakeIPAccounting(nft)
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	second, err := acct.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := second["203.0.113.7"]; got.InBytes != 120 {
+		t.Fatalf("restarted counter = %#v, want the full 120 bytes", got)
+	}
+}
+
+// A firewall reload can flush the table. The next round must rebuild it rather
+// than reporting against counters that no longer exist.
+func TestIPAccountingReinstallsRulesetAfterTheTableDisappears(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}, failSet: true}
+	acct := newFakeIPAccounting(nft)
+	if _, err := acct.Collect(context.Background()); err == nil {
+		t.Fatal("Collect succeeded against a flushed table")
+	}
+	nft.failSet = false
+	nft.reads = 0
+	deltas, err := acct.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect after reinstall: %v", err)
+	}
+	if got := deltas["203.0.113.7"]; got.InBytes != 700 {
+		t.Fatalf("after reinstall = %#v", got)
+	}
+	loads := 0
+	for _, command := range nft.commands {
+		if strings.HasPrefix(command, "-f ") {
+			loads++
+		}
+	}
+	if loads != 2 {
+		t.Fatalf("ruleset loads = %d, want the initial install plus the repair", loads)
+	}
+}
+
+// A set with no counters lists bare address strings; that shape must be skipped
+// rather than failing the whole listing.
+func TestParseNFTCounterSetSkipsElementsWithoutCounters(t *testing.T) {
+	raw := []byte(`{"nftables":[{"set":{"name":"peer_in4","elem":["203.0.113.7",
+        {"elem":{"val":"198.51.100.4","counter":{"packets":3,"bytes":900}}}]}}]}`)
+	counters, err := parseNFTCounterSet(raw)
+	if err != nil {
+		t.Fatalf("parseNFTCounterSet: %v", err)
+	}
+	if len(counters) != 1 || counters["198.51.100.4"] != 900 {
+		t.Fatalf("counters = %#v", counters)
+	}
+}
+
+func newIPTrafficTestMonitor(t *testing.T, now time.Time, nft *fakeNFT) *Monitor {
+	t.Helper()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	m := New(store, Config{
+		Alias:     "local",
+		ResetDay:  15,
+		ResetHour: 5,
+		Now:       func() time.Time { return now },
+	}, nil)
+	m.pingCollector = nil
+	m.ipAccounting = newFakeIPAccounting(nft)
+	return m
+}
+
+func TestIPTrafficServesTopAddressesWithDailySeries(t *testing.T) {
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{
+		"peer_in4":  {"203.0.113.7": 3000, "198.51.100.4": 100},
+		"peer_out4": {"203.0.113.7": 1000},
+	}}}
+	m := newIPTrafficTestMonitor(t, now, nft)
+	m.ipSampleOnce(context.Background(), now)
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/ip-traffic", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		IPTraffic IPTrafficSnapshot `json:"ipTraffic"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	snapshot := payload.IPTraffic
+	if !snapshot.Enabled {
+		t.Fatal("snapshot reports per-IP accounting as unavailable")
+	}
+	if want := CycleStart(now, 15, 5).Unix(); snapshot.CycleStart != want {
+		t.Fatalf("CycleStart = %d, want %d", snapshot.CycleStart, want)
+	}
+	if len(snapshot.Entries) != 2 {
+		t.Fatalf("entries = %#v", snapshot.Entries)
+	}
+	top := snapshot.Entries[0]
+	if top.IP != "203.0.113.7" || top.InBytes != 3000 || top.OutBytes != 1000 || top.TotalBytes != 4000 {
+		t.Fatalf("top entry = %#v", top)
+	}
+	if len(top.Daily) != 1 || top.Daily[0].DayTS != now.Truncate(24*time.Hour).Unix() {
+		t.Fatalf("daily series = %#v", top.Daily)
+	}
+}
+
+// The per-IP table describes one quota cycle, so crossing the reset boundary
+// clears it exactly the way the traffic quota resets.
+func TestIPTrafficClearsWhenTheQuotaCycleRolls(t *testing.T) {
+	beforeReset := time.Date(2026, 6, 15, 4, 0, 0, 0, time.UTC)
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{
+		{"peer_in4": {"203.0.113.7": 3000}},
+		{"peer_in4": {"203.0.113.7": 3400}},
+	}}
+	m := newIPTrafficTestMonitor(t, beforeReset, nft)
+	m.ipSampleOnce(context.Background(), beforeReset)
+	entries, err := m.store.TopIPTraffic(topIPTrafficEntries)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("before reset: entries = %#v (%v)", entries, err)
+	}
+
+	// 05:00 on the 15th is this configuration's reset boundary.
+	afterReset := time.Date(2026, 6, 15, 6, 0, 0, 0, time.UTC)
+	m.ipSampleOnce(context.Background(), afterReset)
+	entries, err = m.store.TopIPTraffic(topIPTrafficEntries)
+	if err != nil {
+		t.Fatalf("after reset: %v", err)
+	}
+	if len(entries) != 1 || entries[0].TotalBytes != 400 {
+		t.Fatalf("after reset: entries = %#v, want only the 400 bytes since the boundary", entries)
+	}
+}
+
+// A host without nftables reports so, which lets the dashboard explain an empty
+// list instead of implying the node saw no traffic.
+func TestIPTrafficReportsDisabledWithoutNFT(t *testing.T) {
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	m := newIPTrafficTestMonitor(t, now, &fakeNFT{})
+	m.ipAccounting = nil
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/ip-traffic", nil))
+	var payload struct {
+		IPTraffic IPTrafficSnapshot `json:"ipTraffic"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.IPTraffic.Enabled {
+		t.Fatal("snapshot reports per-IP accounting as available with no nft utility")
+	}
+}
+
+func TestPruneIPTrafficKeepsOnlyTheBusiestAddresses(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+	day := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC).Unix()
+	for i := range 10 {
+		address := fmt.Sprintf("203.0.113.%d", i+1)
+		if err := store.AddIPTraffic(day, map[string]IPTrafficDelta{address: {InBytes: uint64(i+1) * 100}}); err != nil {
+			t.Fatalf("AddIPTraffic: %v", err)
+		}
+	}
+	if err := store.PruneIPTraffic(3); err != nil {
+		t.Fatalf("PruneIPTraffic: %v", err)
+	}
+	entries, err := store.TopIPTraffic(topIPTrafficEntries)
+	if err != nil {
+		t.Fatalf("TopIPTraffic: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %#v, want the three busiest", entries)
+	}
+	for i, want := range []string{"203.0.113.10", "203.0.113.9", "203.0.113.8"} {
+		if entries[i].IP != want {
+			t.Fatalf("entries[%d] = %q, want %q", i, entries[i].IP, want)
+		}
+	}
+}

@@ -123,6 +123,33 @@ type TrafficRawPoint struct {
 	TotalBytes int64 `json:"totalBytes"`
 }
 
+// IPDailyPoint is one remote address's traffic for one GMT day.
+type IPDailyPoint struct {
+	DayTS      int64 `json:"dayTs"`
+	InBytes    int64 `json:"inBytes"`
+	OutBytes   int64 `json:"outBytes"`
+	TotalBytes int64 `json:"totalBytes"`
+}
+
+// IPTrafficEntry is one remote address's traffic in the current quota cycle,
+// with the daily series the dashboard charts and derives its windows from.
+type IPTrafficEntry struct {
+	IP         string         `json:"ip"`
+	InBytes    int64          `json:"inBytes"`
+	OutBytes   int64          `json:"outBytes"`
+	TotalBytes int64          `json:"totalBytes"`
+	Daily      []IPDailyPoint `json:"daily"`
+}
+
+// IPTrafficSnapshot is the payload behind /api/ip-traffic. Enabled is false on
+// a host without nftables, which lets the dashboard say why the list is empty
+// instead of implying the node saw no traffic.
+type IPTrafficSnapshot struct {
+	Enabled    bool             `json:"enabled"`
+	CycleStart int64            `json:"cycleStart"`
+	Entries    []IPTrafficEntry `json:"entries"`
+}
+
 // PingHourlyPoint is one target's averaged latency for one hour. AvgMS is nil
 // when every probe in the hour was fully lost.
 type PingHourlyPoint struct {

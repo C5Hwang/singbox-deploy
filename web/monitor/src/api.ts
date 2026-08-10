@@ -5,6 +5,7 @@ import type {
   TrafficRawPoint,
   ResourceRawPoint,
   LatencySnapshot,
+  IPTrafficSnapshot,
 } from "./types";
 
 const TOKEN_STORAGE_KEY = "singbox-deploy.monitor.token";
@@ -98,4 +99,14 @@ export async function fetchLatency(source?: string): Promise<LatencySnapshot> {
   const data = await getJSON(`api/ping-trend${sourceQuery(source)}`);
   const latency = data.latency ?? {};
   return { targets: latency.targets ?? [], latest: latency.latest ?? [], points: latency.points ?? [] };
+}
+
+export async function fetchIPTraffic(source?: string): Promise<IPTrafficSnapshot> {
+  const data = await getJSON(`api/ip-traffic${sourceQuery(source)}`);
+  const snapshot = data.ipTraffic ?? {};
+  return {
+    enabled: snapshot.enabled ?? false,
+    cycleStart: snapshot.cycleStart ?? 0,
+    entries: snapshot.entries ?? [],
+  };
 }

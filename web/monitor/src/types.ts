@@ -48,7 +48,43 @@ export interface ResourceHourlyPoint {
 }
 
 // The dashboard's top-level pages, in sidebar order.
-export type Tab = "traffic" | "resources" | "latency";
+export type Tab = "traffic" | "resources" | "topips" | "latency";
+
+export interface IPDailyPoint {
+  dayTs: number;
+  inBytes: number;
+  outBytes: number;
+  totalBytes: number;
+}
+
+export interface IPTrafficEntry {
+  ip: string;
+  inBytes: number;
+  outBytes: number;
+  totalBytes: number;
+  daily: IPDailyPoint[];
+}
+
+export interface IPTrafficSnapshot {
+  enabled: boolean;
+  cycleStart: number;
+  entries: IPTrafficEntry[];
+}
+
+// A merged row: one address's traffic across the nodes it reached, with the
+// windows the table sorts by derived from the daily series.
+export interface IPTrafficRow {
+  ip: string;
+  nodes: string[];
+  inBytes: number;
+  outBytes: number;
+  totalBytes: number;
+  todayBytes: number;
+  last7Bytes: number;
+  daily: IPDailyPoint[];
+}
+
+export type IPSortKey = "total" | "today" | "last7";
 
 export interface PingTarget {
   id: string;

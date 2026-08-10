@@ -718,6 +718,7 @@ func TestMonitorFetchUsesFixedAuthenticatedPathAndStripsQuery(t *testing.T) {
 		{MonitorResourceTrend, "/api/resource-trend"},
 		{MonitorResourceRecent, "/api/resource-recent"},
 		{MonitorPingTrend, "/api/ping-trend"},
+		{MonitorIPTraffic, "/api/ip-traffic"},
 	} {
 		body, err := client.Monitor(context.Background(), tc.endpoint)
 		if err != nil {

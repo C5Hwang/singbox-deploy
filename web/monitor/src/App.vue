@@ -6,12 +6,14 @@ import TokenGate from "./components/TokenGate.vue";
 import Latency from "./pages/Latency.vue";
 import NetworkTraffic from "./pages/NetworkTraffic.vue";
 import Resources from "./pages/Resources.vue";
+import TopIPs from "./pages/TopIPs.vue";
 import { fetchSummary, hasStoredAccessToken, onUnauthorized, setAccessToken, UnauthorizedError } from "./api";
 import type { Summary, Tab } from "./types";
 
 const PAGE_TITLES: Record<Tab, string> = {
   traffic: "Network Traffic",
   resources: "Resources",
+  topips: "Top IPs",
   latency: "Latency",
 };
 
@@ -87,6 +89,7 @@ onUnmounted(() => {
           <div class="mobile-tabs">
             <button :class="{ active: activeTab === 'traffic' }" @click="activeTab = 'traffic'">Traffic</button>
             <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">Resources</button>
+            <button :class="{ active: activeTab === 'topips' }" @click="activeTab = 'topips'">Top IPs</button>
             <button :class="{ active: activeTab === 'latency' }" @click="activeTab = 'latency'">Latency</button>
           </div>
           <TimezonePicker />
@@ -95,6 +98,7 @@ onUnmounted(() => {
 
       <NetworkTraffic v-if="activeTab === 'traffic'" :summary="summary" :error="error" />
       <Resources v-if="activeTab === 'resources'" :summary="summary" :error="error" />
+      <TopIPs v-if="activeTab === 'topips'" :summary="summary" />
       <Latency v-if="activeTab === 'latency'" :summary="summary" />
 
       <p class="footer-note">{{ error ? 'Some data is unavailable. Refresh again later.' : '' }}</p>

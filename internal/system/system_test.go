@@ -262,3 +262,26 @@ func freeTCPPort(t *testing.T) int {
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
 }
+
+// The monitor shells out to nft and ping; a minimal cloud image ships neither,
+// and without them the per-IP and latency metrics disable themselves.
+func TestInstallPlanInstallsMonitorProbeDependencies(t *testing.T) {
+	for _, tc := range []struct {
+		packageManager string
+		ping           string
+	}{
+		{packageManager: "apt", ping: "iputils-ping"},
+		{packageManager: "dnf", ping: "iputils"},
+		{packageManager: "yum", ping: "iputils"},
+	} {
+		t.Run(tc.packageManager, func(t *testing.T) {
+			plan := BuildInstallPlan(OSRelease{PackageManager: tc.packageManager})
+			install := plan.Commands[len(plan.Commands)-1].String()
+			for _, want := range []string{"nftables", tc.ping} {
+				if !strings.Contains(install, " "+want) {
+					t.Fatalf("install command %q does not install %q", install, want)
+				}
+			}
+		})
+	}
+}

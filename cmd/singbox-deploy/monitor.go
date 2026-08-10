@@ -115,6 +115,8 @@ func monitorEndpointForPath(path string) (nodeapi.MonitorEndpoint, error) {
 		return nodeapi.MonitorResourceRecent, nil
 	case "/api/ping-trend":
 		return nodeapi.MonitorPingTrend, nil
+	case "/api/ip-traffic":
+		return nodeapi.MonitorIPTraffic, nil
 	default:
 		return "", fmt.Errorf("unsupported monitor resource %q", path)
 	}

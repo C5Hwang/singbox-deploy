@@ -46,6 +46,19 @@ defineEmits<{
 
     <a
       class="nav-item"
+      :class="{ active: activeTab === 'topips' }"
+      href="#"
+      @click.prevent="$emit('update:activeTab', 'topips')"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18" />
+      </svg>
+      Top IPs
+    </a>
+
+    <a
+      class="nav-item"
       :class="{ active: activeTab === 'latency' }"
       href="#"
       @click.prevent="$emit('update:activeTab', 'latency')"

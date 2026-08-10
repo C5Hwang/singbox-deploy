@@ -1,11 +1,14 @@
 package monitor
 
 import (
+	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
 	"math"
 	"os"
+	"slices"
+	"strconv"
 
 	_ "modernc.org/sqlite"
 )
@@ -144,6 +147,13 @@ CREATE TABLE IF NOT EXISTS resource_hourly (
     dio_read_avg  INTEGER NOT NULL, dio_read_max  INTEGER NOT NULL,
     dio_write_avg INTEGER NOT NULL, dio_write_max INTEGER NOT NULL,
     sample_count  INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS ip_daily (
+    ts_day    INTEGER NOT NULL,
+    ip        TEXT    NOT NULL,
+    in_bytes  INTEGER NOT NULL,
+    out_bytes INTEGER NOT NULL,
+    PRIMARY KEY (ts_day, ip)
 );
 CREATE TABLE IF NOT EXISTS ping_samples (
     ts       INTEGER NOT NULL,
@@ -522,6 +532,145 @@ ON CONFLICT(ts_hour) DO UPDATE SET
     dio_write_max = MAX(resource_hourly.dio_write_max, excluded.dio_write_max),
     sample_count  = resource_hourly.sample_count + excluded.sample_count`,
 		`DELETE FROM resource_samples WHERE ts < ?`)
+}
+
+// ipTrafficCycleKey records the quota cycle the per-IP table describes.
+const ipTrafficCycleKey = "ip_traffic_cycle_start"
+
+// AddIPTraffic folds one round of per-address deltas into the day bucket that
+// contains ts.
+func (s *Store) AddIPTraffic(ts int64, deltas map[string]IPTrafficDelta) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	day := ts / 86400 * 86400
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`
+INSERT INTO ip_daily(ts_day, ip, in_bytes, out_bytes) VALUES(?, ?, ?, ?)
+ON CONFLICT(ts_day, ip) DO UPDATE SET
+    in_bytes = in_bytes + excluded.in_bytes,
+    out_bytes = out_bytes + excluded.out_bytes`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for address, delta := range deltas {
+		if _, err := stmt.Exec(day, address, int64(delta.InBytes), int64(delta.OutBytes)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ResetIPTrafficForCycle clears the per-IP table when the quota cycle rolls
+// over, so the top list always describes the cycle the quota is counting.
+// Day buckets cannot express a reset hour on their own, so the boundary is
+// tracked explicitly rather than inferred from the bucket timestamps. It
+// reports whether it cleared anything.
+func (s *Store) ResetIPTrafficForCycle(cycleStart int64) (bool, error) {
+	var recorded string
+	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, ipTrafficCycleKey).Scan(&recorded)
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+	want := strconv.FormatInt(cycleStart, 10)
+	if err == nil && recorded == want {
+		return false, nil
+	}
+	tx, txErr := s.db.Begin()
+	if txErr != nil {
+		return false, txErr
+	}
+	defer tx.Rollback()
+	// A first run has nothing to clear but still has to record the boundary, or
+	// the next sample would look like a rollover.
+	cleared := err == nil
+	if cleared {
+		if _, execErr := tx.Exec(`DELETE FROM ip_daily`); execErr != nil {
+			return false, execErr
+		}
+	}
+	if _, execErr := tx.Exec(
+		`INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		ipTrafficCycleKey, want,
+	); execErr != nil {
+		return false, execErr
+	}
+	return cleared, tx.Commit()
+}
+
+// PruneIPTraffic keeps only the busiest addresses. A node facing mobile clients
+// sees a long tail of one-off addresses that can never reach the top list, and
+// dropping them is what keeps the table small on a 256 MB VPS.
+func (s *Store) PruneIPTraffic(keep int) error {
+	if keep <= 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`
+DELETE FROM ip_daily WHERE ip NOT IN (
+    SELECT ip FROM ip_daily
+    GROUP BY ip
+    ORDER BY SUM(in_bytes + out_bytes) DESC
+    LIMIT ?
+)`, keep)
+	return err
+}
+
+// TopIPTraffic returns the busiest addresses in the stored cycle, each with its
+// full daily series. Sorting by today or by the last seven days happens in the
+// dashboard, which is also where the per-node lists are merged, so every window
+// is derived from the same series.
+func (s *Store) TopIPTraffic(limit int) ([]IPTrafficEntry, error) {
+	rows, err := s.db.Query(`
+SELECT ip, ts_day, in_bytes, out_bytes FROM ip_daily
+WHERE ip IN (
+    SELECT ip FROM ip_daily
+    GROUP BY ip
+    ORDER BY SUM(in_bytes + out_bytes) DESC
+    LIMIT ?
+)
+ORDER BY ts_day ASC`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byAddress := map[string]*IPTrafficEntry{}
+	var order []string
+	for rows.Next() {
+		var (
+			address string
+			point   IPDailyPoint
+		)
+		if err := rows.Scan(&address, &point.DayTS, &point.InBytes, &point.OutBytes); err != nil {
+			return nil, err
+		}
+		point.TotalBytes = point.InBytes + point.OutBytes
+		entry, ok := byAddress[address]
+		if !ok {
+			entry = &IPTrafficEntry{IP: address}
+			byAddress[address] = entry
+			order = append(order, address)
+		}
+		entry.InBytes += point.InBytes
+		entry.OutBytes += point.OutBytes
+		entry.TotalBytes += point.TotalBytes
+		entry.Daily = append(entry.Daily, point)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	entries := make([]IPTrafficEntry, 0, len(order))
+	for _, address := range order {
+		entries = append(entries, *byAddress[address])
+	}
+	slices.SortFunc(entries, func(a, b IPTrafficEntry) int {
+		return cmp.Compare(b.TotalBytes, a.TotalBytes)
+	})
+	return entries, nil
 }
 
 // InsertPingSamples records one latency round, keyed by target ID.

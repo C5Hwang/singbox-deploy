@@ -2,7 +2,26 @@ package system
 
 // basePackages are the dependencies installed before sing-box and Nginx setup.
 // Nginx itself is installed from the nginx.org mainline repo in a later step.
-var basePackages = []string{"curl", "wget", "tar", "unzip", "openssl", "ca-certificates"}
+// nftables carries the monitor's per-IP byte counters; both families spell it
+// the same way, unlike the ICMP utility below.
+var basePackages = []string{"curl", "wget", "tar", "unzip", "openssl", "ca-certificates", "nftables"}
+
+// pingPackages names the ICMP utility the monitor's latency probes shell out
+// to. A minimal cloud image does not always ship one, and without it latency
+// sampling disables itself.
+var pingPackages = map[string]string{
+	"apt": "iputils-ping",
+	"dnf": "iputils",
+	"yum": "iputils",
+}
+
+func packagesFor(packageManager string) []string {
+	packages := append([]string{}, basePackages...)
+	if ping, ok := pingPackages[packageManager]; ok {
+		packages = append(packages, ping)
+	}
+	return packages
+}
 
 var aptNoninteractiveEnv = []string{
 	"DEBIAN_FRONTEND=noninteractive",
@@ -29,14 +48,14 @@ func BuildInstallPlan(osr OSRelease) InstallPlan {
 	case "apt":
 		installArgs := append([]string{}, aptInstallOptions...)
 		installArgs = append(installArgs, "install")
-		installArgs = append(installArgs, basePackages...)
+		installArgs = append(installArgs, packagesFor(osr.PackageManager)...)
 		return InstallPlan{Commands: []Command{
 			{Name: "apt-get", Args: []string{"update"}, Env: aptNoninteractiveEnv},
 			{Name: "apt-get", Args: installArgs, Env: aptNoninteractiveEnv},
 		}}
 	case "dnf", "yum":
 		return InstallPlan{Commands: []Command{
-			{Name: osr.PackageManager, Args: append([]string{"-y", "install"}, basePackages...)},
+			{Name: osr.PackageManager, Args: append([]string{"-y", "install"}, packagesFor(osr.PackageManager)...)},
 		}}
 	default:
 		return InstallPlan{}

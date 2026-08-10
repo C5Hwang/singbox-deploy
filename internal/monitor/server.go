@@ -82,6 +82,9 @@ type Monitor struct {
 	// pingCollector is nil on a host with no ping utility, which disables
 	// latency sampling without affecting any other metric.
 	pingCollector *PingCollector
+	// ipAccounting is nil on a host with no nft utility, which disables the
+	// per-address counters the same way.
+	ipAccounting *IPAccounting
 	// latestResource is written by the sampling goroutine and read by HTTP
 	// handlers, hence the atomic pointer.
 	latestResource  atomic.Pointer[ResourceSnapshot]
@@ -124,9 +127,13 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 		control:       control,
 		resCollector:  NewResourceCollector("/"),
 		pingCollector: NewPingCollector(),
+		ipAccounting:  NewIPAccounting(),
 	}
 	if m.pingCollector == nil {
 		log.Printf("monitor: no ping utility found; latency sampling is disabled")
+	}
+	if m.ipAccounting == nil {
+		log.Printf("monitor: no nft utility found; per-IP traffic accounting is disabled")
 	}
 	// Restore the quota-stop flag so a monitor restart (settings change, host
 	// reboot) cannot strand sing-box in the stopped state forever.
@@ -147,6 +154,7 @@ func (m *Monitor) Handler() http.Handler {
 	api.HandleFunc("/api/resource-trend", m.handleResourceTrend)
 	api.HandleFunc("/api/resource-recent", m.handleResourceRecent)
 	api.HandleFunc("/api/ping-trend", m.handlePingTrend)
+	api.HandleFunc("/api/ip-traffic", m.handleIPTraffic)
 
 	mux := http.NewServeMux()
 	// Only the JSON API is guarded. The static bundle has to load unauthenticated
@@ -355,6 +363,33 @@ func (m *Monitor) latencySnapshot(since int64) (LatencySnapshot, error) {
 		return LatencySnapshot{}, err
 	}
 	return LatencySnapshot{Targets: m.pingCollector.Targets(), Latest: latest, Points: points}, nil
+}
+
+// topIPTrafficEntries is how many addresses each node reports. The dashboard
+// shows thirty; the surplus is what makes merging several nodes' lists into one
+// ranking accurate when an address is mid-table on each of them.
+const topIPTrafficEntries = 50
+
+// ipTrafficKeptAddresses bounds the per-IP table between prunes.
+const ipTrafficKeptAddresses = 500
+
+func (m *Monitor) handleIPTraffic(w http.ResponseWriter, r *http.Request) {
+	cycleStart := CycleStart(m.now(), m.cfg.ResetDay, m.cfg.ResetHour).Unix()
+	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
+		key:       "ipTraffic",
+		proxyPath: "/api/ip-traffic",
+		local: func() (any, error) {
+			entries, err := m.store.TopIPTraffic(topIPTrafficEntries)
+			if err != nil {
+				return nil, err
+			}
+			return IPTrafficSnapshot{
+				Enabled:    m.ipAccounting.Enabled(),
+				CycleStart: cycleStart,
+				Entries:    entries,
+			}, nil
+		},
+	})
 }
 
 func sourceQuery(r *http.Request) string { return r.URL.Query().Get("source") }
@@ -622,6 +657,16 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}
 	m.sampleOnce(m.now())
 	m.resourceSampleOnce(m.now())
+	m.ipSampleOnce(ctx, m.now())
+	// The accounting table is registered on this host's netfilter hooks, so a
+	// monitor that is shutting down takes it with it.
+	defer func() {
+		removeCtx, cancel := context.WithTimeout(context.Background(), ipAcctCommandTimeout)
+		defer cancel()
+		if err := m.ipAccounting.Remove(removeCtx); err != nil {
+			log.Printf("monitor: remove per-IP accounting ruleset: %v", err)
+		}
+	}()
 
 	// Remote sources are refreshed in the background: request handlers only
 	// read the snapshot file, so a slow or dead peer (or two nodes monitoring
@@ -655,7 +700,9 @@ func (m *Monitor) Run(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			case <-sampleTicker.C:
-				m.sampleOnce(m.now())
+				now := m.now()
+				m.sampleOnce(now)
+				m.ipSampleOnce(ctx, now)
 			case <-resourceTicker.C:
 				m.resourceSampleOnce(m.now())
 			case <-maintTicker.C:
@@ -719,6 +766,30 @@ func (m *Monitor) resourceSampleOnce(now time.Time) {
 		DiskIOReadRate:  float64(reading.DIOReadDelta) / intervalSec,
 		DiskIOWriteRate: float64(reading.DIOWriteDelta) / intervalSec,
 	})
+}
+
+// ipSampleOnce folds one round of nftables counters into the per-IP table,
+// clearing it first whenever the quota cycle has rolled over.
+func (m *Monitor) ipSampleOnce(ctx context.Context, now time.Time) {
+	if !m.ipAccounting.Enabled() {
+		return
+	}
+	cleared, err := m.store.ResetIPTrafficForCycle(CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix())
+	if err != nil {
+		log.Printf("monitor: reset per-IP traffic for the new quota cycle: %v", err)
+		return
+	}
+	if cleared {
+		log.Printf("monitor: quota cycle reset, cleared per-IP traffic")
+	}
+	deltas, err := m.ipAccounting.Collect(ctx)
+	if err != nil {
+		log.Printf("monitor: collect per-IP traffic: %v", err)
+		return
+	}
+	if err := m.store.AddIPTraffic(now.Unix(), deltas); err != nil {
+		log.Printf("monitor: insert per-IP traffic: %v", err)
+	}
 }
 
 func (m *Monitor) pingLoop(ctx context.Context) {
@@ -822,5 +893,8 @@ func (m *Monitor) maintenance(now time.Time) {
 	}
 	if err := m.store.CleanupPingSamples(now.Add(-pingRetention).Unix()); err != nil {
 		log.Printf("monitor: cleanup ping samples: %v", err)
+	}
+	if err := m.store.PruneIPTraffic(ipTrafficKeptAddresses); err != nil {
+		log.Printf("monitor: prune per-IP traffic: %v", err)
 	}
 }

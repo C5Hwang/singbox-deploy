@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import InlineChart from "../components/InlineChart.vue";
 import { fetchLatency } from "../api";
 import { buildFrame, lineSeries, SOURCE_COLORS } from "../chartOptions";
@@ -45,6 +45,16 @@ async function load() {
 }
 
 watch(selectedKey, load, { immediate: true });
+
+// Probes run every five minutes; refreshing a little faster keeps the newest
+// round on screen without polling a node harder than it samples.
+let refreshTimer: number | undefined;
+onMounted(() => {
+  refreshTimer = window.setInterval(load, 60000);
+});
+onUnmounted(() => {
+  if (refreshTimer) window.clearInterval(refreshTimer);
+});
 
 const carriers = computed<string[]>(() => {
   const seen: string[] = [];
