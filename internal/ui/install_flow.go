@@ -52,7 +52,7 @@ func installFields() []field {
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)
 	fields = append(fields, fieldsFromParameters(uiparams.MonitorInstallFields(monitorDisabled))...)
-	return fields
+	return withCoveredZones(paths.DefaultLayout(), fields)
 }
 
 func installProtocolParameterFields(missingProtocol func(config.Protocol) func(map[string]string) bool, noReality func(map[string]string) bool) []field {

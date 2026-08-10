@@ -363,7 +363,7 @@ func (m *nodeManager) beginForm() {
 			note:    "Deselect a group to keep this spoke out of its subscription. Groups are edited under Services → Subscription settings.",
 		})
 	}
-	m.form.begin(fields, nil, m.validateForm)
+	m.form.begin(withCoveredZones(m.layout, fields), nil, m.validateForm)
 	m.phase = nodePhaseForm
 }
 

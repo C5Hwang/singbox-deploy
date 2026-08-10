@@ -417,7 +417,7 @@ func (tm *monitorManager) startForm(fields []field) {
 
 func (tm *monitorManager) localFields() []field {
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
-	return fieldsFromParameters(uiparams.MonitorLocalFields(tm.cfg, monitorDisabled))
+	return withCoveredZones(monitorUILayout(), fieldsFromParameters(uiparams.MonitorLocalFields(tm.cfg, monitorDisabled)))
 }
 
 func (tm *monitorManager) usageFields() []field {

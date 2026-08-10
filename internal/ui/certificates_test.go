@@ -575,3 +575,34 @@ func TestCancellingTheHostnameStepReturnsToTheZonePicker(t *testing.T) {
 		t.Fatalf("cancelled zone form phase = %d continue = %v", m.phase, m.pickHostAfterZone)
 	}
 }
+
+func TestDomainFieldsNameTheZonesTheyWillAccept(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	for _, zone := range []string{"example.com", "foo.net"} {
+		if err := certmgr.UpsertCredential(layout, certmgr.DNSCredential{
+			Domain: zone, Provider: certmgr.ProviderCloudflare, Credential: "token",
+		}); err != nil {
+			t.Fatalf("save DNS zone %s: %v", zone, err)
+		}
+	}
+
+	fields := withCoveredZones(layout, []field{
+		{key: "domain", note: "The spoke's proxy domain. " + noteDNSZone},
+		{key: "alias", note: "Names this node."},
+	})
+	for _, want := range []string{noteDNSZone, "example.com", "foo.net", "and any subdomain"} {
+		if !strings.Contains(fields[0].note, want) {
+			t.Fatalf("domain note missing %q: %q", want, fields[0].note)
+		}
+	}
+	// Fields that do not carry the precondition are left exactly as they were.
+	if fields[1].note != "Names this node." {
+		t.Fatalf("unrelated field note was rewritten: %q", fields[1].note)
+	}
+
+	// With nothing configured the note says so rather than listing an empty set.
+	empty := withCoveredZones(paths.LayoutForRoot(t.TempDir()), []field{{key: "domain", note: noteDNSZone}})
+	if !strings.Contains(empty[0].note, "No DNS zones are configured yet") {
+		t.Fatalf("empty-zone note = %q", empty[0].note)
+	}
+}
