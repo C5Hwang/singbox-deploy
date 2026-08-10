@@ -63,6 +63,11 @@ func TestAddCertificateRejectsManagedDomainAndPointsToRenew(t *testing.T) {
 	if err := certmgr.Register(m.layout, domain); err != nil {
 		t.Fatalf("register managed certificate: %v", err)
 	}
+	if err := certmgr.UpsertCredential(m.layout, certmgr.DNSCredential{
+		Domain: "example.com", Provider: certmgr.ProviderCloudflare, Credential: "token",
+	}); err != nil {
+		t.Fatalf("save DNS zone: %v", err)
+	}
 	m.reload()
 
 	issued := false
@@ -70,7 +75,7 @@ func TestAddCertificateRejectsManagedDomainAndPointsToRenew(t *testing.T) {
 		issued = true
 		return nil
 	}
-	m.beginCertFormWithSeed(domain)
+	m.beginAddForDomain(domain)
 	m.completeForm()
 
 	if m.phase != certPhaseList {
@@ -106,7 +111,7 @@ func TestAddCertificateIssuesAndDistributesWithDistinctResult(t *testing.T) {
 		return nil
 	}
 
-	m.beginCertFormWithSeed(domain)
+	m.beginAddForDomain(domain)
 	m.completeForm()
 	if m.phase != certPhaseRunning || m.startCmd == nil {
 		t.Fatalf("new certificate did not start: phase=%d cmd=%v", m.phase, m.startCmd != nil)
@@ -225,8 +230,8 @@ func TestRenewCertificateFailureHasRenewalTitleAndSkipsDistribution(t *testing.T
 func TestCertificateFormsDoNotCollectAnACMEEmail(t *testing.T) {
 	m := newCertificateManagerForTest(t)
 	forms := map[string]func(){
-		"certificate": func() { m.beginCertForm() },
-		"DNS zone":    func() { m.beginCredForm("") },
+		"certificate": func() { m.beginHostForm("example.com", "") },
+		"DNS zone":    func() { m.beginZoneForm("") },
 	}
 	for name, begin := range forms {
 		begin()
@@ -263,7 +268,7 @@ func TestCertificateRunAdvancesProgressBarPerDistributionTarget(t *testing.T) {
 		return nil
 	}
 
-	m.beginCertFormWithSeed(domain)
+	m.beginAddForDomain(domain)
 	m.completeForm()
 	cmd := m.startCmd
 	if cmd == nil {
@@ -319,7 +324,7 @@ func TestAddCertificateWithNoConsumersHoldsTheBarUntilIssuanceFinishes(t *testin
 	m.issueCertificate = func(context.Context, string, io.Writer) error { return nil }
 	m.distributeCertificate = func(context.Context, string, io.Writer, func(deploy.Event)) error { return nil }
 
-	m.beginCertFormWithSeed(domain)
+	m.beginAddForDomain(domain)
 	m.completeForm()
 	cmd := m.startCmd
 	if cmd == nil {
@@ -356,10 +361,9 @@ func TestUncoveredDomainSeedsTheZoneFormWithTheRegistrableParent(t *testing.T) {
 		t.Fatal("issuance started before a covering zone existed")
 		return nil
 	}
-	m.beginCertFormWithSeed(domain)
-	m.completeForm()
+	m.beginAddForDomain(domain)
 
-	if m.phase != certPhaseCredForm {
+	if m.phase != certPhaseZoneForm {
 		t.Fatalf("uncovered domain phase = %d, want the DNS zone form", m.phase)
 	}
 	// Seeding the certificate domain itself would scope the zone to one host and
@@ -369,5 +373,205 @@ func TestUncoveredDomainSeedsTheZoneFormWithTheRegistrableParent(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, "example.co.uk") {
 		t.Fatalf("zone form does not show the proposed zone:\n%s", view)
+	}
+}
+
+func typeRunes(t *testing.T, m *certManager, text string) tea.Cmd {
+	t.Helper()
+	var cmd tea.Cmd
+	for _, r := range text {
+		cmd, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return cmd
+}
+
+func addZoneForTest(t *testing.T, m *certManager, zone string) {
+	t.Helper()
+	if err := certmgr.UpsertCredential(m.layout, certmgr.DNSCredential{
+		Domain: zone, Provider: certmgr.ProviderCloudflare, Credential: "token",
+	}); err != nil {
+		t.Fatalf("save DNS zone %s: %v", zone, err)
+	}
+	m.reload()
+}
+
+func TestCertificateDomainForHostComposesUnderTheZone(t *testing.T) {
+	cases := []struct{ zone, host, want string }{
+		{"example.com", "us1", "us1.example.com"},
+		{"example.com", "a.b", "a.b.example.com"},
+		// An empty hostname is the zone apex, not an error.
+		{"example.com", "", "example.com"},
+		{"example.com", "  ", "example.com"},
+		// A pasted fully-qualified name keeps its suffix instead of doubling it.
+		{"example.com", "us1.example.com", "us1.example.com"},
+		{"example.com", "example.com", "example.com"},
+		{"example.com", "US1.EXAMPLE.COM", "us1.example.com"},
+		{"example.com", "us1.", "us1.example.com"},
+	}
+	for _, tc := range cases {
+		if got := certificateDomainForHost(tc.zone, tc.host); got != tc.want {
+			t.Fatalf("certificateDomainForHost(%q, %q) = %q, want %q", tc.zone, tc.host, got, tc.want)
+		}
+	}
+	if got := hostWithinZone("example.com", "us1.example.com"); got != "us1" {
+		t.Fatalf("hostWithinZone = %q, want us1", got)
+	}
+	if got := hostWithinZone("example.com", "example.com"); got != "" {
+		t.Fatalf("hostWithinZone at the apex = %q, want empty", got)
+	}
+}
+
+func TestAddCertificateAsksForTheZoneBeforeTheHostname(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	addZoneForTest(t, m, "example.com")
+
+	var issued []string
+	m.issueCertificate = func(_ context.Context, domain string, _ io.Writer) error {
+		issued = append(issued, domain)
+		return nil
+	}
+	m.distributeCertificate = func(context.Context, string, io.Writer, func(deploy.Event)) error { return nil }
+
+	// "Add certificate" opens the zone picker, not a free-form domain field.
+	m.actionCursor = 0
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseZonePick {
+		t.Fatalf("add phase = %d, want the zone picker", m.phase)
+	}
+	view := m.View()
+	for _, want := range []string{"Which DNS zone issues this certificate?", "example.com", addZoneRow} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("zone picker missing %q:\n%s", want, view)
+		}
+	}
+
+	// Picking the zone narrows the question to the name below it.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseHostForm || m.pendingZone != "example.com" {
+		t.Fatalf("zone selection phase = %d zone = %q", m.phase, m.pendingZone)
+	}
+	view = m.View()
+	for _, want := range []string{"Add certificate · example.com", "Hostname"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("hostname step missing %q:\n%s", want, view)
+		}
+	}
+
+	// The badge previews the composed domain while it is still being typed.
+	typeRunes(t, m, "us1")
+	if view := m.View(); !strings.Contains(view, "will issue: us1.example.com") {
+		t.Fatalf("hostname step does not preview the composed domain:\n%s", view)
+	}
+
+	cmd, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || m.phase != certPhaseRunning {
+		t.Fatalf("hostname did not start issuance: phase=%d cmd=%v", m.phase, cmd != nil)
+	}
+	drainCertificateRun(t, m, cmd)
+	if len(issued) != 1 || issued[0] != "us1.example.com" {
+		t.Fatalf("issued = %v, want [us1.example.com]", issued)
+	}
+}
+
+func TestEmptyHostnameIssuesForTheZoneApex(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	addZoneForTest(t, m, "example.com")
+
+	var issued []string
+	m.issueCertificate = func(_ context.Context, domain string, _ io.Writer) error {
+		issued = append(issued, domain)
+		return nil
+	}
+	m.distributeCertificate = func(context.Context, string, io.Writer, func(deploy.Event)) error { return nil }
+
+	m.beginHostForm("example.com", "")
+	if view := m.View(); !strings.Contains(view, "will issue: example.com") {
+		t.Fatalf("empty hostname does not preview the apex:\n%s", view)
+	}
+	cmd, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("empty hostname did not start issuance for the zone apex")
+	}
+	drainCertificateRun(t, m, cmd)
+	if len(issued) != 1 || issued[0] != "example.com" {
+		t.Fatalf("issued = %v, want [example.com]", issued)
+	}
+}
+
+func TestAddingAZoneFromThePickerContinuesToTheHostname(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+
+	// With no zones stored the picker's only row is the one that adds the first,
+	// so the prerequisite is walked through rather than reported as a failure.
+	m.beginAddCertificate()
+	view := m.View()
+	if !strings.Contains(view, addZoneRow) || !strings.Contains(view, "No DNS zones yet") {
+		t.Fatalf("empty zone picker does not offer the first zone:\n%s", view)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseZoneForm || !m.pickHostAfterZone {
+		t.Fatalf("add-zone row phase = %d continue = %v", m.phase, m.pickHostAfterZone)
+	}
+
+	// Fill the zone form: zone, provider (default), token.
+	typeRunes(t, m, "example.com")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	typeRunes(t, m, "cf-token")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.phase != certPhaseHostForm || m.pendingZone != "example.com" {
+		t.Fatalf("saving a zone from the picker did not continue to the hostname: phase=%d zone=%q", m.phase, m.pendingZone)
+	}
+	if m.pickHostAfterZone {
+		t.Fatal("hostname continuation was not consumed")
+	}
+	zones, err := certmgr.LoadCredentials(m.layout)
+	if err != nil || len(zones) != 1 || zones[0].Domain != "example.com" {
+		t.Fatalf("zone was not saved: zones=%+v err=%v", zones, err)
+	}
+}
+
+func TestRedirectedDomainSkipsThePickerWhenItsZoneExists(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	addZoneForTest(t, m, "example.com")
+
+	// A domain another screen rejected arrives ready to confirm: the covering
+	// zone is already chosen and only its hostname is filled in.
+	m.beginAddForDomain("spoke.example.com")
+	if m.phase != certPhaseHostForm || m.pendingZone != "example.com" {
+		t.Fatalf("redirect phase = %d zone = %q, want the hostname step under example.com", m.phase, m.pendingZone)
+	}
+	if got := m.form.values["host"]; got != "spoke" {
+		t.Fatalf("redirect host = %q, want spoke", got)
+	}
+	if view := m.View(); !strings.Contains(view, "will issue: spoke.example.com") {
+		t.Fatalf("redirect does not preview the requested domain:\n%s", view)
+	}
+}
+
+func TestCancellingTheHostnameStepReturnsToTheZonePicker(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	addZoneForTest(t, m, "example.com")
+
+	m.beginAddCertificate()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseHostForm {
+		t.Fatalf("phase = %d, want the hostname step", m.phase)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.phase != certPhaseZonePick {
+		t.Fatalf("cancelled hostname phase = %d, want the zone picker", m.phase)
+	}
+	// Backing out of the zone form reached from the picker returns there too,
+	// rather than dropping into the unrelated zone-management list.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseZoneForm {
+		t.Fatalf("phase = %d, want the zone form", m.phase)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.phase != certPhaseZonePick || m.pickHostAfterZone {
+		t.Fatalf("cancelled zone form phase = %d continue = %v", m.phase, m.pickHostAfterZone)
 	}
 }

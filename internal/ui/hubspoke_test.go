@@ -58,16 +58,13 @@ func TestNodesMenuEntryGatedBeforeHubInstall(t *testing.T) {
 
 func TestCertFormRedirectsWhenNoCredential(t *testing.T) {
 	m := newCertManager()
-	m.creds = nil // no credentials cover anything
-	m.beginCertForm()
-	// Fill the domain field and complete.
-	m.form.values["domain"] = "vpn.example.com"
-	m.completeForm()
-	if m.phase != certPhaseCredForm {
+	m.zones = nil // no zone covers anything
+	m.beginAddForDomain("vpn.example.com")
+	if m.phase != certPhaseZoneForm {
 		t.Fatalf("expected redirect to the DNS zone form, phase=%d", m.phase)
 	}
-	if !m.resumeIssueAfterCred || m.pendingDomain != "vpn.example.com" {
-		t.Fatalf("issuance should be queued to resume: resume=%v domain=%q", m.resumeIssueAfterCred, m.pendingDomain)
+	if !m.resumeIssueAfterZone || m.pendingDomain != "vpn.example.com" {
+		t.Fatalf("issuance should be queued to resume: resume=%v domain=%q", m.resumeIssueAfterZone, m.pendingDomain)
 	}
 	// The zone form is seeded with the registrable parent, so the token entered
 	// here also covers the domain's siblings.
@@ -89,8 +86,8 @@ func TestRootModelSuspendsAndRestoresNodeFormForCertificate(t *testing.T) {
 	if root.nodes != nil || root.suspendedNodes != flow || root.certificates == nil {
 		t.Fatalf("node form was not suspended: nodes=%p suspended=%p certs=%p", root.nodes, root.suspendedNodes, root.certificates)
 	}
-	if root.certificates.form.values["domain"] != "spoke.example.com" || !root.certificates.returnAfterIssue {
-		t.Fatalf("certificate flow was not seeded: values=%v return=%v", root.certificates.form.values, root.certificates.returnAfterIssue)
+	if root.certificates.pendingDomain != "spoke.example.com" || !root.certificates.returnAfterIssue {
+		t.Fatalf("certificate flow was not aimed at the domain: target=%q return=%v", root.certificates.pendingDomain, root.certificates.returnAfterIssue)
 	}
 
 	// A completed issuance returns to the exact retained node form. The operator
@@ -114,8 +111,8 @@ func TestRootModelSuspendsAndRestoresInstallFormForCertificate(t *testing.T) {
 	if root.install != nil || root.suspendedInstall != flow || root.certificates == nil {
 		t.Fatalf("install form was not suspended")
 	}
-	if root.certificates.form.values["domain"] != "hub.example.com" {
-		t.Fatalf("certificate flow seed = %v", root.certificates.form.values)
+	if root.certificates.pendingDomain != "hub.example.com" {
+		t.Fatalf("certificate flow target = %q", root.certificates.pendingDomain)
 	}
 	root.certificates.phase = certPhaseDone
 	root.certificates.run.runErr = nil

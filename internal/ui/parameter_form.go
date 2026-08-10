@@ -432,7 +432,7 @@ func (f *parameterForm) footerHints() []operationHint {
 
 func (f *parameterForm) fieldNote(field field) string {
 	if field.noteFunc != nil {
-		return field.noteFunc(f.values)
+		return field.noteFunc(f.liveValues())
 	}
 	return field.note
 }
@@ -441,7 +441,25 @@ func (f *parameterForm) fieldBadge(field field) string {
 	if field.badgeFunc == nil {
 		return ""
 	}
-	return field.badgeFunc(f.values)
+	return field.badgeFunc(f.liveValues())
+}
+
+// liveValues returns the collected values with the field being edited merged in
+// at its current, uncommitted value. Notes and badges are rendered on every
+// keystroke, so reading the committed values alone would make a preview of what
+// is being typed lag one field behind the cursor.
+func (f *parameterForm) liveValues() map[string]string {
+	f.ensureValues()
+	if f.fieldIx < 0 || f.fieldIx >= len(f.fields) {
+		return f.values
+	}
+	current := f.fields[f.fieldIx]
+	live := make(map[string]string, len(f.values)+1)
+	for k, v := range f.values {
+		live[k] = v
+	}
+	live[current.key] = f.fieldValue(current)
+	return live
 }
 
 func (f *parameterForm) optionsView(field field) string {

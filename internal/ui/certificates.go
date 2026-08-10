@@ -21,13 +21,14 @@ type certPhase int
 
 const (
 	certPhaseList certPhase = iota
-	certPhaseForm
-	certPhaseCredList
-	certPhaseCredForm
+	certPhaseZonePick
+	certPhaseHostForm
+	certPhaseZoneList
+	certPhaseZoneForm
 	certPhaseRenewPick
 	certPhaseRenewConfirm
 	certPhaseCertPick
-	certPhaseCredPick
+	certPhaseZoneDeletePick
 	certPhaseRunning
 	certPhaseDone
 )
@@ -39,29 +40,40 @@ const (
 	certOperationRenew
 )
 
-// certManager is the Certificate & DNS-credential management page. It exposes
-// the certmgr inventory: add a new certificate, force-renew an existing one,
-// delete one, and manage the DNS zones whose names authorize issuance by
-// suffix match. Entering a new domain not covered by any zone redirects to the
-// zone form and resumes issuance once a covering zone is added.
+// certManager is the Certificate & DNS-zone management page. It exposes the
+// certmgr inventory: add a new certificate, force-renew an existing one, delete
+// one, and manage the DNS zones whose names authorize issuance by suffix match.
+//
+// Adding a certificate is zone-first: the operator picks the DNS zone that will
+// issue it and then types only the hostname under that zone, so the containment
+// the suffix match relies on is a structure on screen rather than a rule to
+// remember. Choosing "add a new zone" from the picker collects the zone and its
+// API token and comes straight back to the hostname step.
 type certManager struct {
 	run  commandRun
 	form parameterForm
 
 	layout    paths.Layout
+	width     int
 	phase     certPhase
 	inventory []certmgr.CertInfo
-	creds     []certmgr.DNSCredential
+	zones     []certmgr.DNSCredential
 
 	actionCursor     int
-	credActionCursor int
+	zoneActionCursor int
 	pickCursor       int
+	zoneCursor       int
 	operation        certOperation
 	pendingRenew     certmgr.CertInfo
 
-	// Issuance continuation after adding a credential mid-flow.
+	// pendingZone is the zone the hostname step composes its domain under.
+	pendingZone string
+	// Issuance continuation after adding a zone mid-flow. pendingDomain resumes
+	// a domain another screen asked for; pickHostAfterZone returns to the
+	// hostname step for a zone just added from the picker.
 	pendingDomain        string
-	resumeIssueAfterCred bool
+	resumeIssueAfterZone bool
+	pickHostAfterZone    bool
 	// returnAfterIssue is set when another form (hub install / add spoke)
 	// redirected here because its domain was not managed yet. After issuance,
 	// the next key returns directly to the suspended caller.
@@ -81,7 +93,7 @@ type certManager struct {
 }
 
 var certActions = []string{"Add certificate", "Renew certificate", "Delete certificate", "Manage DNS zones"}
-var credActions = []string{"Add DNS zone", "Delete DNS zone"}
+var zoneActions = []string{"Add DNS zone", "Delete DNS zone"}
 
 func newCertManager() *certManager {
 	m := &certManager{
@@ -97,7 +109,7 @@ func newCertManager() *certManager {
 func newCertManagerForDomain(domain string) *certManager {
 	m := newCertManager()
 	m.returnAfterIssue = true
-	m.beginCertFormWithSeed(domain)
+	m.beginAddForDomain(domain)
 	return m
 }
 
@@ -113,18 +125,19 @@ func (m *certManager) reload() {
 		m.notice.setError("load certificate inventory failed: " + err.Error())
 	}
 	m.inventory = inv
-	creds, err := certmgr.LoadCredentials(m.layout)
+	zones, err := certmgr.LoadCredentials(m.layout)
 	if err != nil {
 		m.loadErr = err
 		m.notice.setError("load DNS zones failed: " + err.Error())
 	}
-	m.creds = creds
+	m.zones = zones
 }
 
 func (m *certManager) runState() *commandRun { return &m.run }
 func (m *certManager) markRunFailed()        { m.phase = certPhaseDone }
 
 func (m *certManager) setSize(w, h int) {
+	m.width = w
 	m.run.setSize(w, h)
 	m.form.setSize(w, h)
 }
@@ -143,7 +156,7 @@ func (m *certManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 			m.phase = certPhaseList
 		}
 		return nil, false
-	case certPhaseForm, certPhaseCredForm:
+	case certPhaseHostForm, certPhaseZoneForm:
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updateForm(key)
 		}
@@ -152,9 +165,13 @@ func (m *certManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updateList(key)
 		}
-	case certPhaseCredList:
+	case certPhaseZonePick:
 		if key, ok := msg.(tea.KeyMsg); ok {
-			return m.updateCredList(key)
+			return m.updateZonePick(key)
+		}
+	case certPhaseZoneList:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return m.updateZoneList(key)
 		}
 	case certPhaseRenewPick:
 		if key, ok := msg.(tea.KeyMsg); ok {
@@ -168,9 +185,9 @@ func (m *certManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updateCertPick(key)
 		}
-	case certPhaseCredPick:
+	case certPhaseZoneDeletePick:
 		if key, ok := msg.(tea.KeyMsg); ok {
-			return m.updateCredPick(key)
+			return m.updateZoneDeletePick(key)
 		}
 	}
 	return nil, false
@@ -204,7 +221,7 @@ func (m *certManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 		Confirm: func() (tea.Cmd, bool) {
 			switch m.actionCursor {
 			case 0:
-				m.beginCertForm()
+				m.beginAddCertificate()
 			case 1:
 				if len(m.inventory) == 0 {
 					m.notice.setError("no certificates to renew")
@@ -221,8 +238,8 @@ func (m *certManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 				m.pickCursor = 0
 				m.phase = certPhaseCertPick
 			case 3:
-				m.credActionCursor = 0
-				m.phase = certPhaseCredList
+				m.zoneActionCursor = 0
+				m.phase = certPhaseZoneList
 			}
 			return nil, false
 		},
@@ -231,24 +248,53 @@ func (m *certManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 	return nil, done
 }
 
-func (m *certManager) updateCredList(key tea.KeyMsg) (tea.Cmd, bool) {
+func (m *certManager) updateZoneList(key tea.KeyMsg) (tea.Cmd, bool) {
 	handleSelectionKey(key, selectionKeyHandlers{
-		Move: func(d int) { m.credActionCursor = moveSelection(m.credActionCursor, len(credActions), d) },
+		Move: func(d int) { m.zoneActionCursor = moveSelection(m.zoneActionCursor, len(zoneActions), d) },
 		Confirm: func() (tea.Cmd, bool) {
-			switch m.credActionCursor {
+			switch m.zoneActionCursor {
 			case 0:
-				m.beginCredForm("")
+				m.beginZoneForm("")
 			case 1:
-				if len(m.creds) == 0 {
-					m.notice.setError("no credentials to delete")
+				if len(m.zones) == 0 {
+					m.notice.setError("no DNS zones to delete")
 					return nil, false
 				}
 				m.pickCursor = 0
-				m.phase = certPhaseCredPick
+				m.phase = certPhaseZoneDeletePick
 			}
 			return nil, false
 		},
 		Cancel: func() (tea.Cmd, bool) { m.phase = certPhaseList; return nil, false },
+	})
+	return nil, false
+}
+
+// updateZonePick drives the first step of adding a certificate. The row past
+// the last zone adds a new one and then continues to the hostname step, so an
+// operator with no zones yet is walked through the prerequisite instead of
+// being rejected by it.
+func (m *certManager) updateZonePick(key tea.KeyMsg) (tea.Cmd, bool) {
+	rows := len(m.zones) + 1
+	handleSelectionKey(key, selectionKeyHandlers{
+		Move: func(d int) { m.zoneCursor = moveSelection(m.zoneCursor, rows, d) },
+		Confirm: func() (tea.Cmd, bool) {
+			idx, ok := selectedIndex(m.zoneCursor, rows)
+			if !ok || idx == len(m.zones) {
+				m.pickHostAfterZone = true
+				m.beginZoneForm("")
+				return nil, false
+			}
+			m.beginHostForm(m.zones[idx].Domain, "")
+			return nil, false
+		},
+		Cancel: func() (tea.Cmd, bool) {
+			if m.returnAfterIssue {
+				return nil, true
+			}
+			m.phase = certPhaseList
+			return nil, false
+		},
 	})
 	return nil, false
 }
@@ -312,22 +358,22 @@ func (m *certManager) updateCertPick(key tea.KeyMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-func (m *certManager) updateCredPick(key tea.KeyMsg) (tea.Cmd, bool) {
+func (m *certManager) updateZoneDeletePick(key tea.KeyMsg) (tea.Cmd, bool) {
 	handleSelectionKey(key, selectionKeyHandlers{
-		Move: func(d int) { m.pickCursor = moveSelection(m.pickCursor, len(m.creds), d) },
+		Move: func(d int) { m.pickCursor = moveSelection(m.pickCursor, len(m.zones), d) },
 		Confirm: func() (tea.Cmd, bool) {
-			if idx, ok := selectedIndex(m.pickCursor, len(m.creds)); ok {
-				if err := certmgr.DeleteCredential(m.layout, m.creds[idx].Domain); err != nil {
+			if idx, ok := selectedIndex(m.pickCursor, len(m.zones)); ok {
+				if err := certmgr.DeleteCredential(m.layout, m.zones[idx].Domain); err != nil {
 					m.notice.setError("delete failed: " + err.Error())
 				} else {
 					m.notice.setInfo("deleted DNS zone")
 				}
 				m.reload()
 			}
-			m.phase = certPhaseCredList
+			m.phase = certPhaseZoneList
 			return nil, false
 		},
-		Cancel: func() (tea.Cmd, bool) { m.phase = certPhaseCredList; return nil, false },
+		Cancel: func() (tea.Cmd, bool) { m.phase = certPhaseZoneList; return nil, false },
 	})
 	return nil, false
 }
@@ -340,12 +386,7 @@ func (m *certManager) updateForm(key tea.KeyMsg) (tea.Cmd, bool) {
 			if m.returnAfterIssue {
 				return nil, true
 			}
-			// Cancel returns to the originating list.
-			if m.phase == certPhaseCredForm {
-				m.phase = certPhaseCredList
-			} else {
-				m.phase = certPhaseList
-			}
+			m.cancelForm()
 			return nil, false
 		},
 	})
@@ -357,23 +398,73 @@ func (m *certManager) updateForm(key tea.KeyMsg) (tea.Cmd, bool) {
 	return cmd, false
 }
 
-func (m *certManager) beginCertForm() {
-	m.beginCertFormWithSeed("")
-}
-
-func (m *certManager) beginCertFormWithSeed(domain string) {
-	m.operation = certOperationAdd
-	seed := map[string]string{}
-	if domain != "" {
-		seed["domain"] = domain
+// cancelForm returns from a form to whichever screen opened it, dropping the
+// continuations that only make sense while that form is on screen.
+func (m *certManager) cancelForm() {
+	switch {
+	case m.phase == certPhaseZoneForm && m.pickHostAfterZone:
+		m.pickHostAfterZone = false
+		m.phase = certPhaseZonePick
+	case m.phase == certPhaseZoneForm:
+		m.resumeIssueAfterZone = false
+		m.pendingDomain = ""
+		m.phase = certPhaseZoneList
+	case m.phase == certPhaseHostForm:
+		m.phase = certPhaseZonePick
+	default:
+		m.phase = certPhaseList
 	}
-	m.form.begin([]field{
-		{key: "domain", label: "Certificate domain", note: "Needs a covering DNS zone. To renew a domain already listed, use Renew certificate."},
-	}, seed, validateCertField)
-	m.phase = certPhaseForm
 }
 
-func (m *certManager) beginCredForm(seedDomain string) {
+// beginAddCertificate opens the add flow at its first question: which zone
+// issues this certificate. The picker is shown even with no zones stored, where
+// its only row is the one that adds the first.
+func (m *certManager) beginAddCertificate() {
+	m.operation = certOperationAdd
+	m.pendingZone = ""
+	m.pendingDomain = ""
+	m.zoneCursor = 0
+	m.phase = certPhaseZonePick
+}
+
+// beginAddForDomain opens the add flow already aimed at a domain another screen
+// could not accept. A covering zone lands directly on the hostname step with
+// the name filled in, so the operator confirms rather than retypes it; without
+// one, the zone comes first and issuance resumes as soon as it is saved.
+func (m *certManager) beginAddForDomain(domain string) {
+	m.operation = certOperationAdd
+	m.pendingDomain = domain
+	if zone, ok := certmgr.SelectCredential(m.zones, domain); ok {
+		m.beginHostForm(zone.Domain, hostWithinZone(zone.Domain, domain))
+		return
+	}
+	m.resumeIssueAfterZone = true
+	m.beginZoneForm(zoneSeedFor(domain))
+}
+
+// beginHostForm collects the hostname to issue under zone. Only the part below
+// the zone is asked for, and the badge shows the domain it composes so the
+// operator sees the result before committing to it.
+func (m *certManager) beginHostForm(zone, host string) {
+	m.operation = certOperationAdd
+	m.pendingZone = zone
+	seed := map[string]string{}
+	if host != "" {
+		seed["host"] = host
+	}
+	m.form.begin([]field{{
+		key:   "host",
+		label: "Hostname",
+		note: "The name below " + zone + ". Leave it empty to issue for " + zone +
+			" itself. To renew a domain already listed, use Renew certificate instead.",
+		badgeFunc: func(vals map[string]string) string {
+			return "will issue: " + certificateDomainForHost(zone, vals["host"])
+		},
+	}}, seed, m.validateHostField)
+	m.phase = certPhaseHostForm
+}
+
+func (m *certManager) beginZoneForm(seedDomain string) {
 	seed := map[string]string{}
 	if seedDomain != "" {
 		seed["domain"] = seedDomain
@@ -381,17 +472,17 @@ func (m *certManager) beginCredForm(seedDomain string) {
 	m.form.begin([]field{
 		{key: "domain", label: "DNS zone", note: "The zone you manage at your DNS provider. Authorizes this domain and every subdomain (e.g. example.com covers a.example.com)."},
 		{key: "provider", label: "DNS provider", def: certmgr.ProviderCloudflare, options: []string{certmgr.ProviderCloudflare, certmgr.ProviderAliyun}},
-		{key: "credential", label: "API token", secret: true, noteFunc: credentialNote},
-	}, seed, validateCredField)
-	m.phase = certPhaseCredForm
+		{key: "credential", label: "API token", secret: true, noteFunc: apiTokenNote},
+	}, seed, validateZoneField)
+	m.phase = certPhaseZoneForm
 }
 
 func (m *certManager) completeForm() {
-	if m.phase == certPhaseCredForm {
-		m.completeCredForm()
+	if m.phase == certPhaseZoneForm {
+		m.completeZoneForm()
 		return
 	}
-	m.continueAdd(strings.TrimSpace(m.form.values["domain"]))
+	m.continueAdd(certificateDomainForHost(m.pendingZone, m.form.values["host"]))
 }
 
 func (m *certManager) continueAdd(domain string) {
@@ -407,42 +498,50 @@ func (m *certManager) continueAdd(domain string) {
 		m.phase = certPhaseList
 		return
 	}
-	if !certmgr.CredentialCovers(m.creds, domain) {
+	if !certmgr.CredentialCovers(m.zones, domain) {
 		// Redirect to add a covering zone, then resume issuance. The seed is the
 		// registrable parent, not the certificate domain: a zone scoped to the
 		// single host would work once and then demand the same API token again
 		// for every sibling.
 		m.pendingDomain = domain
-		m.resumeIssueAfterCred = true
+		m.resumeIssueAfterZone = true
 		m.notice.setError("no DNS zone covers " + domain + "; add one to continue")
-		m.beginCredForm(zoneSeedFor(domain))
+		m.beginZoneForm(zoneSeedFor(domain))
 		return
 	}
 	m.startCertificateRun(certOperationAdd, domain)
 }
 
-func (m *certManager) completeCredForm() {
+func (m *certManager) completeZoneForm() {
 	cred := certmgr.DNSCredential{
 		Domain:     strings.TrimSpace(m.form.values["domain"]),
 		Provider:   strings.TrimSpace(m.form.values["provider"]),
 		Credential: strings.TrimSpace(m.form.values["credential"]),
 	}
 	if err := certmgr.UpsertCredential(m.layout, cred); err != nil {
-		m.notice.setError("save credential failed: " + err.Error())
+		m.notice.setError("save DNS zone failed: " + err.Error())
 		m.reload()
-		m.phase = certPhaseCredList
+		m.phase = certPhaseZoneList
 		return
 	}
 	m.reload()
-	if m.resumeIssueAfterCred {
-		m.resumeIssueAfterCred = false
-		if certmgr.CredentialCovers(m.creds, m.pendingDomain) {
+	pickHost := m.pickHostAfterZone
+	m.pickHostAfterZone = false
+	if m.resumeIssueAfterZone {
+		m.resumeIssueAfterZone = false
+		if certmgr.CredentialCovers(m.zones, m.pendingDomain) {
 			m.continueAdd(m.pendingDomain)
 			return
 		}
 	}
 	m.notice.setInfo("saved DNS zone " + cred.Domain)
-	m.phase = certPhaseCredList
+	if pickHost {
+		// The zone was added from the add-certificate picker, so carry on with
+		// the certificate that prompted it.
+		m.beginHostForm(cred.Domain, "")
+		return
+	}
+	m.phase = certPhaseZoneList
 }
 
 func (m *certManager) startCertificateRun(operation certOperation, domain string) {
@@ -535,22 +634,22 @@ func (m *certManager) View() string {
 			return flowTitle.Render("Certificate renewed") + "\n\n" + flowOK.Render("Press any key to return")
 		}
 		return flowTitle.Render("Certificate added") + "\n\n" + flowOK.Render("Press any key to return")
-	case certPhaseForm, certPhaseCredForm:
-		title := "Add certificate"
-		if m.phase == certPhaseCredForm {
-			title = "Add DNS zone"
-		}
-		return m.form.View(title)
-	case certPhaseCredList:
-		return m.credListView()
+	case certPhaseZonePick:
+		return m.zonePickView()
+	case certPhaseHostForm:
+		return m.form.View("Add certificate · " + m.pendingZone)
+	case certPhaseZoneForm:
+		return m.form.View("Add DNS zone")
+	case certPhaseZoneList:
+		return m.zoneListView()
 	case certPhaseRenewPick:
 		return m.pickView("Renew certificate", certInfoLabels(m.inventory))
 	case certPhaseRenewConfirm:
 		return m.renewConfirmView()
 	case certPhaseCertPick:
 		return m.pickView("Delete certificate", certInfoLabels(m.inventory))
-	case certPhaseCredPick:
-		return m.pickView("Delete DNS zone", credLabels(m.creds))
+	case certPhaseZoneDeletePick:
+		return m.pickView("Delete DNS zone", zoneLabels(m.zones))
 	default:
 		return m.listView()
 	}
@@ -572,26 +671,52 @@ func (m *certManager) listView() string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("DNS zones: %d", len(m.creds))) + "\n\n")
+	b.WriteString(dimStyle.Render(fmt.Sprintf("DNS zones: %d", len(m.zones))) + "\n\n")
 	b.WriteString(renderActionMenu(certActions, m.actionCursor))
 	return b.String()
 }
 
-func (m *certManager) credListView() string {
+func (m *certManager) zoneListView() string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("DNS zones") + "\n\n")
 	if notice := m.notice.view(); notice != "" {
 		b.WriteString(notice + "\n\n")
 	}
-	if len(m.creds) == 0 {
+	if len(m.zones) == 0 {
 		b.WriteString(dimStyle.Render("No DNS zones yet. Add one to authorize certificate issuance.") + "\n\n")
 	} else {
-		for _, c := range m.creds {
-			b.WriteString("  " + credLabel(c) + "\n")
+		for _, c := range m.zones {
+			b.WriteString("  " + zoneLabel(c) + "\n")
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(renderActionMenu(credActions, m.credActionCursor))
+	b.WriteString(renderActionMenu(zoneActions, m.zoneActionCursor))
+	return b.String()
+}
+
+// addZoneRow is the trailing row of the zone picker, so the prerequisite is
+// always one keystroke away from the step that needs it.
+const addZoneRow = "+ Add a new DNS zone…"
+
+func (m *certManager) zonePickView() string {
+	var b strings.Builder
+	b.WriteString(flowTitle.Render("Add certificate") + "\n\n")
+	b.WriteString("Which DNS zone issues this certificate?\n")
+	hint := "The certificate is issued for a hostname under the zone you pick."
+	if len(m.zones) == 0 {
+		hint = "No DNS zones yet. Add the zone you manage at your DNS provider; it then covers every hostname under it."
+	}
+	for _, line := range wrapFieldNote(hint, m.width) {
+		b.WriteString(dimStyle.Render(line) + "\n")
+	}
+	b.WriteString("\n")
+	for i, label := range append(zoneLabels(m.zones), addZoneRow) {
+		row := "  " + label
+		if i == m.zoneCursor {
+			row = selStyle.Render("> " + label)
+		}
+		b.WriteString(row + "\n")
+	}
 	return b.String()
 }
 
@@ -623,15 +748,17 @@ func (m *certManager) footerHints() []operationHint {
 		return runningFooterHints(false)
 	case certPhaseDone:
 		return doneFooterHints(m.run.runErr != nil)
-	case certPhaseForm, certPhaseCredForm:
+	case certPhaseZonePick:
+		return actionFooterHints("Select")
+	case certPhaseHostForm, certPhaseZoneForm:
 		return m.form.footerHints()
 	case certPhaseRenewPick:
 		return actionFooterHints("Choose")
 	case certPhaseRenewConfirm:
 		return []operationHint{{key: "Y", action: "Force renew"}, {key: "N/Esc", action: "Cancel"}}
-	case certPhaseCertPick, certPhaseCredPick:
+	case certPhaseCertPick, certPhaseZoneDeletePick:
 		return actionFooterHints("Delete")
-	case certPhaseCredList:
+	case certPhaseZoneList:
 		return actionBackFooterHints("Select")
 	default:
 		return actionFooterHints("Select")
@@ -680,35 +807,67 @@ func certInfoLabels(inv []certmgr.CertInfo) []string {
 	return labels
 }
 
-func credLabel(c certmgr.DNSCredential) string {
+func zoneLabel(c certmgr.DNSCredential) string {
 	return fmt.Sprintf("%s (%s)", c.Domain, c.Provider)
 }
 
-func credLabels(creds []certmgr.DNSCredential) []string {
+func zoneLabels(creds []certmgr.DNSCredential) []string {
 	labels := make([]string, len(creds))
 	for i, c := range creds {
-		labels[i] = credLabel(c)
+		labels[i] = zoneLabel(c)
 	}
 	return labels
 }
 
-func credentialNote(vals map[string]string) string {
+func apiTokenNote(vals map[string]string) string {
 	if vals["provider"] == certmgr.ProviderAliyun {
 		return "Aliyun: enter AccessKeyID:AccessKeySecret (colon-separated)."
 	}
 	return "Cloudflare: enter an API token with DNS edit permission for the zone."
 }
 
-func validateCertField(f field, value string, _ map[string]string) error {
-	if f.key == "domain" {
-		if _, err := certmgr.NormalizeDomain(value); err != nil {
-			return err
-		}
+// validateHostField validates the composed certificate domain rather than the
+// hostname on its own, so an entry that is only invalid once joined to the zone
+// is caught at the field instead of at issuance.
+func (m *certManager) validateHostField(f field, value string, _ map[string]string) error {
+	if f.key != "host" {
+		return nil
 	}
-	return nil
+	_, err := certmgr.NormalizeDomain(certificateDomainForHost(m.pendingZone, value))
+	return err
 }
 
-func validateCredField(f field, value string, vals map[string]string) error {
+// certificateDomainForHost composes the certificate domain from a hostname
+// entered under zone. An empty hostname means the zone apex, and a hostname that
+// already carries the zone suffix — a pasted fully-qualified name — is taken as
+// it stands rather than nested under the zone a second time.
+func certificateDomainForHost(zone, host string) string {
+	zone = strings.ToLower(strings.Trim(strings.TrimSpace(zone), "."))
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "."))
+	switch {
+	case zone == "":
+		return host
+	case host == "" || host == zone:
+		return zone
+	case strings.HasSuffix(host, "."+zone):
+		return host
+	default:
+		return host + "." + zone
+	}
+}
+
+// hostWithinZone is the inverse: the part of domain below zone, empty when
+// domain is the zone apex.
+func hostWithinZone(zone, domain string) string {
+	zone = strings.ToLower(strings.Trim(strings.TrimSpace(zone), "."))
+	domain = strings.ToLower(strings.Trim(strings.TrimSpace(domain), "."))
+	if zone == "" || domain == zone {
+		return ""
+	}
+	return strings.TrimSuffix(domain, "."+zone)
+}
+
+func validateZoneField(f field, value string, vals map[string]string) error {
 	switch f.key {
 	case "domain":
 		if _, err := certmgr.NormalizeDomain(value); err != nil {
