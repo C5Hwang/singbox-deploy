@@ -26,16 +26,16 @@ const (
 	LabelResetDay         = "Monthly reset day (1-28)"
 	LabelResetHour        = "Monthly reset hour GMT (0-23)"
 
-	// NoteDNSCredential states the one precondition every certificate-bearing
+	// NoteDNSZone states the one precondition every certificate-bearing
 	// domain shares, so setup, spoke creation, and the monitor domain all word
 	// it the same way.
-	NoteDNSCredential = "Needs a matching DNS credential in Certificate management."
+	NoteDNSZone = "Needs a covering DNS zone in Certificate management."
 
 	NoteMonitorWebUI      = "Choose no to serve the API only."
 	NoteMonitorAlias      = "Names the hub on the monitor dashboard."
 	NoteSpokeMonitorAlias = "Blank uses the node alias."
 	NoteMonitorDomain     = "Serves the monitor under its own name, so it is not reachable through the masquerade site's domain. " +
-		NoteDNSCredential + " It is not required to resolve to this server."
+		NoteDNSZone + " It is not required to resolve to this server."
 	NoteMonitorPublic    = "Nginx listens on this public HTTPS port for /monitor."
 	NoteMonitorPort      = "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port."
 	NoteMonitorInterface = "Use auto to detect the default egress interface."

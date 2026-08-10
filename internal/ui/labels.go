@@ -2,10 +2,10 @@ package ui
 
 import uiparams "github.com/C5Hwang/singbox-deploy/internal/ui/parameters"
 
-// noteDNSCredential is defined next to the monitor domain field that also
+// noteDNSZone is defined next to the monitor domain field that also
 // states it, so the precondition is worded once for every domain the hub
 // issues a certificate for.
-const noteDNSCredential = uiparams.NoteDNSCredential
+const noteDNSZone = uiparams.NoteDNSZone
 
 // Labels and notes shared by more than one screen. Anything collected or
 // reported in two places lives here so the same input always reads the same

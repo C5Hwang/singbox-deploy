@@ -26,15 +26,15 @@ func refreshHubSubscriptions(logs io.Writer) {
 }
 
 // domainCoveredByCredential rejects an install/cert domain that no stored DNS
-// credential covers by suffix match. The hub issues every certificate via
-// DNS-01, so a covering credential must exist in Certificate management first.
+// zone covers by suffix match. The hub issues every certificate via DNS-01, so
+// a covering zone must exist in Certificate management first.
 func domainCoveredByCredential(domain string) error {
 	return ensureDomainManaged(paths.DefaultLayout(), domain)
 }
 
 // ensureDomainManaged enforces the single certificate-management entry point
 // used by both hub installation and spoke creation. A domain must be present
-// in the central inventory and have a suffix-matching DNS-01 credential.
+// in the central inventory and have a suffix-matching DNS-01 zone.
 func ensureDomainManaged(layout paths.Layout, domain string) error {
 	if err := certmgr.SeedLegacyCredentials(layout); err != nil {
 		return err

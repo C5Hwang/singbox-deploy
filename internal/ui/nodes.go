@@ -51,7 +51,7 @@ const (
 
 // nodeManager is the spoke-node management page: it lists registered spokes and
 // adds or removes them. Adding is gated on the hub being installed (spokes join
-// the hub's overlay) and on the node's domain being covered by a DNS credential
+// the hub's overlay) and on the node's domain being covered by a DNS zone
 // (the hub issues the spoke's certificate). Add/remove run through hubctl and
 // stream their progress.
 type nodeManager struct {
@@ -318,7 +318,7 @@ func (m *nodeManager) beginForm() {
 		{key: "ssh_password", label: "SSH password", secret: true, skip: isPass},
 		{key: "ssh_key_path", label: "SSH private key path", skip: isKey, note: "Path to the private key file on this hub."},
 		{key: "ssh_key_passphrase", label: "SSH private key passphrase (optional)", secret: true, skip: isKey},
-		{key: "domain", label: "Node domain", note: "The spoke's proxy domain. " + noteDNSCredential},
+		{key: "domain", label: "Node domain", note: "The spoke's proxy domain. " + noteDNSZone},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Credentials are generated on the spoke."},
 	}
 	realitySNI := fieldFromParameter(uiparams.RealitySNIField())

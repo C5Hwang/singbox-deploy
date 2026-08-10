@@ -47,7 +47,7 @@ func drainCertificateRun(t *testing.T, m *certManager, cmd tea.Cmd) {
 func TestCertificateActionsSeparateAddAndRenew(t *testing.T) {
 	m := newCertificateManagerForTest(t)
 	view := m.View()
-	for _, want := range []string{"Add certificate", "Renew certificate", "Delete certificate", "Manage DNS credentials"} {
+	for _, want := range []string{"Add certificate", "Renew certificate", "Delete certificate", "Manage DNS zones"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("certificate menu missing %q:\n%s", want, view)
 		}
@@ -225,8 +225,8 @@ func TestRenewCertificateFailureHasRenewalTitleAndSkipsDistribution(t *testing.T
 func TestCertificateFormsDoNotCollectAnACMEEmail(t *testing.T) {
 	m := newCertificateManagerForTest(t)
 	forms := map[string]func(){
-		"certificate":    func() { m.beginCertForm() },
-		"DNS credential": func() { m.beginCredForm("") },
+		"certificate": func() { m.beginCertForm() },
+		"DNS zone":    func() { m.beginCredForm("") },
 	}
 	for name, begin := range forms {
 		begin()

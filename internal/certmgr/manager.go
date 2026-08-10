@@ -23,13 +23,13 @@ type issuanceSemaphore struct{ token chan struct{} }
 
 var issuanceSemaphores sync.Map
 
-// NoCredentialError reports that no stored DNS credential covers a domain, so
+// NoCredentialError reports that no stored DNS zone covers a domain, so
 // issuance cannot proceed until one is added. The TUI uses this to redirect the
-// operator to the credential-management page.
+// operator to certificate management.
 type NoCredentialError struct{ Domain string }
 
 func (e *NoCredentialError) Error() string {
-	return fmt.Sprintf("no DNS credential covers %s", e.Domain)
+	return fmt.Sprintf("no DNS zone covers %s", e.Domain)
 }
 
 // Manager issues and renews certificates using the stored DNS credentials.

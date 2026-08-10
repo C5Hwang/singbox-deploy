@@ -25,7 +25,7 @@ func TestCertificateMenuEntryOpens(t *testing.T) {
 		t.Fatalf("certificate manager was not opened")
 	}
 	view := m.View()
-	for _, want := range []string{"Certificate management", "Add certificate", "Renew certificate", "Manage DNS credentials"} {
+	for _, want := range []string{"Certificate management", "Add certificate", "Renew certificate", "Manage DNS zones"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("certificate view missing %q:\n%s", want, view)
 		}

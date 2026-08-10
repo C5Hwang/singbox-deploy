@@ -41,10 +41,9 @@ const (
 
 // certManager is the Certificate & DNS-credential management page. It exposes
 // the certmgr inventory: add a new certificate, force-renew an existing one,
-// delete one, and manage the DNS credentials whose base domains authorize
-// issuance by suffix match. Entering a new domain not covered by any credential
-// redirects to the credential form and resumes issuance once a covering
-// credential is added.
+// delete one, and manage the DNS zones whose names authorize issuance by
+// suffix match. Entering a new domain not covered by any zone redirects to the
+// zone form and resumes issuance once a covering zone is added.
 type certManager struct {
 	run  commandRun
 	form parameterForm
@@ -81,8 +80,8 @@ type certManager struct {
 	countDistributionTargets func(string) int
 }
 
-var certActions = []string{"Add certificate", "Renew certificate", "Delete certificate", "Manage DNS credentials"}
-var credActions = []string{"Add DNS credential", "Delete DNS credential"}
+var certActions = []string{"Add certificate", "Renew certificate", "Delete certificate", "Manage DNS zones"}
+var credActions = []string{"Add DNS zone", "Delete DNS zone"}
 
 func newCertManager() *certManager {
 	m := &certManager{
@@ -117,7 +116,7 @@ func (m *certManager) reload() {
 	creds, err := certmgr.LoadCredentials(m.layout)
 	if err != nil {
 		m.loadErr = err
-		m.notice.setError("load DNS credentials failed: " + err.Error())
+		m.notice.setError("load DNS zones failed: " + err.Error())
 	}
 	m.creds = creds
 }
@@ -321,7 +320,7 @@ func (m *certManager) updateCredPick(key tea.KeyMsg) (tea.Cmd, bool) {
 				if err := certmgr.DeleteCredential(m.layout, m.creds[idx].Domain); err != nil {
 					m.notice.setError("delete failed: " + err.Error())
 				} else {
-					m.notice.setInfo("deleted DNS credential")
+					m.notice.setInfo("deleted DNS zone")
 				}
 				m.reload()
 			}
@@ -369,7 +368,7 @@ func (m *certManager) beginCertFormWithSeed(domain string) {
 		seed["domain"] = domain
 	}
 	m.form.begin([]field{
-		{key: "domain", label: "Certificate domain", note: "Needs a matching DNS credential. To renew a domain already listed, use Renew certificate."},
+		{key: "domain", label: "Certificate domain", note: "Needs a covering DNS zone. To renew a domain already listed, use Renew certificate."},
 	}, seed, validateCertField)
 	m.phase = certPhaseForm
 }
@@ -380,9 +379,9 @@ func (m *certManager) beginCredForm(seedDomain string) {
 		seed["domain"] = seedDomain
 	}
 	m.form.begin([]field{
-		{key: "domain", label: "Base domain", note: "Authorizes this domain and every subdomain (e.g. example.com covers a.example.com)."},
+		{key: "domain", label: "DNS zone", note: "The zone you manage at your DNS provider. Authorizes this domain and every subdomain (e.g. example.com covers a.example.com)."},
 		{key: "provider", label: "DNS provider", def: certmgr.ProviderCloudflare, options: []string{certmgr.ProviderCloudflare, certmgr.ProviderAliyun}},
-		{key: "credential", label: "API credential", secret: true, noteFunc: credentialNote},
+		{key: "credential", label: "API token", secret: true, noteFunc: credentialNote},
 	}, seed, validateCredField)
 	m.phase = certPhaseCredForm
 }
@@ -412,7 +411,7 @@ func (m *certManager) continueAdd(domain string) {
 		// Redirect to add a covering credential, then resume issuance.
 		m.pendingDomain = domain
 		m.resumeIssueAfterCred = true
-		m.notice.setError("no DNS credential covers " + domain + "; add one to continue")
+		m.notice.setError("no DNS zone covers " + domain + "; add one to continue")
 		m.beginCredForm(domain)
 		return
 	}
@@ -439,7 +438,7 @@ func (m *certManager) completeCredForm() {
 			return
 		}
 	}
-	m.notice.setInfo("saved DNS credential for " + cred.Domain)
+	m.notice.setInfo("saved DNS zone " + cred.Domain)
 	m.phase = certPhaseCredList
 }
 
@@ -536,7 +535,7 @@ func (m *certManager) View() string {
 	case certPhaseForm, certPhaseCredForm:
 		title := "Add certificate"
 		if m.phase == certPhaseCredForm {
-			title = "Add DNS credential"
+			title = "Add DNS zone"
 		}
 		return m.form.View(title)
 	case certPhaseCredList:
@@ -548,7 +547,7 @@ func (m *certManager) View() string {
 	case certPhaseCertPick:
 		return m.pickView("Delete certificate", certInfoLabels(m.inventory))
 	case certPhaseCredPick:
-		return m.pickView("Delete DNS credential", credLabels(m.creds))
+		return m.pickView("Delete DNS zone", credLabels(m.creds))
 	default:
 		return m.listView()
 	}
@@ -570,19 +569,19 @@ func (m *certManager) listView() string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("DNS credentials: %d", len(m.creds))) + "\n\n")
+	b.WriteString(dimStyle.Render(fmt.Sprintf("DNS zones: %d", len(m.creds))) + "\n\n")
 	b.WriteString(renderActionMenu(certActions, m.actionCursor))
 	return b.String()
 }
 
 func (m *certManager) credListView() string {
 	var b strings.Builder
-	b.WriteString(flowTitle.Render("DNS credentials") + "\n\n")
+	b.WriteString(flowTitle.Render("DNS zones") + "\n\n")
 	if notice := m.notice.view(); notice != "" {
 		b.WriteString(notice + "\n\n")
 	}
 	if len(m.creds) == 0 {
-		b.WriteString(dimStyle.Render("No DNS credentials yet. Add one to authorize certificate issuance.") + "\n\n")
+		b.WriteString(dimStyle.Render("No DNS zones yet. Add one to authorize certificate issuance.") + "\n\n")
 	} else {
 		for _, c := range m.creds {
 			b.WriteString("  " + credLabel(c) + "\n")
@@ -652,7 +651,7 @@ func renderActionMenu(actions []string, cursor int) string {
 
 func renderCertRow(c certmgr.CertInfo, now time.Time) string {
 	if c.NeedsDNSCredential {
-		return c.Domain + "  " + statusWarn.Render("needs DNS credential")
+		return c.Domain + "  " + statusWarn.Render("needs a DNS zone")
 	}
 	if !c.Present {
 		return c.Domain + "  " + statusWarn.Render("not issued")
@@ -714,10 +713,10 @@ func validateCredField(f field, value string, vals map[string]string) error {
 		}
 	case "credential":
 		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("credential is required")
+			return fmt.Errorf("API token is required")
 		}
 		if vals["provider"] == certmgr.ProviderAliyun && !strings.Contains(value, ":") {
-			return fmt.Errorf("Aliyun credential must be AccessKeyID:AccessKeySecret")
+			return fmt.Errorf("Aliyun API token must be AccessKeyID:AccessKeySecret")
 		}
 	}
 	return nil

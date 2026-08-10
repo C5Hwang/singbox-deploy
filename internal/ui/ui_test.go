@@ -327,7 +327,7 @@ func TestInstallFieldShowsUsageNote(t *testing.T) {
 	w.width = 80
 	w.startForm()
 	view := w.View()
-	if !strings.Contains(view, "Needs a matching DNS credential in Certificate management") {
+	if !strings.Contains(view, "Needs a covering DNS zone in Certificate management") {
 		t.Fatalf("field usage note missing:\n%s", view)
 	}
 }

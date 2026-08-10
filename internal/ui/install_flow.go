@@ -45,7 +45,7 @@ func installFields() []field {
 	}
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
-		{key: "domain", label: "Domain (must resolve to this server)", note: noteDNSCredential + " Also used for Nginx server_name and subscription URLs."},
+		{key: "domain", label: "Domain (must resolve to this server)", note: noteDNSZone + " Also used for Nginx server_name and subscription URLs."},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "At least one protocol is required."},
 		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HTML5 UP template deployed to /etc/singbox-deploy/www."},
 	}
@@ -100,8 +100,8 @@ type installForm struct {
 	parameterForm
 
 	validateDomain func(context.Context, string) (string, error)
-	// validateDomainCovered rejects a domain not covered by any DNS credential
-	// in Certificate management, so the hub can issue its certificate via DNS-01.
+	// validateDomainCovered rejects a domain not covered by any DNS zone in
+	// Certificate management, so the hub can issue its certificate via DNS-01.
 	// Tests set it nil to skip the check.
 	validateDomainCovered func(string) error
 	publicIP              string
