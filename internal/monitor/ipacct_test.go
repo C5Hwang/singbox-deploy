@@ -16,6 +16,9 @@ import (
 // sequence of per-set byte counters.
 type fakeNFT struct {
 	commands []string
+	// rulesets holds the stdin of every ruleset load, so a test can assert what
+	// the chains ended up containing.
+	rulesets []string
 	// rounds[i] maps set name to address -> cumulative bytes for the i-th read
 	// of each set; the last round repeats once exhausted.
 	rounds []map[string]map[string]uint64
@@ -30,6 +33,7 @@ func (f *fakeNFT) run(_ context.Context, stdin string, args ...string) ([]byte, 
 		if !strings.Contains(stdin, "table inet "+ipAcctTable) {
 			return nil, fmt.Errorf("ruleset does not define the accounting table")
 		}
+		f.rulesets = append(f.rulesets, stdin)
 		return nil, nil
 	}
 	if len(args) < 5 || args[1] != "list" {
@@ -304,5 +308,78 @@ func TestPruneIPTrafficKeepsOnlyTheBusiestAddresses(t *testing.T) {
 		if entries[i].IP != want {
 			t.Fatalf("entries[%d] = %q, want %q", i, entries[i].IP, want)
 		}
+	}
+}
+
+// The overlay's tunnelled addresses are private, but the packets carrying them
+// travel between public ones, so the private-range filters cannot keep the
+// fleet's own control traffic out of a list of client addresses. The local
+// WireGuard listen port is what does.
+func TestIPAccountingRulesetSkipsTheOverlayTransport(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}}
+	acct := newFakeIPAccounting(nft)
+	acct.overlayPorts = func(context.Context) []int { return []int{51820} }
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(nft.rulesets) != 1 {
+		t.Fatalf("ruleset loads = %d, want one", len(nft.rulesets))
+	}
+	for _, want := range []string{"udp dport { 51820 } return", "udp sport { 51820 } return"} {
+		if !strings.Contains(nft.rulesets[0], want) {
+			t.Fatalf("ruleset is missing %q:\n%s", want, nft.rulesets[0])
+		}
+	}
+}
+
+// A host with no WireGuard interface has nothing to exclude, and the rule is
+// left out entirely rather than rendered against an empty set.
+func TestIPAccountingRulesetOmitsTheOverlayRuleWithoutWireGuard(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}}
+	acct := newFakeIPAccounting(nft)
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if strings.Contains(nft.rulesets[0], "udp dport") {
+		t.Fatalf("ruleset carries an overlay rule with no interface:\n%s", nft.rulesets[0])
+	}
+}
+
+// wg-quick hands a restarted interface a new ephemeral port, so the table has
+// to be rebuilt around it instead of counting the tunnel until the next
+// monitor restart.
+func TestIPAccountingRebuildsTheTableWhenTheOverlayPortChanges(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}}
+	acct := newFakeIPAccounting(nft)
+	port := 45517
+	acct.overlayPorts = func(context.Context) []int { return []int{port} }
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(nft.rulesets) != 1 {
+		t.Fatalf("ruleset loads = %d, want the port to be reused", len(nft.rulesets))
+	}
+	port = 51821
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(nft.rulesets) != 2 {
+		t.Fatalf("ruleset loads = %d, want a rebuild for the new port", len(nft.rulesets))
+	}
+	if !strings.Contains(nft.rulesets[1], "udp dport { 51821 } return") {
+		t.Fatalf("rebuilt ruleset kept the old port:\n%s", nft.rulesets[1])
+	}
+}
+
+func TestParseWireGuardListenPorts(t *testing.T) {
+	ports := parseWireGuardListenPorts("sbwg0\t51820\nwg1\t45517\nsbwg0\t51820\nbroken\n")
+	if len(ports) != 2 || ports[0] != 45517 || ports[1] != 51820 {
+		t.Fatalf("ports = %v, want the two distinct ports sorted", ports)
+	}
+	if got := parseWireGuardListenPorts(""); got != nil {
+		t.Fatalf("ports = %v, want none for a host with no interface", got)
 	}
 }
