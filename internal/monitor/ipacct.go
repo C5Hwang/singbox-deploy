@@ -230,6 +230,13 @@ func (a *IPAccounting) Collect(ctx context.Context) (map[string]IPTrafficDelta, 
 		}
 	}
 	deltas := map[string]IPTrafficDelta{}
+	// Rebuilt rather than updated in place: an element nftables evicted after
+	// its idle timeout has to leave with it, or a node facing a long tail of
+	// one-off client addresses grows this map for as long as it runs — past the
+	// monitor unit's MemoryMax, given enough weeks. An address that comes back
+	// is a new element counting from zero, which is exactly what a missing
+	// previous value already reports.
+	previous := make(map[string]uint64, len(a.previous))
 	for _, set := range ipAcctSets {
 		counters, err := a.readSet(ctx, set.name)
 		if err != nil {
@@ -243,7 +250,7 @@ func (a *IPAccounting) Collect(ctx context.Context) (map[string]IPTrafficDelta, 
 		for address, current := range counters {
 			key := set.name + "|" + address
 			delta := counterDelta(a.previous[key], current)
-			a.previous[key] = current
+			previous[key] = current
 			if delta == 0 {
 				continue
 			}
@@ -256,6 +263,7 @@ func (a *IPAccounting) Collect(ctx context.Context) (map[string]IPTrafficDelta, 
 			deltas[address] = entry
 		}
 	}
+	a.previous = previous
 	return deltas, nil
 }
 

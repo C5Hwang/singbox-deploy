@@ -374,6 +374,29 @@ func TestIPAccountingRebuildsTheTableWhenTheOverlayPortChanges(t *testing.T) {
 	}
 }
 
+// nftables evicts a set element after its idle timeout. The remembered counter
+// has to go with it, or a node facing a long tail of one-off client addresses
+// grows this map for as long as it runs.
+func TestIPAccountingForgetsAddressesTheSetEvicted(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{
+		{"peer_in4": {"203.0.113.7": 700, "203.0.113.8": 900}},
+		{"peer_in4": {"203.0.113.8": 900}},
+	}}
+	acct := newFakeIPAccounting(nft)
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if _, ok := acct.previous["peer_in4|203.0.113.7"]; ok {
+		t.Fatalf("previous still remembers an evicted address: %#v", acct.previous)
+	}
+	if got := acct.previous["peer_in4|203.0.113.8"]; got != 900 {
+		t.Fatalf("previous for a live address = %d, want 900", got)
+	}
+}
+
 func TestParseWireGuardListenPorts(t *testing.T) {
 	ports := parseWireGuardListenPorts("sbwg0\t51820\nwg1\t45517\nsbwg0\t51820\nbroken\n")
 	if len(ports) != 2 || ports[0] != 45517 || ports[1] != 51820 {
