@@ -187,3 +187,24 @@ func TestMaintenanceDropsPingSamplesOlderThanAWeek(t *testing.T) {
 		t.Fatalf("surviving point = %#v", points[0])
 	}
 }
+
+// iputils treats -w as "keep probing until the deadline expires or count
+// probes are answered", so a deadline flag makes -c stop bounding the run: an
+// unanswered target is probed for the whole deadline, and a target slower than
+// the send interval gets an extra probe that reads as 1/11 = 9.09% loss on a
+// route that lost nothing. The count and the per-reply timeout are what bound
+// a probe; pingDeadline bounds it from the outside.
+func TestPingArgsCarryNoDeadlineFlag(t *testing.T) {
+	args := pingArgs("203.0.113.9")
+	for i, arg := range args {
+		if arg == "-w" {
+			t.Fatalf("pingArgs = %q, want no -w deadline flag", args)
+		}
+		if arg == "-c" && (i+1 >= len(args) || args[i+1] != "10") {
+			t.Fatalf("pingArgs = %q, want -c %d", args, pingCount)
+		}
+	}
+	if args[len(args)-1] != "203.0.113.9" {
+		t.Fatalf("pingArgs = %q, want the address last", args)
+	}
+}

@@ -19,12 +19,18 @@ const (
 	// wholesale rather than folded: a week of five-minute samples is already
 	// small, and hourly averaging happens at read time.
 	pingRetention = 7 * 24 * time.Hour
-	// pingRunSeconds is ping's own deadline. Ten requests spaced by
-	// pingIntervalArg need about three seconds; the rest is headroom for a slow
-	// path. pingDeadline is the backstop for a ping that ignores its deadline,
-	// and stays comfortably above it: killing ping before it prints its summary
-	// would throw away a perfectly good 100%-loss reading.
-	pingRunSeconds  = 15
+	// pingDeadline bounds one probe from the outside. A run is pingCount
+	// requests spaced by pingIntervalArg plus at most pingWaitArg for the last
+	// reply, so about five seconds; the rest is headroom for a slow path.
+	// Killing ping before it prints its summary would throw away a perfectly
+	// good 100%-loss reading, so this stays well above the expected run.
+	//
+	// ping's own -w deadline is deliberately not used. iputils documents it as
+	// "ping does not stop after count packets are sent, it waits either for
+	// deadline expire or until count probes are answered": an unanswered target
+	// is probed until the deadline (47 packets instead of ten, measured), and a
+	// target whose RTT outruns the send interval gets one extra probe, which
+	// reports 1/11 = 9.09% loss on a route that lost nothing.
 	pingDeadline    = 25 * time.Second
 	pingIntervalArg = "0.3"
 	pingWaitArg     = "2"
@@ -128,14 +134,7 @@ func (c *PingCollector) Collect(ctx context.Context) map[string]PingSample {
 func systemPing(ctx context.Context, binary, address string) (PingSample, error) {
 	ctx, cancel := context.WithTimeout(ctx, pingDeadline)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binary,
-		"-n", "-q",
-		"-c", strconv.Itoa(pingCount),
-		"-i", pingIntervalArg,
-		"-W", pingWaitArg,
-		"-w", strconv.Itoa(pingRunSeconds),
-		address,
-	).Output()
+	out, err := exec.CommandContext(ctx, binary, pingArgs(address)...).Output()
 	sample, parseErr := parsePingOutput(string(out))
 	if parseErr != nil {
 		if err != nil {
@@ -144,6 +143,18 @@ func systemPing(ctx context.Context, binary, address string) (PingSample, error)
 		return PingSample{}, fmt.Errorf("ping %s: %w", address, parseErr)
 	}
 	return sample, nil
+}
+
+// pingArgs is the probe's command line. It is its own function so a test can
+// assert that no deadline flag creeps back in.
+func pingArgs(address string) []string {
+	return []string{
+		"-n", "-q",
+		"-c", strconv.Itoa(pingCount),
+		"-i", pingIntervalArg,
+		"-W", pingWaitArg,
+		address,
+	}
 }
 
 // parsePingOutput reads the transmitted/received counts and the rtt summary.
