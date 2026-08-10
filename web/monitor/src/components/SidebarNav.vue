@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import type { Tab } from "../types";
+
 defineProps<{
-  activeTab: "traffic" | "resources";
+  activeTab: Tab;
   sourceCount: number;
 }>();
 defineEmits<{
-  "update:activeTab": [value: "traffic" | "resources"];
+  "update:activeTab": [value: Tab];
 }>();
 </script>
 
@@ -40,6 +42,19 @@ defineEmits<{
         <circle cx="6" cy="18" r="1" fill="currentColor" />
       </svg>
       Resources
+    </a>
+
+    <a
+      class="nav-item"
+      :class="{ active: activeTab === 'latency' }"
+      href="#"
+      @click.prevent="$emit('update:activeTab', 'latency')"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </svg>
+      Latency
     </a>
 
     <div class="mini-card">

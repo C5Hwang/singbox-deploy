@@ -123,6 +123,33 @@ type TrafficRawPoint struct {
 	TotalBytes int64 `json:"totalBytes"`
 }
 
+// PingHourlyPoint is one target's averaged latency for one hour. AvgMS is nil
+// when every probe in the hour was fully lost.
+type PingHourlyPoint struct {
+	HourTS  int64    `json:"hourTs"`
+	Target  string   `json:"target"`
+	AvgMS   *float64 `json:"avgMs"`
+	LossPct float64  `json:"lossPct"`
+}
+
+// PingLatestPoint is one target's most recent probe.
+type PingLatestPoint struct {
+	Target  string   `json:"target"`
+	TS      int64    `json:"ts"`
+	AvgMS   *float64 `json:"avgMs"`
+	LossPct float64  `json:"lossPct"`
+}
+
+// LatencySnapshot is the payload behind /api/ping-trend: the probe list this
+// node samples, its newest reading per target, and the hourly history. The
+// target list travels with the data so the dashboard never has to hardcode it,
+// and a node running an older probe list still describes itself correctly.
+type LatencySnapshot struct {
+	Targets []PingTarget      `json:"targets"`
+	Latest  []PingLatestPoint `json:"latest"`
+	Points  []PingHourlyPoint `json:"points"`
+}
+
 // ResourceHourlyPoint is one aggregated hourly resource bucket with avg and max.
 type ResourceHourlyPoint struct {
 	HourTS       int64   `json:"hourTs"`

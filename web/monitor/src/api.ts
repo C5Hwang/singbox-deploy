@@ -1,4 +1,11 @@
-import type { Summary, HourlyPoint, ResourceHourlyPoint, TrafficRawPoint, ResourceRawPoint } from "./types";
+import type {
+  Summary,
+  HourlyPoint,
+  ResourceHourlyPoint,
+  TrafficRawPoint,
+  ResourceRawPoint,
+  LatencySnapshot,
+} from "./types";
 
 const TOKEN_STORAGE_KEY = "singbox-deploy.monitor.token";
 
@@ -82,4 +89,13 @@ export async function fetchResourceTrend(source?: string): Promise<ResourceHourl
 export async function fetchResourceRecent(source?: string): Promise<ResourceRawPoint[]> {
   const data = await getJSON(`api/resource-recent${sourceQuery(source)}`);
   return data.points ?? [];
+}
+
+// A node running an agent from before latency sampling existed answers 502
+// here. That surfaces as an ordinary error, which the Latency page reports per
+// node instead of blanking the whole view.
+export async function fetchLatency(source?: string): Promise<LatencySnapshot> {
+  const data = await getJSON(`api/ping-trend${sourceQuery(source)}`);
+  const latency = data.latency ?? {};
+  return { targets: latency.targets ?? [], latest: latency.latest ?? [], points: latency.points ?? [] };
 }

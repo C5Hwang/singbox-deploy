@@ -79,6 +79,9 @@ type Monitor struct {
 	trafficMu sync.Mutex
 
 	resCollector *ResourceCollector
+	// pingCollector is nil on a host with no ping utility, which disables
+	// latency sampling without affecting any other metric.
+	pingCollector *PingCollector
 	// latestResource is written by the sampling goroutine and read by HTTP
 	// handlers, hence the atomic pointer.
 	latestResource  atomic.Pointer[ResourceSnapshot]
@@ -116,10 +119,14 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 		cfg.ResetHour = 0
 	}
 	m := &Monitor{
-		store:        store,
-		cfg:          cfg,
-		control:      control,
-		resCollector: NewResourceCollector("/"),
+		store:         store,
+		cfg:           cfg,
+		control:       control,
+		resCollector:  NewResourceCollector("/"),
+		pingCollector: NewPingCollector(),
+	}
+	if m.pingCollector == nil {
+		log.Printf("monitor: no ping utility found; latency sampling is disabled")
 	}
 	// Restore the quota-stop flag so a monitor restart (settings change, host
 	// reboot) cannot strand sing-box in the stopped state forever.
@@ -139,6 +146,7 @@ func (m *Monitor) Handler() http.Handler {
 	api.HandleFunc("/api/traffic-recent", m.handleTrafficRecent)
 	api.HandleFunc("/api/resource-trend", m.handleResourceTrend)
 	api.HandleFunc("/api/resource-recent", m.handleResourceRecent)
+	api.HandleFunc("/api/ping-trend", m.handlePingTrend)
 
 	mux := http.NewServeMux()
 	// Only the JSON API is guarded. The static bundle has to load unauthenticated
@@ -326,6 +334,27 @@ func (m *Monitor) handleResourceRecent(w http.ResponseWriter, r *http.Request) {
 			return resourceRecentToRates(points), nil
 		},
 	})
+}
+
+func (m *Monitor) handlePingTrend(w http.ResponseWriter, r *http.Request) {
+	since := m.now().Add(-pingRetention).Unix()
+	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
+		key:       "latency",
+		proxyPath: "/api/ping-trend",
+		local:     func() (any, error) { return m.latencySnapshot(since) },
+	})
+}
+
+func (m *Monitor) latencySnapshot(since int64) (LatencySnapshot, error) {
+	latest, err := m.store.LatestPingSamples(since)
+	if err != nil {
+		return LatencySnapshot{}, err
+	}
+	points, err := m.store.PingTrendHourly(since)
+	if err != nil {
+		return LatencySnapshot{}, err
+	}
+	return LatencySnapshot{Targets: m.pingCollector.Targets(), Latest: latest, Points: points}, nil
 }
 
 func sourceQuery(r *http.Request) string { return r.URL.Query().Get("source") }
@@ -613,6 +642,13 @@ func (m *Monitor) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Latency probing gets its own goroutine: one round takes seconds, and
+	// running it on the sampling loop would delay traffic samples. Sequencing
+	// inside this goroutine is also what stops two rounds from overlapping.
+	if m.pingCollector != nil {
+		go m.pingLoop(ctx)
+	}
+
 	go func() {
 		for {
 			select {
@@ -683,6 +719,30 @@ func (m *Monitor) resourceSampleOnce(now time.Time) {
 		DiskIOReadRate:  float64(reading.DIOReadDelta) / intervalSec,
 		DiskIOWriteRate: float64(reading.DIOWriteDelta) / intervalSec,
 	})
+}
+
+func (m *Monitor) pingLoop(ctx context.Context) {
+	ticker := time.NewTicker(PingInterval)
+	defer ticker.Stop()
+	m.pingSampleOnce(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.pingSampleOnce(ctx)
+		}
+	}
+}
+
+func (m *Monitor) pingSampleOnce(ctx context.Context) {
+	samples := m.pingCollector.Collect(ctx)
+	if len(samples) == 0 {
+		return
+	}
+	if err := m.store.InsertPingSamples(m.now().Unix(), samples); err != nil {
+		log.Printf("monitor: insert ping samples: %v", err)
+	}
 }
 
 func (m *Monitor) enforceQuota(now time.Time) {
@@ -759,5 +819,8 @@ func (m *Monitor) maintenance(now time.Time) {
 	}
 	if err := m.store.Cleanup(now.Add(-historyRetention).Unix()); err != nil {
 		log.Printf("monitor: cleanup: %v", err)
+	}
+	if err := m.store.CleanupPingSamples(now.Add(-pingRetention).Unix()); err != nil {
+		log.Printf("monitor: cleanup ping samples: %v", err)
 	}
 }

@@ -145,6 +145,13 @@ CREATE TABLE IF NOT EXISTS resource_hourly (
     dio_write_avg INTEGER NOT NULL, dio_write_max INTEGER NOT NULL,
     sample_count  INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS ping_samples (
+    ts       INTEGER NOT NULL,
+    target   TEXT    NOT NULL,
+    avg_ms   REAL,
+    loss_pct REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ping_samples_ts ON ping_samples(ts);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -515,6 +522,101 @@ ON CONFLICT(ts_hour) DO UPDATE SET
     dio_write_max = MAX(resource_hourly.dio_write_max, excluded.dio_write_max),
     sample_count  = resource_hourly.sample_count + excluded.sample_count`,
 		`DELETE FROM resource_samples WHERE ts < ?`)
+}
+
+// InsertPingSamples records one latency round, keyed by target ID.
+func (s *Store) InsertPingSamples(ts int64, samples map[string]PingSample) error {
+	if len(samples) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO ping_samples(ts, target, avg_ms, loss_pct) VALUES(?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for target, sample := range samples {
+		var avg any
+		if sample.AvgMS != nil {
+			avg = *sample.AvgMS
+		}
+		if _, err := stmt.Exec(ts, target, avg, sample.LossPct); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// PingTrendHourly returns per-target hourly averages at or after since, oldest
+// first. Averaging at read time keeps a week of five-minute samples small
+// enough to ship in one response. AVG skips the NULL latencies of fully lost
+// rounds, so the average describes the requests that did come back.
+func (s *Store) PingTrendHourly(since int64) ([]PingHourlyPoint, error) {
+	rows, err := s.db.Query(`
+SELECT (ts/3600)*3600 AS ts_hour, target, AVG(avg_ms), AVG(loss_pct)
+FROM ping_samples WHERE ts >= ?
+GROUP BY ts_hour, target
+ORDER BY ts_hour ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var points []PingHourlyPoint
+	for rows.Next() {
+		var (
+			p   PingHourlyPoint
+			avg sql.NullFloat64
+		)
+		if err := rows.Scan(&p.HourTS, &p.Target, &avg, &p.LossPct); err != nil {
+			return nil, err
+		}
+		if avg.Valid {
+			value := avg.Float64
+			p.AvgMS = &value
+		}
+		points = append(points, p)
+	}
+	return points, rows.Err()
+}
+
+// LatestPingSamples returns the most recent sample per target at or after
+// since. The bare columns pair with MAX(ts) under SQLite's documented rule that
+// they are taken from the row the aggregate selected.
+func (s *Store) LatestPingSamples(since int64) ([]PingLatestPoint, error) {
+	rows, err := s.db.Query(`
+SELECT target, MAX(ts), avg_ms, loss_pct
+FROM ping_samples WHERE ts >= ?
+GROUP BY target`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var points []PingLatestPoint
+	for rows.Next() {
+		var (
+			p   PingLatestPoint
+			avg sql.NullFloat64
+		)
+		if err := rows.Scan(&p.Target, &p.TS, &avg, &p.LossPct); err != nil {
+			return nil, err
+		}
+		if avg.Valid {
+			value := avg.Float64
+			p.AvgMS = &value
+		}
+		points = append(points, p)
+	}
+	return points, rows.Err()
+}
+
+// CleanupPingSamples drops latency samples older than the cutoff.
+func (s *Store) CleanupPingSamples(cutoff int64) error {
+	_, err := s.db.Exec(`DELETE FROM ping_samples WHERE ts < ?`, cutoff)
+	return err
 }
 
 // Close closes the underlying database.

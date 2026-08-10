@@ -3,12 +3,19 @@ import { computed, onMounted, onUnmounted, ref, watchEffect } from "vue";
 import SidebarNav from "./components/SidebarNav.vue";
 import TimezonePicker from "./components/TimezonePicker.vue";
 import TokenGate from "./components/TokenGate.vue";
+import Latency from "./pages/Latency.vue";
 import NetworkTraffic from "./pages/NetworkTraffic.vue";
 import Resources from "./pages/Resources.vue";
 import { fetchSummary, hasStoredAccessToken, onUnauthorized, setAccessToken, UnauthorizedError } from "./api";
-import type { Summary } from "./types";
+import type { Summary, Tab } from "./types";
 
-const activeTab = ref<"traffic" | "resources">("traffic");
+const PAGE_TITLES: Record<Tab, string> = {
+  traffic: "Network Traffic",
+  resources: "Resources",
+  latency: "Latency",
+};
+
+const activeTab = ref<Tab>("traffic");
 const summary = ref<Summary | null>(null);
 const error = ref<string>("");
 const locked = ref(false);
@@ -44,7 +51,7 @@ function unlock(token: string) {
 }
 
 const sourceCount = computed(() => summary.value?.sources?.length ?? 0);
-const pageTitle = computed(() => (activeTab.value === "traffic" ? "Network Traffic" : "Resources"));
+const pageTitle = computed(() => PAGE_TITLES[activeTab.value]);
 
 const subtitle = computed(() => {
   if (error.value) return `Failed to load data: ${error.value}`;
@@ -80,6 +87,7 @@ onUnmounted(() => {
           <div class="mobile-tabs">
             <button :class="{ active: activeTab === 'traffic' }" @click="activeTab = 'traffic'">Traffic</button>
             <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">Resources</button>
+            <button :class="{ active: activeTab === 'latency' }" @click="activeTab = 'latency'">Latency</button>
           </div>
           <TimezonePicker />
         </div>
@@ -87,6 +95,7 @@ onUnmounted(() => {
 
       <NetworkTraffic v-if="activeTab === 'traffic'" :summary="summary" :error="error" />
       <Resources v-if="activeTab === 'resources'" :summary="summary" :error="error" />
+      <Latency v-if="activeTab === 'latency'" :summary="summary" />
 
       <p class="footer-note">{{ error ? 'Some data is unavailable. Refresh again later.' : '' }}</p>
     </main>
@@ -232,6 +241,7 @@ body {
 .span-3 { grid-column: span 3; }
 .span-4 { grid-column: span 4; }
 .span-6 { grid-column: span 6; }
+.span-12 { grid-column: span 12; }
 .clickable { cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; }
 .clickable:hover { transform: translateY(-2px); box-shadow: 0 22px 50px rgba(18, 32, 64, 0.12); }
 
@@ -455,7 +465,7 @@ body {
   .app { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .mobile-tabs { display: flex; gap: 8px; }
-  .span-3, .span-4, .span-6, .source-card { grid-column: span 12; }
+  .span-3, .span-4, .span-6, .span-12, .source-card { grid-column: span 12; }
 }
 @media (max-width: 720px) {
   .main { padding: 18px; }

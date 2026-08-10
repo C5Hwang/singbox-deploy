@@ -47,6 +47,38 @@ export interface ResourceHourlyPoint {
   dioWriteMax: number;
 }
 
+// The dashboard's top-level pages, in sidebar order.
+export type Tab = "traffic" | "resources" | "latency";
+
+export interface PingTarget {
+  id: string;
+  carrier: string;
+  city: string;
+  address: string;
+}
+
+// avgMs is null when every probe was lost, which draws as a gap rather than as
+// zero latency.
+export interface PingLatestPoint {
+  target: string;
+  ts: number;
+  avgMs: number | null;
+  lossPct: number;
+}
+
+export interface PingHourlyPoint {
+  hourTs: number;
+  target: string;
+  avgMs: number | null;
+  lossPct: number;
+}
+
+export interface LatencySnapshot {
+  targets: PingTarget[];
+  latest: PingLatestPoint[];
+  points: PingHourlyPoint[];
+}
+
 export interface SourceSummary {
   id: string;
   name: string;
