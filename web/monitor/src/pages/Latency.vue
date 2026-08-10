@@ -22,12 +22,26 @@ const loadError = ref("");
 const loading = ref(false);
 
 // The selector holds a stable source key; the first source is picked once the
-// summary arrives and kept unless that node disappears.
+// summary arrives and kept unless that node disappears. Seeding it is what
+// keeps the <select> from rendering blank: before the summary lands there is
+// no option to match the empty value the ref starts at, so the browser shows
+// nothing while the first node's data is already on screen.
 const selectedKey = computed(() => selected.value || sourceKey(sources.value[0]));
 
 function sourceKey(source: { id?: string; name?: string } | undefined): string {
   return source ? source.id || source.name || "" : "";
 }
+
+watch(
+  sources,
+  (list) => {
+    if (list.length === 0) return;
+    if (!list.some((source) => sourceKey(source) === selected.value)) {
+      selected.value = sourceKey(list[0]);
+    }
+  },
+  { immediate: true },
+);
 
 async function load() {
   const key = selectedKey.value;
