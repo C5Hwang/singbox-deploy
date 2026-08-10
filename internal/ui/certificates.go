@@ -92,7 +92,17 @@ type certManager struct {
 	countDistributionTargets func(string) int
 }
 
-var certActions = []string{"Add certificate", "Renew certificate", "Delete certificate", "Manage DNS zones"}
+// Certificate actions are ordered by dependency rather than by frequency: the
+// zone an issuance needs sits directly under the action that needs it, and the
+// maintenance of certificates that already exist follows both.
+const (
+	actionAddCertificate    = "Add certificate"
+	actionManageZones       = "Manage DNS zones"
+	actionRenewCertificate  = "Renew certificate"
+	actionDeleteCertificate = "Delete certificate"
+)
+
+var certActions = []string{actionAddCertificate, actionManageZones, actionRenewCertificate, actionDeleteCertificate}
 var zoneActions = []string{"Add DNS zone", "Delete DNS zone"}
 
 func newCertManager() *certManager {
@@ -219,10 +229,14 @@ func (m *certManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 	_, done, _ := handleSelectionKey(key, selectionKeyHandlers{
 		Move: func(d int) { m.actionCursor = moveSelection(m.actionCursor, len(certActions), d) },
 		Confirm: func() (tea.Cmd, bool) {
-			switch m.actionCursor {
-			case 0:
+			action, ok := selectedStringOption(certActions, m.actionCursor)
+			if !ok {
+				return nil, false
+			}
+			switch action {
+			case actionAddCertificate:
 				m.beginAddCertificate()
-			case 1:
+			case actionRenewCertificate:
 				if len(m.inventory) == 0 {
 					m.notice.setError("no certificates to renew")
 					return nil, false
@@ -230,14 +244,14 @@ func (m *certManager) updateList(key tea.KeyMsg) (tea.Cmd, bool) {
 				m.pickCursor = 0
 				m.pendingRenew = certmgr.CertInfo{}
 				m.phase = certPhaseRenewPick
-			case 2:
+			case actionDeleteCertificate:
 				if len(m.inventory) == 0 {
 					m.notice.setError("no certificates to delete")
 					return nil, false
 				}
 				m.pickCursor = 0
 				m.phase = certPhaseCertPick
-			case 3:
+			case actionManageZones:
 				m.zoneActionCursor = 0
 				m.phase = certPhaseZoneList
 			}
@@ -671,7 +685,21 @@ func (m *certManager) listView() string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("DNS zones: %d", len(m.zones))) + "\n\n")
+	if len(m.zones) == 0 {
+		// Stating the order costs one line and saves the operator discovering it
+		// by having a domain rejected.
+		b.WriteString(statusWarn.Render("No DNS zones yet.") + "\n")
+		for _, line := range wrapFieldNote("Every certificate is issued through the zone that contains its domain, so a zone comes first. Add certificate collects one on the way.", m.width) {
+			b.WriteString(dimStyle.Render(line) + "\n")
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString(titleStyle.Render("DNS zones") + "\n")
+		for _, zone := range m.zones {
+			b.WriteString("  " + zoneLabel(zone) + "\n")
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString(renderActionMenu(certActions, m.actionCursor))
 	return b.String()
 }

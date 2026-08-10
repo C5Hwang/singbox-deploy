@@ -151,7 +151,7 @@ func TestRenewCertificateRequiresExplicitYThenIssuesAndDistributes(t *testing.T)
 		return nil
 	}
 
-	m.actionCursor = 1
+	selectCertAction(t, m, actionRenewCertificate)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.phase != certPhaseRenewPick {
 		t.Fatalf("renew action phase = %d, want picker", m.phase)
@@ -385,6 +385,19 @@ func typeRunes(t *testing.T, m *certManager, text string) tea.Cmd {
 	return cmd
 }
 
+// selectCertAction parks the cursor on an action by name, so the tests keep
+// working when the menu is reordered and fail loudly if one is renamed.
+func selectCertAction(t *testing.T, m *certManager, action string) {
+	t.Helper()
+	for i, candidate := range certActions {
+		if candidate == action {
+			m.actionCursor = i
+			return
+		}
+	}
+	t.Fatalf("certificate menu has no %q action: %v", action, certActions)
+}
+
 func addZoneForTest(t *testing.T, m *certManager, zone string) {
 	t.Helper()
 	if err := certmgr.UpsertCredential(m.layout, certmgr.DNSCredential{
@@ -433,7 +446,7 @@ func TestAddCertificateAsksForTheZoneBeforeTheHostname(t *testing.T) {
 	m.distributeCertificate = func(context.Context, string, io.Writer, func(deploy.Event)) error { return nil }
 
 	// "Add certificate" opens the zone picker, not a free-form domain field.
-	m.actionCursor = 0
+	selectCertAction(t, m, actionAddCertificate)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.phase != certPhaseZonePick {
 		t.Fatalf("add phase = %d, want the zone picker", m.phase)
@@ -604,5 +617,39 @@ func TestDomainFieldsNameTheZonesTheyWillAccept(t *testing.T) {
 	empty := withCoveredZones(paths.LayoutForRoot(t.TempDir()), []field{{key: "domain", note: noteDNSZone}})
 	if !strings.Contains(empty[0].note, "No DNS zones are configured yet") {
 		t.Fatalf("empty-zone note = %q", empty[0].note)
+	}
+}
+
+func TestCertificateListLeadsWithTheZoneItsIssuanceDependsOn(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	m.setSize(96, 30)
+
+	// Zone management is listed directly under the action that depends on it,
+	// ahead of the maintenance actions for certificates that already exist.
+	want := []string{actionAddCertificate, actionManageZones, actionRenewCertificate, actionDeleteCertificate}
+	if strings.Join(certActions, "|") != strings.Join(want, "|") {
+		t.Fatalf("certificate actions = %v, want %v", certActions, want)
+	}
+
+	// With nothing configured the page states the order instead of leaving it to
+	// be discovered by a rejection.
+	view := m.View()
+	for _, wantText := range []string{"No DNS zones yet", "issued through the zone that contains its domain"} {
+		if !strings.Contains(view, wantText) {
+			t.Fatalf("empty certificate page missing %q:\n%s", wantText, view)
+		}
+	}
+
+	// Once zones exist they are named on the page, not just counted.
+	addZoneForTest(t, m, "example.com")
+	addZoneForTest(t, m, "foo.net")
+	view = m.View()
+	for _, wantText := range []string{"DNS zones", "example.com (cloudflare)", "foo.net (cloudflare)"} {
+		if !strings.Contains(view, wantText) {
+			t.Fatalf("certificate page does not name the zones, missing %q:\n%s", wantText, view)
+		}
+	}
+	if strings.Contains(view, "DNS zones: 2") {
+		t.Fatalf("certificate page still reports a bare zone count:\n%s", view)
 	}
 }
