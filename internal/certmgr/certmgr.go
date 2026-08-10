@@ -18,6 +18,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -118,4 +119,25 @@ func DomainCovers(base, domain string) bool {
 		return false
 	}
 	return domain == base || strings.HasSuffix(domain, "."+base)
+}
+
+// ZoneOf returns the registrable domain that a hostname sits under — the name
+// an operator actually manages as a zone at their DNS provider, so a.b.foo.co.uk
+// yields foo.co.uk rather than b.foo.co.uk. It is what the UI offers as the
+// default when a certificate domain has no covering credential yet: proposing
+// the hostname itself would scope the credential to that single host and force
+// the same API token to be entered again for every sibling.
+//
+// Names the public suffix list cannot split — a bare suffix such as com, or an
+// unlisted TLD — are their own best answer and are returned unchanged.
+func ZoneOf(domain string) (string, error) {
+	normalized, err := NormalizeDomain(domain)
+	if err != nil {
+		return "", err
+	}
+	zone, err := publicsuffix.EffectiveTLDPlusOne(normalized)
+	if err != nil {
+		return normalized, nil
+	}
+	return zone, nil
 }

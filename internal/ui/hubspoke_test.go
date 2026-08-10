@@ -64,14 +64,15 @@ func TestCertFormRedirectsWhenNoCredential(t *testing.T) {
 	m.form.values["domain"] = "vpn.example.com"
 	m.completeForm()
 	if m.phase != certPhaseCredForm {
-		t.Fatalf("expected redirect to credential form, phase=%d", m.phase)
+		t.Fatalf("expected redirect to the DNS zone form, phase=%d", m.phase)
 	}
 	if !m.resumeIssueAfterCred || m.pendingDomain != "vpn.example.com" {
 		t.Fatalf("issuance should be queued to resume: resume=%v domain=%q", m.resumeIssueAfterCred, m.pendingDomain)
 	}
-	// The credential form is pre-seeded with the domain.
-	if m.form.values["domain"] != "vpn.example.com" {
-		t.Fatalf("credential form not seeded with domain: %q", m.form.values["domain"])
+	// The zone form is seeded with the registrable parent, so the token entered
+	// here also covers the domain's siblings.
+	if m.form.values["domain"] != "example.com" {
+		t.Fatalf("zone form not seeded with the registrable parent: %q", m.form.values["domain"])
 	}
 }
 

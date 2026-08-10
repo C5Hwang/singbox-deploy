@@ -408,11 +408,14 @@ func (m *certManager) continueAdd(domain string) {
 		return
 	}
 	if !certmgr.CredentialCovers(m.creds, domain) {
-		// Redirect to add a covering credential, then resume issuance.
+		// Redirect to add a covering zone, then resume issuance. The seed is the
+		// registrable parent, not the certificate domain: a zone scoped to the
+		// single host would work once and then demand the same API token again
+		// for every sibling.
 		m.pendingDomain = domain
 		m.resumeIssueAfterCred = true
 		m.notice.setError("no DNS zone covers " + domain + "; add one to continue")
-		m.beginCredForm(domain)
+		m.beginCredForm(zoneSeedFor(domain))
 		return
 	}
 	m.startCertificateRun(certOperationAdd, domain)
@@ -720,6 +723,17 @@ func validateCredField(f field, value string, vals map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// zoneSeedFor proposes the DNS zone to prefill when a certificate domain has no
+// covering zone yet. An unsplittable name falls back to itself, which is what
+// the operator typed and can still correct.
+func zoneSeedFor(domain string) string {
+	zone, err := certmgr.ZoneOf(domain)
+	if err != nil {
+		return strings.TrimSpace(domain)
+	}
+	return zone
 }
 
 func looksLikeDomain(s string) bool {

@@ -204,3 +204,34 @@ func writeState(t *testing.T, layout paths.Layout, name, value string) {
 		t.Fatalf("write state %s: %v", name, err)
 	}
 }
+
+func TestZoneOfReturnsTheRegistrableParent(t *testing.T) {
+	cases := []struct {
+		domain string
+		want   string
+	}{
+		{"us1.example.com", "example.com"},
+		{"a.b.example.com", "example.com"},
+		{"example.com", "example.com"},
+		// A multi-label public suffix must not be mistaken for the zone.
+		{"vpn.example.co.uk", "example.co.uk"},
+		{"EXAMPLE.COM.", "example.com"},
+		// An unlisted TLD is treated as the whole suffix, so the label under it
+		// is the zone.
+		{"host.internal.invalidtld", "internal.invalidtld"},
+		// A bare public suffix cannot be split; it is its own best answer.
+		{"co.uk", "co.uk"},
+	}
+	for _, tc := range cases {
+		got, err := ZoneOf(tc.domain)
+		if err != nil {
+			t.Fatalf("ZoneOf(%q) error: %v", tc.domain, err)
+		}
+		if got != tc.want {
+			t.Fatalf("ZoneOf(%q) = %q, want %q", tc.domain, got, tc.want)
+		}
+	}
+	if _, err := ZoneOf("not a domain"); err == nil {
+		t.Fatal("ZoneOf accepted an invalid domain")
+	}
+}

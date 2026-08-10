@@ -347,3 +347,27 @@ func TestAddCertificateWithNoConsumersHoldsTheBarUntilIssuanceFinishes(t *testin
 		t.Fatalf("bar after a completed run = %v, want 1", got)
 	}
 }
+
+func TestUncoveredDomainSeedsTheZoneFormWithTheRegistrableParent(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	const domain = "us1.vpn.example.co.uk"
+
+	m.issueCertificate = func(context.Context, string, io.Writer) error {
+		t.Fatal("issuance started before a covering zone existed")
+		return nil
+	}
+	m.beginCertFormWithSeed(domain)
+	m.completeForm()
+
+	if m.phase != certPhaseCredForm {
+		t.Fatalf("uncovered domain phase = %d, want the DNS zone form", m.phase)
+	}
+	// Seeding the certificate domain itself would scope the zone to one host and
+	// force the same API token again for every sibling.
+	if got := m.form.values["domain"]; got != "example.co.uk" {
+		t.Fatalf("seeded DNS zone = %q, want the registrable parent example.co.uk", got)
+	}
+	if view := m.View(); !strings.Contains(view, "example.co.uk") {
+		t.Fatalf("zone form does not show the proposed zone:\n%s", view)
+	}
+}
