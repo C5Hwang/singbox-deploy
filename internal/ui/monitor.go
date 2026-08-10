@@ -849,6 +849,7 @@ func (tm *monitorManager) localUpdateOptions() monitor.UpdateOptions {
 	opts.DeployMonitor = monitorEnabled(tm.values)
 	opts.DeployMonitorFrontend = monitorFrontendEnabled(tm.values)
 	opts.MonitorAlias = strings.TrimSpace(tm.values["monitor_alias"])
+	opts.MonitorToken = uiparams.MonitorTokenValue(tm.values["monitor_token"])
 	opts.MonitorDomain = strings.TrimSpace(tm.values["monitor_domain"])
 	opts.MonitorPublicPort = monitorPublicPort
 	opts.MonitorPort = monitorPort
@@ -918,6 +919,7 @@ func (tm *monitorManager) actionView() string {
 		summaryRow(uiparams.LabelMonitorEnabled, yesNoString(tm.cfg.DeployMonitor)),
 		summaryRow(uiparams.LabelMonitorWebUI, yesNoString(tm.cfg.DeployMonitorFrontend)),
 		summaryRow(uiparams.LabelMonitorAlias, or(tm.cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
+		summaryRow(uiparams.LabelMonitorToken, uiparams.MonitorTokenSummary(tm.cfg.MonitorToken)),
 		summaryRow(uiparams.LabelMonitorDomain, or(tm.cfg.MonitorHost(), "unknown")),
 		summaryRow(uiparams.LabelMonitorPublic, strconv.Itoa(tm.cfg.MonitorPublicPort)),
 		summaryRow(uiparams.LabelMonitorPort, strconv.Itoa(tm.cfg.MonitorPort)),
@@ -962,6 +964,7 @@ func (tm *monitorManager) confirmView() string {
 			summaryRow(uiparams.LabelMonitorEnabled, tm.values["monitor"]),
 			summaryRow(uiparams.LabelMonitorWebUI, tm.values["monitor_frontend"]),
 			summaryRow(uiparams.LabelMonitorAlias, tm.values["monitor_alias"]),
+			summaryRow(uiparams.LabelMonitorToken, uiparams.MonitorTokenSummary(tm.values["monitor_token"])),
 			summaryRow(uiparams.LabelMonitorDomain, tm.values["monitor_domain"]),
 			summaryRow(uiparams.LabelMonitorPublic, tm.values["monitor_public_port"]),
 			summaryRow(uiparams.LabelMonitorPort, tm.values["monitor_port"]),
@@ -1050,6 +1053,7 @@ func (tm *monitorManager) doneSummary() string {
 		summaryRow("Monitor", yesNoString(cfg.DeployMonitor)),
 		summaryRow("Monitor frontend", yesNoString(cfg.DeployMonitorFrontend)),
 		summaryRow("Monitor alias", or(cfg.MonitorAlias, deploy.DefaultMonitorAlias)),
+		summaryRow(uiparams.LabelMonitorToken, uiparams.MonitorTokenSummary(cfg.MonitorToken)),
 		summaryRow(uiparams.LabelMonitorDomain, or(cfg.MonitorHost(), "unknown")),
 		summaryRow("Monitor UI port", strconv.Itoa(cfg.MonitorPublicPort)),
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(cfg), uiparams.DefaultResetHour(cfg))),
@@ -1223,6 +1227,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 				DeployMonitor:          dcfg.DeployMonitor,
 				DeployMonitorFrontend:  dcfg.DeployMonitorFrontend,
 				MonitorAlias:           dcfg.MonitorAlias,
+				MonitorToken:           dcfg.MonitorToken,
 				MonitorPublicPort:      dcfg.MonitorPublicPort,
 				MonitorPort:            dcfg.MonitorPort,
 				MonitorInterface:       dcfg.MonitorInterface,
@@ -1247,6 +1252,7 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 			dcfg.DeployMonitor = mcfg.DeployMonitor
 			dcfg.DeployMonitorFrontend = mcfg.DeployMonitorFrontend
 			dcfg.MonitorAlias = mcfg.MonitorAlias
+			dcfg.MonitorToken = mcfg.MonitorToken
 			dcfg.MonitorDomain = mcfg.MonitorDomain
 			dcfg.MonitorPublicPort = mcfg.MonitorPublicPort
 			dcfg.MonitorPort = mcfg.MonitorPort

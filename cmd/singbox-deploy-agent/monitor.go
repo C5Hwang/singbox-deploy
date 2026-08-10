@@ -204,7 +204,9 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 	return monitor.Config{
 		// Monitor reads are mounted behind the bearer-authenticated agent API.
 		// Monitor.Run still owns its sampling lifecycle and HTTP server, so bind
-		// that internal listener to an ephemeral loopback port only.
+		// that internal listener to an ephemeral loopback port only. AccessToken
+		// stays empty for the same reason: the agent API token already guards
+		// these reads, and a second token here would only lock out the hub.
 		Listen:            net.JoinHostPort("127.0.0.1", "0"),
 		Interface:         iface,
 		SamplingInterval:  time.Duration(interval) * time.Second,

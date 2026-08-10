@@ -18,7 +18,8 @@ are managed from the hub's terminal UI.
   distributes them to the spokes.
 - Subscriptions aggregate every node in the fleet, served in share-link,
   Clash Meta, sing-box, and Surge formats.
-- Resource monitoring through a web dashboard, with per-node quotas.
+- Resource monitoring through a web dashboard, with per-node quotas. The
+  dashboard is guarded by an access token, shown on the hub's Status screen.
 - Nginx serves a masquerade site, chosen from bundled
   [HTML5 UP](https://html5up.net) templates.
 

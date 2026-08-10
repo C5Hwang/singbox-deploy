@@ -43,7 +43,10 @@ type Status struct {
 	MonitorCertState string
 	Protocols        string
 	MonitorUI        string
-	TrafficQuota     string
+	// MonitorToken is the token the dashboard asks for. It is shown in full:
+	// the operator has to be able to read it back to open the dashboard.
+	MonitorToken string
+	TrafficQuota string
 	// Groups holds every published subscription group. They are rendered in
 	// their own panel, one at a time, rather than in the status list: a fleet
 	// with several groups has more subscription URLs than the panel can show.
@@ -674,6 +677,7 @@ func (m *Model) statusView() string {
 	rows = append(rows,
 		summaryRow("Protocols", or(s.Protocols, "none")),
 		summaryRow("Monitor URL", or(s.MonitorUI, "none")),
+		summaryRow("Monitor token", or(s.MonitorToken, "none")),
 		summaryRow("Traffic quota", or(s.TrafficQuota, "unknown")),
 	)
 	return titleStyle.Render("Status") + "\n" + renderSummary(rows)

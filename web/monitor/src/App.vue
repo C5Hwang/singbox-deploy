@@ -2,24 +2,45 @@
 import { computed, onMounted, onUnmounted, ref, watchEffect } from "vue";
 import SidebarNav from "./components/SidebarNav.vue";
 import TimezonePicker from "./components/TimezonePicker.vue";
+import TokenGate from "./components/TokenGate.vue";
 import NetworkTraffic from "./pages/NetworkTraffic.vue";
 import Resources from "./pages/Resources.vue";
-import { fetchSummary } from "./api";
+import { fetchSummary, hasStoredAccessToken, onUnauthorized, setAccessToken, UnauthorizedError } from "./api";
 import type { Summary } from "./types";
 
 const activeTab = ref<"traffic" | "resources">("traffic");
 const summary = ref<Summary | null>(null);
 const error = ref<string>("");
+const locked = ref(false);
+// A token that was already stored and then refused is a stale one, which is
+// worth saying; a first visit to a gated dashboard is not an error.
+const tokenRejected = ref(false);
 let loadTimer: number | undefined;
+
+// Any view can be the one whose request is refused, so the lock is raised from
+// the API layer rather than from this component's own load.
+onUnauthorized(() => {
+  tokenRejected.value = hasStoredAccessToken();
+  locked.value = true;
+});
 
 async function load() {
   try {
     const res = await fetchSummary();
     summary.value = res;
     error.value = "";
+    locked.value = false;
+    tokenRejected.value = false;
   } catch (e) {
+    if (e instanceof UnauthorizedError) return;
     error.value = e instanceof Error ? e.message : String(e);
   }
+}
+
+function unlock(token: string) {
+  setAccessToken(token);
+  tokenRejected.value = false;
+  load();
 }
 
 const sourceCount = computed(() => summary.value?.sources?.length ?? 0);
@@ -44,7 +65,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app">
+  <TokenGate v-if="locked" :rejected="tokenRejected" @submit="unlock" />
+
+  <div v-else class="app">
     <SidebarNav v-model:activeTab="activeTab" :sourceCount="sourceCount" />
 
     <main class="main">

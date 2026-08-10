@@ -1446,7 +1446,7 @@ func TestRealityFieldsHiddenWhenRealityNotSelected(t *testing.T) {
 func TestMonitorFieldsHiddenWhenDisabled(t *testing.T) {
 	vals := map[string]string{"monitor": "no"}
 	fields := installFields()
-	for _, key := range []string{"monitor_alias", "monitor_public_port", "monitor_port", "monitor_interval_seconds", "traffic_in_limit", "traffic_out_limit", "traffic_total_limit", "reset_day", "reset_hour"} {
+	for _, key := range []string{"monitor_alias", "monitor_token", "monitor_public_port", "monitor_port", "monitor_interval_seconds", "traffic_in_limit", "traffic_out_limit", "traffic_total_limit", "reset_day", "reset_hour"} {
 		f := fields[fieldIndex(t, fields, key)]
 		if f.skip == nil || !f.skip(vals) {
 			t.Fatalf("%s should be hidden when monitor is disabled", key)
@@ -1722,4 +1722,67 @@ func fieldIndex(t *testing.T, fields []field, key string) int {
 	}
 	t.Fatalf("field %q not found", key)
 	return -1
+}
+
+// Setup never leaves a monitor ungated by accident: a blank answer generates a
+// token the same way a blank protocol credential generates one.
+func TestBuildConfigGeneratesMonitorTokenWhenBlank(t *testing.T) {
+	w := installFlowWithMonitorToken(t, "")
+	cfg, err := w.buildConfig()
+	if err != nil {
+		t.Fatalf("buildConfig error: %v", err)
+	}
+	if err := uiparams.ValidateMonitorToken(cfg.MonitorToken); err != nil || cfg.MonitorToken == "" {
+		t.Fatalf("generated monitor token = %q (%v)", cfg.MonitorToken, err)
+	}
+}
+
+func TestBuildConfigKeepsTypedMonitorToken(t *testing.T) {
+	w := installFlowWithMonitorToken(t, "s3cret-monitor-token")
+	cfg, err := w.buildConfig()
+	if err != nil {
+		t.Fatalf("buildConfig error: %v", err)
+	}
+	if cfg.MonitorToken != "s3cret-monitor-token" {
+		t.Fatalf("MonitorToken = %q", cfg.MonitorToken)
+	}
+}
+
+// The sentinel is the deliberate way to publish an ungated dashboard, so it
+// must not be replaced by a generated token.
+func TestBuildConfigHonoursMonitorTokenNone(t *testing.T) {
+	w := installFlowWithMonitorToken(t, uiparams.MonitorTokenNone)
+	cfg, err := w.buildConfig()
+	if err != nil {
+		t.Fatalf("buildConfig error: %v", err)
+	}
+	if cfg.MonitorToken != "" {
+		t.Fatalf("MonitorToken = %q, want empty", cfg.MonitorToken)
+	}
+}
+
+func installFlowWithMonitorToken(t *testing.T, token string) *installFlow {
+	t.Helper()
+	return &installFlow{
+		form: installFormWithValuesForTest(map[string]string{
+			"domain":                   "example.com",
+			"protocols":                "tuic",
+			"tuic_uuid":                "22222222-2222-4222-8222-222222222222",
+			"tuic_password":            "tuic-secret",
+			"tuic_port":                "24444",
+			"display_name":             "Node",
+			"site_template":            "forty",
+			"subscribe_port":           "24445",
+			"subscribe_salt":           "abc",
+			"monitor":                  "yes",
+			"monitor_alias":            "JP-local",
+			"monitor_token":            token,
+			"monitor_public_port":      "24447",
+			"monitor_port":             "24446",
+			"monitor_interval_seconds": "60",
+			"reset_day":                "1",
+			"reset_hour":               "5",
+		}),
+		host: supportedTestHost(),
+	}
 }

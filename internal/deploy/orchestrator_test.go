@@ -1071,3 +1071,40 @@ func TestLoadProtocolConfigDefaultsMonitorDomainToInstallDomain(t *testing.T) {
 		t.Fatalf("monitor host = %q, want %q", loaded.MonitorHost(), cfg.Domain)
 	}
 }
+
+func TestInstallStateRoundTripsMonitorToken(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorToken = "s3cret-monitor-token"
+	if err := WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	loaded, err := LoadProtocolConfig(layout)
+	if err != nil {
+		t.Fatalf("LoadProtocolConfig: %v", err)
+	}
+	if loaded.MonitorToken != cfg.MonitorToken {
+		t.Fatalf("monitor token = %q, want %q", loaded.MonitorToken, cfg.MonitorToken)
+	}
+}
+
+// An installation made before the token existed has no monitor_token key and
+// must keep publishing its dashboard rather than locking the operator out.
+func TestLoadProtocolConfigWithoutMonitorTokenReadsAsUngated(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	if err := WriteInstallState(layout.StateDir, testConfig(t)); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	if err := os.Remove(filepath.Join(layout.StateDir, "monitor_token")); err != nil {
+		t.Fatalf("remove monitor_token: %v", err)
+	}
+	loaded, err := LoadProtocolConfig(layout)
+	if err != nil {
+		t.Fatalf("LoadProtocolConfig: %v", err)
+	}
+	if loaded.MonitorToken != "" {
+		t.Fatalf("monitor token = %q, want empty", loaded.MonitorToken)
+	}
+}

@@ -99,6 +99,7 @@ func loadStatus() Status {
 		MonitorCertState: monitorCertState,
 		Protocols:        protocolStrings(protocolsFromValue(readStatusState(store, "enabled_protocols"))),
 		MonitorUI:        monitorUIStatus(monitorDomain, monitorPublicPort, monitorEnabled),
+		MonitorToken:     monitorTokenStatus(store, monitorEnabled),
 		TrafficQuota:     trafficQuotaStatus(store),
 		Groups: subscriptionGroupStatuses(layout, domain, subscribePort,
 			readStatusState(store, "display_name")),
@@ -350,6 +351,16 @@ func monitorUIStatus(domain, port string, enabled bool) string {
 		return ""
 	}
 	return fmt.Sprintf("https://%s:%s/monitor/", domain, port)
+}
+
+// monitorTokenStatus returns the token the dashboard asks for. It is printed
+// in full because there is nowhere else to read it back from; installs made
+// before the token existed have none and report so.
+func monitorTokenStatus(store state.Store, enabled bool) string {
+	if !enabled {
+		return ""
+	}
+	return readStatusState(store, monitor.AccessTokenFile)
 }
 
 func trafficQuotaStatus(store state.Store) string {

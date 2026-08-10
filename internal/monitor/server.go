@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,17 +41,21 @@ type ServiceController interface {
 
 // Config configures the monitor service.
 type Config struct {
-	Listen               string
-	Interface            string
-	SamplingInterval     time.Duration
-	InLimitBytes         uint64
-	OutLimitBytes        uint64
-	TotalLimitBytes      uint64
-	ResetDay             int
-	ResetHour            int
-	Alias                string
-	RemoteMonitorPath    string
-	LocalPositionPath    string
+	Listen            string
+	Interface         string
+	SamplingInterval  time.Duration
+	InLimitBytes      uint64
+	OutLimitBytes     uint64
+	TotalLimitBytes   uint64
+	ResetDay          int
+	ResetHour         int
+	Alias             string
+	RemoteMonitorPath string
+	LocalPositionPath string
+	// AccessToken guards the JSON API. An empty token leaves the API open,
+	// which is the state every installation made before the token existed is
+	// in; those keep working until an operator sets one.
+	AccessToken          string
 	RefreshRemoteSources func(context.Context) error
 	// FetchRemoteData retrieves one fixed drill-down resource for a stable
 	// source ID. The hub wires this to its authenticated spoke-agent API; the
@@ -128,16 +133,47 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 
 // Handler returns the HTTP handler exposing the API and the embedded UI.
 func (m *Monitor) Handler() http.Handler {
+	api := http.NewServeMux()
+	api.HandleFunc("/api/summary", m.handleSummary)
+	api.HandleFunc("/api/traffic-trend", m.handleTrafficTrend)
+	api.HandleFunc("/api/traffic-recent", m.handleTrafficRecent)
+	api.HandleFunc("/api/resource-trend", m.handleResourceTrend)
+	api.HandleFunc("/api/resource-recent", m.handleResourceRecent)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/summary", m.handleSummary)
-	mux.HandleFunc("/api/traffic-trend", m.handleTrafficTrend)
-	mux.HandleFunc("/api/traffic-recent", m.handleTrafficRecent)
-	mux.HandleFunc("/api/resource-trend", m.handleResourceTrend)
-	mux.HandleFunc("/api/resource-recent", m.handleResourceRecent)
+	// Only the JSON API is guarded. The static bundle has to load unauthenticated
+	// so the dashboard can ask for the token in the first place.
+	mux.Handle("/api/", m.authorizeAPI(api))
 	if sub, err := fs.Sub(assets.FS, "monitor-ui"); err == nil {
 		mux.Handle("/", http.FileServer(http.FS(sub)))
 	}
 	return mux
+}
+
+// authorizeAPI rejects API requests that do not carry the configured access
+// token.
+func (m *Monitor) authorizeAPI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		want := m.cfg.AccessToken
+		if want != "" && subtle.ConstantTimeCompare([]byte(requestAccessToken(r)), []byte(want)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="monitor"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requestAccessToken reads the token from the Authorization header, falling
+// back to X-Monitor-Token. The query string is deliberately not consulted: it
+// would land in Nginx access logs, browser history, and Referer headers.
+func requestAccessToken(r *http.Request) string {
+	if values := r.Header.Values("Authorization"); len(values) == 1 {
+		if token, ok := strings.CutPrefix(values[0], "Bearer "); ok {
+			return token
+		}
+	}
+	return r.Header.Get("X-Monitor-Token")
 }
 
 // summary is the JSON payload returned by /api/summary.

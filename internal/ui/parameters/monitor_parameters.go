@@ -15,6 +15,7 @@ const (
 	LabelMonitorEnabled   = "Enable monitor"
 	LabelMonitorWebUI     = "Enable monitor web UI"
 	LabelMonitorAlias     = "Monitor alias"
+	LabelMonitorToken     = "Monitor access token"
 	LabelMonitorDomain    = "Monitor domain"
 	LabelMonitorPublic    = "Monitor public HTTPS port"
 	LabelMonitorPort      = "Monitor local port"
@@ -34,7 +35,18 @@ const (
 	NoteMonitorWebUI      = "Choose no to serve the API only."
 	NoteMonitorAlias      = "Names the hub on the monitor dashboard."
 	NoteSpokeMonitorAlias = "Blank uses the node alias."
-	NoteMonitorDomain     = "Serves the monitor under its own name, so it is not reachable through the masquerade site's domain. " +
+
+	// MonitorTokenNone is the word that clears the token. Blank already means
+	// "keep the default", so turning the gate off needs a word of its own; the
+	// minimum token length keeps it from colliding with a real token.
+	MonitorTokenNone = "none"
+
+	noteMonitorTokenShared = "Guards the monitor dashboard and its API; without it the dashboard shows nothing. " +
+		"At least " + minMonitorTokenLengthText + " characters, no spaces."
+	NoteMonitorTokenInstall = noteMonitorTokenShared + " Blank generates a random token."
+	NoteMonitorTokenEdit    = noteMonitorTokenShared +
+		" Blank keeps the current token; enter " + MonitorTokenNone + " to publish the dashboard without one."
+	NoteMonitorDomain = "Serves the monitor under its own name, so it is not reachable through the masquerade site's domain. " +
 		NoteDNSZone + " It is not required to resolve to this server."
 	NoteMonitorPublic    = "Nginx listens on this public HTTPS port for /monitor."
 	NoteMonitorPort      = "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port."
@@ -63,6 +75,7 @@ func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field 
 		{Key: "monitor", Label: LabelMonitorEnabled, Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to skip the monitor service."},
 		{Key: "monitor_frontend", Label: LabelMonitorWebUI, Def: "yes", Options: []string{"yes", "no"}, Note: NoteMonitorWebUI, Skip: monitorDisabled},
 		{Key: "monitor_alias", Label: LabelMonitorAlias, Def: deploy.DefaultMonitorAlias, Note: NoteMonitorAlias, Skip: monitorDisabled},
+		{Key: "monitor_token", Label: LabelMonitorToken, Note: NoteMonitorTokenInstall, Secret: true, Skip: monitorDisabled},
 		{Key: "monitor_domain", Label: LabelMonitorDomain, DefFunc: installDomainDefault, Note: NoteMonitorDomain, Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: LabelMonitorPublic, Def: strconv.Itoa(deploy.DefaultMonitorPublicPort), Note: NoteMonitorPublic, Skip: monitorDisabled},
 		{Key: "monitor_port", Label: LabelMonitorPort, Def: strconv.Itoa(deploy.DefaultMonitorPort), Note: NoteMonitorPort, Skip: monitorDisabled},
@@ -80,6 +93,7 @@ func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]strin
 		{Key: "monitor", Label: LabelMonitorEnabled, Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: "Choose no to stop the monitor service."},
 		{Key: "monitor_frontend", Label: LabelMonitorWebUI, Def: YesNoString(cfg.DeployMonitorFrontend), Options: []string{"yes", "no"}, Note: NoteMonitorWebUI, Skip: monitorDisabled},
 		{Key: "monitor_alias", Label: LabelMonitorAlias, Def: StringDefault(cfg.MonitorAlias, deploy.DefaultMonitorAlias), Note: NoteMonitorAlias, Skip: monitorDisabled},
+		{Key: "monitor_token", Label: LabelMonitorToken, Def: cfg.MonitorToken, Note: NoteMonitorTokenEdit, Secret: true, Skip: monitorDisabled},
 		{Key: "monitor_domain", Label: LabelMonitorDomain, Def: cfg.MonitorHost(), Note: NoteMonitorDomain, Skip: monitorDisabled},
 		{Key: "monitor_public_port", Label: LabelMonitorPublic, Def: strconv.Itoa(cfg.MonitorPublicPort), Note: NoteMonitorPublic, Skip: monitorDisabled},
 		{Key: "monitor_port", Label: LabelMonitorPort, Def: strconv.Itoa(cfg.MonitorPort), Note: NoteMonitorPort, Skip: monitorDisabled},
@@ -106,6 +120,8 @@ func ValidateMonitorParameterValue(key, val string) error {
 		if strings.TrimSpace(val) == "" {
 			return fmt.Errorf("monitor alias is required")
 		}
+	case key == "monitor_token":
+		return ValidateMonitorToken(val)
 	case key == "monitor_domain":
 		if strings.TrimSpace(val) == "" {
 			return fmt.Errorf("monitor domain is required")
@@ -136,6 +152,51 @@ func ValidateMonitorParameterValue(key, val string) error {
 		}
 	}
 	return nil
+}
+
+const (
+	minMonitorTokenLength     = 8
+	minMonitorTokenLengthText = "8"
+	maxMonitorTokenLength     = 128
+)
+
+// ValidateMonitorToken accepts a blank answer (the field default applies), the
+// clearing sentinel, or a token of printable non-space ASCII. The token travels
+// in an HTTP header, so anything outside that range cannot be sent reliably.
+func ValidateMonitorToken(val string) error {
+	token := strings.TrimSpace(val)
+	if token == "" || token == MonitorTokenNone {
+		return nil
+	}
+	if len(token) < minMonitorTokenLength || len(token) > maxMonitorTokenLength {
+		return fmt.Errorf("monitor access token must be %d-%d characters", minMonitorTokenLength, maxMonitorTokenLength)
+	}
+	for _, r := range token {
+		if r <= ' ' || r > '~' {
+			return fmt.Errorf("monitor access token must use printable ASCII without spaces")
+		}
+	}
+	return nil
+}
+
+// MonitorTokenValue resolves a submitted token to the value to store. The
+// clearing sentinel becomes an empty token, which publishes the dashboard
+// without a gate.
+func MonitorTokenValue(val string) string {
+	token := strings.TrimSpace(val)
+	if token == MonitorTokenNone {
+		return ""
+	}
+	return token
+}
+
+// MonitorTokenSummary renders a token for a summary screen without reprinting
+// the secret. Status is the one screen that shows the token itself.
+func MonitorTokenSummary(val string) string {
+	if MonitorTokenValue(val) == "" {
+		return "none"
+	}
+	return "set"
 }
 
 func ValidateRequiredPort(val string) error {

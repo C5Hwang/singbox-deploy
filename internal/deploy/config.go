@@ -101,9 +101,13 @@ type Config struct {
 	// is what installations made before the split recorded.
 	MonitorDomain string
 
-	DeployMonitor          bool
-	DeployMonitorFrontend  bool
-	MonitorAlias           string
+	DeployMonitor         bool
+	DeployMonitorFrontend bool
+	MonitorAlias          string
+	// MonitorToken is the bearer token the monitor API requires. Empty
+	// publishes the dashboard without one, which is what installations made
+	// before the token existed recorded.
+	MonitorToken           string
 	TrafficInLimitBytes    uint64
 	TrafficOutLimitBytes   uint64
 	TrafficTotalLimitBytes uint64

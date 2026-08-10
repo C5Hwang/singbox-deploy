@@ -609,6 +609,15 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 	if !deployMonitor {
 		monitorDomain = ""
 	}
+	monitorToken := uiparams.MonitorTokenValue(vals["monitor_token"])
+	if deployMonitor && monitorToken == "" && vals["monitor_token"] != uiparams.MonitorTokenNone {
+		// Same rule the protocol credentials follow: a blank secret is filled in
+		// for the operator rather than left off. Only the explicit sentinel
+		// publishes the dashboard without a token.
+		if monitorToken, err = credentials.Password(); err != nil {
+			return deploy.Config{}, err
+		}
+	}
 
 	iface := ""
 	if deployMonitor {
@@ -639,6 +648,7 @@ func (w *installFlow) buildConfig() (deploy.Config, error) {
 		DeployMonitor:          deployMonitor,
 		DeployMonitorFrontend:  deployMonitorFrontend,
 		MonitorAlias:           monitorAlias,
+		MonitorToken:           monitorToken,
 		TrafficInLimitBytes:    inLimitBytes,
 		TrafficOutLimitBytes:   outLimitBytes,
 		TrafficTotalLimitBytes: totalLimitBytes,
@@ -928,6 +938,7 @@ func (w *installForm) summary(host system.Host) string {
 	if deployMonitor {
 		rows = append(rows,
 			summaryRow(uiparams.LabelMonitorAlias, or(w.values["monitor_alias"], deploy.DefaultMonitorAlias)),
+			summaryRow(uiparams.LabelMonitorToken, installMonitorTokenSummary(w.values["monitor_token"])),
 			summaryRow(uiparams.LabelMonitorDomain, or(w.values["monitor_domain"], w.values["domain"])),
 			summaryRow(uiparams.LabelMonitorPublic, or(w.values["monitor_public_port"], strconv.Itoa(deploy.DefaultMonitorPublicPort))),
 			summaryRow(uiparams.LabelMonitorPort, or(w.values["monitor_port"], strconv.Itoa(deploy.DefaultMonitorPort))),
@@ -966,6 +977,15 @@ func trafficLimitSummary(value string) string {
 		return "unlimited"
 	}
 	return value
+}
+
+// installMonitorTokenSummary keeps the secret off the confirmation screen; the
+// Status screen is where the operator reads the token back.
+func installMonitorTokenSummary(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "random"
+	}
+	return uiparams.MonitorTokenSummary(value)
 }
 
 func summaryValueOrRandom(value string) string {

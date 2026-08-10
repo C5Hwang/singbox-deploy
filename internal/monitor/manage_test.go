@@ -57,6 +57,7 @@ func toManageConfig(cfg deploy.Config) monitor.ManageConfig {
 		MonitorDomain:          cfg.MonitorHost(),
 		DeployMonitor:          cfg.DeployMonitor,
 		MonitorAlias:           cfg.MonitorAlias,
+		MonitorToken:           cfg.MonitorToken,
 		MonitorPublicPort:      cfg.MonitorPublicPort,
 		MonitorPort:            cfg.MonitorPort,
 		MonitorInterface:       cfg.MonitorInterface,
@@ -408,5 +409,69 @@ func TestUpdateSettingsRunsNoCertificateStepForAnUnchangedMonitorDomain(t *testi
 	}
 	if !slices.Contains(record, "step:Nginx") {
 		t.Fatalf("a changed monitor port should still rewrite Nginx: %v", record)
+	}
+}
+
+// The monitor reads its token from state when it starts, and the state step
+// runs last, so the token has to be on disk before the service is restarted.
+func TestUpdateSettingsWritesAccessTokenBeforeRestartingTheService(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorToken = "old-monitor-token"
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	var record []string
+	opts := monitorDomainUpdateOptions(t, root, layout, &record)
+	opts.SetMonitor = true
+	opts.DeployMonitor = true
+	opts.MonitorToken = "new-monitor-token"
+	// Capture what the token file holds at the moment the unit is rendered,
+	// which is immediately before the restart commands run.
+	var tokenAtRender string
+	render := opts.RenderMonitorUnit
+	opts.RenderMonitorUnit = func(l paths.Layout, deployBin string, mcfg monitor.ManageConfig) (string, error) {
+		tokenAtRender = monitor.ReadAccessToken(l.StateDir)
+		return render(l, deployBin, mcfg)
+	}
+
+	updated, err := monitor.UpdateSettings(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	if updated.MonitorToken != "new-monitor-token" {
+		t.Fatalf("MonitorToken = %q, want %q", updated.MonitorToken, "new-monitor-token")
+	}
+	if tokenAtRender != "new-monitor-token" {
+		t.Fatalf("token seen by the restarting monitor = %q, want %q", tokenAtRender, "new-monitor-token")
+	}
+}
+
+// An empty token is the meaningful "publish without a gate" answer, so it must
+// survive the round trip rather than being treated as "leave unchanged".
+func TestUpdateSettingsClearsAccessToken(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorToken = "old-monitor-token"
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	var record []string
+	opts := monitorDomainUpdateOptions(t, root, layout, &record)
+	opts.SetMonitor = true
+	opts.DeployMonitor = true
+	opts.MonitorToken = ""
+
+	updated, err := monitor.UpdateSettings(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	if updated.MonitorToken != "" {
+		t.Fatalf("MonitorToken = %q, want empty", updated.MonitorToken)
+	}
+	if got := monitor.ReadAccessToken(layout.StateDir); got != "" {
+		t.Fatalf("stored token = %q, want empty", got)
 	}
 }

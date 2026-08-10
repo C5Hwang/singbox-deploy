@@ -29,10 +29,13 @@ type ManageConfig struct {
 	Domain string
 	// MonitorDomain is the hostname the monitor is published under. It is
 	// normalized to Domain when unset, matching deploy.Config.MonitorHost.
-	MonitorDomain          string
-	DeployMonitor          bool
-	DeployMonitorFrontend  bool
-	MonitorAlias           string
+	MonitorDomain         string
+	DeployMonitor         bool
+	DeployMonitorFrontend bool
+	MonitorAlias          string
+	// MonitorToken guards the monitor API. Empty means the dashboard is
+	// published without a token, which is what pre-token installs recorded.
+	MonitorToken           string
 	MonitorPublicPort      int
 	MonitorPort            int
 	MonitorInterface       string
@@ -70,6 +73,7 @@ type UpdateOptions struct {
 	DeployMonitor         bool
 	DeployMonitorFrontend bool
 	MonitorAlias          string
+	MonitorToken          string
 	MonitorDomain         string
 	MonitorPublicPort     int
 	MonitorPort           int
@@ -206,6 +210,9 @@ func applyUpdateOptions(cfg *ManageConfig, opts UpdateOptions) {
 	if strings.TrimSpace(opts.MonitorAlias) != "" {
 		cfg.MonitorAlias = strings.TrimSpace(opts.MonitorAlias)
 	}
+	// Assigned unconditionally: the local form always submits this field, and
+	// an empty value is the meaningful "publish without a token" answer.
+	cfg.MonitorToken = strings.TrimSpace(opts.MonitorToken)
 	if strings.TrimSpace(opts.MonitorDomain) != "" {
 		cfg.MonitorDomain = strings.TrimSpace(opts.MonitorDomain)
 	}
@@ -371,6 +378,12 @@ func applyManageMonitorService(opts UpdateOptions, cfg ManageConfig) error {
 		return opts.RunCommands(opts.Runner,
 			system.Command{Name: "systemctl", Args: []string{"daemon-reload"}},
 		)
+	}
+	// The token is read from state when the monitor starts, and the state step
+	// runs after this one, so write it here or the restarted service would come
+	// back holding the token the operator just replaced.
+	if err := WriteAccessToken(opts.Layout.StateDir, cfg.MonitorToken); err != nil {
+		return err
 	}
 	unit, err := opts.RenderMonitorUnit(opts.Layout, opts.DeployBin, cfg)
 	if err != nil {

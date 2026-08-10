@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 )
@@ -70,6 +71,7 @@ func LoadProtocolConfig(layout paths.Layout) (Config, error) {
 		DeployMonitor:          monitorStateValue != "no",
 		DeployMonitorFrontend:  monitorFrontendValue != "no",
 		MonitorAlias:           monitorAlias,
+		MonitorToken:           readProtocolStateDefault(store, monitor.AccessTokenFile, ""),
 		TrafficInLimitBytes:    readProtocolStateUintDefault(store, "traffic_in_limit_bytes", 0),
 		TrafficOutLimitBytes:   readProtocolStateUintDefault(store, "traffic_out_limit_bytes", 0),
 		TrafficTotalLimitBytes: readProtocolStateUintDefault(store, "traffic_total_limit_bytes", 0),

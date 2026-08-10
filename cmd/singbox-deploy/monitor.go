@@ -78,6 +78,10 @@ func runMonitor(args []string) error {
 		Alias:             *alias,
 		RemoteMonitorPath: *remoteMonitorPath,
 		LocalPositionPath: filepath.Join(layout.StateDir, "local_monitor_position"),
+		// Read from state rather than passed as a flag, so the secret never
+		// reaches the unit file, the process table, or the journal. An older
+		// unit that predates the token therefore still picks one up.
+		AccessToken: monitor.ReadAccessToken(layout.StateDir),
 		// The hub pulls every spoke's monitor summary over the WireGuard overlay,
 		// so monitor data never traverses the public internet.
 		RefreshRemoteSources: func(ctx context.Context) error {

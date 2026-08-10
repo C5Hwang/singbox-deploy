@@ -11,6 +11,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/config"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/release"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -551,6 +552,7 @@ func WriteInstallState(stateDir string, cfg Config) error {
 	}
 	if cfg.DeployMonitor {
 		state["monitor_alias"] = cfg.MonitorAlias
+		state[monitor.AccessTokenFile] = cfg.MonitorToken
 		state["traffic_in_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficInLimitBytes)
 		state["traffic_out_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficOutLimitBytes)
 		state["traffic_total_limit_bytes"] = fmt.Sprintf("%d", cfg.TrafficTotalLimitBytes)
