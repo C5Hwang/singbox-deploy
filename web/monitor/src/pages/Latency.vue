@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import LatencyMatrix from "../components/LatencyMatrix.vue";
 import LatencyTrendModal from "../components/LatencyTrendModal.vue";
 import { fetchLatency } from "../api";
-import { formatDateTime } from "../utils";
-import type { LatencySnapshot, PingTarget, Summary } from "../types";
+import type { LatencySnapshot, Summary } from "../types";
 
 const props = defineProps<{ summary: Summary | null }>();
 
@@ -65,110 +65,71 @@ onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer);
 });
 
-function latestFor(node: NodeLatency, targetID: string) {
-  return node.snapshot?.latest.find((p) => p.target === targetID);
-}
-
-function latencyText(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined) return "NA";
-  return `${ms.toFixed(ms >= 100 ? 0 : 1)} ms`;
-}
-
-// Loss is what turns a plausible latency into an unusable route, so it is the
-// value the tiles are toned by.
-function lossTone(lossPct: number | undefined): string {
-  if (lossPct === undefined) return " gray";
-  if (lossPct >= 50) return " danger";
-  if (lossPct > 0) return " warn";
-  return "";
-}
-
 // The card's headline is the node's median reachable probe: a mean would let
 // one black-holed carrier speak for the whole node.
 function medianLatency(node: NodeLatency): number | null {
-  const values = (node.snapshot?.latest ?? []).map((p) => p.avgMs).filter((v): v is number => v !== null).sort((a, b) => a - b);
+  const values = (node.snapshot?.latest ?? [])
+    .map((p) => p.avgMs)
+    .filter((v): v is number => v !== null)
+    .sort((a, b) => a - b);
   if (values.length === 0) return null;
   return values[Math.floor((values.length - 1) / 2)];
 }
 
-function reachable(node: NodeLatency): string {
+function headline(node: NodeLatency): string {
+  const ms = medianLatency(node);
+  return ms === null ? "NA" : `${ms.toFixed(ms >= 100 ? 0 : 1)} ms`;
+}
+
+// The dot is the whole status report: green when every probe answered clean,
+// amber when something is losing packets, red when a route is down.
+function statusTone(node: NodeLatency): string {
   const latest = node.snapshot?.latest ?? [];
-  const up = latest.filter((p) => p.lossPct < 100).length;
-  return `${up}/${latest.length || node.snapshot?.targets.length || 0} probes answering`;
+  if (node.error || latest.length === 0) return "gray";
+  if (latest.some((p) => p.lossPct >= 100)) return "danger";
+  if (latest.some((p) => p.lossPct > 0)) return "warn";
+  return "ok";
 }
 
-function sampledAt(node: NodeLatency): string {
-  const newest = (node.snapshot?.latest ?? []).reduce((max, p) => Math.max(max, p.ts), 0);
-  return newest > 0 ? formatDateTime(newest * 1000) : "";
-}
-
-function targetsOf(node: NodeLatency): PingTarget[] {
-  return node.snapshot?.targets ?? [];
-}
-
-function worstTone(node: NodeLatency): string {
+function statusLabel(node: NodeLatency): string {
   const latest = node.snapshot?.latest ?? [];
-  if (latest.length === 0) return " gray";
-  return lossTone(Math.max(...latest.map((p) => p.lossPct)));
+  const answering = latest.filter((p) => p.lossPct < 100).length;
+  if (node.error) return "unavailable";
+  if (latest.length === 0) return "no data";
+  return `${answering} of ${latest.length} probes answering`;
 }
 </script>
 
 <template>
-  <section class="grid">
-    <article class="card span-12 latency-head">
-      <div>
-        <p class="eyebrow">Probe target</p>
-        <p class="metric-value small">Three carriers · Beijing, Shanghai, Guangzhou</p>
-        <p class="metric-detail">
-          TCP connect to each carrier's CDN node, five probes every minute, seven days of history.
-          Click a node for its trend.
-        </p>
-      </div>
-    </article>
-  </section>
-
   <p v-if="loading && nodes.length === 0" class="no-data">Loading latency data...</p>
 
-  <section class="grid sources" aria-label="latency by node">
+  <!-- The colour is a second reading of a number that is already printed on
+       every cell, so the key is a strip and two words rather than a legend. -->
+  <div v-if="nodes.length" class="scale">
+    <span>faster</span>
+    <i v-for="step in ['#86b6ef', '#3987e5', '#256abf', '#104281']" :key="step" :style="{ background: step }"></i>
+    <span>slower</span>
+  </div>
+
+  <section class="grid" aria-label="latency by node">
     <article
       v-for="node in nodes"
       :key="node.key"
       class="card span-6 node-card"
       :class="{ clickable: !!node.snapshot }"
+      :title="node.snapshot ? 'Open the latency trend' : ''"
       @click="node.snapshot && (openNode = node)"
     >
-      <div class="rc-head">
-        <div class="rc-title">
+      <div class="head">
+        <div class="title">
           <p class="eyebrow">{{ node.name }}</p>
-          <p class="metric-value">{{ latencyText(medianLatency(node)) }}</p>
-          <p class="metric-detail">
-            <span v-if="node.snapshot">median · {{ reachable(node) }}</span>
-            <span v-else>unavailable</span>
-          </p>
+          <p class="metric-value">{{ headline(node) }}</p>
         </div>
-        <div class="rc-side">
-          <span :class="`status${worstTone(node)}`"><i class="dot"></i>{{ sampledAt(node) || "no data" }}</span>
-        </div>
+        <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
       </div>
 
-      <p v-if="node.error" class="no-data">
-        Latency is unavailable for this node: {{ node.error }}. A node still running an older agent does not
-        report latency until it is upgraded.
-      </p>
-      <p v-else-if="node.snapshot && targetsOf(node).length === 0" class="no-data">
-        This node reports no latency targets.
-      </p>
-      <div v-else class="probe-grid">
-        <div v-for="target in targetsOf(node)" :key="target.id" class="probe">
-          <span class="probe-label">{{ target.carrier }} · {{ target.city }}</span>
-          <span class="probe-value">{{ latencyText(latestFor(node, target.id)?.avgMs) }}</span>
-          <span :class="`probe-loss${lossTone(latestFor(node, target.id)?.lossPct)}`">
-            {{ latestFor(node, target.id) ? `${Math.round(latestFor(node, target.id)!.lossPct)}%` : "—" }}
-          </span>
-        </div>
-      </div>
-
-      <p class="view-trend-row"><span class="view-trend">View trend<svg viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></p>
+      <p v-if="node.error" class="no-data">Latency is unavailable for this node.</p>
+      <LatencyMatrix v-else-if="node.snapshot" :snapshot="node.snapshot" />
     </article>
   </section>
 
@@ -181,21 +142,31 @@ function worstTone(node: NodeLatency): string {
 </template>
 
 <style scoped>
-.latency-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.scale {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 2px 12px; color: var(--muted); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.03em; text-transform: uppercase;
+}
+.scale i { width: 26px; height: 7px; border-radius: 2px; }
 .node-card { display: flex; flex-direction: column; }
-.probe-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 8px 14px; margin-top: 18px;
+.head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.title .metric-value { margin-top: 4px; font-size: 28px; }
+/* The corner carries a state, and a state is a dot. The words that were here
+   said what the matrix underneath already shows. */
+.dot-only {
+  width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0; margin-top: 6px;
+  position: relative;
 }
-.probe {
-  display: grid; grid-template-columns: 1fr auto auto; align-items: baseline; gap: 8px;
-  padding: 8px 0; border-top: 1px solid var(--line);
+.dot-only::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: currentColor; animation: pulseDot 2.4s ease-in-out infinite;
 }
-.probe-label { color: var(--muted); font-size: 12px; font-weight: 650; }
-.probe-value { font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.probe-loss { font-size: 11px; font-weight: 750; color: #15803d; font-variant-numeric: tabular-nums; }
-.probe-loss.warn { color: var(--yellow); }
-.probe-loss.danger { color: var(--red); }
-.probe-loss.gray { color: var(--muted); }
-.view-trend-row { margin: 16px 0 0; display: flex; justify-content: flex-end; }
+.dot-only.ok { background: #0ca30c; color: #0ca30c; }
+.dot-only.warn { background: #fab219; color: #fab219; }
+.dot-only.danger { background: #d03b3b; color: #d03b3b; }
+.dot-only.gray { background: #98a2b3; color: #98a2b3; }
+.dot-only.gray::before { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .dot-only::before { animation: none; }
+}
 </style>
