@@ -66,20 +66,41 @@ function submit() {
   width: 100%; border: 1px solid var(--line); border-radius: 14px;
   padding: 13px 16px; background: white; color: var(--text);
   font: inherit; font-size: 15px; letter-spacing: 0.04em;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s;
 }
+/* The focus ring is an outline, not an animated shadow. Returning to the tab
+   re-focuses this input, and a transitioned ring makes that read as a flash of
+   the whole field; an outline just appears with the caret. */
 .gate-input:focus {
-  outline: none; border-color: var(--blue);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue), transparent 88%);
+  outline: 3px solid color-mix(in srgb, var(--blue), transparent 82%);
+  outline-offset: 0;
+  border-color: var(--blue);
 }
 .gate-error { margin: 12px 0 0; color: var(--red); font-size: 13px; font-weight: 650; }
+/* Typing the first character enables this button, and clearing the field
+   disables it again. Every property that differs between the two states is
+   transitioned on the same curve — the shadow used to snap from none to a wide
+   glow while the opacity faded, and that mismatch under a moving element is
+   what read as a flicker on every keystroke that crossed empty. */
 .gate-button {
+  position: relative; isolation: isolate;
   width: 100%; margin-top: 18px; border: none; border-radius: 14px; padding: 13px;
   background: linear-gradient(135deg, var(--blue), var(--cyan)); color: white;
   font: inherit; font-size: 15px; font-weight: 750; cursor: pointer;
+  opacity: 1;
+  transition: filter 0.18s ease, transform 0.18s ease, opacity 0.18s ease;
+}
+/* The glow is a pseudo-element so it fades with opacity — a compositor-friendly
+   property — rather than the browser re-rasterising a box-shadow each frame. */
+.gate-button::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit;
   box-shadow: 0 12px 28px rgba(37, 99, 235, 0.28);
-  transition: filter 0.15s, transform 0.15s, opacity 0.15s;
+  opacity: 1; transition: opacity 0.18s ease;
 }
 .gate-button:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
-.gate-button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+.gate-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.gate-button:disabled::after { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .gate-button, .gate-button::after { transition: none; }
+}
 </style>
