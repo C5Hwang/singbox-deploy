@@ -107,8 +107,9 @@ function statusLabel(node: NodeLatency): string {
        every cell, so the key is a strip and two words rather than a legend. -->
   <div v-if="nodes.length" class="scale">
     <span>faster</span>
-    <i v-for="step in ['#86b6ef', '#3987e5', '#256abf', '#104281']" :key="step" :style="{ background: step }"></i>
+    <i v-for="step in ['#74c56e', '#b9861d', '#ad4e25', '#932220']" :key="step" :style="{ background: step }"></i>
     <span>slower</span>
+    <em class="scale-loss"><i></i>packet loss</em>
   </div>
 
   <section class="grid" aria-label="latency by node">
@@ -148,6 +149,8 @@ function statusLabel(node: NodeLatency): string {
   letter-spacing: 0.03em; text-transform: uppercase;
 }
 .scale i { width: 26px; height: 7px; border-radius: 2px; }
+.scale-loss { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; font-style: normal; }
+.scale-loss i { width: 18px; height: 4px; border-radius: 999px; background: #fab219; }
 .node-card { display: flex; flex-direction: column; }
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .title .metric-value { margin-top: 4px; font-size: 28px; }

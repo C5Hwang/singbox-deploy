@@ -7,20 +7,30 @@ import type { LatencySnapshot, PingLatestPoint, PingTarget } from "../types";
 // are a row and a column rather than a search through nine text lines.
 const props = defineProps<{ snapshot: LatencySnapshot }>();
 
-// Latency buckets, not a continuous ramp. The cells are discrete tiles with the
-// value printed on them, so an ordinal scale is the honest encoding: one hue,
-// light to dark, four steps whose lightest still stands off the card surface.
-// Steps are the documented blue ramp at 250 / 400 / 500 / 650.
+// Latency buckets on a green-to-red ramp, because "fast is good, slow is bad"
+// is the reading and a single hue cannot say it.
+//
+// Red and green are exactly the pair red-green colour blindness collapses, so
+// the ramp is built to survive that: its lightness falls monotonically across
+// the four steps (validated: monotone, every adjacent gap >= 0.06, light end
+// 2.06:1 on the surface), which leaves the steps distinguishable by brightness
+// alone. Every cell also prints its own number, so colour is never the only
+// reading. Ink is chosen per step and clears 4.5:1 on all four.
 const BUCKETS = [
-  { limit: 150, fill: "#86b6ef", ink: "#0d2a52" },
-  { limit: 250, fill: "#3987e5", ink: "#ffffff" },
-  { limit: 350, fill: "#256abf", ink: "#ffffff" },
-  { limit: Infinity, fill: "#104281", ink: "#ffffff" },
+  { limit: 150, fill: "#74c56e", ink: "#123f10" },
+  { limit: 250, fill: "#b9861d", ink: "#241a02" },
+  { limit: 350, fill: "#ad4e25", ink: "#ffffff" },
+  { limit: Infinity, fill: "#932220", ink: "#ffffff" },
 ];
-// A probe that answered nothing is not "slow", it is out. It gets the surface
-// and the critical status colour rather than the far end of the latency ramp.
-const DEAD = { fill: "#fdf0f0", ink: "#b91c1c" };
+// A probe that answered nothing is not "slow", it is out — off the end of the
+// ramp rather than at the far end of it.
+const DEAD = { fill: "#7a1c1a", ink: "#ffffff" };
 const MISSING = { fill: "#f4f6fa", ink: "#98a2b3" };
+
+// Loss is a state, not a magnitude, so it takes the reserved status colours
+// rather than a step of the latency ramp.
+const LOSS_WARNING = "#fab219";
+const LOSS_CRITICAL = "#ff6b6b";
 
 const carriers = computed(() => unique((t) => t.carrier));
 const cities = computed(() => unique((t) => t.city));
@@ -34,49 +44,50 @@ function unique(pick: (t: PingTarget) => string): string[] {
   return seen;
 }
 
-function targetAt(carrier: string, city: string): PingTarget | undefined {
-  return props.snapshot.targets.find((t) => t.carrier === carrier && t.city === city);
-}
-
 function latestAt(carrier: string, city: string): PingLatestPoint | undefined {
-  const target = targetAt(carrier, city);
+  const target = props.snapshot.targets.find((t) => t.carrier === carrier && t.city === city);
   return target ? props.snapshot.latest.find((p) => p.target === target.id) : undefined;
 }
 
 interface Cell {
   key: string;
   text: string;
-  loss: number | null;
+  loss: number;
+  hasLoss: boolean;
   style: Record<string, string>;
   title: string;
 }
 
 function cell(carrier: string, city: string): Cell {
   const latest = latestAt(carrier, city);
-  const key = `${carrier}-${city}`;
   const ms = latest?.avgMs ?? null;
-  const loss = latest ? latest.lossPct : null;
+  const loss = latest?.lossPct ?? 0;
   const tone = ms === null ? (latest ? DEAD : MISSING) : BUCKETS.find((b) => ms < b.limit)!;
   const text = ms === null ? (latest ? "out" : "—") : ms >= 100 ? String(Math.round(ms)) : ms.toFixed(1);
-  const lossText = loss === null ? "no data" : `${Math.round(loss)}% loss`;
   return {
-    key,
+    key: `${carrier}-${city}`,
     text,
     loss,
-    style: { "--fill": tone.fill, "--ink": tone.ink },
-    title: `${carrier} · ${city} — ${ms === null ? "no answer" : `${text} ms`}, ${lossText}`,
+    hasLoss: !!latest && loss > 0,
+    style: {
+      "--fill": tone.fill,
+      "--ink": tone.ink,
+      "--loss": `${Math.max(0, Math.min(100, loss))}%`,
+      "--loss-color": loss >= 50 ? LOSS_CRITICAL : LOSS_WARNING,
+    },
+    title: `${carrier} · ${city} — ${ms === null ? "no answer" : `${text} ms`}, ${latest ? `${Math.round(loss)}% loss` : "no data"}`,
   };
 }
 
-// Carrier and city names are long enough to crowd a half-width card; the matrix
-// only needs enough to tell three of each apart.
+// Carrier names are long enough to crowd a half-width card; the matrix only
+// needs enough to tell three of them apart.
 function shortCarrier(name: string): string {
   return name.replace(/^China\s+/, "");
 }
 </script>
 
 <template>
-  <div class="matrix" role="table" :aria-label="`Latency by carrier and city, milliseconds`">
+  <div class="matrix" role="table" aria-label="Latency by carrier and city, milliseconds">
     <div class="row head" role="row">
       <span class="corner" role="columnheader"></span>
       <span v-for="city in cities" :key="city" class="col-head" role="columnheader">{{ city }}</span>
@@ -87,12 +98,14 @@ function shortCarrier(name: string): string {
         v-for="city in cities"
         :key="cell(carrier, city).key"
         class="cell"
-        :class="{ lossy: (cell(carrier, city).loss ?? 0) > 0 }"
         :style="cell(carrier, city).style"
         :title="cell(carrier, city).title"
         role="cell"
       >
-        {{ cell(carrier, city).text }}
+        <span class="value">{{ cell(carrier, city).text }}</span>
+        <!-- The bar is only drawn when something was lost, so a healthy matrix
+             stays clean and any bar at all is the thing that catches the eye. -->
+        <i v-if="cell(carrier, city).hasLoss" class="loss" aria-hidden="true"></i>
       </span>
     </div>
   </div>
@@ -108,22 +121,28 @@ function shortCarrier(name: string): string {
 .col-head { text-align: center; padding-bottom: 2px; }
 .row-head { text-align: right; padding-right: 2px; }
 .cell {
-  position: relative;
+  position: relative; overflow: hidden;
   display: grid; place-items: center;
-  height: 42px; border-radius: 10px;
+  height: 44px; border-radius: 10px;
   background: var(--fill); color: var(--ink);
   font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums;
   cursor: default;
 }
-/* Loss is a state, not a magnitude, so it never rides the latency ramp: it is
-   a corner marker on top of whatever the latency colour already said. */
-.cell.lossy::after {
-  content: ""; position: absolute; top: 5px; right: 5px;
-  width: 6px; height: 6px; border-radius: 999px;
-  background: #fab219; box-shadow: 0 0 0 2px color-mix(in srgb, var(--fill), transparent 40%);
+.value { line-height: 1; }
+/* A track the width of the cell with the lost fraction filled in, so the bar
+   reads as a proportion rather than as an arbitrary stub. The track is a dark
+   wash so it holds on the light green step as well as on the dark red one. */
+.loss {
+  position: absolute; left: 6px; right: 6px; bottom: 5px; height: 4px;
+  border-radius: 999px; background: rgba(0, 0, 0, 0.16);
+}
+.loss::after {
+  content: ""; position: absolute; inset: 0 auto 0 0;
+  width: var(--loss); min-width: 4px;
+  border-radius: inherit; background: var(--loss-color);
 }
 @media (max-width: 720px) {
   .row { grid-template-columns: 52px repeat(3, minmax(0, 1fr)); }
-  .cell { height: 38px; font-size: 13px; }
+  .cell { height: 40px; font-size: 13px; }
 }
 </style>
