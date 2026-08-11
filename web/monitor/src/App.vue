@@ -20,17 +20,42 @@ const PAGE_TITLES: Record<Tab, string> = {
 const activeTab = ref<Tab>("traffic");
 const summary = ref<Summary | null>(null);
 const error = ref<string>("");
-const locked = ref(false);
+
+// Three states, not a boolean: until the first answer comes back the dashboard
+// does not know which shell it is. Starting on "unlocked" painted the whole
+// dashboard chrome — sidebar, cards, their entrance animations — and then
+// replaced it with the gate the moment the 401 landed, which is a flash of the
+// wrong interface on every single load.
+type Shell = "checking" | "locked" | "ready";
+const shell = ref<Shell>("checking");
 // A token that was already stored and then refused is a stale one, which is
 // worth saying; a first visit to a gated dashboard is not an error.
 const tokenRejected = ref(false);
 let loadTimer: number | undefined;
 
+function startPolling() {
+  if (loadTimer !== undefined) return;
+  loadTimer = window.setInterval(load, 10000);
+}
+
+// Nothing useful can come of polling while the gate is up: every request is
+// refused, and each refusal wrote the same two values back over themselves six
+// times a minute. The loop resumes the moment a token is accepted.
+function stopPolling() {
+  if (loadTimer === undefined) return;
+  window.clearInterval(loadTimer);
+  loadTimer = undefined;
+}
+
 // Any view can be the one whose request is refused, so the lock is raised from
-// the API layer rather than from this component's own load.
+// the API layer rather than from this component's own load. The writes are
+// guarded: re-rendering the gate to the same state is what a viewer sees as a
+// blink.
 onUnauthorized(() => {
-  tokenRejected.value = hasStoredAccessToken();
-  locked.value = true;
+  const rejected = hasStoredAccessToken();
+  if (tokenRejected.value !== rejected) tokenRejected.value = rejected;
+  if (shell.value !== "locked") shell.value = "locked";
+  stopPolling();
 });
 
 async function load() {
@@ -38,11 +63,15 @@ async function load() {
     const res = await fetchSummary();
     summary.value = res;
     error.value = "";
-    locked.value = false;
-    tokenRejected.value = false;
+    if (tokenRejected.value) tokenRejected.value = false;
+    if (shell.value !== "ready") shell.value = "ready";
+    startPolling();
   } catch (e) {
     if (e instanceof UnauthorizedError) return;
     error.value = e instanceof Error ? e.message : String(e);
+    // A transport failure is not an authorization failure: an open dashboard
+    // stays open and says so rather than demanding a token it does not want.
+    if (shell.value === "checking") shell.value = "ready";
   }
 }
 
@@ -61,20 +90,17 @@ const subtitle = computed(() => {
   return "";
 });
 
-onMounted(() => {
-  load();
-  loadTimer = window.setInterval(load, 10000);
-});
+onMounted(load);
 watchEffect(() => {
   document.title = pageTitle.value;
 });
-onUnmounted(() => {
-  if (loadTimer) window.clearInterval(loadTimer);
-});
+onUnmounted(stopPolling);
 </script>
 
 <template>
-  <TokenGate v-if="locked" :rejected="tokenRejected" @submit="unlock" />
+  <div v-if="shell === 'checking'" class="boot" aria-busy="true"></div>
+
+  <TokenGate v-else-if="shell === 'locked'" :rejected="tokenRejected" @submit="unlock" />
 
   <div v-else class="app">
     <SidebarNav v-model:activeTab="activeTab" :sourceCount="sourceCount" />
@@ -125,6 +151,11 @@ onUnmounted(() => {
 }
 
 * { box-sizing: border-box; }
+
+/* The first paint, before the dashboard knows whether it is gated. It is the
+   page background and nothing else, so whichever shell wins arrives on a
+   surface that was already there rather than replacing a different one. */
+.boot { min-height: 100vh; background: var(--bg); }
 
 body {
   margin: 0;

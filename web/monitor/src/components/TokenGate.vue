@@ -17,7 +17,7 @@ function submit() {
 
 <template>
   <div class="gate">
-    <form class="card gate-card" @submit.prevent="submit">
+    <form class="gate-card" @submit.prevent="submit">
       <div class="brand-logo gate-logo">M</div>
       <h1 class="gate-title">Monitor</h1>
       <p class="gate-subtitle">Enter the access token to view this dashboard.</p>
@@ -41,9 +41,23 @@ function submit() {
 
 <style scoped>
 .gate { display: grid; place-items: center; min-height: 100vh; padding: 24px; }
+/* The card's own surface and entrance rather than the shared .card rule: that
+   one is written for a grid of dashboard cards, and its animation replays on
+   anything that remounts. The gate is one card that appears once. */
 .gate-card {
   display: flex; flex-direction: column; align-items: center;
   width: min(100%, 400px); padding: 34px 30px 30px; text-align: center;
+  background: var(--card); border: 1px solid rgba(231, 236, 244, 0.94);
+  border-radius: var(--radius-xl); box-shadow: var(--shadow);
+  animation: gateIn 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes gateIn { from { opacity: 0; transform: translateY(10px); } }
+/* The rejection line is the only part that changes while the gate is open, so
+   it fades in on its own instead of the card re-announcing itself. */
+.gate-error { animation: gateErrorIn 0.22s ease both; }
+@keyframes gateErrorIn { from { opacity: 0; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) {
+  .gate-card, .gate-error { animation: none; }
 }
 .gate-logo { width: 52px; height: 52px; font-size: 20px; }
 .gate-title { margin: 18px 0 0; font-size: 24px; letter-spacing: -0.02em; }
