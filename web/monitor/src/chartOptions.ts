@@ -240,10 +240,62 @@ export function lineSeries(
   };
 }
 
+// Average lines are horizontal and span the whole plot, so two series with
+// similar averages put their labels in the same place. Spreading the labels
+// along the line instead of stacking them at one end is what makes collision
+// impossible rather than merely unlikely: each series takes a different slot,
+// so the labels cannot land on each other however close the values are.
+// The slots alternate side as well as position, so consecutive series — the
+// ones whose averages are most likely to be close — are separated both across
+// the plot and above/below their own line.
+const AVERAGE_LABEL_SLOTS = [
+  "insideStartTop",
+  "insideMiddleBottom",
+  "insideEndTop",
+  "insideStartBottom",
+  "insideMiddleTop",
+  "insideEndBottom",
+];
+
+// A peak in the last fifth of the series would push its label off the right
+// edge, so that one is labelled to the left of the marker instead of above it.
+const PEAK_FLIP_FRACTION = 0.8;
+
+function seriesValues(data: any[]): number[] {
+  const values: number[] = [];
+  for (const point of data ?? []) {
+    const value = Number(Array.isArray(point) ? point[1] : point);
+    if (Number.isFinite(value)) values.push(value);
+  }
+  return values;
+}
+
+// peakPosition reports where the maximum sits along the series, 0 at the left
+// edge and 1 at the right, so its label can be placed on the side that has room.
+function peakPosition(data: any[]): number {
+  let bestIndex = -1;
+  let best = -Infinity;
+  const points = data ?? [];
+  for (let i = 0; i < points.length; i++) {
+    const value = Number(Array.isArray(points[i]) ? points[i][1] : points[i]);
+    if (Number.isFinite(value) && value > best) {
+      best = value;
+      bestIndex = i;
+    }
+  }
+  if (bestIndex < 0 || points.length < 2) return 0;
+  return bestIndex / (points.length - 1);
+}
+
 // withPeakAverage overlays each series with its own average line and peak
 // marker. ECharts computes both from the data already on the chart, so the
 // overlay can never disagree with the curve it annotates, and nulls — a fully
 // lost latency round, a gap in a sparse series — are skipped by both.
+//
+// Both labels are drawn as filled chips in the series colour with white text.
+// A bare coloured label sat directly on the curves and the area fills it was
+// annotating and became unreadable wherever they were dense; a chip carries its
+// own background, so it reads against the plot instead of competing with it.
 //
 // The marks are always emitted, empty when hidden: the toggle updates the chart
 // by merging rather than rebuilding it, and a merge only removes what it is
@@ -254,8 +306,20 @@ export function withPeakAverage(
   { show, format, narrow }: { show: boolean; format: (v: number) => string; narrow: boolean },
 ): any[] {
   const fontSize = narrow ? 10 : 11;
-  return series.map((s) => {
+  const chip = (color: string) => ({
+    color: "#ffffff",
+    backgroundColor: color,
+    padding: narrow ? [2, 4] : [3, 6],
+    borderRadius: 5,
+    fontSize,
+    fontWeight: 700,
+  });
+  return series.map((s, i) => {
     const color = s.itemStyle?.color ?? "#2563eb";
+    const values = seriesValues(s.data);
+    // A series with nothing in it has no average and no peak to draw; emitting
+    // them anyway would put a chip on the zero line of an empty chart.
+    const hasData = show && values.length > 0;
     return {
       ...s,
       markLine: {
@@ -264,17 +328,17 @@ export function withPeakAverage(
         animation: true,
         animationDuration: 320,
         animationEasing: "cubicOut",
-        lineStyle: { type: "dashed", width: 1.5, color, opacity: 0.85 },
+        // Recessive next to the curves: this is an annotation of the data, not
+        // another reading of it.
+        lineStyle: { type: "dashed", width: 1, color, opacity: 0.55 },
         label: {
-          position: "insideEndTop",
-          distance: 3,
-          color,
-          fontSize,
-          fontWeight: 700,
+          ...chip(color),
+          position: AVERAGE_LABEL_SLOTS[i % AVERAGE_LABEL_SLOTS.length],
+          distance: 4,
           formatter: ({ value }: any) => `avg ${format(Number(value))}`,
         },
         emphasis: { disabled: true },
-        data: show ? [{ type: "average" }] : [],
+        data: hasData ? [{ type: "average" }] : [],
       },
       markPoint: {
         silent: true,
@@ -285,15 +349,13 @@ export function withPeakAverage(
         animationEasing: "backOut",
         itemStyle: { color, borderColor: "#ffffff", borderWidth: 2 },
         label: {
-          position: "top",
-          distance: 6,
-          color,
-          fontSize,
-          fontWeight: 700,
+          ...chip(color),
+          position: peakPosition(s.data) > PEAK_FLIP_FRACTION ? "left" : "top",
+          distance: 7,
           formatter: ({ value }: any) => `peak ${format(Number(value))}`,
         },
         emphasis: { disabled: true },
-        data: show ? [{ type: "max" }] : [],
+        data: hasData ? [{ type: "max" }] : [],
       },
     };
   });
