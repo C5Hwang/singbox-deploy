@@ -1786,3 +1786,28 @@ func installFlowWithMonitorToken(t *testing.T, token string) *installFlow {
 		host: supportedTestHost(),
 	}
 }
+
+// A generated token is only readable from Status, so the screen that hands over
+// the dashboard URL has to hand over the token with it.
+func TestInstallDoneSummaryPrintsTheMonitorToken(t *testing.T) {
+	w := &installFlow{cfg: deploy.Config{
+		DisplayName:           "Node",
+		Domain:                "example.com",
+		DeployMonitor:         true,
+		DeployMonitorFrontend: true,
+		MonitorPublicPort:     2087,
+		MonitorToken:          "s3cr3t-token-value",
+	}}
+	summary := w.doneSummary()
+	if !strings.Contains(summary, "s3cr3t-token-value") {
+		t.Fatalf("done summary hides the monitor token:\n%s", summary)
+	}
+	if !strings.Contains(summary, "/monitor/") {
+		t.Fatalf("done summary lost the monitor URL:\n%s", summary)
+	}
+
+	w.cfg.MonitorToken = ""
+	if open := w.doneSummary(); !strings.Contains(open, "without a gate") {
+		t.Fatalf("done summary does not state an ungated dashboard:\n%s", open)
+	}
+}

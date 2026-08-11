@@ -1010,6 +1010,15 @@ func (w *installFlow) doneSummary() string {
 			rows = append(rows, summaryRow("Monitor UI", monitorBase+"/monitor/"))
 		}
 		rows = append(rows, summaryRow("Monitor API", monitorBase+"/monitor/api/summary"))
+		// The token is printed in full here, not summarized. The install form
+		// generates it when the operator leaves the field blank, and a dashboard
+		// URL handed over without the token it asks for opens on an empty prompt.
+		// Status is the only other place it can be read back from.
+		if w.cfg.MonitorToken != "" {
+			rows = append(rows, summaryRow(uiparams.LabelMonitorToken, w.cfg.MonitorToken))
+		} else {
+			rows = append(rows, summaryRow(uiparams.LabelMonitorToken, "none — the dashboard is published without a gate"))
+		}
 	}
 	return renderSummary(rows)
 }
