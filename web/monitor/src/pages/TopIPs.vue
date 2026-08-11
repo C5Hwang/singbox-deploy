@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import IPTrendModal from "../components/IPTrendModal.vue";
 import { fetchIPTraffic } from "../api";
-import { locations, resolveLocations } from "../geo";
+import { flagFor, locations, resolveLocations } from "../geo";
 import { formatBytesCompact, formatDateTime } from "../utils";
 import type { IPDirectionKey, IPTrafficRow, IPTrafficWindow, IPWindowKey, IPSort, Summary } from "../types";
 
@@ -179,14 +179,14 @@ function shareStyle(row: IPTrafficRow): Record<string, string> {
   return { "--share": `${Math.max(0, Math.min(100, (row[window][direction] / topValue.value) * 100))}%` };
 }
 
-// Geolocation comes back as "Country · Region · City", which is wider than the
-// column it has to live in. The city carries the information; the rest is the
-// tooltip.
-function place(ip: string): string {
-  const label = locations.value[ip];
-  if (!label) return "";
-  const parts = label.split(" · ");
-  return parts.length > 1 ? parts[parts.length - 1] : label;
+function placeOf(ip: string) {
+  return locations.value[ip] ?? { country: "", code: "", city: "" };
+}
+
+// The modal has one line for the whole place, so its two columns join back up.
+function placeLabel(ip: string): string {
+  const place = placeOf(ip);
+  return [place.country, place.city].filter(Boolean).join(" · ");
 }
 
 watch(visible, (list) => resolveLocations(list.map((r) => r.ip)));
@@ -250,6 +250,7 @@ const modalSources = computed(() =>
               <th class="rank"></th>
               <th></th>
               <th></th>
+              <th></th>
               <th v-if="selected === ALL_NODES"></th>
               <th v-for="w in windows" :key="w.key" colspan="3" class="band-label">
                 <span>{{ w.label }}</span>
@@ -258,7 +259,8 @@ const modalSources = computed(() =>
             <tr class="heads">
               <th class="rank">#</th>
               <th class="col-address">Address</th>
-              <th class="col-place">Location</th>
+              <th class="col-country">Country</th>
+              <th class="col-place">City</th>
               <th v-if="selected === ALL_NODES" class="col-nodes">Nodes</th>
               <template v-for="w in windows" :key="w.key">
                 <th
@@ -280,7 +282,11 @@ const modalSources = computed(() =>
             <tr v-for="(row, i) in visible" :key="row.ip" class="ip-row" @click="modalRow = row">
               <td class="rank">{{ firstRank + i }}</td>
               <td class="address" :style="shareStyle(row)"><span>{{ row.ip }}</span></td>
-              <td class="place" :title="locations[row.ip] || ''">{{ place(row.ip) || "—" }}</td>
+              <td class="country" :title="placeOf(row.ip).country">
+                <span v-if="placeOf(row.ip).code" class="flag">{{ flagFor(placeOf(row.ip).code) }}</span>
+                <span class="country-name">{{ placeOf(row.ip).country || "—" }}</span>
+              </td>
+              <td class="place">{{ placeOf(row.ip).city || "—" }}</td>
               <td v-if="selected === ALL_NODES" class="nodes">
                 <span v-for="node in row.nodes" :key="node" class="node-chip">{{ node }}</span>
               </td>
@@ -321,7 +327,7 @@ const modalSources = computed(() =>
   <IPTrendModal
     v-if="modalRow"
     :row="modalRow"
-    :location="locations[modalRow.ip] || ''"
+    :location="placeLabel(modalRow.ip)"
     :sources="modalSources"
     @close="modalRow = null"
   />
@@ -335,31 +341,38 @@ const modalSources = computed(() =>
   background: white; color: var(--text); font: inherit; font-size: 14px; font-weight: 650;
   min-width: 180px; cursor: pointer;
 }
-.table-card { padding: 20px 8px 12px; }
+.table-card { padding: 8px 8px 12px; overflow: hidden; }
 .table-scroll { overflow-x: auto; }
 .ip-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 
-/* The band names the three windows without becoming a second table header:
-   no rules, no borders, just a small caps label sitting over its own columns
-   with a tinted underline that says how far the group reaches. */
-.band th { padding: 0 0 4px; border: 0; }
+/* The header is one solid band rather than two rows of loose text: a tinted
+   surface with rounded top corners, sticky so it stays legible while the reader
+   scrolls a long page, and a firm rule where it meets the rows. Inside it the
+   window names sit in their own chips over the columns they cover. */
+.ip-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: #f5f8fd;
+}
+.band th { padding: 12px 0 2px; border: 0; }
 .band-label { text-align: center; }
 .band-label span {
-  display: block; margin: 0 6px;
-  padding-bottom: 5px; border-bottom: 2px solid #e8eefb;
-  color: var(--muted); font-size: 10px; font-weight: 800;
-  letter-spacing: 0.09em; text-transform: uppercase;
+  display: inline-block; margin: 0 6px; padding: 3px 12px;
+  border-radius: 999px; background: #e3ecfb; color: #35507d;
+  font-size: 10px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase;
 }
 .heads th {
-  padding: 7px 8px 10px; color: var(--muted); font-size: 11px; font-weight: 750;
-  letter-spacing: 0.04em; text-transform: uppercase; text-align: left; white-space: nowrap;
+  padding: 8px 8px 11px; color: #63708a; font-size: 11px; font-weight: 800;
+  letter-spacing: 0.05em; text-transform: uppercase; text-align: left; white-space: nowrap;
+  box-shadow: inset 0 -1px 0 #dde5f2;
 }
+.band th:first-child { border-top-left-radius: 14px; }
+.band th:last-child { border-top-right-radius: 14px; }
 .heads th.num { text-align: right; }
 /* Groups are separated by air, not by lines. */
 .ip-table th.lead, .ip-table td.lead { padding-left: 18px; }
-.sortable { cursor: pointer; user-select: none; transition: color 0.15s; }
+.sortable { cursor: pointer; user-select: none; transition: color 0.15s, background 0.15s; }
 .sortable .glyph { font-size: 13px; font-weight: 700; }
-.sortable:hover { color: var(--blue); }
+.sortable:hover { color: var(--blue); background: #eaf1fd; }
 .sortable.sorted { color: var(--blue); }
 .caret { display: inline-block; width: 10px; font-size: 9px; }
 .caret.up { display: inline-block; transform: rotate(180deg); }
@@ -379,7 +392,13 @@ const modalSources = computed(() =>
   background: linear-gradient(90deg, rgba(37, 99, 235, 0.13), rgba(37, 99, 235, 0.03));
 }
 .address span { position: relative; }
-.place, .nodes { color: var(--muted); font-weight: 600; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+.country, .place, .nodes { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.country { max-width: 158px; }
+.place { max-width: 116px; }
+.nodes { max-width: 132px; }
+.country { display: flex; align-items: center; gap: 7px; }
+.flag { font-size: 15px; line-height: 1; flex-shrink: 0; }
+.country-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-chip {
   display: inline-block; margin-right: 4px; padding: 2px 7px;
   border-radius: 999px; background: #f0f4f9; color: #5f6b7e;
