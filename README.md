@@ -18,13 +18,8 @@ are managed from the hub's terminal UI.
   distributes them to the spokes.
 - Subscriptions aggregate every node in the fleet, served in share-link,
   Clash Meta, sing-box, and Surge formats.
-- Resource monitoring through a web dashboard, with per-node quotas. The
-  dashboard is guarded by an access token, shown on the hub's Status screen.
-- Per-client-IP traffic accounting through nftables counters, ranked over the
-  quota cycle, today, or the last seven days, with locations resolved in the
-  browser.
-- Latency probes from every node to three Chinese carriers in three cities,
-  every five minutes, charted over the last seven days.
+- A web dashboard watches the whole fleet: resource usage and per-node quotas,
+  per-client-IP traffic rankings, and latency to Chinese carriers.
 - Nginx serves a masquerade site, chosen from bundled
   [HTML5 UP](https://html5up.net) templates.
 
