@@ -7,30 +7,32 @@ import type { LatencySnapshot, PingLatestPoint, PingTarget } from "../types";
 // are a row and a column rather than a search through nine text lines.
 const props = defineProps<{ snapshot: LatencySnapshot }>();
 
-// Latency buckets on a green-to-red ramp, because "fast is good, slow is bad"
-// is the reading and a single hue cannot say it.
+// Latency buckets on a green-to-red ramp, in the bright register ping tools
+// use: green reads as "fine" at a glance and red as "look at this", which is
+// the whole job of the colour here.
 //
-// Red and green are exactly the pair red-green colour blindness collapses, so
-// the ramp is built to survive that: its lightness falls monotonically across
-// the four steps (validated: monotone, every adjacent gap >= 0.06, light end
-// 2.06:1 on the surface), which leaves the steps distinguishable by brightness
-// alone. Every cell also prints its own number, so colour is never the only
-// reading. Ink is chosen per step and clears 4.5:1 on all four.
+// Red and green are exactly the pair red-green colour blindness collapses. A
+// bright traffic-light ramp cannot also be monotone in lightness — yellow is
+// the lightest hue there is, so it will always sit above green — so the second
+// reading is carried by the number printed on every cell rather than by
+// brightness. Ink is chosen per step and clears 4.5:1 on all of them, so the
+// numbers stay legible whatever the fill.
 const BUCKETS = [
-  { limit: 150, fill: "#74c56e", ink: "#123f10" },
-  { limit: 250, fill: "#b9861d", ink: "#241a02" },
-  { limit: 350, fill: "#ad4e25", ink: "#ffffff" },
-  { limit: Infinity, fill: "#932220", ink: "#ffffff" },
+  { limit: 150, fill: "#4ade80", ink: "#0b3a1e" },
+  { limit: 250, fill: "#fbbf24", ink: "#3d2a00" },
+  { limit: 350, fill: "#fb7a3c", ink: "#4a1a02" },
+  { limit: Infinity, fill: "#f2544f", ink: "#330807" },
 ];
 // A probe that answered nothing is not "slow", it is out — off the end of the
-// ramp rather than at the far end of it.
-const DEAD = { fill: "#7a1c1a", ink: "#ffffff" };
-const MISSING = { fill: "#f4f6fa", ink: "#98a2b3" };
+// ramp rather than at the far end of it, so it takes the one solid fill.
+const DEAD = { fill: "#dc2626", ink: "#ffffff" };
+const MISSING = { fill: "#f1f4f9", ink: "#98a2b3" };
 
-// Loss is a state, not a magnitude, so it takes the reserved status colours
-// rather than a step of the latency ramp.
-const LOSS_WARNING = "#fab219";
-const LOSS_CRITICAL = "#ff6b6b";
+// Loss is a state, not a magnitude, so it takes reserved colours rather than a
+// step of the latency ramp. On these brighter fills the bar needs to be darker
+// than the cell to register, which inverts what it was on the old dark ramp.
+const LOSS_WARNING = "#b45309";
+const LOSS_CRITICAL = "#7f1d1d";
 
 const carriers = computed(() => unique((t) => t.carrier));
 const cities = computed(() => unique((t) => t.city));
@@ -134,7 +136,7 @@ function shortCarrier(name: string): string {
    wash so it holds on the light green step as well as on the dark red one. */
 .loss {
   position: absolute; left: 6px; right: 6px; bottom: 5px; height: 4px;
-  border-radius: 999px; background: rgba(0, 0, 0, 0.16);
+  border-radius: 999px; background: rgba(0, 0, 0, 0.13);
 }
 .loss::after {
   content: ""; position: absolute; inset: 0 auto 0 0;
