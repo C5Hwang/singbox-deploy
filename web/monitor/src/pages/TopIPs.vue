@@ -2,9 +2,9 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import IPTrendModal from "../components/IPTrendModal.vue";
 import { fetchIPTraffic } from "../api";
-import { DEFAULT_GEO_ENDPOINT, geoEndpoint, locations, resolveLocations, setGeoEndpoint } from "../geo";
+import { locations, resolveLocations } from "../geo";
 import { formatBytes, formatDateTime } from "../utils";
-import type { IPDailyPoint, IPSortKey, IPTrafficRow, Summary } from "../types";
+import type { IPDirectionKey, IPTrafficRow, IPTrafficWindow, IPWindowKey, IPSort, Summary } from "../types";
 
 // The dashboard shows thirty; each node returns more so that merging several
 // nodes' lists produces the true top thirty rather than the top of each.
@@ -24,7 +24,9 @@ function sourceKey(source: { id?: string; name?: string }): string {
 }
 
 const selected = ref<string>(ALL_NODES);
-const sortKey = ref<IPSortKey>("total");
+// Ranking defaults to the window the quota is counted over, largest first,
+// which is the question the page exists to answer.
+const sort = ref<IPSort>({ window: "cycle", direction: "totalBytes", descending: true });
 const rows = ref<IPTrafficRow[]>([]);
 const cycleStart = ref(0);
 const unavailableNodes = ref<string[]>([]);
@@ -32,29 +34,33 @@ const disabledNodes = ref<string[]>([]);
 const loading = ref(false);
 const loadError = ref("");
 const modalRow = ref<IPTrafficRow | null>(null);
-const endpointDraft = ref(geoEndpoint.value);
 
-const sortOptions: { key: IPSortKey; label: string }[] = [
-  { key: "total", label: "This cycle" },
+// Every window carries all three directions, so the header is a matrix and any
+// cell in it can order the table.
+const windows: { key: IPWindowKey; label: string }[] = [
   { key: "today", label: "Today" },
   { key: "last7", label: "Last 7 days" },
+  { key: "cycle", label: "This cycle" },
+];
+const directions: { key: IPDirectionKey; label: string }[] = [
+  { key: "inBytes", label: "In" },
+  { key: "outBytes", label: "Out" },
+  { key: "totalBytes", label: "Total" },
 ];
 
-// Day buckets are GMT, matching the GMT quota reset the rest of the dashboard
-// is keyed to, so the windows are computed in GMT rather than in the viewer's
-// display timezone.
-function gmtDayStart(now = Date.now()): number {
-  return Math.floor(now / 1000 / 86400) * 86400;
+function emptyWindow(): IPTrafficWindow {
+  return { inBytes: 0, outBytes: 0, totalBytes: 0 };
 }
 
-function windowTotal(daily: IPDailyPoint[], days: number): number {
-  const from = gmtDayStart() - (days - 1) * 86400;
-  return daily.reduce((sum, p) => (p.dayTs >= from ? sum + p.totalBytes : sum), 0);
+function addWindow(into: IPTrafficWindow, from: IPTrafficWindow) {
+  into.inBytes += from.inBytes;
+  into.outBytes += from.outBytes;
+  into.totalBytes += from.totalBytes;
 }
 
 // Nodes are queried in parallel and merged by address: the same client reaching
-// two nodes is one row whose total is the sum, which is what a "top 30" over a
-// fleet has to mean.
+// two nodes is one row whose totals are the sum, which is what a "top 30" over
+// a fleet has to mean.
 async function load() {
   const targets = selected.value === ALL_NODES ? sources.value : sources.value.filter((s) => sourceKey(s) === selected.value);
   if (targets.length === 0) return;
@@ -85,28 +91,19 @@ async function load() {
       const row = merged.get(entry.ip) ?? {
         ip: entry.ip,
         nodes: [],
-        inBytes: 0,
-        outBytes: 0,
-        totalBytes: 0,
-        todayBytes: 0,
-        last7Bytes: 0,
-        daily: [],
+        cycle: emptyWindow(),
+        today: emptyWindow(),
+        last7: emptyWindow(),
       };
       row.nodes.push(source.name ?? sourceKey(source));
-      row.inBytes += entry.inBytes;
-      row.outBytes += entry.outBytes;
-      row.totalBytes += entry.totalBytes;
-      row.daily = mergeDaily(row.daily, entry.daily);
+      addWindow(row.cycle, entry.cycle);
+      addWindow(row.today, entry.today);
+      addWindow(row.last7, entry.last7);
       merged.set(entry.ip, row);
     }
   }
 
-  const list = [...merged.values()];
-  for (const row of list) {
-    row.todayBytes = windowTotal(row.daily, 1);
-    row.last7Bytes = windowTotal(row.daily, 7);
-  }
-  rows.value = list;
+  rows.value = [...merged.values()];
   cycleStart.value = latestCycle;
   unavailableNodes.value = unavailable;
   disabledNodes.value = disabled;
@@ -115,24 +112,25 @@ async function load() {
   resolveLocations(visible.value.map((r) => r.ip));
 }
 
-function mergeDaily(into: IPDailyPoint[], from: IPDailyPoint[]): IPDailyPoint[] {
-  const byDay = new Map(into.map((p) => [p.dayTs, { ...p }]));
-  for (const point of from) {
-    const existing = byDay.get(point.dayTs);
-    if (existing) {
-      existing.inBytes += point.inBytes;
-      existing.outBytes += point.outBytes;
-      existing.totalBytes += point.totalBytes;
-    } else {
-      byDay.set(point.dayTs, { ...point });
-    }
+// Clicking a cell sorts by it; clicking the same cell again reverses it. A new
+// cell always starts descending, because "who used the most" is the question
+// nine times out of ten.
+function sortBy(window: IPWindowKey, direction: IPDirectionKey) {
+  if (sort.value.window === window && sort.value.direction === direction) {
+    sort.value = { ...sort.value, descending: !sort.value.descending };
+    return;
   }
-  return [...byDay.values()].sort((a, b) => a.dayTs - b.dayTs);
+  sort.value = { window, direction, descending: true };
+}
+
+function isSorted(window: IPWindowKey, direction: IPDirectionKey): boolean {
+  return sort.value.window === window && sort.value.direction === direction;
 }
 
 const sorted = computed(() => {
-  const key: keyof IPTrafficRow = sortKey.value === "total" ? "totalBytes" : sortKey.value === "today" ? "todayBytes" : "last7Bytes";
-  return [...rows.value].sort((a, b) => (b[key] as number) - (a[key] as number));
+  const { window, direction, descending } = sort.value;
+  const value = (row: IPTrafficRow) => row[window][direction];
+  return [...rows.value].sort((a, b) => (descending ? value(b) - value(a) : value(a) - value(b)));
 });
 
 const visible = computed(() => sorted.value.slice(0, SHOWN_ROWS));
@@ -152,11 +150,11 @@ onUnmounted(() => {
 
 const cycleLabel = computed(() => (cycleStart.value > 0 ? formatDateTime(cycleStart.value * 1000) : ""));
 
-function applyEndpoint() {
-  setGeoEndpoint(endpointDraft.value);
-  endpointDraft.value = geoEndpoint.value;
-  resolveLocations(visible.value.map((r) => r.ip));
-}
+// The modal drills into whichever nodes the table is currently showing, so the
+// chart it opens describes the same numbers the row does.
+const modalSources = computed(() =>
+  selected.value === ALL_NODES ? sources.value.map(sourceKey) : [selected.value],
+);
 </script>
 
 <template>
@@ -166,27 +164,17 @@ function applyEndpoint() {
         <p class="eyebrow">Top talkers</p>
         <p class="metric-value small">Busiest {{ SHOWN_ROWS }} client addresses</p>
         <p class="metric-detail">
-          Counted per remote address for connections opened to the node.
+          Counted per remote address for connections opened to the node. Click a column to sort by it, or a row for its trend.
           <span v-if="cycleLabel"> Cleared with the traffic quota, last reset {{ cycleLabel }}.</span>
         </p>
       </div>
-      <div class="controls">
-        <label class="picker">
-          <span class="eyebrow">Node</span>
-          <select v-model="selected">
-            <option :value="ALL_NODES">All nodes</option>
-            <option v-for="source in sources" :key="sourceKey(source)" :value="sourceKey(source)">{{ source.name }}</option>
-          </select>
-        </label>
-        <div class="picker">
-          <span class="eyebrow">Sort by</span>
-          <div class="toggle-group">
-            <button v-for="option in sortOptions" :key="option.key" :class="{ active: sortKey === option.key }" @click="sortKey = option.key">
-              {{ option.label }}
-            </button>
-          </div>
-        </div>
-      </div>
+      <label class="picker">
+        <span class="eyebrow">Node</span>
+        <select v-model="selected">
+          <option :value="ALL_NODES">All nodes</option>
+          <option v-for="source in sources" :key="sourceKey(source)" :value="sourceKey(source)">{{ source.name }}</option>
+        </select>
+      </label>
     </article>
   </section>
 
@@ -208,16 +196,27 @@ function applyEndpoint() {
       <div v-else class="table-scroll">
         <table class="ip-table">
           <thead>
+            <tr class="window-row">
+              <th class="rank" rowspan="2">#</th>
+              <th rowspan="2">Address</th>
+              <th rowspan="2">Location</th>
+              <th v-if="selected === ALL_NODES" rowspan="2">Nodes</th>
+              <th v-for="w in windows" :key="w.key" colspan="3" class="window-head">{{ w.label }}</th>
+            </tr>
             <tr>
-              <th class="rank">#</th>
-              <th>Address</th>
-              <th>Location</th>
-              <th v-if="selected === ALL_NODES">Nodes</th>
-              <th class="num">Inbound</th>
-              <th class="num">Outbound</th>
-              <th class="num">Today</th>
-              <th class="num">7 days</th>
-              <th class="num">Cycle</th>
+              <template v-for="w in windows" :key="w.key">
+                <th
+                  v-for="d in directions"
+                  :key="`${w.key}-${d.key}`"
+                  class="num sortable"
+                  :class="{ sorted: isSorted(w.key, d.key), first: d.key === 'inBytes' }"
+                  :aria-sort="isSorted(w.key, d.key) ? (sort.descending ? 'descending' : 'ascending') : 'none'"
+                  @click="sortBy(w.key, d.key)"
+                >
+                  {{ d.label }}
+                  <span class="caret" :class="{ up: isSorted(w.key, d.key) && !sort.descending }">{{ isSorted(w.key, d.key) ? "▾" : "" }}</span>
+                </th>
+              </template>
             </tr>
           </thead>
           <tbody>
@@ -226,32 +225,35 @@ function applyEndpoint() {
               <td class="address">{{ row.ip }}</td>
               <td class="location">{{ locations[row.ip] || "…" }}</td>
               <td v-if="selected === ALL_NODES" class="nodes">{{ row.nodes.join(", ") }}</td>
-              <td class="num">{{ formatBytes(row.inBytes) }}</td>
-              <td class="num">{{ formatBytes(row.outBytes) }}</td>
-              <td class="num">{{ formatBytes(row.todayBytes) }}</td>
-              <td class="num">{{ formatBytes(row.last7Bytes) }}</td>
-              <td class="num strong">{{ formatBytes(row.totalBytes) }}</td>
+              <template v-for="w in windows" :key="w.key">
+                <td
+                  v-for="d in directions"
+                  :key="`${w.key}-${d.key}`"
+                  class="num"
+                  :class="{ sorted: isSorted(w.key, d.key), strong: d.key === 'totalBytes', first: d.key === 'inBytes' }"
+                >
+                  {{ formatBytes(row[w.key][d.key]) }}
+                </td>
+              </template>
             </tr>
           </tbody>
         </table>
       </div>
-      <p class="geo-note">
-        Locations are resolved by your browser, not by the node.
-        <label>
-          Lookup URL
-          <input v-model="endpointDraft" spellcheck="false" :placeholder="DEFAULT_GEO_ENDPOINT" @keyup.enter="applyEndpoint" />
-        </label>
-        <button @click="applyEndpoint">Apply</button>
-      </p>
+      <p class="geo-note">Locations are resolved by your browser, not by the node.</p>
     </article>
   </section>
 
-  <IPTrendModal v-if="modalRow" :row="modalRow" :location="locations[modalRow.ip] || ''" @close="modalRow = null" />
+  <IPTrendModal
+    v-if="modalRow"
+    :row="modalRow"
+    :location="locations[modalRow.ip] || ''"
+    :sources="modalSources"
+    @close="modalRow = null"
+  />
 </template>
 
 <style scoped>
 .topips-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
-.controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
 .picker { display: flex; flex-direction: column; gap: 7px; }
 .picker select {
   border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px;
@@ -261,30 +263,31 @@ function applyEndpoint() {
 .table-scroll { overflow-x: auto; }
 .ip-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .ip-table th {
-  padding: 0 12px 10px; color: var(--muted); font-size: 11px; font-weight: 750;
+  padding: 0 10px 9px; color: var(--muted); font-size: 11px; font-weight: 750;
   letter-spacing: 0.04em; text-transform: uppercase; text-align: left; white-space: nowrap;
 }
-.ip-table td { padding: 11px 12px; border-top: 1px solid var(--line); white-space: nowrap; }
+.window-row th.window-head {
+  text-align: center; padding-bottom: 6px; color: var(--text);
+  border-bottom: 1px solid var(--line);
+}
+.ip-table th.num, .ip-table td.num { text-align: right; }
+.ip-table th.first, .ip-table td.first { border-left: 1px solid var(--line); }
+.sortable { cursor: pointer; user-select: none; transition: color 0.15s; }
+.sortable:hover { color: var(--blue); }
+.sortable.sorted { color: var(--blue); }
+.caret { display: inline-block; width: 9px; font-size: 10px; }
+.caret.up { transform: rotate(180deg); }
+.ip-table td { padding: 11px 10px; border-top: 1px solid var(--line); white-space: nowrap; }
 .ip-row { cursor: pointer; transition: background 0.15s; }
 .ip-row:hover { background: #f6f9fd; }
 .rank { width: 34px; color: var(--muted); font-weight: 750; font-variant-numeric: tabular-nums; }
 .address { font-weight: 750; font-variant-numeric: tabular-nums; }
-.location, .nodes { color: var(--muted); font-weight: 600; white-space: normal; min-width: 130px; }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
+.location, .nodes { color: var(--muted); font-weight: 600; white-space: normal; min-width: 120px; }
+.num { font-variant-numeric: tabular-nums; }
 .num.strong { font-weight: 800; }
+td.num.sorted { color: var(--blue); }
 .geo-note {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--line);
   color: var(--muted); font-size: 12px; font-weight: 600;
 }
-.geo-note label { display: flex; align-items: center; gap: 8px; }
-.geo-note input {
-  border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
-  background: white; color: var(--text); font: inherit; font-size: 12px; min-width: 240px;
-}
-.geo-note button {
-  border: 1px solid var(--line); border-radius: 10px; padding: 7px 14px;
-  background: white; color: var(--text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
-}
-.geo-note button:hover { background: #f0f4f8; }
 </style>

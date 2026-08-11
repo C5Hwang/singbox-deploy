@@ -6,6 +6,7 @@ import type {
   ResourceRawPoint,
   LatencySnapshot,
   IPTrafficSnapshot,
+  IPTrafficDetail,
 } from "./types";
 
 const TOKEN_STORAGE_KEY = "singbox-deploy.monitor.token";
@@ -98,7 +99,13 @@ export async function fetchResourceRecent(source?: string): Promise<ResourceRawP
 export async function fetchLatency(source?: string): Promise<LatencySnapshot> {
   const data = await getJSON(`api/ping-trend${sourceQuery(source)}`);
   const latency = data.latency ?? {};
-  return { targets: latency.targets ?? [], latest: latency.latest ?? [], points: latency.points ?? [] };
+  return {
+    targets: latency.targets ?? [],
+    latest: latency.latest ?? [],
+    points: latency.points ?? [],
+    daily: latency.daily ?? [],
+    recent: latency.recent ?? [],
+  };
 }
 
 export async function fetchIPTraffic(source?: string): Promise<IPTrafficSnapshot> {
@@ -108,5 +115,20 @@ export async function fetchIPTraffic(source?: string): Promise<IPTrafficSnapshot
     enabled: snapshot.enabled ?? false,
     cycleStart: snapshot.cycleStart ?? 0,
     entries: snapshot.entries ?? [],
+  };
+}
+
+// One address's own history. The address goes in the query the node validates,
+// so a row that cannot be parsed as an address never reaches a node.
+export async function fetchIPDetail(ip: string, source?: string): Promise<IPTrafficDetail> {
+  const scope = sourceQuery(source);
+  const separator = scope ? "&" : "?";
+  const data = await getJSON(`api/ip-detail${scope}${separator}ip=${encodeURIComponent(ip)}`);
+  const detail = data.ipDetail ?? {};
+  return {
+    ip: detail.ip ?? ip,
+    recent: detail.recent ?? [],
+    hourly: detail.hourly ?? [],
+    daily: detail.daily ?? [],
   };
 }

@@ -50,8 +50,16 @@ export interface ResourceHourlyPoint {
 // The dashboard's top-level pages, in sidebar order.
 export type Tab = "traffic" | "resources" | "topips" | "latency";
 
-export interface IPDailyPoint {
-  dayTs: number;
+// One bucket of an address's history, at whichever granularity it was read at.
+export interface IPSeriesPoint {
+  ts: number;
+  inBytes: number;
+  outBytes: number;
+  totalBytes: number;
+}
+
+// One address's traffic over one of the windows the table ranks by.
+export interface IPTrafficWindow {
   inBytes: number;
   outBytes: number;
   totalBytes: number;
@@ -59,10 +67,9 @@ export interface IPDailyPoint {
 
 export interface IPTrafficEntry {
   ip: string;
-  inBytes: number;
-  outBytes: number;
-  totalBytes: number;
-  daily: IPDailyPoint[];
+  cycle: IPTrafficWindow;
+  today: IPTrafficWindow;
+  last7: IPTrafficWindow;
 }
 
 export interface IPTrafficSnapshot {
@@ -71,20 +78,31 @@ export interface IPTrafficSnapshot {
   entries: IPTrafficEntry[];
 }
 
-// A merged row: one address's traffic across the nodes it reached, with the
-// windows the table sorts by derived from the daily series.
+export interface IPTrafficDetail {
+  ip: string;
+  recent: IPSeriesPoint[];
+  hourly: IPSeriesPoint[];
+  daily: IPSeriesPoint[];
+}
+
+// A merged row: one address's traffic summed across the nodes it reached.
 export interface IPTrafficRow {
   ip: string;
   nodes: string[];
-  inBytes: number;
-  outBytes: number;
-  totalBytes: number;
-  todayBytes: number;
-  last7Bytes: number;
-  daily: IPDailyPoint[];
+  cycle: IPTrafficWindow;
+  today: IPTrafficWindow;
+  last7: IPTrafficWindow;
 }
 
-export type IPSortKey = "total" | "today" | "last7";
+// Every cell in the table is sortable, so a sort is a window plus a direction
+// within it rather than one of a few named orders.
+export type IPWindowKey = "today" | "last7" | "cycle";
+export type IPDirectionKey = "inBytes" | "outBytes" | "totalBytes";
+export interface IPSort {
+  window: IPWindowKey;
+  direction: IPDirectionKey;
+  descending: boolean;
+}
 
 export interface PingTarget {
   id: string;
@@ -109,10 +127,19 @@ export interface PingHourlyPoint {
   lossPct: number;
 }
 
+export interface PingRawPoint {
+  ts: number;
+  target: string;
+  avgMs: number | null;
+  lossPct: number;
+}
+
 export interface LatencySnapshot {
   targets: PingTarget[];
   latest: PingLatestPoint[];
   points: PingHourlyPoint[];
+  daily: PingHourlyPoint[];
+  recent: PingRawPoint[];
 }
 
 export interface SourceSummary {

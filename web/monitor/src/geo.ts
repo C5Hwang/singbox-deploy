@@ -3,9 +3,12 @@ import { ref } from "vue";
 // Geolocation is resolved in the browser, not on the node: the monitor service
 // runs on a low-memory VPS and has no business shipping a location database or
 // calling a third party on every render.
-export const DEFAULT_GEO_ENDPOINT = "https://ipwho.is/{ip}";
+//
+// The endpoint is fixed. It used to be editable from the page, which put a
+// URL every viewer's browser would call into a field any viewer could rewrite —
+// a dashboard-wide setting stored per browser, and one more place to get wrong.
+const GEO_ENDPOINT = "https://ipwho.is/{ip}";
 
-const ENDPOINT_KEY = "singbox-deploy.monitor.geoEndpoint";
 const CACHE_KEY = "singbox-deploy.monitor.geoCache";
 // Well past the thirty addresses a page shows, and small enough that the cache
 // stays inside the few-hundred-kilobyte budget browsers give one origin.
@@ -28,20 +31,6 @@ function writeStored(key: string, value: string) {
   } catch {
     /* the lookup still works, it just will not be remembered */
   }
-}
-
-// The endpoint is a template so an operator can point the dashboard at a
-// service of their own — a self-hosted resolver, or a paid plan with a key —
-// without a rebuild.
-export const geoEndpoint = ref(readStored(ENDPOINT_KEY) ?? DEFAULT_GEO_ENDPOINT);
-
-export function setGeoEndpoint(endpoint: string) {
-  const value = endpoint.trim() || DEFAULT_GEO_ENDPOINT;
-  geoEndpoint.value = value;
-  writeStored(ENDPOINT_KEY, value);
-  // Cached labels came from the previous service and may be worded differently.
-  cache.clear();
-  writeStored(CACHE_KEY, "{}");
 }
 
 function loadCache(): Map<string, string> {
@@ -87,10 +76,7 @@ function labelFrom(body: any): string {
 
 async function lookup(ip: string): Promise<string> {
   try {
-    const url = geoEndpoint.value.includes("{ip}")
-      ? geoEndpoint.value.replaceAll("{ip}", encodeURIComponent(ip))
-      : `${geoEndpoint.value.replace(/\/$/, "")}/${encodeURIComponent(ip)}`;
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(GEO_ENDPOINT.replaceAll("{ip}", encodeURIComponent(ip)), { cache: "no-store" });
     if (!res.ok) return "";
     return labelFrom(await res.json());
   } catch {
