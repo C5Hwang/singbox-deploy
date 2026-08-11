@@ -66,7 +66,10 @@ type certManager struct {
 	pickCursor       int
 	zoneCursor       int
 	operation        certOperation
-	pendingRenew     certmgr.CertInfo
+	// operationDomain names the certificate a run is acting on, so the notice
+	// it leaves behind reads the same way as every other result on this page.
+	operationDomain string
+	pendingRenew    certmgr.CertInfo
 	// Deletion is confirmed on its own screen rather than on the Enter that
 	// picks a row, and the screen states what the deletion costs: the nodes a
 	// certificate serves, or the certificates a zone is the only renewal path
@@ -226,9 +229,9 @@ func (m *certManager) updateRunning(msg tea.Msg) (tea.Cmd, bool) {
 		if rm.done {
 			if rm.err == nil {
 				if m.operation == certOperationRenew {
-					m.notice.setInfo("certificate renewed")
+					m.notice.setInfo("renewed certificate " + m.operationDomain)
 				} else {
-					m.notice.setInfo("certificate added")
+					m.notice.setInfo("added certificate " + m.operationDomain)
 				}
 			}
 			m.phase = certPhaseDone
@@ -437,7 +440,7 @@ func (m *certManager) updateZoneDeleteConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
 		if err := certmgr.DeleteCredential(m.layout, domain); err != nil {
 			m.notice.setError("delete failed: " + err.Error())
 		} else {
-			m.notice.setInfo("deleted DNS zone")
+			m.notice.setInfo("deleted DNS zone " + domain)
 		}
 		m.reload()
 		m.phase = certPhaseZoneList
@@ -630,6 +633,7 @@ func (m *certManager) completeZoneForm() {
 
 func (m *certManager) startCertificateRun(operation certOperation, domain string) {
 	m.operation = operation
+	m.operationDomain = domain
 	m.notice.clear()
 	m.phase = certPhaseRunning
 	ch := make(chan runMsg, 64)

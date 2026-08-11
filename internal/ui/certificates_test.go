@@ -125,7 +125,7 @@ func TestAddCertificateIssuesAndDistributesWithDistinctResult(t *testing.T) {
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("add calls = %v, want %v", calls, wantCalls)
 	}
-	if m.notice.text != "certificate added" {
+	if m.notice.text != "added certificate "+domain {
 		t.Fatalf("add result = %q", m.notice.text)
 	}
 	if view := m.View(); !strings.Contains(view, "Certificate added") {
@@ -196,7 +196,7 @@ func TestRenewCertificateRequiresExplicitYThenIssuesAndDistributes(t *testing.T)
 	if strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Fatalf("renew calls = %v, want %v", calls, wantCalls)
 	}
-	if m.notice.text != "certificate renewed" {
+	if m.notice.text != "renewed certificate "+domain {
 		t.Fatalf("renew result = %q", m.notice.text)
 	}
 	if view := m.View(); !strings.Contains(view, "Certificate renewed") {
@@ -749,5 +749,32 @@ func TestDeleteDNSZoneConfirmationNamesTheCertificatesItIssues(t *testing.T) {
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	if len(m.zones) != 1 || m.zones[0].Domain != "other.example.net" {
 		t.Fatalf("confirmed zone delete = %#v", m.zones)
+	}
+}
+
+// Every result notice on this page names the object it acted on, so a run that
+// finished and a zone that was removed read the same way as the rest.
+func TestCertificateResultNoticesNameTheirSubject(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	addZoneForTest(t, m, "example.com")
+	if err := certmgr.Register(m.layout, "kept.example.com"); err != nil {
+		t.Fatalf("register certificate: %v", err)
+	}
+	m.reload()
+
+	m.phase, m.operation, m.operationDomain = certPhaseRunning, certOperationAdd, "new.example.com"
+	if _, _ = m.Update(runMsg{done: true}); !strings.Contains(m.notice.text, "added certificate new.example.com") {
+		t.Fatalf("add notice = %q", m.notice.text)
+	}
+	m.phase, m.operation, m.operationDomain = certPhaseRunning, certOperationRenew, "kept.example.com"
+	if _, _ = m.Update(runMsg{done: true}); !strings.Contains(m.notice.text, "renewed certificate kept.example.com") {
+		t.Fatalf("renew notice = %q", m.notice.text)
+	}
+
+	m.phase = certPhaseZoneDeleteConfirm
+	m.pendingDeleteZone = m.zones[0]
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if !strings.Contains(m.notice.text, "deleted DNS zone example.com") {
+		t.Fatalf("zone delete notice = %q", m.notice.text)
 	}
 }
