@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import IPTrendModal from "../components/IPTrendModal.vue";
 import { fetchIPTraffic } from "../api";
 import { locations, resolveLocations } from "../geo";
-import { formatBytes, formatDateTime } from "../utils";
+import { formatBytesCompact, formatDateTime } from "../utils";
 import type { IPDirectionKey, IPTrafficRow, IPTrafficWindow, IPWindowKey, IPSort, Summary } from "../types";
 
 // The dashboard shows thirty; each node returns more so that merging several
@@ -35,17 +35,18 @@ const loading = ref(false);
 const loadError = ref("");
 const modalRow = ref<IPTrafficRow | null>(null);
 
-// Every window carries all three directions, so the header is a matrix and any
-// cell in it can order the table.
+// Nine numbers per row is a lot of header. The window names carry the words and
+// the directions are reduced to arrows, so the second header row is three
+// glyphs rather than three more words per group.
 const windows: { key: IPWindowKey; label: string }[] = [
   { key: "today", label: "Today" },
-  { key: "last7", label: "Last 7 days" },
-  { key: "cycle", label: "This cycle" },
+  { key: "last7", label: "7 days" },
+  { key: "cycle", label: "Cycle" },
 ];
-const directions: { key: IPDirectionKey; label: string }[] = [
-  { key: "inBytes", label: "In" },
-  { key: "outBytes", label: "Out" },
-  { key: "totalBytes", label: "Total" },
+const directions: { key: IPDirectionKey; glyph: string; title: string }[] = [
+  { key: "inBytes", glyph: "↓", title: "Inbound" },
+  { key: "outBytes", glyph: "↑", title: "Outbound" },
+  { key: "totalBytes", glyph: "Σ", title: "Total" },
 ];
 
 function emptyWindow(): IPTrafficWindow {
@@ -135,6 +136,28 @@ const sorted = computed(() => {
 
 const visible = computed(() => sorted.value.slice(0, SHOWN_ROWS));
 
+// A share bar behind the leading column turns the ranking into something the
+// eye reads before the numbers do.
+const topValue = computed(() => {
+  const { window, direction } = sort.value;
+  return Math.max(1, ...visible.value.map((r) => r[window][direction]));
+});
+
+function shareStyle(row: IPTrafficRow): Record<string, string> {
+  const { window, direction } = sort.value;
+  return { "--share": `${Math.max(0, Math.min(100, (row[window][direction] / topValue.value) * 100))}%` };
+}
+
+// Geolocation comes back as "Country · Region · City", which is wider than the
+// column it has to live in. The city carries the information; the rest is the
+// tooltip.
+function place(ip: string): string {
+  const label = locations.value[ip];
+  if (!label) return "";
+  const parts = label.split(" · ");
+  return parts.length > 1 ? parts[parts.length - 1] : label;
+}
+
 watch(visible, (list) => resolveLocations(list.map((r) => r.ip)));
 watch([selected, () => sources.value.length], load, { immediate: true });
 
@@ -163,10 +186,7 @@ const modalSources = computed(() =>
       <div>
         <p class="eyebrow">Top talkers</p>
         <p class="metric-value small">Busiest {{ SHOWN_ROWS }} client addresses</p>
-        <p class="metric-detail">
-          Counted per remote address for connections opened to the node. Click a column to sort by it, or a row for its trend.
-          <span v-if="cycleLabel"> Cleared with the traffic quota, last reset {{ cycleLabel }}.</span>
-        </p>
+        <p v-if="cycleLabel" class="metric-detail">Cycle from {{ cycleLabel }}</p>
       </div>
       <label class="picker">
         <span class="eyebrow">Node</span>
@@ -182,12 +202,11 @@ const modalSources = computed(() =>
     Per-IP accounting is unavailable on {{ disabledNodes.join(", ") }}: the host has no nftables utility.
   </p>
   <p v-if="unavailableNodes.length" class="no-data">
-    No per-IP data from {{ unavailableNodes.join(", ") }}. A node still running an older agent does not report it
-    until it is upgraded.
+    No per-IP data from {{ unavailableNodes.join(", ") }}.
   </p>
 
   <section class="grid sources">
-    <article class="card span-12">
+    <article class="card span-12 table-card">
       <p v-if="loading && rows.length === 0" class="no-data">Loading per-IP traffic...</p>
       <p v-else-if="loadError" class="no-data">Per-IP traffic is unavailable: {{ loadError }}.</p>
       <p v-else-if="visible.length === 0" class="no-data">
@@ -196,24 +215,31 @@ const modalSources = computed(() =>
       <div v-else class="table-scroll">
         <table class="ip-table">
           <thead>
-            <tr class="window-row">
-              <th class="rank" rowspan="2">#</th>
-              <th rowspan="2">Address</th>
-              <th rowspan="2">Location</th>
-              <th v-if="selected === ALL_NODES" rowspan="2">Nodes</th>
-              <th v-for="w in windows" :key="w.key" colspan="3" class="window-head">{{ w.label }}</th>
+            <tr class="band">
+              <th class="rank"></th>
+              <th></th>
+              <th></th>
+              <th v-if="selected === ALL_NODES"></th>
+              <th v-for="w in windows" :key="w.key" colspan="3" class="band-label">
+                <span>{{ w.label }}</span>
+              </th>
             </tr>
-            <tr>
+            <tr class="heads">
+              <th class="rank">#</th>
+              <th class="col-address">Address</th>
+              <th class="col-place">Location</th>
+              <th v-if="selected === ALL_NODES" class="col-nodes">Nodes</th>
               <template v-for="w in windows" :key="w.key">
                 <th
                   v-for="d in directions"
                   :key="`${w.key}-${d.key}`"
                   class="num sortable"
-                  :class="{ sorted: isSorted(w.key, d.key), first: d.key === 'inBytes' }"
+                  :class="{ sorted: isSorted(w.key, d.key), lead: d.key === 'inBytes' }"
+                  :title="`${w.label} · ${d.title}`"
                   :aria-sort="isSorted(w.key, d.key) ? (sort.descending ? 'descending' : 'ascending') : 'none'"
                   @click="sortBy(w.key, d.key)"
                 >
-                  {{ d.label }}
+                  <span class="glyph">{{ d.glyph }}</span>
                   <span class="caret" :class="{ up: isSorted(w.key, d.key) && !sort.descending }">{{ isSorted(w.key, d.key) ? "▾" : "" }}</span>
                 </th>
               </template>
@@ -222,24 +248,25 @@ const modalSources = computed(() =>
           <tbody>
             <tr v-for="(row, i) in visible" :key="row.ip" class="ip-row" @click="modalRow = row">
               <td class="rank">{{ i + 1 }}</td>
-              <td class="address">{{ row.ip }}</td>
-              <td class="location">{{ locations[row.ip] || "…" }}</td>
-              <td v-if="selected === ALL_NODES" class="nodes">{{ row.nodes.join(", ") }}</td>
+              <td class="address" :style="shareStyle(row)"><span>{{ row.ip }}</span></td>
+              <td class="place" :title="locations[row.ip] || ''">{{ place(row.ip) || "—" }}</td>
+              <td v-if="selected === ALL_NODES" class="nodes">
+                <span v-for="node in row.nodes" :key="node" class="node-chip">{{ node }}</span>
+              </td>
               <template v-for="w in windows" :key="w.key">
                 <td
                   v-for="d in directions"
                   :key="`${w.key}-${d.key}`"
                   class="num"
-                  :class="{ sorted: isSorted(w.key, d.key), strong: d.key === 'totalBytes', first: d.key === 'inBytes' }"
+                  :class="{ sorted: isSorted(w.key, d.key), strong: d.key === 'totalBytes', lead: d.key === 'inBytes' }"
                 >
-                  {{ formatBytes(row[w.key][d.key]) }}
+                  {{ formatBytesCompact(row[w.key][d.key]) }}
                 </td>
               </template>
             </tr>
           </tbody>
         </table>
       </div>
-      <p class="geo-note">Locations are resolved by your browser, not by the node.</p>
     </article>
   </section>
 
@@ -260,34 +287,57 @@ const modalSources = computed(() =>
   background: white; color: var(--text); font: inherit; font-size: 14px; font-weight: 650;
   min-width: 180px; cursor: pointer;
 }
+.table-card { padding: 20px 8px 12px; }
 .table-scroll { overflow-x: auto; }
 .ip-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.ip-table th {
-  padding: 0 10px 9px; color: var(--muted); font-size: 11px; font-weight: 750;
+
+/* The band names the three windows without becoming a second table header:
+   no rules, no borders, just a small caps label sitting over its own columns
+   with a tinted underline that says how far the group reaches. */
+.band th { padding: 0 0 4px; border: 0; }
+.band-label { text-align: center; }
+.band-label span {
+  display: block; margin: 0 6px;
+  padding-bottom: 5px; border-bottom: 2px solid #e8eefb;
+  color: var(--muted); font-size: 10px; font-weight: 800;
+  letter-spacing: 0.09em; text-transform: uppercase;
+}
+.heads th {
+  padding: 7px 8px 10px; color: var(--muted); font-size: 11px; font-weight: 750;
   letter-spacing: 0.04em; text-transform: uppercase; text-align: left; white-space: nowrap;
 }
-.window-row th.window-head {
-  text-align: center; padding-bottom: 6px; color: var(--text);
-  border-bottom: 1px solid var(--line);
-}
-.ip-table th.num, .ip-table td.num { text-align: right; }
-.ip-table th.first, .ip-table td.first { border-left: 1px solid var(--line); }
+.heads th.num { text-align: right; }
+/* Groups are separated by air, not by lines. */
+.ip-table th.lead, .ip-table td.lead { padding-left: 18px; }
 .sortable { cursor: pointer; user-select: none; transition: color 0.15s; }
+.sortable .glyph { font-size: 13px; font-weight: 700; }
 .sortable:hover { color: var(--blue); }
 .sortable.sorted { color: var(--blue); }
-.caret { display: inline-block; width: 9px; font-size: 10px; }
-.caret.up { transform: rotate(180deg); }
-.ip-table td { padding: 11px 10px; border-top: 1px solid var(--line); white-space: nowrap; }
+.caret { display: inline-block; width: 10px; font-size: 9px; }
+.caret.up { display: inline-block; transform: rotate(180deg); }
+
+.ip-table td { padding: 10px 8px; border-top: 1px solid var(--line); white-space: nowrap; }
 .ip-row { cursor: pointer; transition: background 0.15s; }
 .ip-row:hover { background: #f6f9fd; }
-.rank { width: 34px; color: var(--muted); font-weight: 750; font-variant-numeric: tabular-nums; }
-.address { font-weight: 750; font-variant-numeric: tabular-nums; }
-.location, .nodes { color: var(--muted); font-weight: 600; white-space: normal; min-width: 120px; }
-.num { font-variant-numeric: tabular-nums; }
-.num.strong { font-weight: 800; }
-td.num.sorted { color: var(--blue); }
-.geo-note {
-  margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--line);
-  color: var(--muted); font-size: 12px; font-weight: 600;
+.rank { width: 30px; color: var(--muted); font-weight: 750; font-variant-numeric: tabular-nums; text-align: right; padding-right: 4px; }
+
+/* The address cell doubles as the rank bar: a tint sized to the row's share of
+   the leading value, so the shape of the distribution is visible without a
+   column of its own. */
+.address { position: relative; font-weight: 750; font-variant-numeric: tabular-nums; }
+.address::before {
+  content: ""; position: absolute; left: 4px; top: 4px; bottom: 4px;
+  width: var(--share); border-radius: 5px;
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.13), rgba(37, 99, 235, 0.03));
 }
+.address span { position: relative; }
+.place, .nodes { color: var(--muted); font-weight: 600; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+.node-chip {
+  display: inline-block; margin-right: 4px; padding: 2px 7px;
+  border-radius: 999px; background: #f0f4f9; color: #5f6b7e;
+  font-size: 11px; font-weight: 700;
+}
+.num { text-align: right; font-variant-numeric: tabular-nums; color: #5f6b7e; }
+.num.strong { font-weight: 800; color: var(--text); }
+td.num.sorted { color: var(--blue); }
 </style>
