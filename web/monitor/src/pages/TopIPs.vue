@@ -215,7 +215,7 @@ const modalSources = computed(() =>
   <section class="grid">
     <article class="card span-12 topips-head">
       <div>
-        <p class="eyebrow">Top talkers</p>
+        <p class="eyebrow">Busiest first</p>
         <p class="metric-value small">{{ rows.length }} client address{{ rows.length === 1 ? "" : "es" }}</p>
         <p v-if="cycleLabel" class="metric-detail">Cycle from {{ cycleLabel }}</p>
       </div>

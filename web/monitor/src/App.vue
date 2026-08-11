@@ -13,7 +13,7 @@ import type { Summary, Tab } from "./types";
 const PAGE_TITLES: Record<Tab, string> = {
   traffic: "Network Traffic",
   resources: "Resources",
-  topips: "Top IPs",
+  topips: "Clients",
   latency: "Latency",
 };
 
@@ -115,7 +115,7 @@ onUnmounted(stopPolling);
           <div class="mobile-tabs">
             <button :class="{ active: activeTab === 'traffic' }" @click="activeTab = 'traffic'">Traffic</button>
             <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">Resources</button>
-            <button :class="{ active: activeTab === 'topips' }" @click="activeTab = 'topips'">Top IPs</button>
+            <button :class="{ active: activeTab === 'topips' }" @click="activeTab = 'topips'">Clients</button>
             <button :class="{ active: activeTab === 'latency' }" @click="activeTab = 'latency'">Latency</button>
           </div>
           <TimezonePicker />
