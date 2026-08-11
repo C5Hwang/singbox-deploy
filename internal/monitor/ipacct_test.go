@@ -195,7 +195,7 @@ func newIPTrafficTestMonitor(t *testing.T, now time.Time, nft *fakeNFT) *Monitor
 	return m
 }
 
-func TestIPTrafficServesTopAddressesWithDailySeries(t *testing.T) {
+func TestIPTrafficServesTopAddressesWithEveryWindow(t *testing.T) {
 	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
 	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{
 		"peer_in4":  {"203.0.113.7": 3000, "198.51.100.4": 100},
@@ -226,12 +226,101 @@ func TestIPTrafficServesTopAddressesWithDailySeries(t *testing.T) {
 		t.Fatalf("entries = %#v", snapshot.Entries)
 	}
 	top := snapshot.Entries[0]
-	if top.IP != "203.0.113.7" || top.InBytes != 3000 || top.OutBytes != 1000 || top.TotalBytes != 4000 {
+	if top.IP != "203.0.113.7" {
 		t.Fatalf("top entry = %#v", top)
 	}
-	if len(top.Daily) != 1 || top.Daily[0].DayTS != now.Truncate(24*time.Hour).Unix() {
-		t.Fatalf("daily series = %#v", top.Daily)
+	// One round inside today sits inside all three windows, so each of them
+	// reports the same bytes broken out by direction.
+	for name, window := range map[string]IPTrafficWindow{"cycle": top.Cycle, "today": top.Today, "last7": top.Last7} {
+		if window.InBytes != 3000 || window.OutBytes != 1000 || window.TotalBytes != 4000 {
+			t.Fatalf("%s window = %#v", name, window)
+		}
 	}
+}
+
+// Clicking an address asks for its own history, which is read at the same three
+// granularities the node's traffic modal offers.
+func TestIPDetailServesRecentHourlyAndDaily(t *testing.T) {
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 3000}}}}
+	m := newIPTrafficTestMonitor(t, now, nft)
+	m.ipSampleOnce(context.Background(), now)
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/ip-detail?ip=203.0.113.7", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		IPDetail IPTrafficDetail `json:"ipDetail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	detail := payload.IPDetail
+	if detail.IP != "203.0.113.7" {
+		t.Fatalf("detail = %#v", detail)
+	}
+	if len(detail.Recent) != 1 || detail.Recent[0].TS != now.Unix() || detail.Recent[0].InBytes != 3000 {
+		t.Fatalf("recent = %#v", detail.Recent)
+	}
+	if len(detail.Hourly) != 1 || detail.Hourly[0].TS != now.Truncate(time.Hour).Unix() {
+		t.Fatalf("hourly = %#v", detail.Hourly)
+	}
+	if len(detail.Daily) != 1 || detail.Daily[0].TS != now.Truncate(24*time.Hour).Unix() {
+		t.Fatalf("daily = %#v", detail.Daily)
+	}
+
+	// Anything that is not an address is refused before it reaches the store.
+	bad := httptest.NewRecorder()
+	m.Handler().ServeHTTP(bad, httptest.NewRequest(http.MethodGet, "/api/ip-detail?ip=not-an-address", nil))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d for a non-address, want 400", bad.Code)
+	}
+}
+
+// Raw samples fold into hourly buckets on the same cutoff the node's own
+// samples do, and a window total spans both tables so nothing is lost or
+// counted twice across the fold.
+func TestIPTrafficFoldsIntoHourlyWithoutChangingTotals(t *testing.T) {
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 3000}}}}
+	m := newIPTrafficTestMonitor(t, now, nft)
+	old := now.Add(-3 * time.Hour)
+	if err := m.store.AddIPTraffic(old.Unix(), map[string]IPTrafficDelta{"203.0.113.7": {InBytes: 500, OutBytes: 100}}); err != nil {
+		t.Fatalf("AddIPTraffic: %v", err)
+	}
+	m.ipSampleOnce(context.Background(), now)
+
+	before := topEntry(t, m, now)
+	m.maintenance(now)
+	after := topEntry(t, m, now)
+	if before.Cycle != after.Cycle {
+		t.Fatalf("cycle total changed across the fold: %#v -> %#v", before.Cycle, after.Cycle)
+	}
+	if after.Cycle.TotalBytes != 3600 {
+		t.Fatalf("cycle total = %#v, want both rounds", after.Cycle)
+	}
+	// Today's window excludes nothing here, but the folded row now lives in the
+	// hourly table, which is what proves the window reads both.
+	var rawRows int
+	if err := m.store.db.QueryRow(`SELECT COUNT(*) FROM ip_samples`).Scan(&rawRows); err != nil {
+		t.Fatalf("count raw: %v", err)
+	}
+	if rawRows != 1 {
+		t.Fatalf("raw rows = %d, want only the sample inside the retention window", rawRows)
+	}
+}
+
+func topEntry(t *testing.T, m *Monitor, now time.Time) IPTrafficEntry {
+	t.Helper()
+	cycle := CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix()
+	today := now.Truncate(24 * time.Hour).Unix()
+	entries, err := m.store.TopIPTraffic(topIPTrafficEntries, cycle, today, today-6*86400)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("TopIPTraffic: %#v (%v)", entries, err)
+	}
+	return entries[0]
 }
 
 // The per-IP table describes one quota cycle, so crossing the reset boundary
@@ -244,20 +333,15 @@ func TestIPTrafficClearsWhenTheQuotaCycleRolls(t *testing.T) {
 	}}
 	m := newIPTrafficTestMonitor(t, beforeReset, nft)
 	m.ipSampleOnce(context.Background(), beforeReset)
-	entries, err := m.store.TopIPTraffic(topIPTrafficEntries)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("before reset: entries = %#v (%v)", entries, err)
+	if entry := topEntry(t, m, beforeReset); entry.Cycle.TotalBytes != 3000 {
+		t.Fatalf("before reset: entry = %#v", entry)
 	}
 
 	// 05:00 on the 15th is this configuration's reset boundary.
 	afterReset := time.Date(2026, 6, 15, 6, 0, 0, 0, time.UTC)
 	m.ipSampleOnce(context.Background(), afterReset)
-	entries, err = m.store.TopIPTraffic(topIPTrafficEntries)
-	if err != nil {
-		t.Fatalf("after reset: %v", err)
-	}
-	if len(entries) != 1 || entries[0].TotalBytes != 400 {
-		t.Fatalf("after reset: entries = %#v, want only the 400 bytes since the boundary", entries)
+	if entry := topEntry(t, m, afterReset); entry.Cycle.TotalBytes != 400 {
+		t.Fatalf("after reset: entry = %#v, want only the 400 bytes since the boundary", entry)
 	}
 }
 
@@ -294,10 +378,17 @@ func TestPruneIPTrafficKeepsOnlyTheBusiestAddresses(t *testing.T) {
 			t.Fatalf("AddIPTraffic: %v", err)
 		}
 	}
+	// Half the history is folded, so the ranking has to span both tables.
+	if err := store.AggregateIPHourly(day + 1); err != nil {
+		t.Fatalf("AggregateIPHourly: %v", err)
+	}
+	if err := store.AddIPTraffic(day+3600, map[string]IPTrafficDelta{"203.0.113.10": {InBytes: 50}}); err != nil {
+		t.Fatalf("AddIPTraffic: %v", err)
+	}
 	if err := store.PruneIPTraffic(3); err != nil {
 		t.Fatalf("PruneIPTraffic: %v", err)
 	}
-	entries, err := store.TopIPTraffic(topIPTrafficEntries)
+	entries, err := store.TopIPTraffic(topIPTrafficEntries, day, day, day)
 	if err != nil {
 		t.Fatalf("TopIPTraffic: %v", err)
 	}

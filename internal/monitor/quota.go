@@ -94,13 +94,13 @@ func clampDay(year int, month time.Month, day int) int {
 
 // ResourceSnapshot is the latest resource reading shown on the monitor card.
 type ResourceSnapshot struct {
-	CPUPct         float64 `json:"cpuPct"`
-	MemPct         float64 `json:"memPct"`
-	MemUsedBytes   uint64  `json:"memUsedBytes"`
-	MemTotalBytes  uint64  `json:"memTotalBytes"`
-	DiskUsagePct   float64 `json:"diskUsagePct"`
-	DiskUsedBytes  uint64  `json:"diskUsedBytes"`
-	DiskTotalBytes uint64  `json:"diskTotalBytes"`
+	CPUPct          float64 `json:"cpuPct"`
+	MemPct          float64 `json:"memPct"`
+	MemUsedBytes    uint64  `json:"memUsedBytes"`
+	MemTotalBytes   uint64  `json:"memTotalBytes"`
+	DiskUsagePct    float64 `json:"diskUsagePct"`
+	DiskUsedBytes   uint64  `json:"diskUsedBytes"`
+	DiskTotalBytes  uint64  `json:"diskTotalBytes"`
 	DiskIOReadRate  float64 `json:"diskIOReadRate"`
 	DiskIOWriteRate float64 `json:"diskIOWriteRate"`
 }
@@ -123,22 +123,40 @@ type TrafficRawPoint struct {
 	TotalBytes int64 `json:"totalBytes"`
 }
 
-// IPDailyPoint is one remote address's traffic for one GMT day.
-type IPDailyPoint struct {
-	DayTS      int64 `json:"dayTs"`
+// IPSeriesPoint is one remote address's traffic in one bucket, at whichever
+// granularity the series was read at.
+type IPSeriesPoint struct {
+	TS         int64 `json:"ts"`
 	InBytes    int64 `json:"inBytes"`
 	OutBytes   int64 `json:"outBytes"`
 	TotalBytes int64 `json:"totalBytes"`
 }
 
-// IPTrafficEntry is one remote address's traffic in the current quota cycle,
-// with the daily series the dashboard charts and derives its windows from.
+// IPTrafficWindow is one address's traffic over one of the ranking windows.
+type IPTrafficWindow struct {
+	InBytes    int64 `json:"inBytes"`
+	OutBytes   int64 `json:"outBytes"`
+	TotalBytes int64 `json:"totalBytes"`
+}
+
+func (w *IPTrafficWindow) total() { w.TotalBytes = w.InBytes + w.OutBytes }
+
+// Add folds another node's figures for the same address into this window, which
+// is what merging a fleet's lists into one ranking amounts to.
+func (w *IPTrafficWindow) Add(other IPTrafficWindow) {
+	w.InBytes += other.InBytes
+	w.OutBytes += other.OutBytes
+	w.TotalBytes += other.TotalBytes
+}
+
+// IPTrafficEntry is one remote address's traffic over each window the table
+// sorts by. Every window carries all three directions so the dashboard can sort
+// on any column without a second request.
 type IPTrafficEntry struct {
-	IP         string         `json:"ip"`
-	InBytes    int64          `json:"inBytes"`
-	OutBytes   int64          `json:"outBytes"`
-	TotalBytes int64          `json:"totalBytes"`
-	Daily      []IPDailyPoint `json:"daily"`
+	IP    string          `json:"ip"`
+	Cycle IPTrafficWindow `json:"cycle"`
+	Today IPTrafficWindow `json:"today"`
+	Last7 IPTrafficWindow `json:"last7"`
 }
 
 // IPTrafficSnapshot is the payload behind /api/ip-traffic. Enabled is false on
@@ -148,6 +166,15 @@ type IPTrafficSnapshot struct {
 	Enabled    bool             `json:"enabled"`
 	CycleStart int64            `json:"cycleStart"`
 	Entries    []IPTrafficEntry `json:"entries"`
+}
+
+// IPTrafficDetail is one address's history behind /api/ip-detail, at the same
+// three granularities the node's own traffic modal offers.
+type IPTrafficDetail struct {
+	IP     string          `json:"ip"`
+	Recent []IPSeriesPoint `json:"recent"`
+	Hourly []IPSeriesPoint `json:"hourly"`
+	Daily  []IPSeriesPoint `json:"daily"`
 }
 
 // PingHourlyPoint is one target's averaged latency for one hour. AvgMS is nil
@@ -190,15 +217,15 @@ type LatencySnapshot struct {
 
 // ResourceHourlyPoint is one aggregated hourly resource bucket with avg and max.
 type ResourceHourlyPoint struct {
-	HourTS       int64   `json:"hourTs"`
-	CPUAvg       float64 `json:"cpuAvg"`
-	CPUMax       float64 `json:"cpuMax"`
-	MemAvg       float64 `json:"memAvg"`
-	MemMax       float64 `json:"memMax"`
-	DiskAvg      float64 `json:"diskAvg"`
-	DiskMax      float64 `json:"diskMax"`
-	DIOReadAvg   int64   `json:"dioReadAvg"`
-	DIOReadMax   int64   `json:"dioReadMax"`
-	DIOWriteAvg  int64   `json:"dioWriteAvg"`
-	DIOWriteMax  int64   `json:"dioWriteMax"`
+	HourTS      int64   `json:"hourTs"`
+	CPUAvg      float64 `json:"cpuAvg"`
+	CPUMax      float64 `json:"cpuMax"`
+	MemAvg      float64 `json:"memAvg"`
+	MemMax      float64 `json:"memMax"`
+	DiskAvg     float64 `json:"diskAvg"`
+	DiskMax     float64 `json:"diskMax"`
+	DIOReadAvg  int64   `json:"dioReadAvg"`
+	DIOReadMax  int64   `json:"dioReadMax"`
+	DIOWriteAvg int64   `json:"dioWriteAvg"`
+	DIOWriteMax int64   `json:"dioWriteMax"`
 }

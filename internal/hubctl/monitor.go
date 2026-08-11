@@ -84,7 +84,7 @@ func (c *Controller) RefreshMonitor(ctx context.Context) error {
 // requests use Controller.MonitorData, so no direct monitor URL is persisted or
 // exposed to the browser.
 func fetchNodeSummary(ctx context.Context, client *nodeapi.Client, n nodes.Node, name string) (monitor.SourceSummary, error) {
-	body, err := client.Monitor(ctx, nodeapi.MonitorSummary)
+	body, err := client.Monitor(ctx, nodeapi.MonitorSummary, "")
 	if err != nil {
 		return monitor.SourceSummary{}, err
 	}
@@ -133,7 +133,10 @@ func fetchNodeSummary(ctx context.Context, client *nodeapi.Client, n nodes.Node,
 // MonitorData reads one fixed monitor resource for a registered spoke through
 // its bearer-authenticated agent API. nodeID is a stable registry ID; aliases
 // are intentionally not accepted because they are mutable and may duplicate.
-func (c *Controller) MonitorData(ctx context.Context, nodeID string, endpoint nodeapi.MonitorEndpoint) ([]byte, error) {
+// address, when the endpoint drills into one, is the only parameter the
+// protocol carries; it is parsed on both sides so no caller-typed text reaches
+// the spoke's monitor.
+func (c *Controller) MonitorData(ctx context.Context, nodeID string, endpoint nodeapi.MonitorEndpoint, address string) ([]byte, error) {
 	c.defaults()
 	list, err := nodes.Load(c.Layout)
 	if err != nil {
@@ -146,7 +149,7 @@ func (c *Controller) MonitorData(ctx context.Context, nodeID string, endpoint no
 		if !node.Installed || !node.Monitor {
 			return nil, fmt.Errorf("monitor is not enabled for node %s", node.EffectiveAlias())
 		}
-		return c.NewClient(node).Monitor(ctx, endpoint)
+		return c.NewClient(node).Monitor(ctx, endpoint, address)
 	}
 	return nil, fmt.Errorf("monitor node %s not found", nodeID)
 }

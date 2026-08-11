@@ -1,13 +1,11 @@
 package monitor
 
 import (
-	"cmp"
 	"database/sql"
 	"errors"
 	"fmt"
 	"math"
 	"os"
-	"slices"
 	"strconv"
 
 	_ "modernc.org/sqlite"
@@ -148,13 +146,30 @@ CREATE TABLE IF NOT EXISTS resource_hourly (
     dio_write_avg INTEGER NOT NULL, dio_write_max INTEGER NOT NULL,
     sample_count  INTEGER NOT NULL DEFAULT 1
 );
-CREATE TABLE IF NOT EXISTS ip_daily (
-    ts_day    INTEGER NOT NULL,
+-- Per-address traffic mirrors the whole-node traffic above exactly: raw
+-- samples at the sampling interval, folded into hourly buckets by the same
+-- maintenance pass and pruned by the same cutoff. A window total is therefore
+-- the same sum of the two tables that totalsSince computes for the node.
+CREATE TABLE IF NOT EXISTS ip_samples (
+    ts        INTEGER NOT NULL,
     ip        TEXT    NOT NULL,
     in_bytes  INTEGER NOT NULL,
     out_bytes INTEGER NOT NULL,
-    PRIMARY KEY (ts_day, ip)
+    PRIMARY KEY (ts, ip)
 );
+CREATE INDEX IF NOT EXISTS idx_ip_samples_ip ON ip_samples(ip);
+CREATE TABLE IF NOT EXISTS ip_hourly (
+    ts_hour   INTEGER NOT NULL,
+    ip        TEXT    NOT NULL,
+    in_bytes  INTEGER NOT NULL,
+    out_bytes INTEGER NOT NULL,
+    PRIMARY KEY (ts_hour, ip)
+);
+CREATE INDEX IF NOT EXISTS idx_ip_hourly_ip ON ip_hourly(ip);
+-- ip_daily held day totals only. Its content is a strict subset of what the
+-- pair above records, and per-address history is cleared every quota cycle
+-- anyway, so it is dropped rather than migrated.
+DROP TABLE IF EXISTS ip_daily;
 CREATE TABLE IF NOT EXISTS ping_samples (
     ts       INTEGER NOT NULL,
     target   TEXT    NOT NULL,
@@ -537,21 +552,20 @@ ON CONFLICT(ts_hour) DO UPDATE SET
 // ipTrafficCycleKey records the quota cycle the per-IP table describes.
 const ipTrafficCycleKey = "ip_traffic_cycle_start"
 
-// AddIPTraffic folds one round of per-address deltas into the day bucket that
-// contains ts.
+// AddIPTraffic records one round of per-address deltas as raw samples, exactly
+// as InsertSample records the node's own counters.
 func (s *Store) AddIPTraffic(ts int64, deltas map[string]IPTrafficDelta) error {
 	if len(deltas) == 0 {
 		return nil
 	}
-	day := ts / 86400 * 86400
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	stmt, err := tx.Prepare(`
-INSERT INTO ip_daily(ts_day, ip, in_bytes, out_bytes) VALUES(?, ?, ?, ?)
-ON CONFLICT(ts_day, ip) DO UPDATE SET
+INSERT INTO ip_samples(ts, ip, in_bytes, out_bytes) VALUES(?, ?, ?, ?)
+ON CONFLICT(ts, ip) DO UPDATE SET
     in_bytes = in_bytes + excluded.in_bytes,
     out_bytes = out_bytes + excluded.out_bytes`)
 	if err != nil {
@@ -559,18 +573,28 @@ ON CONFLICT(ts_day, ip) DO UPDATE SET
 	}
 	defer stmt.Close()
 	for address, delta := range deltas {
-		if _, err := stmt.Exec(day, address, int64(delta.InBytes), int64(delta.OutBytes)); err != nil {
+		if _, err := stmt.Exec(ts, address, int64(delta.InBytes), int64(delta.OutBytes)); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-// ResetIPTrafficForCycle clears the per-IP table when the quota cycle rolls
-// over, so the top list always describes the cycle the quota is counting.
-// Day buckets cannot express a reset hour on their own, so the boundary is
-// tracked explicitly rather than inferred from the bucket timestamps. It
-// reports whether it cleared anything.
+// AggregateIPHourly folds raw per-address samples older than before into hourly
+// buckets, the same fold AggregateHourly performs for the node as a whole and
+// in the same maintenance pass, so both histories thin out together.
+func (s *Store) AggregateIPHourly(before int64) error {
+	return s.foldAndPrune(before, `
+INSERT INTO ip_hourly(ts_hour, ip, in_bytes, out_bytes)
+SELECT (ts/3600)*3600 AS h, ip, SUM(in_bytes), SUM(out_bytes) FROM ip_samples WHERE ts < ? GROUP BY h, ip
+ON CONFLICT(ts_hour, ip) DO UPDATE SET in_bytes = in_bytes + excluded.in_bytes, out_bytes = out_bytes + excluded.out_bytes`,
+		`DELETE FROM ip_samples WHERE ts < ?`)
+}
+
+// ResetIPTrafficForCycle clears the per-address history when the quota cycle
+// rolls over, so the top list always describes the cycle the quota is counting.
+// Bucket timestamps cannot express a reset hour on their own, so the boundary
+// is tracked explicitly. It reports whether it cleared anything.
 func (s *Store) ResetIPTrafficForCycle(cycleStart int64) (bool, error) {
 	var recorded string
 	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, ipTrafficCycleKey).Scan(&recorded)
@@ -590,8 +614,10 @@ func (s *Store) ResetIPTrafficForCycle(cycleStart int64) (bool, error) {
 	// the next sample would look like a rollover.
 	cleared := err == nil
 	if cleared {
-		if _, execErr := tx.Exec(`DELETE FROM ip_daily`); execErr != nil {
-			return false, execErr
+		for _, table := range []string{"ip_samples", "ip_hourly"} {
+			if _, execErr := tx.Exec(`DELETE FROM ` + table); execErr != nil {
+				return false, execErr
+			}
 		}
 	}
 	if _, execErr := tx.Exec(
@@ -605,72 +631,144 @@ func (s *Store) ResetIPTrafficForCycle(cycleStart int64) (bool, error) {
 
 // PruneIPTraffic keeps only the busiest addresses. A node facing mobile clients
 // sees a long tail of one-off addresses that can never reach the top list, and
-// dropping them is what keeps the table small on a 256 MB VPS.
+// dropping them is what keeps the tables small on a 256 MB VPS. Ranking spans
+// both tables so an address is judged on its whole cycle, not on whichever part
+// of it has been folded.
 func (s *Store) PruneIPTraffic(keep int) error {
 	if keep <= 0 {
 		return nil
 	}
-	_, err := s.db.Exec(`
-DELETE FROM ip_daily WHERE ip NOT IN (
-    SELECT ip FROM ip_daily
-    GROUP BY ip
-    ORDER BY SUM(in_bytes + out_bytes) DESC
+	const survivors = `
+SELECT ip FROM (
+    SELECT ip, SUM(bytes) AS bytes FROM (
+        SELECT ip, SUM(in_bytes + out_bytes) AS bytes FROM ip_samples GROUP BY ip
+        UNION ALL
+        SELECT ip, SUM(in_bytes + out_bytes) AS bytes FROM ip_hourly GROUP BY ip
+    ) GROUP BY ip
+    ORDER BY bytes DESC
     LIMIT ?
-)`, keep)
-	return err
+)`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"ip_samples", "ip_hourly"} {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE ip NOT IN (`+survivors+`)`, keep); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
-// TopIPTraffic returns the busiest addresses in the stored cycle, each with its
-// full daily series. Sorting by today or by the last seven days happens in the
-// dashboard, which is also where the per-node lists are merged, so every window
-// is derived from the same series.
-func (s *Store) TopIPTraffic(limit int) ([]IPTrafficEntry, error) {
+// TopIPTraffic ranks addresses by their traffic since cycleStart and reports
+// each one's totals over the three windows the dashboard sorts by. Every window
+// sums the raw table and the hourly table, which is the same reading
+// totalsSince performs for the node itself; the boundaries are all hour-aligned
+// so no bucket is split between windows.
+func (s *Store) TopIPTraffic(limit int, cycleStart, todayStart, weekStart int64) ([]IPTrafficEntry, error) {
 	rows, err := s.db.Query(`
-SELECT ip, ts_day, in_bytes, out_bytes FROM ip_daily
-WHERE ip IN (
-    SELECT ip FROM ip_daily
-    GROUP BY ip
-    ORDER BY SUM(in_bytes + out_bytes) DESC
-    LIMIT ?
+SELECT ip,
+       SUM(cycle_in),  SUM(cycle_out),
+       SUM(today_in),  SUM(today_out),
+       SUM(week_in),   SUM(week_out)
+FROM (
+    SELECT ip,
+           SUM(CASE WHEN ts >= ?1 THEN in_bytes  ELSE 0 END) AS cycle_in,
+           SUM(CASE WHEN ts >= ?1 THEN out_bytes ELSE 0 END) AS cycle_out,
+           SUM(CASE WHEN ts >= ?2 THEN in_bytes  ELSE 0 END) AS today_in,
+           SUM(CASE WHEN ts >= ?2 THEN out_bytes ELSE 0 END) AS today_out,
+           SUM(CASE WHEN ts >= ?3 THEN in_bytes  ELSE 0 END) AS week_in,
+           SUM(CASE WHEN ts >= ?3 THEN out_bytes ELSE 0 END) AS week_out
+    FROM ip_samples GROUP BY ip
+    UNION ALL
+    SELECT ip,
+           SUM(CASE WHEN ts_hour >= ?1 THEN in_bytes  ELSE 0 END),
+           SUM(CASE WHEN ts_hour >= ?1 THEN out_bytes ELSE 0 END),
+           SUM(CASE WHEN ts_hour >= ?2 THEN in_bytes  ELSE 0 END),
+           SUM(CASE WHEN ts_hour >= ?2 THEN out_bytes ELSE 0 END),
+           SUM(CASE WHEN ts_hour >= ?3 THEN in_bytes  ELSE 0 END),
+           SUM(CASE WHEN ts_hour >= ?3 THEN out_bytes ELSE 0 END)
+    FROM ip_hourly GROUP BY ip
 )
-ORDER BY ts_day ASC`, limit)
+GROUP BY ip
+HAVING SUM(cycle_in) + SUM(cycle_out) > 0
+ORDER BY SUM(cycle_in) + SUM(cycle_out) DESC
+LIMIT ?4`, cycleStart, todayStart, weekStart, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	byAddress := map[string]*IPTrafficEntry{}
-	var order []string
+	var entries []IPTrafficEntry
 	for rows.Next() {
-		var (
-			address string
-			point   IPDailyPoint
-		)
-		if err := rows.Scan(&address, &point.DayTS, &point.InBytes, &point.OutBytes); err != nil {
+		var e IPTrafficEntry
+		if err := rows.Scan(&e.IP,
+			&e.Cycle.InBytes, &e.Cycle.OutBytes,
+			&e.Today.InBytes, &e.Today.OutBytes,
+			&e.Last7.InBytes, &e.Last7.OutBytes,
+		); err != nil {
 			return nil, err
 		}
-		point.TotalBytes = point.InBytes + point.OutBytes
-		entry, ok := byAddress[address]
-		if !ok {
-			entry = &IPTrafficEntry{IP: address}
-			byAddress[address] = entry
-			order = append(order, address)
-		}
-		entry.InBytes += point.InBytes
-		entry.OutBytes += point.OutBytes
-		entry.TotalBytes += point.TotalBytes
-		entry.Daily = append(entry.Daily, point)
+		e.Cycle.total()
+		e.Today.total()
+		e.Last7.total()
+		entries = append(entries, e)
 	}
-	if err := rows.Err(); err != nil {
+	return entries, rows.Err()
+}
+
+// IPTrafficSeries returns one address's history at the three granularities the
+// dashboard draws, each read the same way the node's own series is: raw rows
+// for the recent window, hourly buckets for the hourly view, and those buckets
+// folded into GMT days for the daily view.
+func (s *Store) IPTrafficSeries(address string, recentSince, since int64) (IPTrafficDetail, error) {
+	detail := IPTrafficDetail{IP: address}
+	recent, err := s.ipPoints(`SELECT ts, in_bytes, out_bytes FROM ip_samples WHERE ip = ? AND ts >= ? ORDER BY ts ASC`, address, recentSince)
+	if err != nil {
+		return IPTrafficDetail{}, err
+	}
+	detail.Recent = recent
+	// The hourly view has to include the samples not folded yet, or its most
+	// recent hours read as empty until maintenance catches up.
+	hourly, err := s.ipBuckets(address, since, 3600)
+	if err != nil {
+		return IPTrafficDetail{}, err
+	}
+	detail.Hourly = hourly
+	daily, err := s.ipBuckets(address, since, 86400)
+	if err != nil {
+		return IPTrafficDetail{}, err
+	}
+	detail.Daily = daily
+	return detail, nil
+}
+
+func (s *Store) ipBuckets(address string, since, width int64) ([]IPSeriesPoint, error) {
+	return s.ipPoints(`
+SELECT bucket, SUM(in_bytes), SUM(out_bytes) FROM (
+    SELECT (ts/?2)*?2 AS bucket, in_bytes, out_bytes FROM ip_samples WHERE ip = ?1 AND ts >= ?3
+    UNION ALL
+    SELECT (ts_hour/?2)*?2 AS bucket, in_bytes, out_bytes FROM ip_hourly WHERE ip = ?1 AND ts_hour >= ?3
+)
+GROUP BY bucket ORDER BY bucket ASC`, address, width, since)
+}
+
+func (s *Store) ipPoints(query string, args ...any) ([]IPSeriesPoint, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
 		return nil, err
 	}
-	entries := make([]IPTrafficEntry, 0, len(order))
-	for _, address := range order {
-		entries = append(entries, *byAddress[address])
+	defer rows.Close()
+	points := []IPSeriesPoint{}
+	for rows.Next() {
+		var p IPSeriesPoint
+		if err := rows.Scan(&p.TS, &p.InBytes, &p.OutBytes); err != nil {
+			return nil, err
+		}
+		p.TotalBytes = p.InBytes + p.OutBytes
+		points = append(points, p)
 	}
-	slices.SortFunc(entries, func(a, b IPTrafficEntry) int {
-		return cmp.Compare(b.TotalBytes, a.TotalBytes)
-	})
-	return entries, nil
+	return points, rows.Err()
 }
 
 // InsertPingSamples records one latency round, keyed by target ID.

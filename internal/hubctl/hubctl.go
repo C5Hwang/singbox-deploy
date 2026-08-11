@@ -1107,7 +1107,7 @@ func (c *Controller) validateOperationalAgent(
 	if !node.Monitor {
 		return nil
 	}
-	body, err := client.Monitor(ctx, nodeapi.MonitorSummary)
+	body, err := client.Monitor(ctx, nodeapi.MonitorSummary, "")
 	if err != nil {
 		return fmt.Errorf("agent %s monitor summary is unavailable: %w", label, err)
 	}

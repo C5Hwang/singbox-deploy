@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 )
 
@@ -321,11 +323,24 @@ func (s *Server) handleMonitor(endpoint MonitorEndpoint) http.HandlerFunc {
 		// Never pass a caller-controlled path or query to the monitor. In
 		// particular, dropping `source` prevents its multi-source handler from
 		// proxying to a URL stored in a remote snapshot.
+		//
+		// One endpoint drills into a single address, so it needs a parameter.
+		// The address is parsed and written back out rather than forwarded, so
+		// what reaches the monitor is still a value this process produced.
+		query := ""
+		if endpoint == MonitorIPDetail {
+			address, err := netip.ParseAddr(strings.TrimSpace(r.URL.Query().Get("ip")))
+			if err != nil {
+				http.Error(w, "ip must be an IP address", http.StatusBadRequest)
+				return
+			}
+			query = url.Values{"ip": []string{address.String()}}.Encode()
+		}
 		monitorRequest := r.Clone(r.Context())
 		monitorRequest.Method = http.MethodGet
 		monitorRequest.URL.Path = handlerPath
 		monitorRequest.URL.RawPath = ""
-		monitorRequest.URL.RawQuery = ""
+		monitorRequest.URL.RawQuery = query
 		monitorRequest.RequestURI = handlerPath
 		monitorRequest.Header = r.Header.Clone()
 		monitorRequest.Header.Del("Authorization")

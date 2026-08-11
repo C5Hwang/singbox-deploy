@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,8 +61,9 @@ type Config struct {
 	RefreshRemoteSources func(context.Context) error
 	// FetchRemoteData retrieves one fixed drill-down resource for a stable
 	// source ID. The hub wires this to its authenticated spoke-agent API; the
-	// browser never receives overlay addresses or bearer tokens.
-	FetchRemoteData func(context.Context, string, string) ([]byte, error)
+	// browser never receives overlay addresses or bearer tokens. The values are
+	// this process's own, not the caller's.
+	FetchRemoteData func(ctx context.Context, sourceID, path string, query url.Values) ([]byte, error)
 	Now             func() time.Time
 }
 
@@ -152,6 +155,7 @@ func (m *Monitor) Handler() http.Handler {
 	api.HandleFunc("/api/resource-recent", m.handleResourceRecent)
 	api.HandleFunc("/api/ping-trend", m.handlePingTrend)
 	api.HandleFunc("/api/ip-traffic", m.handleIPTraffic)
+	api.HandleFunc("/api/ip-detail", m.handleIPDetail)
 
 	mux := http.NewServeMux()
 	// Only the JSON API is guarded. The static bundle has to load unauthenticated
@@ -385,12 +389,17 @@ const topIPTrafficEntries = 50
 const ipTrafficKeptAddresses = 500
 
 func (m *Monitor) handleIPTraffic(w http.ResponseWriter, r *http.Request) {
-	cycleStart := CycleStart(m.now(), m.cfg.ResetDay, m.cfg.ResetHour).Unix()
+	now := m.now()
+	cycleStart := CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix()
+	// The two shorter windows are GMT-aligned, matching the quota cycle the
+	// rest of the dashboard is keyed to rather than the viewer's timezone.
+	todayStart := now.Truncate(24 * time.Hour).Unix()
+	weekStart := todayStart - 6*86400
 	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
 		key:       "ipTraffic",
 		proxyPath: "/api/ip-traffic",
 		local: func() (any, error) {
-			entries, err := m.store.TopIPTraffic(topIPTrafficEntries)
+			entries, err := m.store.TopIPTraffic(topIPTrafficEntries, cycleStart, todayStart, weekStart)
 			if err != nil {
 				return nil, err
 			}
@@ -403,15 +412,39 @@ func (m *Monitor) handleIPTraffic(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleIPDetail serves one address's history. The address is parsed before it
+// reaches the store, so the only thing that ever reaches a query is a value
+// this process re-serialized.
+func (m *Monitor) handleIPDetail(w http.ResponseWriter, r *http.Request) {
+	address, err := netip.ParseAddr(strings.TrimSpace(r.URL.Query().Get("ip")))
+	if err != nil {
+		http.Error(w, "ip must be an IP address", http.StatusBadRequest)
+		return
+	}
+	now := m.now()
+	cycleStart := CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix()
+	recentSince := now.Add(-rawRetention).Unix()
+	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
+		key:        "ipDetail",
+		proxyPath:  "/api/ip-detail",
+		proxyQuery: url.Values{"ip": []string{address.String()}},
+		local:      func() (any, error) { return m.store.IPTrafficSeries(address.String(), recentSince, cycleStart) },
+	})
+}
+
 func sourceQuery(r *http.Request) string { return r.URL.Query().Get("source") }
 
 // sourceEndpoint parameterizes the trend/recent handlers, which otherwise
 // duplicated the same local-vs-remote dispatch.
 type sourceEndpoint struct {
-	key       string                          // JSON response field ("trend" or "points")
-	proxyPath string                          // remote API path to proxy to
-	local     func() (any, error)             // local data provider
-	embedded  func(SourceSummary) (any, bool) // optional embedded-snapshot fallback
+	key       string // JSON response field ("trend" or "points")
+	proxyPath string // remote API path to proxy to
+	// proxyQuery carries the parameters a remote read needs. Every value in it
+	// has already been parsed and re-serialized by this process, so nothing a
+	// caller typed is forwarded verbatim.
+	proxyQuery url.Values
+	local      func() (any, error)             // local data provider
+	embedded   func(SourceSummary) (any, bool) // optional embedded-snapshot fallback
 }
 
 func (m *Monitor) serveSourceData(ctx context.Context, w http.ResponseWriter, source string, ep sourceEndpoint) {
@@ -434,7 +467,7 @@ func (m *Monitor) serveSourceData(ctx context.Context, w http.ResponseWriter, so
 				http.Error(w, "remote source is not a managed spoke", http.StatusNotFound)
 				return
 			}
-			body, err := m.cfg.FetchRemoteData(ctx, rs.ID, ep.proxyPath)
+			body, err := m.cfg.FetchRemoteData(ctx, rs.ID, ep.proxyPath, ep.proxyQuery)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
 				return
@@ -898,6 +931,11 @@ func (m *Monitor) maintenance(now time.Time) {
 	}
 	if err := m.store.AggregateResourceHourly(now.Add(-resourceRawRetention).Unix()); err != nil {
 		log.Printf("monitor: aggregate resources: %v", err)
+	}
+	// Per-address samples fold on the node's own cutoff, so the two histories
+	// always describe the same window at the same granularity.
+	if err := m.store.AggregateIPHourly(now.Add(-rawRetention).Unix()); err != nil {
+		log.Printf("monitor: aggregate per-IP traffic: %v", err)
 	}
 	if err := m.store.Cleanup(now.Add(-historyRetention).Unix()); err != nil {
 		log.Printf("monitor: cleanup: %v", err)

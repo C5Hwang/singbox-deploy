@@ -720,7 +720,7 @@ func TestMonitorFetchUsesFixedAuthenticatedPathAndStripsQuery(t *testing.T) {
 		{MonitorPingTrend, "/api/ping-trend"},
 		{MonitorIPTraffic, "/api/ip-traffic"},
 	} {
-		body, err := client.Monitor(context.Background(), tc.endpoint)
+		body, err := client.Monitor(context.Background(), tc.endpoint, "203.0.113.7")
 		if err != nil {
 			t.Fatalf("Monitor(%s): %v", tc.endpoint, err)
 		}
@@ -756,7 +756,7 @@ func TestMonitorRejectsUnknownEndpointWithoutProxying(t *testing.T) {
 	}
 
 	client := &Client{BaseURL: "http://unused.invalid", Token: "secret"}
-	if _, err := client.Monitor(context.Background(), MonitorEndpoint("http://169.254.169.254")); err == nil || !strings.Contains(err.Error(), "unsupported") {
+	if _, err := client.Monitor(context.Background(), MonitorEndpoint("http://169.254.169.254"), ""); err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("expected client allow-list rejection, got %v", err)
 	}
 }
@@ -870,5 +870,39 @@ func TestGenerateTokenUnique(t *testing.T) {
 	b, _ := GenerateToken()
 	if a == b || len(a) != 64 {
 		t.Fatalf("tokens not unique/wrong length: %q %q", a, b)
+	}
+}
+
+// The per-address drill-down is the one endpoint that carries a parameter. It
+// is parsed and written back out on both sides, so what reaches the monitor is
+// never the caller's text — and anything that is not an address is refused
+// before it gets that far.
+func TestMonitorIPDetailForwardsOnlyAParsedAddress(t *testing.T) {
+	var gotPath, gotQuery string
+	h := &fakeHandler{monitor: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"ipDetail":{}}`)
+	})}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+
+	if _, err := client.Monitor(context.Background(), MonitorIPDetail, " 203.0.113.7 "); err != nil {
+		t.Fatalf("Monitor(ip-detail): %v", err)
+	}
+	if gotPath != "/api/ip-detail" || gotQuery != "ip=203.0.113.7" {
+		t.Fatalf("internal request path=%q query=%q", gotPath, gotQuery)
+	}
+
+	if _, err := client.Monitor(context.Background(), MonitorIPDetail, "../../etc/passwd"); err == nil {
+		t.Fatal("client forwarded a non-address")
+	}
+
+	// A direct caller that skips the client cannot smuggle text either.
+	req := httptest.NewRequest(http.MethodGet, "/api/monitor/ip-detail?ip=%2Fetc%2Fpasswd&source=http://evil.invalid", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	(&Server{Token: "secret", Handler: h}).Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d for a non-address, want 400", rec.Code)
 	}
 }

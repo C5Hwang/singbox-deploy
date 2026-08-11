@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
@@ -87,12 +88,12 @@ func runMonitor(args []string) error {
 		RefreshRemoteSources: func(ctx context.Context) error {
 			return ctrl.RefreshMonitor(ctx)
 		},
-		FetchRemoteData: func(ctx context.Context, sourceID, path string) ([]byte, error) {
+		FetchRemoteData: func(ctx context.Context, sourceID, path string, query url.Values) ([]byte, error) {
 			endpoint, err := monitorEndpointForPath(path)
 			if err != nil {
 				return nil, err
 			}
-			return ctrl.MonitorData(ctx, sourceID, endpoint)
+			return ctrl.MonitorData(ctx, sourceID, endpoint, query.Get("ip"))
 		},
 		Now: now,
 	}
@@ -117,6 +118,8 @@ func monitorEndpointForPath(path string) (nodeapi.MonitorEndpoint, error) {
 		return nodeapi.MonitorPingTrend, nil
 	case "/api/ip-traffic":
 		return nodeapi.MonitorIPTraffic, nil
+	case "/api/ip-detail":
+		return nodeapi.MonitorIPDetail, nil
 	default:
 		return "", fmt.Errorf("unsupported monitor resource %q", path)
 	}

@@ -638,6 +638,7 @@ const (
 	MonitorResourceRecent MonitorEndpoint = "resource-recent"
 	MonitorPingTrend      MonitorEndpoint = "ping-trend"
 	MonitorIPTraffic      MonitorEndpoint = "ip-traffic"
+	MonitorIPDetail       MonitorEndpoint = "ip-detail"
 )
 
 func (e MonitorEndpoint) paths() (apiPath, handlerPath string, ok bool) {
@@ -656,6 +657,8 @@ func (e MonitorEndpoint) paths() (apiPath, handlerPath string, ok bool) {
 		return "/api/monitor/ping-trend", "/api/ping-trend", true
 	case MonitorIPTraffic:
 		return "/api/monitor/ip-traffic", "/api/ip-traffic", true
+	case MonitorIPDetail:
+		return "/api/monitor/ip-detail", "/api/ip-detail", true
 	default:
 		return "", "", false
 	}
@@ -669,6 +672,7 @@ var monitorEndpoints = [...]MonitorEndpoint{
 	MonitorResourceRecent,
 	MonitorPingTrend,
 	MonitorIPTraffic,
+	MonitorIPDetail,
 }
 
 // Stream status sentinels. A streamed operation ends with exactly one of these

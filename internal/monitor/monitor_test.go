@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1258,7 +1259,7 @@ func TestRemoteDrillDownUsesStableIDFetcherInsteadOfStoredURL(t *testing.T) {
 	m := New(store, Config{
 		Alias:             "local",
 		RemoteMonitorPath: remotePath,
-		FetchRemoteData: func(_ context.Context, sourceID, path string) ([]byte, error) {
+		FetchRemoteData: func(_ context.Context, sourceID, path string, _ url.Values) ([]byte, error) {
 			gotID, gotPath = sourceID, path
 			return []byte(`{"trend":[{"hourTs":1000,"inBytes":7}]}`), nil
 		},
@@ -1292,7 +1293,7 @@ func TestManagedHubDoesNotFallBackToLegacyPublicMonitorURL(t *testing.T) {
 	}
 	m := New(store, Config{
 		RemoteMonitorPath: remotePath,
-		FetchRemoteData: func(context.Context, string, string) ([]byte, error) {
+		FetchRemoteData: func(context.Context, string, string, url.Values) ([]byte, error) {
 			t.Fatal("legacy source without stable ID must not reach the spoke fetcher")
 			return nil, nil
 		},

@@ -76,7 +76,7 @@ func TestRefreshMonitorAndDrillDownUseAuthenticatedAgentAPI(t *testing.T) {
 	if snapshot[0].MonitorURL != "" {
 		t.Fatalf("snapshot leaked direct monitor URL %q", snapshot[0].MonitorURL)
 	}
-	body, err := ctrl.MonitorData(context.Background(), nodeID, nodeapi.MonitorTrafficTrend)
+	body, err := ctrl.MonitorData(context.Background(), nodeID, nodeapi.MonitorTrafficTrend, "")
 	if err != nil {
 		t.Fatalf("MonitorData: %v", err)
 	}
