@@ -380,10 +380,13 @@ func (m *Monitor) latencySnapshot(since int64) (LatencySnapshot, error) {
 	}, nil
 }
 
-// topIPTrafficEntries is how many addresses each node reports. The dashboard
-// shows thirty; the surplus is what makes merging several nodes' lists into one
-// ranking accurate when an address is mid-table on each of them.
-const topIPTrafficEntries = 50
+// topIPTrafficEntries bounds one response. A node keeps at most
+// ipTrafficKeptAddresses of them, so this ceiling is never the thing that
+// truncates the list — it exists so a table that has not been pruned yet
+// cannot produce an unbounded response. The dashboard pages through whatever
+// comes back rather than reading a top-N, which is also what makes merging
+// several nodes' lists exact instead of approximate.
+const topIPTrafficEntries = 2000
 
 // ipTrafficKeptAddresses bounds the per-IP table between prunes.
 const ipTrafficKeptAddresses = 500

@@ -6,9 +6,8 @@ import { locations, resolveLocations } from "../geo";
 import { formatBytesCompact, formatDateTime } from "../utils";
 import type { IPDirectionKey, IPTrafficRow, IPTrafficWindow, IPWindowKey, IPSort, Summary } from "../types";
 
-// The dashboard shows thirty; each node returns more so that merging several
-// nodes' lists produces the true top thirty rather than the top of each.
-const SHOWN_ROWS = 30;
+// Every address a node still has is listed; thirty of them fit on a page.
+const PAGE_SIZE = 30;
 const ALL_NODES = "__all__";
 
 const props = defineProps<{ summary: Summary | null }>();
@@ -134,13 +133,45 @@ const sorted = computed(() => {
   return [...rows.value].sort((a, b) => (descending ? value(b) - value(a) : value(a) - value(b)));
 });
 
-const visible = computed(() => sorted.value.slice(0, SHOWN_ROWS));
+const pageCount = computed(() => Math.max(1, Math.ceil(sorted.value.length / PAGE_SIZE)));
+const page = ref(1);
+
+// Re-sorting or switching node re-ranks the whole list, so the page the reader
+// was on no longer means anything; a shorter list can also strand them past the
+// end. Both cases go back to the first page.
+watch([sort, selected], () => (page.value = 1));
+watch(pageCount, (count) => {
+  if (page.value > count) page.value = count;
+});
+
+const visible = computed(() => sorted.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE));
+// The rank column counts through the whole ranking, not through the page.
+const firstRank = computed(() => (page.value - 1) * PAGE_SIZE + 1);
+
+// Enough page buttons to jump around without a strip that wraps: the ends are
+// always reachable and the current position always has neighbours.
+const pageButtons = computed<(number | "gap")[]>(() => {
+  const total = pageCount.value;
+  const current = page.value;
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages = new Set([1, total, current, current - 1, current + 1]);
+  if (current <= 3) [2, 3, 4].forEach((p) => pages.add(p));
+  if (current >= total - 2) [total - 3, total - 2, total - 1].forEach((p) => pages.add(p));
+  const ordered = [...pages].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
+  const out: (number | "gap")[] = [];
+  for (let i = 0; i < ordered.length; i++) {
+    if (i > 0 && ordered[i] - ordered[i - 1] > 1) out.push("gap");
+    out.push(ordered[i]);
+  }
+  return out;
+});
 
 // A share bar behind the leading column turns the ranking into something the
-// eye reads before the numbers do.
+// eye reads before the numbers do. It is scaled to the whole ranking rather
+// than to the page, so page two does not re-inflate its own rows to full width.
 const topValue = computed(() => {
   const { window, direction } = sort.value;
-  return Math.max(1, ...visible.value.map((r) => r[window][direction]));
+  return Math.max(1, ...sorted.value.map((r) => r[window][direction]));
 });
 
 function shareStyle(row: IPTrafficRow): Record<string, string> {
@@ -185,7 +216,7 @@ const modalSources = computed(() =>
     <article class="card span-12 topips-head">
       <div>
         <p class="eyebrow">Top talkers</p>
-        <p class="metric-value small">Busiest {{ SHOWN_ROWS }} client addresses</p>
+        <p class="metric-value small">{{ rows.length }} client address{{ rows.length === 1 ? "" : "es" }}</p>
         <p v-if="cycleLabel" class="metric-detail">Cycle from {{ cycleLabel }}</p>
       </div>
       <label class="picker">
@@ -247,7 +278,7 @@ const modalSources = computed(() =>
           </thead>
           <tbody>
             <tr v-for="(row, i) in visible" :key="row.ip" class="ip-row" @click="modalRow = row">
-              <td class="rank">{{ i + 1 }}</td>
+              <td class="rank">{{ firstRank + i }}</td>
               <td class="address" :style="shareStyle(row)"><span>{{ row.ip }}</span></td>
               <td class="place" :title="locations[row.ip] || ''">{{ place(row.ip) || "—" }}</td>
               <td v-if="selected === ALL_NODES" class="nodes">
@@ -267,6 +298,23 @@ const modalSources = computed(() =>
           </tbody>
         </table>
       </div>
+
+      <nav v-if="pageCount > 1" class="pager" aria-label="Pagination">
+        <button class="page-step" :disabled="page === 1" aria-label="Previous page" @click="page = page - 1">‹</button>
+        <template v-for="(entry, i) in pageButtons" :key="`${entry}-${i}`">
+          <span v-if="entry === 'gap'" class="page-gap">…</span>
+          <button
+            v-else
+            class="page-num"
+            :class="{ on: entry === page }"
+            :aria-current="entry === page ? 'page' : undefined"
+            @click="page = entry as number"
+          >
+            {{ entry }}
+          </button>
+        </template>
+        <button class="page-step" :disabled="page === pageCount" aria-label="Next page" @click="page = page + 1">›</button>
+      </nav>
     </article>
   </section>
 
