@@ -28,7 +28,9 @@ const (
 	certPhaseRenewPick
 	certPhaseRenewConfirm
 	certPhaseCertPick
+	certPhaseCertDeleteConfirm
 	certPhaseZoneDeletePick
+	certPhaseZoneDeleteConfirm
 	certPhaseRunning
 	certPhaseDone
 )
@@ -65,6 +67,13 @@ type certManager struct {
 	zoneCursor       int
 	operation        certOperation
 	pendingRenew     certmgr.CertInfo
+	// Deletion is confirmed on its own screen rather than on the Enter that
+	// picks a row, and the screen states what the deletion costs: the nodes a
+	// certificate serves, or the certificates a zone is the only renewal path
+	// for. Both are resolved at pick time so the warning precedes the keypress.
+	pendingDeleteCert  certmgr.CertInfo
+	pendingDeleteZone  certmgr.DNSCredential
+	pendingZoneCovered []string
 
 	// pendingZone is the zone the hostname step composes its domain under.
 	pendingZone string
@@ -195,9 +204,17 @@ func (m *certManager) Update(msg tea.Msg) (tea.Cmd, bool) {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updateCertPick(key)
 		}
+	case certPhaseCertDeleteConfirm:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return m.updateCertDeleteConfirm(key)
+		}
 	case certPhaseZoneDeletePick:
 		if key, ok := msg.(tea.KeyMsg); ok {
 			return m.updateZoneDeletePick(key)
+		}
+	case certPhaseZoneDeleteConfirm:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return m.updateZoneDeleteConfirm(key)
 		}
 	}
 	return nil, false
@@ -346,29 +363,52 @@ func (m *certManager) updateRenewConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
+// updateCertPick moves a chosen certificate to its confirmation screen. A
+// certificate a node still serves is refused here rather than on the
+// confirmation, so the operator never confirms a deletion that cannot happen.
 func (m *certManager) updateCertPick(key tea.KeyMsg) (tea.Cmd, bool) {
 	handleSelectionKey(key, selectionKeyHandlers{
 		Move: func(d int) { m.pickCursor = moveSelection(m.pickCursor, len(m.inventory), d) },
 		Confirm: func() (tea.Cmd, bool) {
-			if idx, ok := selectedIndex(m.pickCursor, len(m.inventory)); ok {
-				domain := m.inventory[idx].Domain
-				consumers, err := (&hubctl.Controller{Layout: m.layout}).CertificateConsumers(domain)
-				if err != nil {
-					m.notice.setError("delete failed: " + err.Error())
-				} else if len(consumers) > 0 {
-					m.notice.setError(fmt.Sprintf("cannot delete %s: certificate is used by %s", domain, strings.Join(consumers.Labels(), ", ")))
-				} else if err := certmgr.Deregister(m.layout, domain); err != nil {
-					m.notice.setError("delete failed: " + err.Error())
-				} else {
-					m.notice.setInfo("deleted certificate " + domain)
-				}
-				m.reload()
+			idx, ok := selectedIndex(m.pickCursor, len(m.inventory))
+			if !ok {
+				return nil, false
 			}
-			m.phase = certPhaseList
+			target := m.inventory[idx]
+			consumers, err := (&hubctl.Controller{Layout: m.layout}).CertificateConsumers(target.Domain)
+			switch {
+			case err != nil:
+				m.notice.setError("delete failed: " + err.Error())
+				m.phase = certPhaseList
+			case len(consumers) > 0:
+				m.notice.setError(fmt.Sprintf("cannot delete %s: certificate is used by %s", target.Domain, strings.Join(consumers.Labels(), ", ")))
+			default:
+				m.pendingDeleteCert = target
+				m.phase = certPhaseCertDeleteConfirm
+			}
 			return nil, false
 		},
 		Cancel: func() (tea.Cmd, bool) { m.phase = certPhaseList; return nil, false },
 	})
+	return nil, false
+}
+
+func (m *certManager) updateCertDeleteConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
+	switch strings.ToLower(key.String()) {
+	case "y":
+		domain := m.pendingDeleteCert.Domain
+		m.pendingDeleteCert = certmgr.CertInfo{}
+		if err := certmgr.Deregister(m.layout, domain); err != nil {
+			m.notice.setError("delete failed: " + err.Error())
+		} else {
+			m.notice.setInfo("deleted certificate " + domain)
+		}
+		m.reload()
+		m.phase = certPhaseList
+	case "n", "esc":
+		m.pendingDeleteCert = certmgr.CertInfo{}
+		m.phase = certPhaseCertPick
+	}
 	return nil, false
 }
 
@@ -377,19 +417,49 @@ func (m *certManager) updateZoneDeletePick(key tea.KeyMsg) (tea.Cmd, bool) {
 		Move: func(d int) { m.pickCursor = moveSelection(m.pickCursor, len(m.zones), d) },
 		Confirm: func() (tea.Cmd, bool) {
 			if idx, ok := selectedIndex(m.pickCursor, len(m.zones)); ok {
-				if err := certmgr.DeleteCredential(m.layout, m.zones[idx].Domain); err != nil {
-					m.notice.setError("delete failed: " + err.Error())
-				} else {
-					m.notice.setInfo("deleted DNS zone")
-				}
-				m.reload()
+				m.pendingDeleteZone = m.zones[idx]
+				m.pendingZoneCovered = m.certificatesIssuedThrough(m.zones[idx].Domain)
+				m.phase = certPhaseZoneDeleteConfirm
 			}
-			m.phase = certPhaseZoneList
 			return nil, false
 		},
 		Cancel: func() (tea.Cmd, bool) { m.phase = certPhaseZoneList; return nil, false },
 	})
 	return nil, false
+}
+
+func (m *certManager) updateZoneDeleteConfirm(key tea.KeyMsg) (tea.Cmd, bool) {
+	switch strings.ToLower(key.String()) {
+	case "y":
+		domain := m.pendingDeleteZone.Domain
+		m.pendingDeleteZone = certmgr.DNSCredential{}
+		m.pendingZoneCovered = nil
+		if err := certmgr.DeleteCredential(m.layout, domain); err != nil {
+			m.notice.setError("delete failed: " + err.Error())
+		} else {
+			m.notice.setInfo("deleted DNS zone")
+		}
+		m.reload()
+		m.phase = certPhaseZoneList
+	case "n", "esc":
+		m.pendingDeleteZone = certmgr.DNSCredential{}
+		m.pendingZoneCovered = nil
+		m.phase = certPhaseZoneDeletePick
+	}
+	return nil, false
+}
+
+// certificatesIssuedThrough lists the certificates whose renewal this zone is
+// the DNS-01 path for. Selection is the same longest-suffix match issuance
+// performs, so a name covered by a more specific zone is not counted twice.
+func (m *certManager) certificatesIssuedThrough(zone string) []string {
+	var covered []string
+	for _, cert := range m.inventory {
+		if selected, ok := certmgr.SelectCredential(m.zones, cert.Domain); ok && selected.Domain == zone {
+			covered = append(covered, cert.Domain)
+		}
+	}
+	return covered
 }
 
 func (m *certManager) updateForm(key tea.KeyMsg) (tea.Cmd, bool) {
@@ -662,8 +732,12 @@ func (m *certManager) View() string {
 		return m.renewConfirmView()
 	case certPhaseCertPick:
 		return m.pickView("Delete certificate", certInfoLabels(m.inventory))
+	case certPhaseCertDeleteConfirm:
+		return m.certDeleteConfirmView()
 	case certPhaseZoneDeletePick:
 		return m.pickView("Delete DNS zone", zoneLabels(m.zones))
+	case certPhaseZoneDeleteConfirm:
+		return m.zoneDeleteConfirmView()
 	default:
 		return m.listView()
 	}
@@ -770,6 +844,35 @@ func (m *certManager) renewConfirmView() string {
 		"Press y to force renew, or n/Esc to cancel."
 }
 
+func (m *certManager) certDeleteConfirmView() string {
+	return flowTitle.Render("Delete certificate · Confirm") + "\n\n" +
+		statusWarn.Render("Removes the certificate and its private key from this hub.") + "\n" +
+		"No node currently serves it. Issuing it again means a fresh ACME order.\n\n" +
+		"Domain: " + m.pendingDeleteCert.Domain + "\n\n" +
+		"Press y to delete, or n/Esc to cancel."
+}
+
+func (m *certManager) zoneDeleteConfirmView() string {
+	var b strings.Builder
+	b.WriteString(flowTitle.Render("Delete DNS zone · Confirm") + "\n\n")
+	b.WriteString(statusWarn.Render("Removes the zone and the API token stored with it.") + "\n")
+	b.WriteString("Certificates already on disk keep working until they expire.\n\n")
+	b.WriteString("Zone: " + zoneLabel(m.pendingDeleteZone) + "\n\n")
+	if len(m.pendingZoneCovered) > 0 {
+		b.WriteString(statusBad.Render(fmt.Sprintf(
+			"%s is the DNS-01 path for %d certificate(s), which cannot be renewed without it:",
+			m.pendingDeleteZone.Domain, len(m.pendingZoneCovered))) + "\n")
+		for _, domain := range m.pendingZoneCovered {
+			b.WriteString("  " + domain + "\n")
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("No certificate is issued through this zone.\n\n")
+	}
+	b.WriteString("Press y to delete, or n/Esc to cancel.")
+	return b.String()
+}
+
 func (m *certManager) footerHints() []operationHint {
 	switch m.phase {
 	case certPhaseRunning:
@@ -784,8 +887,10 @@ func (m *certManager) footerHints() []operationHint {
 		return actionFooterHints("Choose")
 	case certPhaseRenewConfirm:
 		return []operationHint{{key: "Y", action: "Force renew"}, {key: "N/Esc", action: "Cancel"}}
+	case certPhaseCertDeleteConfirm, certPhaseZoneDeleteConfirm:
+		return []operationHint{{key: "Y", action: "Delete"}, {key: "N/Esc", action: "Cancel"}}
 	case certPhaseCertPick, certPhaseZoneDeletePick:
-		return actionFooterHints("Delete")
+		return actionFooterHints("Choose")
 	case certPhaseZoneList:
 		return actionBackFooterHints("Select")
 	default:

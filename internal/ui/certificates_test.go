@@ -653,3 +653,101 @@ func TestCertificateListLeadsWithTheZoneItsIssuanceDependsOn(t *testing.T) {
 		t.Fatalf("certificate page still reports a bare zone count:\n%s", view)
 	}
 }
+
+// Deleting a certificate is destructive and irreversible without a fresh ACME
+// order, so the picker's Enter opens a confirmation rather than deleting.
+func TestDeleteCertificateRequiresExplicitY(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	const domain = "doomed.example.com"
+	if err := certmgr.Register(m.layout, domain); err != nil {
+		t.Fatalf("register certificate: %v", err)
+	}
+	m.reload()
+
+	selectCertAction(t, m, actionDeleteCertificate)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseCertPick {
+		t.Fatalf("delete action phase = %d, want picker", m.phase)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseCertDeleteConfirm {
+		t.Fatalf("delete picker phase = %d, want confirmation", m.phase)
+	}
+	confirm := m.View()
+	for _, want := range []string{domain, "Press y to delete"} {
+		if !strings.Contains(confirm, want) {
+			t.Fatalf("delete confirmation missing %q:\n%s", want, confirm)
+		}
+	}
+
+	// Enter is deliberately insufficient, and cancelling returns to the picker
+	// with the certificate still on disk.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseCertDeleteConfirm {
+		t.Fatalf("Enter bypassed the delete confirmation: phase=%d", m.phase)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.phase != certPhaseCertPick {
+		t.Fatalf("cancelled delete phase = %d, want the picker", m.phase)
+	}
+	m.reload()
+	if len(m.inventory) != 1 {
+		t.Fatalf("cancelling deleted the certificate: %#v", m.inventory)
+	}
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if m.phase != certPhaseList {
+		t.Fatalf("confirmed delete phase = %d, want the certificate page", m.phase)
+	}
+	if len(m.inventory) != 0 {
+		t.Fatalf("confirmed delete left the certificate behind: %#v", m.inventory)
+	}
+}
+
+// A zone is the DNS-01 path for every certificate under it, so its confirmation
+// names them: deleting the zone is what silently breaks their renewal.
+func TestDeleteDNSZoneConfirmationNamesTheCertificatesItIssues(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	addZoneForTest(t, m, "example.com")
+	addZoneForTest(t, m, "other.example.net")
+	for _, domain := range []string{"a.example.com", "b.example.com"} {
+		if err := certmgr.Register(m.layout, domain); err != nil {
+			t.Fatalf("register certificate: %v", err)
+		}
+	}
+	m.reload()
+
+	selectCertAction(t, m, actionManageZones)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m.zoneActionCursor = 1
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseZoneDeletePick {
+		t.Fatalf("zone delete phase = %d, want picker", m.phase)
+	}
+	for i, zone := range m.zones {
+		if zone.Domain == "example.com" {
+			m.pickCursor = i
+		}
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.phase != certPhaseZoneDeleteConfirm {
+		t.Fatalf("zone picker phase = %d, want confirmation", m.phase)
+	}
+	confirm := m.View()
+	for _, want := range []string{"example.com", "a.example.com", "b.example.com", "Press y to delete"} {
+		if !strings.Contains(confirm, want) {
+			t.Fatalf("zone delete confirmation missing %q:\n%s", want, confirm)
+		}
+	}
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.phase != certPhaseZoneDeletePick || len(m.zones) != 2 {
+		t.Fatalf("cancelling deleted the zone: phase=%d zones=%#v", m.phase, m.zones)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if len(m.zones) != 1 || m.zones[0].Domain != "other.example.net" {
+		t.Fatalf("confirmed zone delete = %#v", m.zones)
+	}
+}
