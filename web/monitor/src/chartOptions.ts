@@ -245,21 +245,126 @@ export function lineSeries(
 // along the line instead of stacking them at one end is what makes collision
 // impossible rather than merely unlikely: each series takes a different slot,
 // so the labels cannot land on each other however close the values are.
-// The slots alternate side as well as position, so consecutive series — the
-// ones whose averages are most likely to be close — are separated both across
-// the plot and above/below their own line.
-const AVERAGE_LABEL_SLOTS = [
-  "insideStartTop",
-  "insideMiddleBottom",
-  "insideEndTop",
-  "insideStartBottom",
-  "insideMiddleTop",
-  "insideEndBottom",
-];
+const AVERAGE_LABEL_X = ["insideStart", "insideMiddle", "insideEnd"];
+
+// Which side of its own line a label sits on is not free at the edges of the
+// plot: an average close to zero — the common case, since one busy hour lifts
+// the maximum far above the mean — has no room underneath, and a label put
+// there lands on top of the time axis. So the label sits above its line unless
+// the line is high enough that above would leave the plot.
+const AVERAGE_HIGH = 0.75;
+
+// Slots are handed out by value proximity rather than by series order: two
+// averages far apart do not collide however they are placed, and only the ones
+// that are close need to be pulled apart. Three horizontal slots come first
+// because separation across the plot reads better than a stack; a fourth close
+// average is lifted a chip clear of the first.
+const AVERAGE_NEAR_Y = 0.06;
+
+interface AverageSlot {
+  height: number;
+  slot: number;
+}
+
+function averageSlots(series: any[]): (AverageSlot | null)[] {
+  const all: number[] = [];
+  const means = series.map((s) => {
+    const values = seriesValues(s.data);
+    all.push(...values);
+    return values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
+  });
+  // Zero anchors the range because these axes start there, so a mean near zero
+  // is recognised as sitting at the bottom of the plot rather than in the
+  // middle of whatever narrow band the data happens to occupy.
+  const top = Math.max(0, ...all);
+  const span = top - Math.min(0, ...all);
+  const slots: (AverageSlot | null)[] = means.map((mean) =>
+    mean === null ? null : { height: span > 0 ? (mean - Math.min(0, ...all)) / span : 0, slot: 0 },
+  );
+
+  const placed: AverageSlot[] = [];
+  for (const entry of slots
+    .filter((s): s is AverageSlot => s !== null)
+    .slice()
+    .sort((a, b) => b.height - a.height)) {
+    while (placed.some((p) => p.slot === entry.slot && Math.abs(p.height - entry.height) < AVERAGE_NEAR_Y)) {
+      entry.slot++;
+    }
+    placed.push(entry);
+  }
+  return slots;
+}
 
 // A peak in the last fifth of the series would push its label off the right
 // edge, so that one is labelled to the left of the marker instead of above it.
 const PEAK_FLIP_FRACTION = 0.8;
+
+// Peak chips are pinned to a data point, so unlike the average labels they
+// cannot be spread along the plot — the only free direction is up. Two peaks
+// collide when they are close along both axes at once, which is the normal case
+// for series that are related by construction: a total peaks where its largest
+// component does, within a pixel or two, so both chips land on the same spot.
+//
+// A chip that has been pushed up by one slot no longer collides with the one
+// below it, so the test is run against each chip's placed position rather than
+// its marker, and levels are assigned highest peak first — the topmost chip
+// keeps the marker and the ones underneath stack above it in value order.
+// Thresholds are in normalised plot space: a chip is roughly a fifteenth of the
+// plot tall and a seventh of it wide.
+const PEAK_NEAR_X = 0.14;
+const PEAK_LEVEL_Y = 0.09;
+
+interface PeakAnchor {
+  x: number;
+  y: number;
+  level: number;
+}
+
+function peakAnchors(series: any[]): (PeakAnchor | null)[] {
+  const raw = series.map((s) => {
+    const points = s.data ?? [];
+    let bestIndex = -1;
+    let best = -Infinity;
+    for (let i = 0; i < points.length; i++) {
+      const value = Number(Array.isArray(points[i]) ? points[i][1] : points[i]);
+      if (Number.isFinite(value) && value > best) {
+        best = value;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0) return null;
+    return { x: points.length < 2 ? 0 : bestIndex / (points.length - 1), value: best };
+  });
+
+  // Values only have to be comparable to each other, so they are scaled by the
+  // largest peak on the chart. Series on a second axis are laid out against the
+  // same scale, which is approximate but errs towards separating chips.
+  const top = Math.max(...raw.map((a) => (a ? a.value : -Infinity)));
+  const bottom = Math.min(...raw.map((a) => (a ? a.value : Infinity)));
+  const span = top - bottom;
+  const anchors: (PeakAnchor | null)[] = raw.map((a) =>
+    a ? { x: a.x, y: span > 0 ? (a.value - bottom) / span : 0, level: 0 } : null,
+  );
+
+  const placed: PeakAnchor[] = [];
+  const order = anchors
+    .map((a, i) => ({ a, i }))
+    .filter((e): e is { a: PeakAnchor; i: number } => e.a !== null)
+    .sort((p, q) => q.a.y - p.a.y);
+  for (const { a } of order) {
+    while (
+      placed.some(
+        (p) =>
+          Math.abs(p.x - a.x) < PEAK_NEAR_X &&
+          Math.abs(p.y + p.level * PEAK_LEVEL_Y - (a.y + a.level * PEAK_LEVEL_Y)) < PEAK_LEVEL_Y,
+      )
+    ) {
+      a.level++;
+    }
+    placed.push(a);
+  }
+  return anchors;
+}
 
 function seriesValues(data: any[]): number[] {
   const values: number[] = [];
@@ -268,23 +373,6 @@ function seriesValues(data: any[]): number[] {
     if (Number.isFinite(value)) values.push(value);
   }
   return values;
-}
-
-// peakPosition reports where the maximum sits along the series, 0 at the left
-// edge and 1 at the right, so its label can be placed on the side that has room.
-function peakPosition(data: any[]): number {
-  let bestIndex = -1;
-  let best = -Infinity;
-  const points = data ?? [];
-  for (let i = 0; i < points.length; i++) {
-    const value = Number(Array.isArray(points[i]) ? points[i][1] : points[i]);
-    if (Number.isFinite(value) && value > best) {
-      best = value;
-      bestIndex = i;
-    }
-  }
-  if (bestIndex < 0 || points.length < 2) return 0;
-  return bestIndex / (points.length - 1);
 }
 
 // withPeakAverage overlays each series with its own average line and peak
@@ -306,6 +394,9 @@ export function withPeakAverage(
   { show, format, narrow }: { show: boolean; format: (v: number) => string; narrow: boolean },
 ): any[] {
   const fontSize = narrow ? 10 : 11;
+  // One stacking slot is a chip plus the gap that keeps two of them from
+  // touching, which is what the normalised PEAK_LEVEL_Y stands in for.
+  const levelHeight = narrow ? 17 : 21;
   const chip = (color: string) => ({
     color: "#ffffff",
     backgroundColor: color,
@@ -314,9 +405,19 @@ export function withPeakAverage(
     fontSize,
     fontWeight: 700,
   });
+  const anchors = peakAnchors(series);
+  const averages = averageSlots(series);
   return series.map((s, i) => {
     const color = s.itemStyle?.color ?? "#2563eb";
     const values = seriesValues(s.data);
+    const anchor = anchors[i];
+    const average = averages[i];
+    const slot = average?.slot ?? 0;
+    // Above the line unless the line is too high for above; the stack then
+    // grows in whichever direction the label already faces.
+    const above = (average?.height ?? 0) < AVERAGE_HIGH;
+    const averagePosition = `${AVERAGE_LABEL_X[slot % AVERAGE_LABEL_X.length]}${above ? "Top" : "Bottom"}`;
+    const averageOffset = Math.floor(slot / AVERAGE_LABEL_X.length) * levelHeight;
     // A series with nothing in it has no average and no peak to draw; emitting
     // them anyway would put a chip on the zero line of an empty chart.
     const hasData = show && values.length > 0;
@@ -333,8 +434,9 @@ export function withPeakAverage(
         lineStyle: { type: "dashed", width: 1, color, opacity: 0.55 },
         label: {
           ...chip(color),
-          position: AVERAGE_LABEL_SLOTS[i % AVERAGE_LABEL_SLOTS.length],
+          position: averagePosition,
           distance: 4,
+          offset: [0, above ? -averageOffset : averageOffset],
           formatter: ({ value }: any) => `avg ${format(Number(value))}`,
         },
         emphasis: { disabled: true },
@@ -350,8 +452,11 @@ export function withPeakAverage(
         itemStyle: { color, borderColor: "#ffffff", borderWidth: 2 },
         label: {
           ...chip(color),
-          position: peakPosition(s.data) > PEAK_FLIP_FRACTION ? "left" : "top",
+          position: (anchor?.x ?? 0) > PEAK_FLIP_FRACTION ? "left" : "top",
           distance: 7,
+          // Negative y is up: a chip that would land on one already placed is
+          // lifted clear of it rather than drawn over it.
+          offset: [0, -(anchor?.level ?? 0) * levelHeight],
           formatter: ({ value }: any) => `peak ${format(Number(value))}`,
         },
         emphasis: { disabled: true },
