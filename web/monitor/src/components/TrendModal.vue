@@ -2,7 +2,8 @@
 import { ref } from "vue";
 import { fetchTrafficTrend, fetchTrafficRecent } from "../api";
 import { formatBytes } from "../utils";
-import { buildFrame, lineSeries, bytesAxis, aggregateTrafficDaily, type TimeUnit } from "../chartOptions";
+import PeakAverageToggle from "./PeakAverageToggle.vue";
+import { buildFrame, lineSeries, bytesAxis, aggregateTrafficDaily, withPeakAverage, type TimeUnit } from "../chartOptions";
 import { tzOffsetMinutes } from "../timezone";
 import { useTrendChart } from "../useTrendChart";
 import type { SourceSummary, HourlyPoint, TrafficRawPoint } from "../types";
@@ -12,6 +13,7 @@ const emit = defineEmits<{ close: [] }>();
 
 type Granularity = "recent" | "hourly" | "daily";
 const granularity = ref<Granularity>("hourly");
+const showPeakAverage = ref(false);
 const trend = ref<HourlyPoint[]>([]);
 const recentPoints = ref<TrafficRawPoint[]>([]);
 
@@ -60,14 +62,14 @@ function buildOption(): any {
     ];
   }
 
-  return { ...option, yAxis: bytesAxis(narrow), series };
+  return { ...option, yAxis: bytesAxis(narrow), series: withPeakAverage(series, { show: showPeakAverage.value, format: formatBytes, narrow }) };
 }
 
 function close() {
   emit("close");
 }
 
-const { chartRef, loading } = useTrendChart(load, buildOption, [granularity, tzOffsetMinutes], close);
+const { chartRef, loading } = useTrendChart(load, buildOption, [granularity, tzOffsetMinutes], close, [showPeakAverage]);
 </script>
 
 <template>
@@ -85,6 +87,7 @@ const { chartRef, loading } = useTrendChart(load, buildOption, [granularity, tzO
             <button :class="{ active: granularity === 'hourly' }" @click="granularity = 'hourly'">Hourly</button>
             <button :class="{ active: granularity === 'daily' }" @click="granularity = 'daily'">Daily</button>
           </div>
+          <PeakAverageToggle v-model="showPeakAverage" />
         </div>
       </div>
       <div v-if="loading" class="chart-loading">Loading trend data...</div>

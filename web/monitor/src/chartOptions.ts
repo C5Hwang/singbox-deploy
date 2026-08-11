@@ -240,6 +240,65 @@ export function lineSeries(
   };
 }
 
+// withPeakAverage overlays each series with its own average line and peak
+// marker. ECharts computes both from the data already on the chart, so the
+// overlay can never disagree with the curve it annotates, and nulls — a fully
+// lost latency round, a gap in a sparse series — are skipped by both.
+//
+// The marks are always emitted, empty when hidden: the toggle updates the chart
+// by merging rather than rebuilding it, and a merge only removes what it is
+// handed. That is also what keeps the transition to the curve itself: the lines
+// stay where they are while the annotations fade in over them.
+export function withPeakAverage(
+  series: any[],
+  { show, format, narrow }: { show: boolean; format: (v: number) => string; narrow: boolean },
+): any[] {
+  const fontSize = narrow ? 10 : 11;
+  return series.map((s) => {
+    const color = s.itemStyle?.color ?? "#2563eb";
+    return {
+      ...s,
+      markLine: {
+        silent: true,
+        symbol: "none",
+        animation: true,
+        animationDuration: 320,
+        animationEasing: "cubicOut",
+        lineStyle: { type: "dashed", width: 1.5, color, opacity: 0.85 },
+        label: {
+          position: "insideEndTop",
+          distance: 3,
+          color,
+          fontSize,
+          fontWeight: 700,
+          formatter: ({ value }: any) => `avg ${format(Number(value))}`,
+        },
+        emphasis: { disabled: true },
+        data: show ? [{ type: "average" }] : [],
+      },
+      markPoint: {
+        silent: true,
+        symbol: "circle",
+        symbolSize: narrow ? 7 : 9,
+        animation: true,
+        animationDuration: 320,
+        animationEasing: "backOut",
+        itemStyle: { color, borderColor: "#ffffff", borderWidth: 2 },
+        label: {
+          position: "top",
+          distance: 6,
+          color,
+          fontSize,
+          fontWeight: 700,
+          formatter: ({ value }: any) => `peak ${format(Number(value))}`,
+        },
+        emphasis: { disabled: true },
+        data: show ? [{ type: "max" }] : [],
+      },
+    };
+  });
+}
+
 export function bytesAxis(narrow: boolean) {
   return {
     type: "value",

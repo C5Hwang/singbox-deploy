@@ -1,18 +1,40 @@
 import { nextTick, onMounted, onUnmounted, ref, shallowRef, watch, type WatchSource } from "vue";
 import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
-import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent } from "echarts/components";
+import {
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+  DataZoomComponent,
+  MarkLineComponent,
+  MarkPointComponent,
+} from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
-echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer]);
+echarts.use([
+  LineChart,
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+  DataZoomComponent,
+  MarkLineComponent,
+  MarkPointComponent,
+  CanvasRenderer,
+]);
 
 // Shared lifecycle for the modal trend charts: load data, init ECharts,
 // rebuild on the given reactive sources, debounce resize, close on Escape.
+//
+// mergeOn is for changes that annotate the chart rather than replace it — the
+// peak/average overlay. Those update by merging into the live option, so the
+// curves stay exactly where they are and only the annotations animate; a
+// rebuild would redraw every line for what is meant to read as a light touch.
 export function useTrendChart(
   load: () => Promise<void>,
   buildOption: () => Record<string, any>,
   rebuildOn: WatchSource[],
   close: () => void,
+  mergeOn: WatchSource[] = [],
 ) {
   const chartRef = ref<HTMLDivElement>();
   const chart = shallowRef<echarts.ECharts>();
@@ -53,6 +75,12 @@ export function useTrendChart(
   watch(rebuildOn, () => {
     chart.value?.setOption(buildOption(), true);
   });
+
+  if (mergeOn.length > 0) {
+    watch(mergeOn, () => {
+      chart.value?.setOption(buildOption(), false);
+    });
+  }
 
   return { chartRef, loading };
 }

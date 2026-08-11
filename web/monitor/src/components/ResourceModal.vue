@@ -2,7 +2,8 @@
 import { ref } from "vue";
 import { fetchResourceTrend, fetchResourceRecent } from "../api";
 import { formatRate } from "../utils";
-import { buildFrame, lineSeries, percentAxis, rateAxis, aggregateResourceDaily, type TimeUnit } from "../chartOptions";
+import PeakAverageToggle from "./PeakAverageToggle.vue";
+import { buildFrame, lineSeries, percentAxis, rateAxis, aggregateResourceDaily, withPeakAverage, type TimeUnit } from "../chartOptions";
 import { tzOffsetMinutes } from "../timezone";
 import { useTrendChart } from "../useTrendChart";
 import type { SourceSummary, ResourceHourlyPoint, ResourceRawPoint } from "../types";
@@ -12,6 +13,7 @@ const emit = defineEmits<{ close: [] }>();
 
 type Mode = "recent" | "hourly-avg" | "hourly-max" | "daily-avg" | "daily-max";
 const mode = ref<Mode>("hourly-avg");
+const showPeakAverage = ref(false);
 const trend = ref<ResourceHourlyPoint[]>([]);
 const recentPoints = ref<ResourceRawPoint[]>([]);
 
@@ -82,14 +84,21 @@ function buildOption(): any {
     ];
   }
 
-  return { ...option, yAxis: [percentAxis(narrow), rateAxis(narrow)], series };
+  // Two axes share this chart, so the overlay labels each series in the unit
+  // that series is drawn in rather than in one unit for the whole chart.
+  const format = (v: number) => `${v.toFixed(1)}%`;
+  const marked = [
+    ...withPeakAverage(series.slice(0, 2), { show: showPeakAverage.value, format, narrow }),
+    ...withPeakAverage(series.slice(2), { show: showPeakAverage.value, format: formatRate, narrow }),
+  ];
+  return { ...option, yAxis: [percentAxis(narrow), rateAxis(narrow)], series: marked };
 }
 
 function close() {
   emit("close");
 }
 
-const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMinutes], close);
+const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMinutes], close, [showPeakAverage]);
 </script>
 
 <template>
@@ -105,6 +114,7 @@ const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMi
           <div class="toggle-group">
             <button v-for="m in modes" :key="m.key" :class="{ active: mode === m.key }" @click="mode = m.key">{{ m.label }}</button>
           </div>
+          <PeakAverageToggle v-model="showPeakAverage" />
         </div>
       </div>
       <div v-if="loading" class="chart-loading">Loading trend data...</div>

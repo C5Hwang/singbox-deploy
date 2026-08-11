@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { fetchTrafficTrend, fetchTrafficRecent, fetchResourceTrend, fetchResourceRecent } from "../api";
 import { formatBytes } from "../utils";
+import PeakAverageToggle from "./PeakAverageToggle.vue";
 import {
   buildFrame,
   lineSeries,
@@ -9,6 +10,7 @@ import {
   percentAxis,
   aggregateTrafficDaily,
   aggregateResourceDaily,
+  withPeakAverage,
   SOURCE_COLORS,
   type TimeUnit,
 } from "../chartOptions";
@@ -43,6 +45,7 @@ const modes: { key: Mode; label: string }[] = isTraffic
       { key: "daily-max", label: "Daily (Max)" },
     ];
 const mode = ref<Mode>(isTraffic ? "hourly" : "hourly-avg");
+const showPeakAverage = ref(false);
 
 interface MachineSeries {
   name: string;
@@ -124,14 +127,19 @@ function buildOption(): any {
     );
   });
 
-  return { ...option, yAxis: isTraffic ? bytesAxis(narrow) : percentAxis(narrow), series };
+  const format = (v: number) => (isTraffic ? formatBytes(v) : `${v.toFixed(1)}%`);
+  return {
+    ...option,
+    yAxis: isTraffic ? bytesAxis(narrow) : percentAxis(narrow),
+    series: withPeakAverage(series, { show: showPeakAverage.value, format, narrow }),
+  };
 }
 
 function close() {
   emit("close");
 }
 
-const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMinutes], close);
+const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMinutes], close, [showPeakAverage]);
 </script>
 
 <template>
@@ -147,6 +155,7 @@ const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMi
           <div class="toggle-group">
             <button v-for="m in modes" :key="m.key" :class="{ active: mode === m.key }" @click="mode = m.key">{{ m.label }}</button>
           </div>
+          <PeakAverageToggle v-model="showPeakAverage" />
         </div>
       </div>
       <div v-if="loading" class="chart-loading">Loading trend data...</div>
