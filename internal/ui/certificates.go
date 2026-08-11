@@ -826,9 +826,15 @@ func (m *certManager) zonePickView() string {
 	return b.String()
 }
 
+// pickView renders the notice too: a pick that is refused — a certificate a
+// node still serves — leaves the operator on this screen, and without the
+// reason on it the keypress reads as having done nothing at all.
 func (m *certManager) pickView(title string, labels []string) string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render(title) + "\n\n")
+	if notice := m.notice.view(); notice != "" {
+		b.WriteString(notice + "\n\n")
+	}
 	for i, label := range labels {
 		row := "  " + label
 		if i == m.pickCursor {

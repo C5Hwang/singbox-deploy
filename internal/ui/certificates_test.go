@@ -654,6 +654,27 @@ func TestCertificateListLeadsWithTheZoneItsIssuanceDependsOn(t *testing.T) {
 	}
 }
 
+// A certificate a node still serves cannot be deleted, and the refusal has to
+// be visible on the screen the operator is left on.
+func TestDeleteCertificateRefusalIsVisibleOnThePicker(t *testing.T) {
+	m := newCertificateManagerForTest(t)
+	const domain = "in-use.example.com"
+	if err := certmgr.Register(m.layout, domain); err != nil {
+		t.Fatalf("register certificate: %v", err)
+	}
+	m.reload()
+	m.phase = certPhaseCertPick
+	m.pickCursor = 0
+	m.notice.setError("cannot delete " + domain + ": certificate is used by hub")
+
+	view := m.View()
+	for _, want := range []string{"cannot delete", domain} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("delete picker hides the refusal %q:\n%s", want, view)
+		}
+	}
+}
+
 // Deleting a certificate is destructive and irreversible without a fresh ACME
 // order, so the picker's Enter opens a confirmation rather than deleting.
 func TestDeleteCertificateRequiresExplicitY(t *testing.T) {
