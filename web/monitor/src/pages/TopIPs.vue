@@ -245,6 +245,14 @@ const modalSources = computed(() =>
       </p>
       <div v-else class="table-scroll">
         <table class="ip-table">
+          <colgroup>
+            <col class="c-rank" />
+            <col />
+            <col class="c-country" />
+            <col class="c-place" />
+            <col v-if="selected === ALL_NODES" class="c-nodes" />
+            <col v-for="n in 9" :key="n" class="c-num" />
+          </colgroup>
           <thead>
             <tr class="band">
               <th class="rank"></th>
@@ -272,8 +280,10 @@ const modalSources = computed(() =>
                   :aria-sort="isSorted(w.key, d.key) ? (sort.descending ? 'descending' : 'ascending') : 'none'"
                   @click="sortBy(w.key, d.key)"
                 >
-                  <span class="glyph">{{ d.glyph }}</span>
-                  <span class="caret" :class="{ up: isSorted(w.key, d.key) && !sort.descending }">{{ isSorted(w.key, d.key) ? "▾" : "" }}</span>
+                  <span class="sort-chip">
+                    <span class="glyph">{{ d.glyph }}</span>
+                    <span class="caret" :class="{ up: isSorted(w.key, d.key) && !sort.descending }">{{ isSorted(w.key, d.key) ? "▾" : "" }}</span>
+                  </span>
                 </th>
               </template>
             </tr>
@@ -356,7 +366,7 @@ const modalSources = computed(() =>
 .band th { padding: 12px 0 2px; border: 0; }
 .band-label { text-align: center; }
 .band-label span {
-  display: inline-block; margin: 0 6px; padding: 3px 12px;
+  display: inline-block; padding: 3px 12px;
   border-radius: 999px; background: #e3ecfb; color: #35507d;
   font-size: 10px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase;
 }
@@ -370,12 +380,54 @@ const modalSources = computed(() =>
 .heads th.num { text-align: right; }
 /* Groups are separated by air, not by lines. */
 .ip-table th.lead, .ip-table td.lead { padding-left: 14px; }
-.sortable { cursor: pointer; user-select: none; transition: color 0.15s, background 0.15s; }
-.sortable .glyph { font-size: 13px; font-weight: 700; }
-.sortable:hover { color: var(--blue); background: #eaf1fd; }
-.sortable.sorted { color: var(--blue); }
-.caret { display: inline-block; width: 10px; font-size: 9px; }
+/* The nine numeric columns share one width, so a group's chip sits over the
+   middle of its own three rather than drifting toward whichever column happens
+   to hold the widest number. */
+.c-num { width: 64px; }
+.c-rank { width: 34px; }
+.c-country { width: 126px; }
+.c-place { width: 98px; }
+.c-nodes { width: 112px; }
+
+/* The sort affordance is a chip around the glyph, not a fill of the whole cell.
+   Tinting the cell painted a wide block that started nowhere in particular and
+   ran to the table's edge, under a group label centred somewhere else; a chip
+   is the size of the thing it marks. */
+.sortable { cursor: pointer; user-select: none; }
+.sort-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 4px 7px; border-radius: 8px;
+  transition: background 0.15s, color 0.15s;
+}
+.sortable .glyph { font-size: 13px; font-weight: 700; line-height: 1; }
+.sortable:hover .sort-chip { background: #e6eefb; color: var(--blue); }
+.sortable.sorted .sort-chip { background: var(--blue); color: white; }
+.caret { display: inline-block; width: 8px; font-size: 9px; }
 .caret.up { display: inline-block; transform: rotate(180deg); }
+
+/* Same vocabulary as the sidebar's active item and the filter chips: white
+   surface, hairline border, a soft blue wash for the current page rather than a
+   solid block that shouts louder than the table it belongs to. */
+.pager {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  margin: 16px 0 4px; padding-top: 16px; border-top: 1px solid var(--line);
+}
+.page-num, .page-step {
+  min-width: 34px; height: 34px; padding: 0 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 11px;
+  background: white; color: #5f6b7e;
+  font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.page-step { font-size: 17px; line-height: 1; }
+.page-num:hover:not(.on), .page-step:hover:not(:disabled) { background: #f6f9fd; color: var(--text); }
+.page-num.on {
+  background: #edf4ff; color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue), transparent 55%);
+}
+.page-step:disabled { color: #ccd4e2; border-color: #eef2f7; cursor: default; }
+.page-gap { color: var(--muted); font-size: 13px; font-weight: 700; padding: 0 2px; }
 
 .ip-table td { padding: 10px 7px; border-top: 1px solid var(--line); white-space: nowrap; }
 .ip-row { cursor: pointer; transition: background 0.15s; }
@@ -393,9 +445,6 @@ const modalSources = computed(() =>
 }
 .address span { position: relative; }
 .country, .place, .nodes { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.country { max-width: 126px; }
-.place { max-width: 98px; }
-.nodes { max-width: 112px; }
 .country { display: flex; align-items: center; gap: 7px; }
 .flag { font-size: 15px; line-height: 1; flex-shrink: 0; }
 .country-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
