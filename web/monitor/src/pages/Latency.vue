@@ -1,67 +1,62 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import InlineChart from "../components/InlineChart.vue";
+import LatencyTrendModal from "../components/LatencyTrendModal.vue";
 import { fetchLatency } from "../api";
-import { buildFrame, lineSeries, SOURCE_COLORS } from "../chartOptions";
-import { tzOffsetMinutes } from "../timezone";
 import { formatDateTime } from "../utils";
 import type { LatencySnapshot, PingTarget, Summary } from "../types";
 
 const props = defineProps<{ summary: Summary | null }>();
 
-// A single-node install reports no source list; it is still one selectable
-// node, spelled the way the traffic page spells it.
+// A single-node install reports no source list; it is still one node, spelled
+// the way the traffic page spells it.
 const sources = computed(() => {
   const list = props.summary?.sources ?? [];
   if (list.length > 0) return list;
   return props.summary ? [{ id: "local", name: "Local Server" }] : [];
 });
-const selected = ref<string>("");
-const snapshot = ref<LatencySnapshot | null>(null);
-const loadError = ref("");
-const loading = ref(false);
 
-// The selector holds a stable source key; the first source is picked once the
-// summary arrives and kept unless that node disappears. Seeding it is what
-// keeps the <select> from rendering blank: before the summary lands there is
-// no option to match the empty value the ref starts at, so the browser shows
-// nothing while the first node's data is already on screen.
-const selectedKey = computed(() => selected.value || sourceKey(sources.value[0]));
-
-function sourceKey(source: { id?: string; name?: string } | undefined): string {
-  return source ? source.id || source.name || "" : "";
+function sourceKey(source: { id?: string; name?: string }): string {
+  return source.id || source.name || "";
 }
 
-watch(
-  sources,
-  (list) => {
-    if (list.length === 0) return;
-    if (!list.some((source) => sourceKey(source) === selected.value)) {
-      selected.value = sourceKey(list[0]);
-    }
-  },
-  { immediate: true },
-);
+interface NodeLatency {
+  key: string;
+  name: string;
+  snapshot: LatencySnapshot | null;
+  error: string;
+}
 
+const nodes = ref<NodeLatency[]>([]);
+const loading = ref(false);
+const openNode = ref<NodeLatency | null>(null);
+
+// Every node is fetched in parallel and gets its own card, so one unreachable
+// spoke costs its own card rather than the page.
 async function load() {
-  const key = selectedKey.value;
-  if (!key) return;
+  const targets = sources.value;
+  if (targets.length === 0) return;
   loading.value = true;
-  try {
-    snapshot.value = await fetchLatency(key);
-    loadError.value = "";
-  } catch (e) {
-    snapshot.value = null;
-    loadError.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    loading.value = false;
+  nodes.value = await Promise.all(
+    targets.map(async (source) => {
+      const key = sourceKey(source);
+      try {
+        return { key, name: source.name ?? key, snapshot: await fetchLatency(key), error: "" };
+      } catch (e) {
+        return { key, name: source.name ?? key, snapshot: null, error: e instanceof Error ? e.message : String(e) };
+      }
+    }),
+  );
+  loading.value = false;
+  // The modal holds a snapshot by value, so it is re-pointed at the refreshed
+  // one rather than left showing the round it was opened on.
+  if (openNode.value) {
+    openNode.value = nodes.value.find((n) => n.key === openNode.value?.key) ?? null;
   }
 }
 
-watch(selectedKey, load, { immediate: true });
+watch(() => sources.value.map(sourceKey).join(","), load, { immediate: true });
 
-// Probes run every five minutes; refreshing a little faster keeps the newest
-// round on screen without polling a node harder than it samples.
+// Probes run every minute, and the card only shows the newest round.
 let refreshTimer: number | undefined;
 onMounted(() => {
   refreshTimer = window.setInterval(load, 60000);
@@ -70,20 +65,8 @@ onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer);
 });
 
-const carriers = computed<string[]>(() => {
-  const seen: string[] = [];
-  for (const target of snapshot.value?.targets ?? []) {
-    if (!seen.includes(target.carrier)) seen.push(target.carrier);
-  }
-  return seen;
-});
-
-function targetsFor(carrier: string): PingTarget[] {
-  return (snapshot.value?.targets ?? []).filter((t) => t.carrier === carrier);
-}
-
-function latestFor(targetID: string) {
-  return snapshot.value?.latest.find((p) => p.target === targetID);
+function latestFor(node: NodeLatency, targetID: string) {
+  return node.snapshot?.latest.find((p) => p.target === targetID);
 }
 
 function latencyText(ms: number | null | undefined): string {
@@ -100,52 +83,34 @@ function lossTone(lossPct: number | undefined): string {
   return "";
 }
 
-const sampledAt = computed(() => {
-  const newest = (snapshot.value?.latest ?? []).reduce((max, p) => Math.max(max, p.ts), 0);
-  return newest > 0 ? formatDateTime(newest * 1000) : "";
-});
-
-function carrierOption(carrier: string): Record<string, any> {
-  const targets = targetsFor(carrier);
-  const { narrow, option } = buildFrame({
-    width: window.innerWidth,
-    unit: "hour",
-    legend: targets.map((t) => t.city),
-    tooltipUnit: "hour",
-    tooltipValue: (p) => {
-      const value = Array.isArray(p.value) ? p.value[1] : p.value;
-      const n = Number(value);
-      return Number.isFinite(n) ? `${n.toFixed(1)} ms` : "NA";
-    },
-  });
-  const series = targets.map((target, i) => {
-    // A fully-lost hour has no latency; feeding null leaves a gap in the line
-    // instead of dropping the series to the axis.
-    const data = (snapshot.value?.points ?? [])
-      .filter((p) => p.target === target.id)
-      .map((p) => [p.hourTs * 1000, p.avgMs] as [number, number]);
-    return lineSeries(target.city, SOURCE_COLORS[i % SOURCE_COLORS.length], data, { showSymbol: !narrow });
-  });
-  return {
-    ...option,
-    yAxis: {
-      type: "value",
-      name: narrow ? "" : "ms",
-      min: 0,
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: "#f0f4f8" } },
-      axisLabel: { color: "#7a869a", fontSize: narrow ? 10 : 12, formatter: (v: number) => `${v}` },
-    },
-    series,
-  };
+// The card's headline is the node's median reachable probe: a mean would let
+// one black-holed carrier speak for the whole node.
+function medianLatency(node: NodeLatency): number | null {
+  const values = (node.snapshot?.latest ?? []).map((p) => p.avgMs).filter((v): v is number => v !== null).sort((a, b) => a - b);
+  if (values.length === 0) return null;
+  return values[Math.floor((values.length - 1) / 2)];
 }
 
-// Rebuilding on the timezone pick keeps the axis labels in step with the rest
-// of the page.
-const carrierOptions = computed(() => {
-  void tzOffsetMinutes.value;
-  return carriers.value.map((carrier) => ({ carrier, option: carrierOption(carrier) }));
-});
+function reachable(node: NodeLatency): string {
+  const latest = node.snapshot?.latest ?? [];
+  const up = latest.filter((p) => p.lossPct < 100).length;
+  return `${up}/${latest.length || node.snapshot?.targets.length || 0} probes answering`;
+}
+
+function sampledAt(node: NodeLatency): string {
+  const newest = (node.snapshot?.latest ?? []).reduce((max, p) => Math.max(max, p.ts), 0);
+  return newest > 0 ? formatDateTime(newest * 1000) : "";
+}
+
+function targetsOf(node: NodeLatency): PingTarget[] {
+  return node.snapshot?.targets ?? [];
+}
+
+function worstTone(node: NodeLatency): string {
+  const latest = node.snapshot?.latest ?? [];
+  if (latest.length === 0) return " gray";
+  return lossTone(Math.max(...latest.map((p) => p.lossPct)));
+}
 </script>
 
 <template>
@@ -155,61 +120,82 @@ const carrierOptions = computed(() => {
         <p class="eyebrow">Probe target</p>
         <p class="metric-value small">Three carriers · Beijing, Shanghai, Guangzhou</p>
         <p class="metric-detail">
-          10 requests every 5 minutes, 7 days of history.
-          <span v-if="sampledAt"> Last probe {{ sampledAt }}.</span>
+          TCP connect to each carrier's CDN node, five probes every minute, seven days of history.
+          Click a node for its trend.
         </p>
       </div>
-      <label class="source-picker">
-        <span class="eyebrow">Node</span>
-        <select v-model="selected">
-          <option v-for="source in sources" :key="sourceKey(source)" :value="sourceKey(source)">{{ source.name }}</option>
-        </select>
-      </label>
     </article>
   </section>
 
-  <p v-if="loadError" class="no-data">
-    Latency data is unavailable for this node: {{ loadError }}. A node still running an older agent does not
-    report latency until it is upgraded.
-  </p>
-  <p v-else-if="loading && !snapshot" class="no-data">Loading latency data...</p>
-  <p v-else-if="snapshot && snapshot.targets.length === 0" class="no-data">
-    This node reports no latency targets. Latency sampling needs a ping utility on the host.
-  </p>
+  <p v-if="loading && nodes.length === 0" class="no-data">Loading latency data...</p>
 
-  <template v-else-if="snapshot">
-    <section class="grid sources" aria-label="latest latency">
-      <article v-for="target in snapshot.targets" :key="target.id" class="card metric-card span-4 latency-tile">
-        <div class="metric-head">
-          <div>
-            <p class="eyebrow">{{ target.carrier }} · {{ target.city }}</p>
-            <p class="metric-value">{{ latencyText(latestFor(target.id)?.avgMs) }}</p>
-            <p class="metric-detail">{{ target.address }}</p>
-          </div>
-          <span :class="`status${lossTone(latestFor(target.id)?.lossPct)}`">
-            <i class="dot"></i>
-            {{ latestFor(target.id) ? `${Math.round(latestFor(target.id)!.lossPct)}% loss` : "No data" }}
+  <section class="grid sources" aria-label="latency by node">
+    <article
+      v-for="node in nodes"
+      :key="node.key"
+      class="card span-6 node-card"
+      :class="{ clickable: !!node.snapshot }"
+      @click="node.snapshot && (openNode = node)"
+    >
+      <div class="rc-head">
+        <div class="rc-title">
+          <p class="eyebrow">{{ node.name }}</p>
+          <p class="metric-value">{{ latencyText(medianLatency(node)) }}</p>
+          <p class="metric-detail">
+            <span v-if="node.snapshot">median · {{ reachable(node) }}</span>
+            <span v-else>unavailable</span>
+          </p>
+        </div>
+        <div class="rc-side">
+          <span :class="`status${worstTone(node)}`"><i class="dot"></i>{{ sampledAt(node) || "no data" }}</span>
+        </div>
+      </div>
+
+      <p v-if="node.error" class="no-data">
+        Latency is unavailable for this node: {{ node.error }}. A node still running an older agent does not
+        report latency until it is upgraded.
+      </p>
+      <p v-else-if="node.snapshot && targetsOf(node).length === 0" class="no-data">
+        This node reports no latency targets.
+      </p>
+      <div v-else class="probe-grid">
+        <div v-for="target in targetsOf(node)" :key="target.id" class="probe">
+          <span class="probe-label">{{ target.carrier }} · {{ target.city }}</span>
+          <span class="probe-value">{{ latencyText(latestFor(node, target.id)?.avgMs) }}</span>
+          <span :class="`probe-loss${lossTone(latestFor(node, target.id)?.lossPct)}`">
+            {{ latestFor(node, target.id) ? `${Math.round(latestFor(node, target.id)!.lossPct)}%` : "—" }}
           </span>
         </div>
-      </article>
-    </section>
+      </div>
 
-    <section class="grid sources" aria-label="latency trends">
-      <article v-for="entry in carrierOptions" :key="entry.carrier" class="card span-12">
-        <h3 class="source-name">{{ entry.carrier }}</h3>
-        <InlineChart :option="entry.option" />
-      </article>
-    </section>
-  </template>
+      <p class="view-trend-row"><span class="view-trend">View trend<svg viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></p>
+    </article>
+  </section>
+
+  <LatencyTrendModal
+    v-if="openNode && openNode.snapshot"
+    :nodeName="openNode.name"
+    :snapshot="openNode.snapshot"
+    @close="openNode = null"
+  />
 </template>
 
 <style scoped>
 .latency-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
-.source-picker { display: flex; flex-direction: column; gap: 7px; }
-.source-picker select {
-  border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px;
-  background: white; color: var(--text); font: inherit; font-size: 14px; font-weight: 650;
-  min-width: 200px; cursor: pointer;
+.node-card { display: flex; flex-direction: column; }
+.probe-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px 14px; margin-top: 18px;
 }
-.latency-tile .metric-head { margin-bottom: 0; min-height: 0; }
+.probe {
+  display: grid; grid-template-columns: 1fr auto auto; align-items: baseline; gap: 8px;
+  padding: 8px 0; border-top: 1px solid var(--line);
+}
+.probe-label { color: var(--muted); font-size: 12px; font-weight: 650; }
+.probe-value { font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.probe-loss { font-size: 11px; font-weight: 750; color: #15803d; font-variant-numeric: tabular-nums; }
+.probe-loss.warn { color: var(--yellow); }
+.probe-loss.danger { color: var(--red); }
+.probe-loss.gray { color: var(--muted); }
+.view-trend-row { margin: 16px 0 0; display: flex; justify-content: flex-end; }
 </style>
