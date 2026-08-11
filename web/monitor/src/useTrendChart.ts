@@ -29,6 +29,30 @@ echarts.use([
 // peak/average overlay. Those update by merging into the live option, so the
 // curves stay exactly where they are and only the annotations animate; a
 // rebuild would redraw every line for what is meant to read as a light touch.
+//
+// holdAnnotations delays the peak/average marks past the curve animation on a
+// full render. An annotation is a statement about a shape, and on startup the
+// shape is still being drawn: the average line arrives at its final height
+// immediately while the curve is still sweeping in under it, so the two cross
+// each other over and over for the length of the sweep. Waiting until the
+// curves have settled costs nothing — the overlay is a light touch either way —
+// and it never applies to a merge, where there is no sweep to wait for.
+function holdAnnotations(option: Record<string, any>): Record<string, any> {
+  const delay = Number(option.animationDuration) || 0;
+  if (delay <= 0 || !Array.isArray(option.series)) return option;
+  return {
+    ...option,
+    series: option.series.map((s: any) =>
+      s?.markLine || s?.markPoint
+        ? {
+            ...s,
+            ...(s.markLine ? { markLine: { ...s.markLine, animationDelay: delay } } : {}),
+            ...(s.markPoint ? { markPoint: { ...s.markPoint, animationDelay: delay } } : {}),
+          }
+        : s,
+    ),
+  };
+}
 export function useTrendChart(
   load: () => Promise<void>,
   buildOption: () => Record<string, any>,
@@ -53,12 +77,12 @@ export function useTrendChart(
     await nextTick();
     if (chartRef.value) {
       chart.value = echarts.init(chartRef.value);
-      chart.value.setOption(buildOption());
+      chart.value.setOption(holdAnnotations(buildOption()));
       resizeHandler = () => {
         if (resizeTimer) window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(() => {
           chart.value?.resize();
-          chart.value?.setOption(buildOption(), true);
+          chart.value?.setOption(holdAnnotations(buildOption()), true);
         }, 120);
       };
       window.addEventListener("resize", resizeHandler);
@@ -73,7 +97,7 @@ export function useTrendChart(
   });
 
   watch(rebuildOn, () => {
-    chart.value?.setOption(buildOption(), true);
+    chart.value?.setOption(holdAnnotations(buildOption()), true);
   });
 
   if (mergeOn.length > 0) {
