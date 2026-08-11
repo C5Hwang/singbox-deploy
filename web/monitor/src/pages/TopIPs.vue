@@ -361,7 +361,7 @@ const modalSources = computed(() =>
   font-size: 10px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase;
 }
 .heads th {
-  padding: 8px 8px 11px; color: #63708a; font-size: 11px; font-weight: 800;
+  padding: 8px 7px 11px; color: #63708a; font-size: 11px; font-weight: 800;
   letter-spacing: 0.05em; text-transform: uppercase; text-align: left; white-space: nowrap;
   box-shadow: inset 0 -1px 0 #dde5f2;
 }
@@ -369,7 +369,7 @@ const modalSources = computed(() =>
 .band th:last-child { border-top-right-radius: 14px; }
 .heads th.num { text-align: right; }
 /* Groups are separated by air, not by lines. */
-.ip-table th.lead, .ip-table td.lead { padding-left: 18px; }
+.ip-table th.lead, .ip-table td.lead { padding-left: 14px; }
 .sortable { cursor: pointer; user-select: none; transition: color 0.15s, background 0.15s; }
 .sortable .glyph { font-size: 13px; font-weight: 700; }
 .sortable:hover { color: var(--blue); background: #eaf1fd; }
@@ -377,7 +377,7 @@ const modalSources = computed(() =>
 .caret { display: inline-block; width: 10px; font-size: 9px; }
 .caret.up { display: inline-block; transform: rotate(180deg); }
 
-.ip-table td { padding: 10px 8px; border-top: 1px solid var(--line); white-space: nowrap; }
+.ip-table td { padding: 10px 7px; border-top: 1px solid var(--line); white-space: nowrap; }
 .ip-row { cursor: pointer; transition: background 0.15s; }
 .ip-row:hover { background: #f6f9fd; }
 .rank { width: 30px; color: var(--muted); font-weight: 750; font-variant-numeric: tabular-nums; text-align: right; padding-right: 4px; }
@@ -393,9 +393,9 @@ const modalSources = computed(() =>
 }
 .address span { position: relative; }
 .country, .place, .nodes { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.country { max-width: 158px; }
-.place { max-width: 116px; }
-.nodes { max-width: 132px; }
+.country { max-width: 126px; }
+.place { max-width: 98px; }
+.nodes { max-width: 112px; }
 .country { display: flex; align-items: center; gap: 7px; }
 .flag { font-size: 15px; line-height: 1; flex-shrink: 0; }
 .country-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
