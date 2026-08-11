@@ -247,7 +247,7 @@ const modalSources = computed(() =>
         <table class="ip-table">
           <colgroup>
             <col class="c-rank" />
-            <col />
+            <col class="c-address" />
             <col class="c-country" />
             <col class="c-place" />
             <col v-if="selected === ALL_NODES" class="c-nodes" />
@@ -353,7 +353,10 @@ const modalSources = computed(() =>
 }
 .table-card { padding: 8px 8px 12px; overflow: hidden; }
 .table-scroll { overflow-x: auto; }
-.ip-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+/* Fixed layout so the colgroup widths below are the layout, not a hint the
+   browser may overrule: with auto layout a long country name simply widened its
+   column and pushed the last group of numbers off the card. */
+.ip-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
 
 /* The header is one solid band rather than two rows of loose text: a tinted
    surface with rounded top corners, sticky so it stays legible while the reader
@@ -383,7 +386,8 @@ const modalSources = computed(() =>
 /* The nine numeric columns share one width, so a group's chip sits over the
    middle of its own three rather than drifting toward whichever column happens
    to hold the widest number. */
-.c-num { width: 64px; }
+.c-num { width: 62px; }
+.c-address { width: 132px; }
 .c-rank { width: 34px; }
 .c-country { width: 126px; }
 .c-place { width: 98px; }
@@ -445,6 +449,7 @@ const modalSources = computed(() =>
 }
 .address span { position: relative; }
 .country, .place, .nodes { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.address, .num { overflow: hidden; text-overflow: ellipsis; }
 .country { display: flex; align-items: center; gap: 7px; }
 .flag { font-size: 15px; line-height: 1; flex-shrink: 0; }
 .country-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
