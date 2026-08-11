@@ -637,9 +637,25 @@ const (
 	MonitorResourceTrend  MonitorEndpoint = "resource-trend"
 	MonitorResourceRecent MonitorEndpoint = "resource-recent"
 	MonitorPingTrend      MonitorEndpoint = "ping-trend"
+	MonitorPingSeries     MonitorEndpoint = "ping-series"
 	MonitorIPTraffic      MonitorEndpoint = "ip-traffic"
 	MonitorIPDetail       MonitorEndpoint = "ip-detail"
 )
+
+// MonitorHandlerPaths lists the local monitor path each proxied endpoint
+// resolves to. The hub maps the other way round, from the path its dashboard
+// asked for back to an endpoint, and a path that is missing here is refused
+// before it ever reaches a spoke — so the two directions have to agree, and
+// this is what lets a test say so.
+func MonitorHandlerPaths() []string {
+	paths := make([]string, 0, len(monitorEndpoints))
+	for _, endpoint := range monitorEndpoints {
+		if _, handlerPath, ok := endpoint.paths(); ok {
+			paths = append(paths, handlerPath)
+		}
+	}
+	return paths
+}
 
 func (e MonitorEndpoint) paths() (apiPath, handlerPath string, ok bool) {
 	switch e {
@@ -655,6 +671,8 @@ func (e MonitorEndpoint) paths() (apiPath, handlerPath string, ok bool) {
 		return "/api/monitor/resource-recent", "/api/resource-recent", true
 	case MonitorPingTrend:
 		return "/api/monitor/ping-trend", "/api/ping-trend", true
+	case MonitorPingSeries:
+		return "/api/monitor/ping-series", "/api/ping-series", true
 	case MonitorIPTraffic:
 		return "/api/monitor/ip-traffic", "/api/ip-traffic", true
 	case MonitorIPDetail:
@@ -671,6 +689,7 @@ var monitorEndpoints = [...]MonitorEndpoint{
 	MonitorResourceTrend,
 	MonitorResourceRecent,
 	MonitorPingTrend,
+	MonitorPingSeries,
 	MonitorIPTraffic,
 	MonitorIPDetail,
 }

@@ -116,6 +116,8 @@ func monitorEndpointForPath(path string) (nodeapi.MonitorEndpoint, error) {
 		return nodeapi.MonitorResourceRecent, nil
 	case "/api/ping-trend":
 		return nodeapi.MonitorPingTrend, nil
+	case "/api/ping-series":
+		return nodeapi.MonitorPingSeries, nil
 	case "/api/ip-traffic":
 		return nodeapi.MonitorIPTraffic, nil
 	case "/api/ip-detail":
