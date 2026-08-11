@@ -49,7 +49,7 @@ func newLatencyTestMonitor(t *testing.T, now time.Time) *Monitor {
 	return m
 }
 
-func TestPingTrendServesHourlyAveragesAndLatest(t *testing.T) {
+func TestPingTrendServesTargetsAndLatest(t *testing.T) {
 	now := time.Date(2026, 6, 15, 12, 30, 0, 0, time.UTC)
 	m := newLatencyTestMonitor(t, now)
 
@@ -83,15 +83,6 @@ func TestPingTrendServesHourlyAveragesAndLatest(t *testing.T) {
 	if len(payload.Latency.Targets) != len(DefaultPingTargets) {
 		t.Fatalf("targets = %d, want %d", len(payload.Latency.Targets), len(DefaultPingTargets))
 	}
-	var hourly *PingHourlyPoint
-	for i, p := range payload.Latency.Points {
-		if p.HourTS == hour.Unix() && p.Target == "telecom-beijing" {
-			hourly = &payload.Latency.Points[i]
-		}
-	}
-	if hourly == nil || hourly.AvgMS == nil || *hourly.AvgMS != 150 {
-		t.Fatalf("hourly point = %#v, want the 100/200 average", hourly)
-	}
 	if len(payload.Latency.Latest) != 1 {
 		t.Fatalf("latest = %#v, want one entry per probed target", payload.Latency.Latest)
 	}
@@ -116,15 +107,65 @@ func TestMaintenanceDropsPingSamplesOlderThanAWeek(t *testing.T) {
 	}
 	m.maintenance(now)
 
-	points, err := m.store.PingTrendHourly(0)
+	var rows int
+	if err := m.store.db.QueryRow(`SELECT COUNT(*) FROM ping_samples`).Scan(&rows); err != nil {
+		t.Fatalf("count ping samples: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("rows = %d, want only the sample inside the retention window", rows)
+	}
+}
+
+// The series is a fixed grid rather than a list of points, so what has to hold
+// is that a round lands in the slot its timestamp names, a round that answered
+// nothing is told apart from a minute that was never probed, and the week is
+// covered end to end.
+func TestPingSeriesPlacesRoundsOnTheMinuteGrid(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))
 	if err != nil {
-		t.Fatalf("PingTrendHourly: %v", err)
+		t.Fatalf("OpenStore: %v", err)
 	}
-	if len(points) != 1 {
-		t.Fatalf("points = %#v, want only the sample inside the retention window", points)
+	defer store.Close()
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	since := now.Add(-pingRetention)
+
+	value := 123.456
+	if err := store.InsertPingSamples(since.Add(90*time.Second).Unix(), map[string]PingSample{
+		"telecom-beijing": {AvgMS: &value, LossPct: 20},
+	}); err != nil {
+		t.Fatalf("InsertPingSamples: %v", err)
 	}
-	if points[0].HourTS != now.Add(-6*24*time.Hour).Truncate(time.Hour).Unix() {
-		t.Fatalf("surviving point = %#v", points[0])
+	// A round that lost everything: recorded, but with no latency to report.
+	if err := store.InsertPingSamples(since.Add(3*time.Minute).Unix(), map[string]PingSample{
+		"telecom-beijing": {LossPct: 100},
+	}); err != nil {
+		t.Fatalf("InsertPingSamples: %v", err)
+	}
+
+	series, err := store.PingSeriesData(since.Unix(), now.Unix(), 60)
+	if err != nil {
+		t.Fatalf("PingSeriesData: %v", err)
+	}
+	if series.Step != 60 || series.Count != 7*24*60+1 {
+		t.Fatalf("grid = %d slots of %ds, want a week of minutes", series.Count, series.Step)
+	}
+	track := series.Series["telecom-beijing"]
+	if track == nil {
+		t.Fatal("no track for the probed target")
+	}
+	if len(track.MS) != series.Count || len(track.Loss) != series.Count {
+		t.Fatalf("track = %d/%d slots, want %d", len(track.MS), len(track.Loss), series.Count)
+	}
+	// 90 seconds in is the second minute, and the value is rounded to the one
+	// decimal a ping measurement means.
+	if track.MS[1] == nil || *track.MS[1] != 123.5 || track.Loss[1] != 20 {
+		t.Fatalf("slot 1 = %v / %v, want the rounded round", track.MS[1], track.Loss[1])
+	}
+	if track.MS[3] != nil || track.Loss[3] != 100 {
+		t.Fatalf("slot 3 = %v / %v, want a recorded round that answered nothing", track.MS[3], track.Loss[3])
+	}
+	if track.MS[2] != nil || track.Loss[2] != -1 {
+		t.Fatalf("slot 2 = %v / %v, want an unprobed minute", track.MS[2], track.Loss[2])
 	}
 }
 

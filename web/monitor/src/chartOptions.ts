@@ -2,7 +2,7 @@ import { formatBytes } from "./utils";
 import { gmtLabel, shiftToTz, tzOffsetMinutes } from "./timezone";
 import type { HourlyPoint, ResourceHourlyPoint } from "./types";
 
-export type TimeUnit = "second" | "hour" | "day";
+export type TimeUnit = "second" | "minute" | "hour" | "day";
 
 // Machine-identity colors for multi-source charts, assigned by source order.
 // Ordered so adjacent hues stay distinguishable under color-vision deficiency.
@@ -82,6 +82,15 @@ export function fmtDate(value: number): string {
 
 export function fmtTime(value: number): string {
   return shiftToTz(value).toLocaleTimeString("en-US", HOUR_MIN);
+}
+
+// A week of minutes is too long an axis for bare clock times — 14:00 turns up
+// seven times — and too short for dates alone. The tick that lands on midnight
+// carries the date and the rest carry the time, so the axis reads correctly at
+// both ends of the zoom the slider covers.
+export function fmtDayOrTime(value: number): string {
+  const d = shiftToTz(value);
+  return d.getUTCHours() === 0 && d.getUTCMinutes() === 0 ? fmtDate(value) : fmtTime(value);
 }
 
 export function fmtTooltipTime(value: number, unit: TimeUnit): string {
@@ -186,7 +195,8 @@ export function buildFrame({ width, unit, legend, tooltipUnit, tooltipValue, sor
         color: "#7a869a",
         fontSize: narrow ? 10 : 12,
         hideOverlap: true,
-        formatter: (value: number) => (unit === "day" ? fmtDate(value) : fmtTime(value)),
+        formatter: (value: number) =>
+          unit === "day" ? fmtDate(value) : unit === "minute" ? fmtDayOrTime(value) : fmtTime(value),
       },
     },
     dataZoom: [
@@ -222,8 +232,8 @@ export function buildFrame({ width, unit, legend, tooltipUnit, tooltipValue, sor
 export function lineSeries(
   name: string,
   color: string,
-  data: [number, number][],
-  opts: { yAxisIndex?: number; showSymbol?: boolean } = {},
+  data: [number, number | null][],
+  opts: { yAxisIndex?: number; showSymbol?: boolean; dense?: boolean } = {},
 ) {
   return {
     name,
@@ -236,6 +246,11 @@ export function lineSeries(
     lineStyle: { width: opts.showSymbol ? 2 : 1.5 },
     areaStyle: { opacity: 0.06 },
     itemStyle: { color },
+    // A week of one-minute rounds is more points than the plot has pixels.
+    // Downsampling picks which of them to draw; it does not decide which of
+    // them exist, so zooming in still reaches every round, and lttb is the
+    // rule that keeps the spikes rather than averaging them away.
+    ...(opts.dense ? { sampling: "lttb" } : {}),
     data,
   };
 }

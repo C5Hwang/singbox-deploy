@@ -177,23 +177,6 @@ type IPTrafficDetail struct {
 	Daily  []IPSeriesPoint `json:"daily"`
 }
 
-// PingHourlyPoint is one target's averaged latency for one hour. AvgMS is nil
-// when every probe in the hour was fully lost.
-type PingHourlyPoint struct {
-	HourTS  int64    `json:"hourTs"`
-	Target  string   `json:"target"`
-	AvgMS   *float64 `json:"avgMs"`
-	LossPct float64  `json:"lossPct"`
-}
-
-// PingRawPoint is one target's single probe round, at the sampling interval.
-type PingRawPoint struct {
-	TS      int64    `json:"ts"`
-	Target  string   `json:"target"`
-	AvgMS   *float64 `json:"avgMs"`
-	LossPct float64  `json:"lossPct"`
-}
-
 // PingLatestPoint is one target's most recent probe.
 type PingLatestPoint struct {
 	Target  string   `json:"target"`
@@ -203,16 +186,32 @@ type PingLatestPoint struct {
 }
 
 // LatencySnapshot is the payload behind /api/ping-trend: the probe list this
-// node samples, its newest reading per target, and the history at the three
-// granularities the dashboard offers. The target list travels with the data so
-// the dashboard never has to hardcode it, and a node running an older probe
-// list still describes itself correctly.
+// node samples and its newest reading per target. The target list travels with
+// the data so the dashboard never has to hardcode it, and a node running an
+// older probe list still describes itself correctly.
+//
+// This is what the latency page polls every minute, so it holds only what the
+// page always shows. The history is a week of one-minute rounds and lives
+// behind /api/ping-series, fetched once when someone opens a trend.
 type LatencySnapshot struct {
 	Targets []PingTarget      `json:"targets"`
 	Latest  []PingLatestPoint `json:"latest"`
-	Points  []PingHourlyPoint `json:"points"`
-	Daily   []PingHourlyPoint `json:"daily"`
-	Recent  []PingRawPoint    `json:"recent"`
+}
+
+// PingSeries is the full latency history on a fixed grid: slot i of every track
+// is the round at Start + i*Step, so a timestamp never has to be transmitted.
+type PingSeries struct {
+	Start  int64                 `json:"start"`
+	Step   int64                 `json:"step"`
+	Count  int                   `json:"count"`
+	Series map[string]*PingTrack `json:"series"`
+}
+
+// PingTrack is one target's week. MS is null for a round that answered nothing
+// and Loss is -1 for a slot with no round at all.
+type PingTrack struct {
+	MS   []*float64 `json:"ms"`
+	Loss []float64  `json:"loss"`
 }
 
 // ResourceHourlyPoint is one aggregated hourly resource bucket with avg and max.

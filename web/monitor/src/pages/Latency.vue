@@ -136,6 +136,7 @@ function statusLabel(node: NodeLatency): string {
 
   <LatencyTrendModal
     v-if="openNode && openNode.snapshot"
+    :nodeKey="openNode.key"
     :nodeName="openNode.name"
     :snapshot="openNode.snapshot"
     @close="openNode = null"

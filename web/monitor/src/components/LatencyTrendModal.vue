@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import PeakAverageToggle from "./PeakAverageToggle.vue";
-import { buildFrame, lineSeries, withPeakAverage, SOURCE_COLORS, type TimeUnit } from "../chartOptions";
+import { buildFrame, lineSeries, withPeakAverage, SOURCE_COLORS } from "../chartOptions";
+import { fetchLatencySeries } from "../api";
 import { tzOffsetMinutes } from "../timezone";
 import { useTrendChart } from "../useTrendChart";
-import type { LatencySnapshot, PingTarget } from "../types";
+import type { LatencySnapshot, PingSeries, PingTarget } from "../types";
 
-const props = defineProps<{ nodeName: string; snapshot: LatencySnapshot }>();
+const props = defineProps<{ nodeKey: string; nodeName: string; snapshot: LatencySnapshot }>();
 const emit = defineEmits<{ close: [] }>();
 
-type Granularity = "recent" | "hourly" | "daily";
-const granularity = ref<Granularity>("hourly");
 const showPeakAverage = ref(false);
+const history = ref<PingSeries | null>(null);
+const loadError = ref("");
 
 // Carriers and cities are filtered independently: the interesting comparisons
 // are one carrier across three cities and one city across three carriers, and a
@@ -49,38 +50,48 @@ const shownTargets = computed(() =>
   ),
 );
 
+// The card that opened this modal carries only the newest round, so the week is
+// fetched here — once, on open, rather than on the page's minute poll.
 async function load() {
-  // The snapshot arrives with the card that opened this modal; nothing to fetch.
+  try {
+    history.value = await fetchLatencySeries(props.nodeKey);
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+// Every round the node recorded, at the minute it recorded it. A slot with no
+// value — a round that answered nothing, or a minute the monitor was not
+// running — becomes a null, which draws as a gap rather than as zero latency.
+function trackData(targetId: string): [number, number | null][] {
+  const series = history.value;
+  const track = series?.series[targetId];
+  if (!series || !track) return [];
+  const points: [number, number | null][] = [];
+  for (let i = 0; i < track.ms.length; i++) {
+    points.push([(series.start + i * series.step) * 1000, track.ms[i]]);
+  }
+  return points;
 }
 
 function buildOption(): any {
-  const isRecent = granularity.value === "recent";
-  const isDaily = granularity.value === "daily";
-  const unit: TimeUnit = isDaily ? "day" : "hour";
   const targets = shownTargets.value;
 
   const { narrow, option } = buildFrame({
     width: chartRef.value?.clientWidth ?? 800,
-    unit,
+    unit: "minute",
     legend: targets.map(seriesName),
     sortTooltip: true,
-    tooltipUnit: isRecent ? "second" : unit,
+    tooltipUnit: "minute",
     tooltipValue: (p) => {
       const value = Number(Array.isArray(p.value) ? p.value[1] : p.value);
       return Number.isFinite(value) ? `${value.toFixed(1)} ms` : "NA";
     },
   });
 
-  const series = targets.map((target, i) => {
-    // A fully lost round has no latency; feeding null leaves a gap in the line
-    // instead of dropping the series to the axis.
-    const data: [number, number][] = isRecent
-      ? props.snapshot.recent.filter((p) => p.target === target.id).map((p) => [p.ts * 1000, p.avgMs as number])
-      : (isDaily ? props.snapshot.daily : props.snapshot.points)
-          .filter((p) => p.target === target.id)
-          .map((p) => [p.hourTs * 1000, p.avgMs as number]);
-    return lineSeries(seriesName(target), SOURCE_COLORS[i % SOURCE_COLORS.length], data, { showSymbol: !narrow && !isRecent });
-  });
+  const series = targets.map((target, i) =>
+    lineSeries(seriesName(target), SOURCE_COLORS[i % SOURCE_COLORS.length], trackData(target.id), { dense: true }),
+  );
 
   return {
     ...option,
@@ -117,7 +128,7 @@ function close() {
 const { chartRef, loading } = useTrendChart(
   load,
   buildOption,
-  [granularity, tzOffsetMinutes, selectedCarriers, selectedCities],
+  [tzOffsetMinutes, selectedCarriers, selectedCities],
   close,
   [showPeakAverage],
 );
@@ -130,14 +141,11 @@ const { chartRef, loading } = useTrendChart(
       <div class="modal-header">
         <div>
           <h2 class="modal-title">{{ nodeName }}</h2>
-          <p class="modal-subtitle">Latency to {{ shownTargets.length }} of {{ snapshot.targets.length }} probes</p>
+          <p class="modal-subtitle">
+            {{ shownTargets.length }} of {{ snapshot.targets.length }} probes · every minute for 7 days
+          </p>
         </div>
         <div class="modal-controls">
-          <div class="toggle-group">
-            <button :class="{ active: granularity === 'recent' }" @click="granularity = 'recent'">Recent</button>
-            <button :class="{ active: granularity === 'hourly' }" @click="granularity = 'hourly'">Hourly</button>
-            <button :class="{ active: granularity === 'daily' }" @click="granularity = 'daily'">Daily</button>
-          </div>
           <PeakAverageToggle v-model="showPeakAverage" />
         </div>
       </div>
@@ -174,7 +182,8 @@ const { chartRef, loading } = useTrendChart(
       </div>
 
       <div v-if="loading" class="chart-loading">Loading latency data...</div>
-      <div v-show="!loading" ref="chartRef" class="chart-container"></div>
+      <div v-else-if="loadError" class="chart-loading">Latency history is unavailable: {{ loadError }}.</div>
+      <div v-show="!loading && !loadError" ref="chartRef" class="chart-container"></div>
     </div>
   </div>
 </template>

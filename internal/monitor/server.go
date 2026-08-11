@@ -158,6 +158,7 @@ func (m *Monitor) Handler() http.Handler {
 	api.HandleFunc("/api/resource-trend", m.handleResourceTrend)
 	api.HandleFunc("/api/resource-recent", m.handleResourceRecent)
 	api.HandleFunc("/api/ping-trend", m.handlePingTrend)
+	api.HandleFunc("/api/ping-series", m.handlePingSeries)
 	api.HandleFunc("/api/ip-traffic", m.handleIPTraffic)
 	api.HandleFunc("/api/ip-detail", m.handleIPDetail)
 
@@ -358,30 +359,28 @@ func (m *Monitor) handlePingTrend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handlePingSeries serves the week of one-minute rounds behind the trend chart.
+// It is deliberately not part of the snapshot the page polls: the history only
+// changes by one slot a minute, so re-sending all of it every minute would be
+// nearly a megabyte to say what one number already said.
+func (m *Monitor) handlePingSeries(w http.ResponseWriter, r *http.Request) {
+	now := m.now()
+	since := now.Add(-pingRetention).Unix()
+	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
+		key:       "series",
+		proxyPath: "/api/ping-series",
+		local: func() (any, error) {
+			return m.store.PingSeriesData(since, now.Unix(), int64(PingInterval/time.Second))
+		},
+	})
+}
+
 func (m *Monitor) latencySnapshot(since int64) (LatencySnapshot, error) {
 	latest, err := m.store.LatestPingSamples(since)
 	if err != nil {
 		return LatencySnapshot{}, err
 	}
-	points, err := m.store.PingTrendHourly(since)
-	if err != nil {
-		return LatencySnapshot{}, err
-	}
-	daily, err := m.store.PingTrendDaily(since)
-	if err != nil {
-		return LatencySnapshot{}, err
-	}
-	recent, err := m.store.PingRawSamples(m.now().Add(-pingRawRetention).Unix())
-	if err != nil {
-		return LatencySnapshot{}, err
-	}
-	return LatencySnapshot{
-		Targets: m.pingCollector.Targets(),
-		Latest:  latest,
-		Points:  points,
-		Daily:   daily,
-		Recent:  recent,
-	}, nil
+	return LatencySnapshot{Targets: m.pingCollector.Targets(), Latest: latest}, nil
 }
 
 // topIPTrafficEntries bounds one response. A node keeps at most

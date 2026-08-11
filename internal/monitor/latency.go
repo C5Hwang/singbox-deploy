@@ -25,11 +25,11 @@ const (
 	// spaced by pingSpacing, each capped at pingConnectTimeout, cannot exceed
 	// about eleven seconds; the rest is headroom for a slow resolver.
 	pingRoundDeadline = 20 * time.Second
-	// pingRetention bounds the latency history at a week of one-minute samples.
+	// pingRetention bounds the latency history at a week of one-minute samples,
+	// and that is the only shape it is ever read in. Nine targets at one round a
+	// minute is 90,720 rows a week — about 3.4 MB, small enough that folding them
+	// into hours would save little and cost the detail the chart is for.
 	pingRetention = 7 * 24 * time.Hour
-	// pingRawRetention bounds the raw window the dashboard's "recent" view
-	// reads, matching the traffic and resource views it sits beside.
-	pingRawRetention = 2 * time.Hour
 )
 
 // PingTarget is one latency probe destination: a carrier's node in one city,

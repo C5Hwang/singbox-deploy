@@ -120,26 +120,26 @@ export interface PingLatestPoint {
   lossPct: number;
 }
 
-export interface PingHourlyPoint {
-  hourTs: number;
-  target: string;
-  avgMs: number | null;
-  lossPct: number;
-}
-
-export interface PingRawPoint {
-  ts: number;
-  target: string;
-  avgMs: number | null;
-  lossPct: number;
-}
-
+// What the latency page polls: the probe list and the newest round each. The
+// history is a separate fetch because it is a week of one-minute rounds and it
+// only changes by one slot a minute.
 export interface LatencySnapshot {
   targets: PingTarget[];
   latest: PingLatestPoint[];
-  points: PingHourlyPoint[];
-  daily: PingHourlyPoint[];
-  recent: PingRawPoint[];
+}
+
+// One target's week on a fixed grid: slot i is the round at start + i*step.
+// ms is null where a round answered nothing, loss is -1 where no round ran.
+export interface PingTrack {
+  ms: (number | null)[];
+  loss: number[];
+}
+
+export interface PingSeries {
+  start: number;
+  step: number;
+  count: number;
+  series: Record<string, PingTrack>;
 }
 
 export interface SourceSummary {

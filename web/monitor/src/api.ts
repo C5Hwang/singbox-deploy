@@ -5,6 +5,7 @@ import type {
   TrafficRawPoint,
   ResourceRawPoint,
   LatencySnapshot,
+  PingSeries,
   IPTrafficSnapshot,
   IPTrafficDetail,
 } from "./types";
@@ -99,12 +100,19 @@ export async function fetchResourceRecent(source?: string): Promise<ResourceRawP
 export async function fetchLatency(source?: string): Promise<LatencySnapshot> {
   const data = await getJSON(`api/ping-trend${sourceQuery(source)}`);
   const latency = data.latency ?? {};
+  return { targets: latency.targets ?? [], latest: latency.latest ?? [] };
+}
+
+// The week of one-minute rounds behind the trend chart, fetched when a trend is
+// opened rather than on the page's minute poll.
+export async function fetchLatencySeries(source?: string): Promise<PingSeries> {
+  const data = await getJSON(`api/ping-series${sourceQuery(source)}`);
+  const series = data.series ?? {};
   return {
-    targets: latency.targets ?? [],
-    latest: latency.latest ?? [],
-    points: latency.points ?? [],
-    daily: latency.daily ?? [],
-    recent: latency.recent ?? [],
+    start: series.start ?? 0,
+    step: series.step ?? 60,
+    count: series.count ?? 0,
+    series: series.series ?? {},
   };
 }
 

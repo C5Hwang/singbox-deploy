@@ -856,75 +856,77 @@ func (s *Store) InsertPingSamples(ts int64, samples map[string]PingSample) error
 	return tx.Commit()
 }
 
-// PingTrendHourly returns per-target hourly averages at or after since, oldest
-// first. Averaging at read time keeps a week of one-minute samples small
-// enough to ship in one response. AVG skips the NULL latencies of fully lost
-// rounds, so the average describes the connects that did come back.
-func (s *Store) PingTrendHourly(since int64) ([]PingHourlyPoint, error) {
-	return s.pingBuckets(since, 3600)
-}
-
-// PingTrendDaily folds the same samples into GMT days, which is the window the
-// dashboard's daily view draws.
-func (s *Store) PingTrendDaily(since int64) ([]PingHourlyPoint, error) {
-	return s.pingBuckets(since, 86400)
-}
-
-func (s *Store) pingBuckets(since, width int64) ([]PingHourlyPoint, error) {
-	rows, err := s.db.Query(`
-SELECT (ts/?)*? AS bucket, target, AVG(avg_ms), AVG(loss_pct)
-FROM ping_samples WHERE ts >= ?
-GROUP BY bucket, target
-ORDER BY bucket ASC`, width, width, since)
-	if err != nil {
-		return nil, err
+// PingSeriesData returns the whole latency history on a fixed grid of step
+// seconds, one slot per probe round, with a gap where nothing was recorded.
+//
+// The probe writes one row per target per minute and the table keeps a week of
+// them, so there is exactly one shape to read and no bucketing to choose: what
+// comes back is what was measured. Averaging into hours and days used to be how
+// a week fitted in a response, but it also meant the chart could never show the
+// spike that the average had smoothed away.
+//
+// The grid is what makes that affordable. A row's own timestamp is implied by
+// its slot, so the response carries values rather than (time, value) pairs, and
+// each target is one array of latencies beside one array of loss percentages
+// instead of ten thousand small objects.
+func (s *Store) PingSeriesData(since, until, step int64) (PingSeries, error) {
+	if step <= 0 || until <= since {
+		return PingSeries{Step: step, Series: map[string]*PingTrack{}}, nil
 	}
-	defer rows.Close()
-	var points []PingHourlyPoint
-	for rows.Next() {
-		var (
-			p   PingHourlyPoint
-			avg sql.NullFloat64
-		)
-		if err := rows.Scan(&p.HourTS, &p.Target, &avg, &p.LossPct); err != nil {
-			return nil, err
-		}
-		if avg.Valid {
-			value := avg.Float64
-			p.AvgMS = &value
-		}
-		points = append(points, p)
-	}
-	return points, rows.Err()
-}
+	start := (since / step) * step
+	count := int((until-start)/step) + 1
+	series := PingSeries{Start: start, Step: step, Count: count, Series: map[string]*PingTrack{}}
 
-// PingRawSamples returns every sample at or after since, oldest first. It backs
-// the dashboard's per-minute "recent" view, so the window it is called with is
-// deliberately short.
-func (s *Store) PingRawSamples(since int64) ([]PingRawPoint, error) {
 	rows, err := s.db.Query(`
 SELECT ts, target, avg_ms, loss_pct FROM ping_samples
-WHERE ts >= ? ORDER BY ts ASC`, since)
+WHERE ts >= ? ORDER BY ts ASC`, start)
 	if err != nil {
-		return nil, err
+		return PingSeries{}, err
 	}
 	defer rows.Close()
-	var points []PingRawPoint
 	for rows.Next() {
 		var (
-			p   PingRawPoint
-			avg sql.NullFloat64
+			ts     int64
+			target string
+			avg    sql.NullFloat64
+			loss   float64
 		)
-		if err := rows.Scan(&p.TS, &p.Target, &avg, &p.LossPct); err != nil {
-			return nil, err
+		if err := rows.Scan(&ts, &target, &avg, &loss); err != nil {
+			return PingSeries{}, err
+		}
+		slot := int((ts - start) / step)
+		if slot < 0 || slot >= count {
+			continue
+		}
+		track := series.Series[target]
+		if track == nil {
+			track = newPingTrack(count)
+			series.Series[target] = track
 		}
 		if avg.Valid {
-			value := avg.Float64
-			p.AvgMS = &value
+			value := round1(avg.Float64)
+			track.MS[slot] = &value
 		}
-		points = append(points, p)
+		track.Loss[slot] = round1(loss)
 	}
-	return points, rows.Err()
+	return series, rows.Err()
+}
+
+func newPingTrack(count int) *PingTrack {
+	track := &PingTrack{MS: make([]*float64, count), Loss: make([]float64, count)}
+	// A slot nothing was written to is a round that did not happen, which is not
+	// the same as a round that lost every packet; the loss array carries -1 there
+	// so the reader can tell the two apart.
+	for i := range track.Loss {
+		track.Loss[i] = -1
+	}
+	return track
+}
+
+// One decimal is every digit a ping measurement means and a third of the bytes
+// a float's full expansion would spend on saying so.
+func round1(v float64) float64 {
+	return math.Round(v*10) / 10
 }
 
 // LatestPingSamples returns the most recent sample per target at or after
