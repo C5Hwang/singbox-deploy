@@ -50,7 +50,7 @@ function submit() {
           <path d="M12 7.5v5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
           <circle cx="12" cy="16.4" r="1.15" fill="currentColor" />
         </svg>
-        <span>That token was rejected. Check it on the hub's Status screen.</span>
+        <span>That access token was not accepted. Check it and try again.</span>
       </div>
     </Transition>
 
