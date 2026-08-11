@@ -60,19 +60,58 @@ async function load() {
   }
 }
 
+// The grid the node sends is always a full week, one slot a minute, whether or
+// not anything was recorded in each — that is what makes it a grid. The chart
+// only draws the part of it that was: a node installed yesterday would
+// otherwise get an axis six days of which are empty, which reads as a broken
+// chart rather than as a young one.
+//
+// A round that answered nothing still counts as recorded, so an outage is
+// inside the window as a gap rather than trimmed off the end of it. loss is
+// what says a round happened; ms is null for the ones that answered nothing.
+const recorded = computed<[number, number] | null>(() => {
+  const series = history.value;
+  if (!series) return null;
+  let first = -1;
+  let last = -1;
+  for (const target of shownTargets.value) {
+    const track = series.series[target.id];
+    if (!track) continue;
+    for (let i = 0; i < track.loss.length; i++) {
+      if (track.loss[i] < 0) continue;
+      if (first < 0 || i < first) first = i;
+      if (i > last) last = i;
+    }
+  }
+  return first < 0 ? null : [first, last];
+});
+
 // Every round the node recorded, at the minute it recorded it. A slot with no
 // value — a round that answered nothing, or a minute the monitor was not
 // running — becomes a null, which draws as a gap rather than as zero latency.
 function trackData(targetId: string): [number, number | null][] {
   const series = history.value;
   const track = series?.series[targetId];
-  if (!series || !track) return [];
+  const span = recorded.value;
+  if (!series || !track || !span) return [];
   const points: [number, number | null][] = [];
-  for (let i = 0; i < track.ms.length; i++) {
+  for (let i = span[0]; i <= span[1]; i++) {
     points.push([(series.start + i * series.step) * 1000, track.ms[i]]);
   }
   return points;
 }
+
+// What the subtitle claims has to be what the axis shows, so it reports the
+// span that was actually recorded rather than the week that was asked for.
+const spanLabel = computed(() => {
+  const series = history.value;
+  const span = recorded.value;
+  if (!series || !span) return "no rounds recorded yet";
+  const hours = ((span[1] - span[0]) * series.step) / 3600;
+  if (hours < 1) return "every minute · under an hour";
+  if (hours < 48) return `every minute · last ${Math.round(hours)} h`;
+  return `every minute · last ${Math.round(hours / 24)} days`;
+});
 
 function buildOption(): any {
   const targets = shownTargets.value;
@@ -144,7 +183,7 @@ const { chartRef, loading } = useTrendChart(
         <div>
           <h2 class="modal-title">{{ nodeName }}</h2>
           <p class="modal-subtitle">
-            {{ shownTargets.length }} of {{ snapshot.targets.length }} probes · every minute for 7 days
+            {{ shownTargets.length }} of {{ snapshot.targets.length }} probes · {{ spanLabel }}
           </p>
         </div>
         <div class="modal-controls">
