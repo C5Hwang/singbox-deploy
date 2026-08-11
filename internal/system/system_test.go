@@ -263,23 +263,20 @@ func freeTCPPort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// The monitor shells out to nft and ping; a minimal cloud image ships neither,
-// and without them the per-IP and latency metrics disable themselves.
+// The monitor shells out to nft for its per-IP counters, and a minimal cloud
+// image does not ship it. Latency probing needs nothing installed: it measures
+// TCP connect time from inside the binary, so no ICMP utility is pulled in.
 func TestInstallPlanInstallsMonitorProbeDependencies(t *testing.T) {
-	for _, tc := range []struct {
-		packageManager string
-		ping           string
-	}{
-		{packageManager: "apt", ping: "iputils-ping"},
-		{packageManager: "dnf", ping: "iputils"},
-		{packageManager: "yum", ping: "iputils"},
-	} {
-		t.Run(tc.packageManager, func(t *testing.T) {
-			plan := BuildInstallPlan(OSRelease{PackageManager: tc.packageManager})
+	for _, packageManager := range []string{"apt", "dnf", "yum"} {
+		t.Run(packageManager, func(t *testing.T) {
+			plan := BuildInstallPlan(OSRelease{PackageManager: packageManager})
 			install := plan.Commands[len(plan.Commands)-1].String()
-			for _, want := range []string{"nftables", tc.ping} {
-				if !strings.Contains(install, " "+want) {
-					t.Fatalf("install command %q does not install %q", install, want)
+			if !strings.Contains(install, " nftables") {
+				t.Fatalf("install command %q does not install nftables", install)
+			}
+			for _, unwanted := range []string{"iputils-ping", "iputils"} {
+				if strings.Contains(install, " "+unwanted) {
+					t.Fatalf("install command %q still installs the ICMP utility %q", install, unwanted)
 				}
 			}
 		})

@@ -3,74 +3,14 @@ package monitor
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
-
-func TestParsePingOutput(t *testing.T) {
-	const iputils = `PING 219.141.136.10 (219.141.136.10) 56(84) bytes of data.
-
---- 219.141.136.10 ping statistics ---
-10 packets transmitted, 8 received, 20% packet loss, time 2712ms
-rtt min/avg/max/mdev = 59.302/63.257/69.333/4.360 ms
-`
-	sample, err := parsePingOutput(iputils)
-	if err != nil {
-		t.Fatalf("parsePingOutput: %v", err)
-	}
-	if sample.AvgMS == nil || *sample.AvgMS != 63.257 {
-		t.Fatalf("AvgMS = %v, want 63.257", sample.AvgMS)
-	}
-	if sample.LossPct != 20 {
-		t.Fatalf("LossPct = %v, want 20", sample.LossPct)
-	}
-}
-
-// BusyBox spells the second count differently and labels the summary
-// "round-trip", so both spellings have to parse.
-func TestParsePingOutputBusyBoxSpelling(t *testing.T) {
-	const busybox = `--- 1.1.1.1 ping statistics ---
-10 packets transmitted, 9 packets received, 10% packet loss
-round-trip min/avg/max = 11.1/22.5/44.0 ms
-`
-	sample, err := parsePingOutput(busybox)
-	if err != nil {
-		t.Fatalf("parsePingOutput: %v", err)
-	}
-	if sample.AvgMS == nil || *sample.AvgMS != 22.5 {
-		t.Fatalf("AvgMS = %v, want 22.5", sample.AvgMS)
-	}
-	if sample.LossPct != 10 {
-		t.Fatalf("LossPct = %v, want 10", sample.LossPct)
-	}
-}
-
-// A target that answered nothing has no latency at all. Reporting zero would
-// draw as a perfect link, so the sample carries no value instead.
-func TestParsePingOutputFullLossHasNoLatency(t *testing.T) {
-	const lost = `--- 10.0.0.1 ping statistics ---
-10 packets transmitted, 0 received, 100% packet loss, time 9204ms
-`
-	sample, err := parsePingOutput(lost)
-	if err != nil {
-		t.Fatalf("parsePingOutput: %v", err)
-	}
-	if sample.AvgMS != nil {
-		t.Fatalf("AvgMS = %v, want nil", *sample.AvgMS)
-	}
-	if sample.LossPct != 100 {
-		t.Fatalf("LossPct = %v, want 100", sample.LossPct)
-	}
-}
-
-func TestParsePingOutputRejectsUnparsableSummary(t *testing.T) {
-	if _, err := parsePingOutput("ping: connect: Network is unreachable\n"); err == nil {
-		t.Fatal("parsePingOutput accepted output with no statistics")
-	}
-}
 
 // A probe that cannot run at all is dropped rather than recorded, so a broken
 // target never masquerades as a reachable one with no data.
@@ -188,23 +128,98 @@ func TestMaintenanceDropsPingSamplesOlderThanAWeek(t *testing.T) {
 	}
 }
 
-// iputils treats -w as "keep probing until the deadline expires or count
-// probes are answered", so a deadline flag makes -c stop bounding the run: an
-// unanswered target is probed for the whole deadline, and a target slower than
-// the send interval gets an extra probe that reads as 1/11 = 9.09% loss on a
-// route that lost nothing. The count and the per-reply timeout are what bound
-// a probe; pingDeadline bounds it from the outside.
-func TestPingArgsCarryNoDeadlineFlag(t *testing.T) {
-	args := pingArgs("203.0.113.9")
-	for i, arg := range args {
-		if arg == "-w" {
-			t.Fatalf("pingArgs = %q, want no -w deadline flag", args)
+// The probe list is what the dashboard groups its cards by, so it has to stay a
+// full three-by-three of carriers and cities addressed as host:port.
+func TestDefaultPingTargetsAreThreeCarriersByThreeCities(t *testing.T) {
+	carriers, cities := map[string]int{}, map[string]int{}
+	for _, target := range DefaultPingTargets {
+		carriers[target.Carrier]++
+		cities[target.City]++
+		host, port, err := net.SplitHostPort(target.Address)
+		if err != nil {
+			t.Fatalf("target %s address %q is not host:port: %v", target.ID, target.Address, err)
 		}
-		if arg == "-c" && (i+1 >= len(args) || args[i+1] != "10") {
-			t.Fatalf("pingArgs = %q, want -c %d", args, pingCount)
+		if port != "80" || !strings.HasSuffix(host, ".ip.zstaticcdn.com") {
+			t.Fatalf("target %s = %q, want a zstaticcdn node on port 80", target.ID, target.Address)
 		}
 	}
-	if args[len(args)-1] != "203.0.113.9" {
-		t.Fatalf("pingArgs = %q, want the address last", args)
+	if len(carriers) != 3 || len(cities) != 3 || len(DefaultPingTargets) != 9 {
+		t.Fatalf("targets = %d across %d carriers and %d cities", len(DefaultPingTargets), len(carriers), len(cities))
+	}
+	for carrier, count := range carriers {
+		if count != 3 {
+			t.Fatalf("carrier %s has %d cities, want 3", carrier, count)
+		}
+	}
+}
+
+// A listener that accepts every connect is a route with no loss, and the
+// average is a real measurement rather than a placeholder.
+func TestTCPPingMeasuresAnAcceptingListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	sample, err := tcpPing(context.Background(), listener.Addr().String())
+	if err != nil {
+		t.Fatalf("tcpPing: %v", err)
+	}
+	if sample.LossPct != 0 {
+		t.Fatalf("LossPct = %v, want 0 against a listener that accepts", sample.LossPct)
+	}
+	if sample.AvgMS == nil || *sample.AvgMS < 0 {
+		t.Fatalf("AvgMS = %v, want a measured average", sample.AvgMS)
+	}
+}
+
+// A refused port is a fully lost round: 100% loss and no latency at all, which
+// the dashboard draws as a gap instead of as a perfect link.
+func TestTCPPingReportsFullLossOnARefusedPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	address := listener.Addr().String()
+	listener.Close()
+
+	sample, err := tcpPing(context.Background(), address)
+	if err != nil {
+		t.Fatalf("tcpPing: %v", err)
+	}
+	if sample.LossPct != 100 {
+		t.Fatalf("LossPct = %v, want 100 against a closed port", sample.LossPct)
+	}
+	if sample.AvgMS != nil {
+		t.Fatalf("AvgMS = %v, want no latency for a fully lost round", *sample.AvgMS)
+	}
+}
+
+// A target that cannot even be addressed is an error, not a sample: recording
+// it as loss would blame the route for a configuration mistake. Collect drops
+// errored probes, so the target keeps its previous history instead.
+func TestTCPPingErrorsOnAnUnusableAddress(t *testing.T) {
+	if _, err := tcpPing(context.Background(), "missing-port.example.com"); err == nil {
+		t.Fatal("tcpPing accepted an address with no port")
+	}
+}
+
+func TestPingSampleFromCountsLossAgainstAttempts(t *testing.T) {
+	sample := pingSampleFrom(300*time.Millisecond, 3, 5)
+	if sample.LossPct != 40 {
+		t.Fatalf("LossPct = %v, want 40 for three of five", sample.LossPct)
+	}
+	if sample.AvgMS == nil || *sample.AvgMS != 100 {
+		t.Fatalf("AvgMS = %v, want the average over the answered connects", sample.AvgMS)
 	}
 }

@@ -2,25 +2,14 @@ package system
 
 // basePackages are the dependencies installed before sing-box and Nginx setup.
 // Nginx itself is installed from the nginx.org mainline repo in a later step.
-// nftables carries the monitor's per-IP byte counters; both families spell it
-// the same way, unlike the ICMP utility below.
+// nftables carries the monitor's per-IP byte counters.
+//
+// No ICMP utility is installed: latency probing measures TCP connect time from
+// inside the binary, so it needs neither an external command nor a raw socket.
 var basePackages = []string{"curl", "wget", "tar", "unzip", "openssl", "ca-certificates", "nftables"}
 
-// pingPackages names the ICMP utility the monitor's latency probes shell out
-// to. A minimal cloud image does not always ship one, and without it latency
-// sampling disables itself.
-var pingPackages = map[string]string{
-	"apt": "iputils-ping",
-	"dnf": "iputils",
-	"yum": "iputils",
-}
-
-func packagesFor(packageManager string) []string {
-	packages := append([]string{}, basePackages...)
-	if ping, ok := pingPackages[packageManager]; ok {
-		packages = append(packages, ping)
-	}
-	return packages
+func packagesFor(string) []string {
+	return append([]string{}, basePackages...)
 }
 
 var aptNoninteractiveEnv = []string{

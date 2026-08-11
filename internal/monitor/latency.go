@@ -2,44 +2,38 @@ package monitor
 
 import (
 	"context"
-	"fmt"
-	"os/exec"
-	"strconv"
-	"strings"
+	"net"
 	"sync"
 	"time"
 )
 
 const (
 	// PingInterval is how often every latency target is probed.
-	PingInterval = 5 * time.Minute
-	// pingCount is the number of echo requests averaged into one sample.
-	pingCount = 10
-	// pingRetention bounds the latency history. Older samples are dropped
-	// wholesale rather than folded: a week of five-minute samples is already
-	// small, and hourly averaging happens at read time.
+	PingInterval = 1 * time.Minute
+	// pingCount is the number of connects averaged into one sample. Five keeps
+	// the loss figure to twenty-point steps within a round while staying cheap
+	// enough to repeat every minute: a connect is a SYN, a SYN-ACK and a reset.
+	pingCount = 5
+	// pingSpacing separates the connects inside one round, so a sample measures
+	// the route over a moment rather than one instant of it.
+	pingSpacing = 200 * time.Millisecond
+	// pingConnectTimeout is how long one connect may take before it counts as
+	// lost. Chinese carriers answer a nearby probe in well under 400 ms, so two
+	// seconds is a generous ceiling that still fails fast on a black hole.
+	pingConnectTimeout = 2 * time.Second
+	// pingRoundDeadline bounds a whole round from the outside. Five connects
+	// spaced by pingSpacing, each capped at pingConnectTimeout, cannot exceed
+	// about eleven seconds; the rest is headroom for a slow resolver.
+	pingRoundDeadline = 20 * time.Second
+	// pingRetention bounds the latency history at a week of one-minute samples.
 	pingRetention = 7 * 24 * time.Hour
-	// pingDeadline bounds one probe from the outside. A run is pingCount
-	// requests spaced by pingIntervalArg plus at most pingWaitArg for the last
-	// reply, so about five seconds; the rest is headroom for a slow path.
-	// Killing ping before it prints its summary would throw away a perfectly
-	// good 100%-loss reading, so this stays well above the expected run.
-	//
-	// ping's own -w deadline is deliberately not used. iputils documents it as
-	// "ping does not stop after count packets are sent, it waits either for
-	// deadline expire or until count probes are answered": an unanswered target
-	// is probed until the deadline (47 packets instead of ten, measured), and a
-	// target whose RTT outruns the send interval gets one extra probe, which
-	// reports 1/11 = 9.09% loss on a route that lost nothing.
-	pingDeadline    = 25 * time.Second
-	pingIntervalArg = "0.3"
-	pingWaitArg     = "2"
+	// pingRawRetention bounds the raw window the dashboard's "recent" view
+	// reads, matching the traffic and resource views it sits beside.
+	pingRawRetention = 2 * time.Hour
 )
 
-// PingTarget is one fixed latency probe destination. The nine targets are the
-// provincial carrier resolvers Chinese network tests conventionally use: they
-// answer ICMP reliably and sit on each carrier's own backbone, so the numbers
-// describe the route rather than the responder.
+// PingTarget is one latency probe destination: a carrier's node in one city,
+// addressed as host:port.
 type PingTarget struct {
 	ID      string `json:"id"`
 	Carrier string `json:"carrier"`
@@ -48,45 +42,46 @@ type PingTarget struct {
 }
 
 // DefaultPingTargets is the probe list: three carriers by three cities.
+//
+// The hostnames come from the Zstatic CDN node catalogue, which publishes one
+// name per carrier per region for exactly this purpose. They are probed by TCP
+// connect rather than by ICMP: the catalogue addresses them as host:80, and a
+// carrier that rate-limits or deprioritizes ICMP still answers a SYN the same
+// way a real client's connection is answered.
+//
+// The names are resolved on every round rather than pinned to an address, so a
+// node the CDN moves is followed without a release.
 var DefaultPingTargets = []PingTarget{
-	{ID: "telecom-beijing", Carrier: "China Telecom", City: "Beijing", Address: "219.141.136.10"},
-	{ID: "telecom-shanghai", Carrier: "China Telecom", City: "Shanghai", Address: "202.96.209.133"},
-	{ID: "telecom-guangzhou", Carrier: "China Telecom", City: "Guangzhou", Address: "202.96.128.86"},
-	{ID: "unicom-beijing", Carrier: "China Unicom", City: "Beijing", Address: "202.106.195.68"},
-	{ID: "unicom-shanghai", Carrier: "China Unicom", City: "Shanghai", Address: "210.22.70.3"},
-	{ID: "unicom-guangzhou", Carrier: "China Unicom", City: "Guangzhou", Address: "210.21.196.6"},
-	{ID: "mobile-beijing", Carrier: "China Mobile", City: "Beijing", Address: "221.130.33.60"},
-	{ID: "mobile-shanghai", Carrier: "China Mobile", City: "Shanghai", Address: "211.136.112.50"},
-	{ID: "mobile-guangzhou", Carrier: "China Mobile", City: "Guangzhou", Address: "211.136.192.6"},
+	{ID: "telecom-beijing", Carrier: "China Telecom", City: "Beijing", Address: "bj-ct-v4.ip.zstaticcdn.com:80"},
+	{ID: "telecom-shanghai", Carrier: "China Telecom", City: "Shanghai", Address: "sh-ct-v4.ip.zstaticcdn.com:80"},
+	{ID: "telecom-guangzhou", Carrier: "China Telecom", City: "Guangzhou", Address: "gd-guangzhou-ct-v4.ip.zstaticcdn.com:80"},
+	{ID: "unicom-beijing", Carrier: "China Unicom", City: "Beijing", Address: "bj-cu-v4.ip.zstaticcdn.com:80"},
+	{ID: "unicom-shanghai", Carrier: "China Unicom", City: "Shanghai", Address: "sh-cu-v4.ip.zstaticcdn.com:80"},
+	{ID: "unicom-guangzhou", Carrier: "China Unicom", City: "Guangzhou", Address: "gd-guangzhou-cu-v4.ip.zstaticcdn.com:80"},
+	{ID: "mobile-beijing", Carrier: "China Mobile", City: "Beijing", Address: "bj-cm-v4.ip.zstaticcdn.com:80"},
+	{ID: "mobile-shanghai", Carrier: "China Mobile", City: "Shanghai", Address: "sh-cm-v4.ip.zstaticcdn.com:80"},
+	{ID: "mobile-guangzhou", Carrier: "China Mobile", City: "Guangzhou", Address: "gd-guangzhou-cm-v4.ip.zstaticcdn.com:80"},
 }
 
-// PingSample is one probe outcome. AvgMS is nil when every request was lost,
+// PingSample is one probe outcome. AvgMS is nil when every connect failed,
 // which the dashboard draws as a gap rather than as zero latency.
 type PingSample struct {
 	AvgMS   *float64
 	LossPct float64
 }
 
-// PingCollector probes the latency targets with the system ping utility.
+// PingCollector measures TCP connect latency to the probe targets.
 type PingCollector struct {
 	targets []PingTarget
-	// probe is the test seam. Production shells out to ping(8), which is the
-	// only ICMP path that works without the binary holding raw-socket rights.
+	// probe is the test seam. Production opens real connections.
 	probe func(context.Context, string) (PingSample, error)
 }
 
-// NewPingCollector returns a collector for the default targets, or nil when the
-// host has no ping utility. A nil collector disables latency sampling and
-// leaves every other metric untouched.
+// NewPingCollector returns a collector for the default targets. Unlike the ICMP
+// implementation it replaces, this one needs no external utility and no raw
+// socket, so it is never nil.
 func NewPingCollector() *PingCollector {
-	binary, err := exec.LookPath("ping")
-	if err != nil {
-		return nil
-	}
-	return &PingCollector{
-		targets: DefaultPingTargets,
-		probe:   func(ctx context.Context, address string) (PingSample, error) { return systemPing(ctx, binary, address) },
-	}
+	return &PingCollector{targets: DefaultPingTargets, probe: tcpPing}
 }
 
 // Targets returns the probe list this collector samples.
@@ -128,108 +123,77 @@ func (c *PingCollector) Collect(ctx context.Context) map[string]PingSample {
 	return out
 }
 
-// systemPing runs one probe and parses the summary ping(8) prints. A run where
-// every request was lost exits non-zero, which is a valid sample rather than an
-// error; only a failure to run or an unparsable summary is an error.
-func systemPing(ctx context.Context, binary, address string) (PingSample, error) {
-	ctx, cancel := context.WithTimeout(ctx, pingDeadline)
+// tcpPing times pingCount connects to address and averages the ones that
+// answered. The name is resolved once per round and the connects go to the
+// resolved address, so a slow resolver is not billed to the route; a name that
+// does not resolve at all is an error rather than a sample, which leaves the
+// target's history untouched instead of recording a route failure.
+func tcpPing(ctx context.Context, address string) (PingSample, error) {
+	ctx, cancel := context.WithTimeout(ctx, pingRoundDeadline)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binary, pingArgs(address)...).Output()
-	sample, parseErr := parsePingOutput(string(out))
-	if parseErr != nil {
-		if err != nil {
-			return PingSample{}, fmt.Errorf("ping %s: %w", address, err)
-		}
-		return PingSample{}, fmt.Errorf("ping %s: %w", address, parseErr)
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return PingSample{}, err
 	}
-	return sample, nil
-}
-
-// pingArgs is the probe's command line. It is its own function so a test can
-// assert that no deadline flag creeps back in.
-func pingArgs(address string) []string {
-	return []string{
-		"-n", "-q",
-		"-c", strconv.Itoa(pingCount),
-		"-i", pingIntervalArg,
-		"-W", pingWaitArg,
-		address,
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+	if err != nil {
+		return PingSample{}, err
 	}
-}
+	if len(addrs) == 0 {
+		return PingSample{}, &net.DNSError{Err: "no address", Name: host}
+	}
+	target := net.JoinHostPort(addrs[0].String(), port)
 
-// parsePingOutput reads the transmitted/received counts and the rtt summary.
-// Loss is recomputed from the counts rather than read from the percentage,
-// which some implementations round.
-func parsePingOutput(out string) (PingSample, error) {
 	var (
-		sample      PingSample
-		haveCounts  bool
-		transmitted int
-		received    int
+		total     time.Duration
+		answered  int
+		attempted int
 	)
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.Contains(line, "packets transmitted"):
-			transmitted, received, haveCounts = parsePingCounts(line)
-		case strings.HasPrefix(line, "rtt "), strings.HasPrefix(line, "round-trip "):
-			if avg, ok := parsePingAverage(line); ok {
-				sample.AvgMS = &avg
+	for i := 0; i < pingCount; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				// The round ran out of time. Report what was measured rather
+				// than counting the connects never attempted as losses.
+				return pingSampleFrom(total, answered, attempted), nil
+			case <-time.After(pingSpacing):
 			}
 		}
+		attempted++
+		if elapsed, ok := connectOnce(ctx, target); ok {
+			total += elapsed
+			answered++
+		}
 	}
-	if !haveCounts || transmitted <= 0 {
-		return PingSample{}, fmt.Errorf("no packet statistics in ping output")
-	}
-	if received <= 0 {
-		// Every request was lost: there is no rtt line to read, and reporting a
-		// latency of zero here would read as a perfect link.
-		sample.AvgMS = nil
-	}
-	sample.LossPct = float64(transmitted-received) / float64(transmitted) * 100
-	return sample, nil
+	return pingSampleFrom(total, answered, attempted), nil
 }
 
-// parsePingCounts reads "10 packets transmitted, 8 received, ...". BusyBox
-// spells the second count "8 packets received", so each keyword takes the
-// nearest integer before it rather than a fixed field position.
-func parsePingCounts(line string) (transmitted, received int, ok bool) {
-	preceding := -1
-	for _, field := range strings.Fields(strings.ReplaceAll(line, ",", " ")) {
-		if value, err := strconv.Atoi(field); err == nil {
-			preceding = value
-			continue
-		}
-		if preceding < 0 {
-			continue
-		}
-		switch field {
-		case "transmitted":
-			transmitted, ok = preceding, true
-		case "received":
-			received = preceding
-		}
-	}
-	return transmitted, received, ok
-}
-
-// parsePingAverage reads the second field of "min/avg/max/mdev = a/b/c/d ms".
-func parsePingAverage(line string) (float64, bool) {
-	_, values, found := strings.Cut(line, "=")
-	if !found {
-		return 0, false
-	}
-	fields := strings.Fields(values)
-	if len(fields) == 0 {
-		return 0, false
-	}
-	parts := strings.Split(fields[0], "/")
-	if len(parts) < 2 {
-		return 0, false
-	}
-	avg, err := strconv.ParseFloat(parts[1], 64)
+func connectOnce(ctx context.Context, target string) (time.Duration, bool) {
+	dialer := net.Dialer{Timeout: pingConnectTimeout}
+	start := time.Now()
+	conn, err := dialer.DialContext(ctx, "tcp", target)
 	if err != nil {
 		return 0, false
 	}
-	return avg, true
+	elapsed := time.Since(start)
+	// Close with a reset rather than a FIN: the probe has nothing to shut down
+	// gracefully, and a round every minute would otherwise leave a steady
+	// population of sockets in TIME_WAIT.
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetLinger(0)
+	}
+	conn.Close()
+	return elapsed, true
+}
+
+func pingSampleFrom(total time.Duration, answered, attempted int) PingSample {
+	if attempted == 0 {
+		return PingSample{LossPct: 100}
+	}
+	sample := PingSample{LossPct: float64(attempted-answered) / float64(attempted) * 100}
+	if answered > 0 {
+		avg := float64(total.Nanoseconds()) / float64(answered) / 1e6
+		sample.AvgMS = &avg
+	}
+	return sample
 }

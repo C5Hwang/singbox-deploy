@@ -129,9 +129,6 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 		pingCollector: NewPingCollector(),
 		ipAccounting:  NewIPAccounting(),
 	}
-	if m.pingCollector == nil {
-		log.Printf("monitor: no ping utility found; latency sampling is disabled")
-	}
 	if m.ipAccounting == nil {
 		log.Printf("monitor: no nft utility found; per-IP traffic accounting is disabled")
 	}
@@ -362,7 +359,21 @@ func (m *Monitor) latencySnapshot(since int64) (LatencySnapshot, error) {
 	if err != nil {
 		return LatencySnapshot{}, err
 	}
-	return LatencySnapshot{Targets: m.pingCollector.Targets(), Latest: latest, Points: points}, nil
+	daily, err := m.store.PingTrendDaily(since)
+	if err != nil {
+		return LatencySnapshot{}, err
+	}
+	recent, err := m.store.PingRawSamples(m.now().Add(-pingRawRetention).Unix())
+	if err != nil {
+		return LatencySnapshot{}, err
+	}
+	return LatencySnapshot{
+		Targets: m.pingCollector.Targets(),
+		Latest:  latest,
+		Points:  points,
+		Daily:   daily,
+		Recent:  recent,
+	}, nil
 }
 
 // topIPTrafficEntries is how many addresses each node reports. The dashboard

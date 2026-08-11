@@ -701,15 +701,25 @@ func (s *Store) InsertPingSamples(ts int64, samples map[string]PingSample) error
 }
 
 // PingTrendHourly returns per-target hourly averages at or after since, oldest
-// first. Averaging at read time keeps a week of five-minute samples small
+// first. Averaging at read time keeps a week of one-minute samples small
 // enough to ship in one response. AVG skips the NULL latencies of fully lost
-// rounds, so the average describes the requests that did come back.
+// rounds, so the average describes the connects that did come back.
 func (s *Store) PingTrendHourly(since int64) ([]PingHourlyPoint, error) {
+	return s.pingBuckets(since, 3600)
+}
+
+// PingTrendDaily folds the same samples into GMT days, which is the window the
+// dashboard's daily view draws.
+func (s *Store) PingTrendDaily(since int64) ([]PingHourlyPoint, error) {
+	return s.pingBuckets(since, 86400)
+}
+
+func (s *Store) pingBuckets(since, width int64) ([]PingHourlyPoint, error) {
 	rows, err := s.db.Query(`
-SELECT (ts/3600)*3600 AS ts_hour, target, AVG(avg_ms), AVG(loss_pct)
+SELECT (ts/?)*? AS bucket, target, AVG(avg_ms), AVG(loss_pct)
 FROM ping_samples WHERE ts >= ?
-GROUP BY ts_hour, target
-ORDER BY ts_hour ASC`, since)
+GROUP BY bucket, target
+ORDER BY bucket ASC`, width, width, since)
 	if err != nil {
 		return nil, err
 	}
@@ -721,6 +731,35 @@ ORDER BY ts_hour ASC`, since)
 			avg sql.NullFloat64
 		)
 		if err := rows.Scan(&p.HourTS, &p.Target, &avg, &p.LossPct); err != nil {
+			return nil, err
+		}
+		if avg.Valid {
+			value := avg.Float64
+			p.AvgMS = &value
+		}
+		points = append(points, p)
+	}
+	return points, rows.Err()
+}
+
+// PingRawSamples returns every sample at or after since, oldest first. It backs
+// the dashboard's per-minute "recent" view, so the window it is called with is
+// deliberately short.
+func (s *Store) PingRawSamples(since int64) ([]PingRawPoint, error) {
+	rows, err := s.db.Query(`
+SELECT ts, target, avg_ms, loss_pct FROM ping_samples
+WHERE ts >= ? ORDER BY ts ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var points []PingRawPoint
+	for rows.Next() {
+		var (
+			p   PingRawPoint
+			avg sql.NullFloat64
+		)
+		if err := rows.Scan(&p.TS, &p.Target, &avg, &p.LossPct); err != nil {
 			return nil, err
 		}
 		if avg.Valid {
