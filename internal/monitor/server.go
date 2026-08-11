@@ -32,6 +32,10 @@ const (
 	rawRetention            = 2 * time.Hour
 	resourceRawRetention    = 2 * time.Hour
 	historyRetention        = 90 * 24 * time.Hour
+	// How long per-address history stays readable at hour granularity before it
+	// folds into days. A week covers every window the dashboard draws hourly and
+	// leaves the rest of a quota cycle to the cheaper tier.
+	ipHourlyRetention = 7 * 24 * time.Hour
 )
 
 // ServiceController starts/stops sing-box for quota enforcement.
@@ -939,6 +943,14 @@ func (m *Monitor) maintenance(now time.Time) {
 	// always describe the same window at the same granularity.
 	if err := m.store.AggregateIPHourly(now.Add(-rawRetention).Unix()); err != nil {
 		log.Printf("monitor: aggregate per-IP traffic: %v", err)
+	}
+	// Then the hours fold again. The node's own hourly table is one row an hour;
+	// this one is a row an hour per address, so it is the part that grows enough
+	// over a quota cycle to slow the ranking query down. The cutoff is aligned to
+	// a GMT day so a day bucket is only written complete and always sits older
+	// than the week window handleIPTraffic reads.
+	if err := m.store.AggregateIPDaily(now.Truncate(24 * time.Hour).Add(-ipHourlyRetention).Unix()); err != nil {
+		log.Printf("monitor: fold per-IP traffic into days: %v", err)
 	}
 	if err := m.store.Cleanup(now.Add(-historyRetention).Unix()); err != nil {
 		log.Printf("monitor: cleanup: %v", err)

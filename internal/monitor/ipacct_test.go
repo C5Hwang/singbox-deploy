@@ -312,6 +312,98 @@ func TestIPTrafficFoldsIntoHourlyWithoutChangingTotals(t *testing.T) {
 	}
 }
 
+// Hours older than a week fold again into days. The fold is the thing that
+// keeps the ranking query flat over a long quota cycle, so what it must not do
+// is change any number the dashboard reads: the cycle total stays put, the
+// shorter windows keep their own totals, and the hours that survive are exactly
+// the ones inside the retention window.
+func TestIPTrafficFoldsIntoDailyWithoutChangingTotals(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	today := now.Truncate(24 * time.Hour)
+	cycle := today.AddDate(0, 0, -20).Unix()
+	const address = "203.0.113.7"
+
+	// One sample a day for three weeks, so the history straddles the cutoff.
+	for day := 20; day >= 0; day-- {
+		ts := today.AddDate(0, 0, -day).Add(9 * time.Hour).Unix()
+		if err := store.AddIPTraffic(ts, map[string]IPTrafficDelta{address: {InBytes: 100, OutBytes: 20}}); err != nil {
+			t.Fatalf("AddIPTraffic: %v", err)
+		}
+	}
+	if err := store.AggregateIPHourly(now.Add(-rawRetention).Unix()); err != nil {
+		t.Fatalf("AggregateIPHourly: %v", err)
+	}
+	before := ipEntry(t, store, address, cycle, today.Unix())
+
+	cutoff := today.Add(-ipHourlyRetention).Unix()
+	if err := store.AggregateIPDaily(cutoff); err != nil {
+		t.Fatalf("AggregateIPDaily: %v", err)
+	}
+	after := ipEntry(t, store, address, cycle, today.Unix())
+	if before != after {
+		t.Fatalf("totals changed across the daily fold: %#v -> %#v", before, after)
+	}
+	if after.Cycle.TotalBytes != 21*120 {
+		t.Fatalf("cycle total = %#v, want every day of the cycle", after.Cycle)
+	}
+	if after.Last7.TotalBytes != 7*120 {
+		t.Fatalf("week total = %#v, want the seven days inside the window", after.Last7)
+	}
+
+	var oldestHour, hours, days int64
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*), COALESCE(MIN(ts_hour), 0) FROM ip_hourly`).Scan(&hours, &oldestHour); err != nil {
+		t.Fatalf("count hourly: %v", err)
+	}
+	if oldestHour < cutoff {
+		t.Fatalf("oldest surviving hour %d is older than the cutoff %d", oldestHour, cutoff)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM ip_daily`).Scan(&days); err != nil {
+		t.Fatalf("count daily: %v", err)
+	}
+	// The cutoff falls on midnight seven days back and the samples sit at 09:00,
+	// so eight days of hours survive it and the other thirteen fold. What matters
+	// is that every day is in exactly one tier.
+	if hours != 8 || days != 13 {
+		t.Fatalf("split = %d hours + %d days, want 8 + 13 covering all 21", hours, days)
+	}
+
+	// A day bucket carries a whole day of bytes, so letting one into the hourly
+	// view would draw a spike at midnight that never happened.
+	detail, err := store.IPTrafficSeries(address, now.Add(-rawRetention).Unix(), cycle)
+	if err != nil {
+		t.Fatalf("IPTrafficSeries: %v", err)
+	}
+	for _, point := range detail.Hourly {
+		if point.TS < cutoff {
+			t.Fatalf("hourly series reaches %d, older than the folded cutoff %d", point.TS, cutoff)
+		}
+	}
+	if len(detail.Daily) != 21 {
+		t.Fatalf("daily series = %d points, want every day of the cycle", len(detail.Daily))
+	}
+}
+
+func ipEntry(t *testing.T, store *Store, address string, cycle, today int64) IPTrafficEntry {
+	t.Helper()
+	entries, err := store.TopIPTraffic(topIPTrafficEntries, cycle, today, today-6*86400)
+	if err != nil {
+		t.Fatalf("TopIPTraffic: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IP == address {
+			return entry
+		}
+	}
+	t.Fatalf("entries = %#v, want %s", entries, address)
+	return IPTrafficEntry{}
+}
+
 func topEntry(t *testing.T, m *Monitor, now time.Time) IPTrafficEntry {
 	t.Helper()
 	cycle := CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix()

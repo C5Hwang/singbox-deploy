@@ -146,10 +146,11 @@ CREATE TABLE IF NOT EXISTS resource_hourly (
     dio_write_avg INTEGER NOT NULL, dio_write_max INTEGER NOT NULL,
     sample_count  INTEGER NOT NULL DEFAULT 1
 );
--- Per-address traffic mirrors the whole-node traffic above exactly: raw
--- samples at the sampling interval, folded into hourly buckets by the same
--- maintenance pass and pruned by the same cutoff. A window total is therefore
--- the same sum of the two tables that totalsSince computes for the node.
+-- Per-address traffic mirrors the whole-node traffic above: raw samples at the
+-- sampling interval, folded into hourly buckets by the same maintenance pass
+-- and pruned by the same cutoff. It carries one tier the node does not (see
+-- ip_daily), so a window total is the sum of three tables where the node's is
+-- the sum of two.
 CREATE TABLE IF NOT EXISTS ip_samples (
     ts        INTEGER NOT NULL,
     ip        TEXT    NOT NULL,
@@ -166,10 +167,25 @@ CREATE TABLE IF NOT EXISTS ip_hourly (
     PRIMARY KEY (ts_hour, ip)
 );
 CREATE INDEX IF NOT EXISTS idx_ip_hourly_ip ON ip_hourly(ip);
--- ip_daily held day totals only. Its content is a strict subset of what the
--- pair above records, and per-address history is cleared every quota cycle
--- anyway, so it is dropped rather than migrated.
-DROP TABLE IF EXISTS ip_daily;
+-- Hours fold again into days past ipHourlyRetention. The node's own hourly
+-- table is one row an hour and can be left alone; this one is a row an hour per
+-- surviving address, so across a full quota cycle it reaches 500 x 744 rows and
+-- the ranking query has to scan all of them every minute. Folding the tail into
+-- days trades history the dashboard draws at day granularity anyway for a table
+-- an order of magnitude smaller.
+--
+-- An earlier ip_daily recorded day totals *alongside* the hourly rows rather
+-- than in place of them, which made it redundant, and it was dropped. This one
+-- holds only hours that have been deleted from ip_hourly, so no second of the
+-- cycle is ever described by two tables at once.
+CREATE TABLE IF NOT EXISTS ip_daily (
+    ts_day    INTEGER NOT NULL,
+    ip        TEXT    NOT NULL,
+    in_bytes  INTEGER NOT NULL,
+    out_bytes INTEGER NOT NULL,
+    PRIMARY KEY (ts_day, ip)
+);
+CREATE INDEX IF NOT EXISTS idx_ip_daily_ip ON ip_daily(ip);
 CREATE TABLE IF NOT EXISTS ping_samples (
     ts       INTEGER NOT NULL,
     target   TEXT    NOT NULL,
@@ -552,6 +568,12 @@ ON CONFLICT(ts_hour) DO UPDATE SET
 // ipTrafficCycleKey records the quota cycle the per-IP table describes.
 const ipTrafficCycleKey = "ip_traffic_cycle_start"
 
+// ipTrafficTables is the per-address history in fold order: samples become
+// hours, hours become days. Anything that clears the history or ranks an
+// address over the whole cycle has to span all three, because which tier a
+// given hour lives in is only a function of how long ago it was.
+var ipTrafficTables = []string{"ip_samples", "ip_hourly", "ip_daily"}
+
 // AddIPTraffic records one round of per-address deltas as raw samples, exactly
 // as InsertSample records the node's own counters.
 func (s *Store) AddIPTraffic(ts int64, deltas map[string]IPTrafficDelta) error {
@@ -591,6 +613,19 @@ ON CONFLICT(ts_hour, ip) DO UPDATE SET in_bytes = in_bytes + excluded.in_bytes, 
 		`DELETE FROM ip_samples WHERE ts < ?`)
 }
 
+// AggregateIPDaily folds hourly per-address buckets older than before into day
+// buckets and deletes the hours it folded, which is what keeps the ranking
+// query flat as a quota cycle runs on. The caller passes a day-aligned cutoff,
+// so a day bucket is only ever written once it is complete and always lands
+// outside the shorter windows TopIPTraffic reads.
+func (s *Store) AggregateIPDaily(before int64) error {
+	return s.foldAndPrune(before, `
+INSERT INTO ip_daily(ts_day, ip, in_bytes, out_bytes)
+SELECT (ts_hour/86400)*86400 AS d, ip, SUM(in_bytes), SUM(out_bytes) FROM ip_hourly WHERE ts_hour < ? GROUP BY d, ip
+ON CONFLICT(ts_day, ip) DO UPDATE SET in_bytes = in_bytes + excluded.in_bytes, out_bytes = out_bytes + excluded.out_bytes`,
+		`DELETE FROM ip_hourly WHERE ts_hour < ?`)
+}
+
 // ResetIPTrafficForCycle clears the per-address history when the quota cycle
 // rolls over, so the top list always describes the cycle the quota is counting.
 // Bucket timestamps cannot express a reset hour on their own, so the boundary
@@ -614,7 +649,7 @@ func (s *Store) ResetIPTrafficForCycle(cycleStart int64) (bool, error) {
 	// the next sample would look like a rollover.
 	cleared := err == nil
 	if cleared {
-		for _, table := range []string{"ip_samples", "ip_hourly"} {
+		for _, table := range ipTrafficTables {
 			if _, execErr := tx.Exec(`DELETE FROM ` + table); execErr != nil {
 				return false, execErr
 			}
@@ -632,7 +667,7 @@ func (s *Store) ResetIPTrafficForCycle(cycleStart int64) (bool, error) {
 // PruneIPTraffic keeps only the busiest addresses. A node facing mobile clients
 // sees a long tail of one-off addresses that can never reach the top list, and
 // dropping them is what keeps the tables small on a 256 MB VPS. Ranking spans
-// both tables so an address is judged on its whole cycle, not on whichever part
+// every tier so an address is judged on its whole cycle, not on whichever part
 // of it has been folded.
 func (s *Store) PruneIPTraffic(keep int) error {
 	if keep <= 0 {
@@ -644,6 +679,8 @@ SELECT ip FROM (
         SELECT ip, SUM(in_bytes + out_bytes) AS bytes FROM ip_samples GROUP BY ip
         UNION ALL
         SELECT ip, SUM(in_bytes + out_bytes) AS bytes FROM ip_hourly GROUP BY ip
+        UNION ALL
+        SELECT ip, SUM(in_bytes + out_bytes) AS bytes FROM ip_daily GROUP BY ip
     ) GROUP BY ip
     ORDER BY bytes DESC
     LIMIT ?
@@ -653,7 +690,7 @@ SELECT ip FROM (
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"ip_samples", "ip_hourly"} {
+	for _, table := range ipTrafficTables {
 		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE ip NOT IN (`+survivors+`)`, keep); err != nil {
 			return err
 		}
@@ -663,9 +700,10 @@ SELECT ip FROM (
 
 // TopIPTraffic ranks addresses by their traffic since cycleStart and reports
 // each one's totals over the three windows the dashboard sorts by. Every window
-// sums the raw table and the hourly table, which is the same reading
-// totalsSince performs for the node itself; the boundaries are all hour-aligned
-// so no bucket is split between windows.
+// sums all three tiers, which is the same reading totalsSince performs for the
+// node itself; the boundaries are all hour-aligned and day buckets are only
+// written once they are older than every window but the cycle, so no bucket is
+// ever split between windows.
 func (s *Store) TopIPTraffic(limit int, cycleStart, todayStart, weekStart int64) ([]IPTrafficEntry, error) {
 	rows, err := s.db.Query(`
 SELECT ip,
@@ -690,6 +728,15 @@ FROM (
            SUM(CASE WHEN ts_hour >= ?3 THEN in_bytes  ELSE 0 END),
            SUM(CASE WHEN ts_hour >= ?3 THEN out_bytes ELSE 0 END)
     FROM ip_hourly GROUP BY ip
+    UNION ALL
+    SELECT ip,
+           SUM(CASE WHEN ts_day >= ?1 THEN in_bytes  ELSE 0 END),
+           SUM(CASE WHEN ts_day >= ?1 THEN out_bytes ELSE 0 END),
+           SUM(CASE WHEN ts_day >= ?2 THEN in_bytes  ELSE 0 END),
+           SUM(CASE WHEN ts_day >= ?2 THEN out_bytes ELSE 0 END),
+           SUM(CASE WHEN ts_day >= ?3 THEN in_bytes  ELSE 0 END),
+           SUM(CASE WHEN ts_day >= ?3 THEN out_bytes ELSE 0 END)
+    FROM ip_daily GROUP BY ip
 )
 GROUP BY ip
 HAVING SUM(cycle_in) + SUM(cycle_out) > 0
@@ -719,7 +766,7 @@ LIMIT ?4`, cycleStart, todayStart, weekStart, limit)
 
 // IPTrafficSeries returns one address's history at the three granularities the
 // dashboard draws, each read the same way the node's own series is: raw rows
-// for the recent window, hourly buckets for the hourly view, and those buckets
+// for the recent window, hourly buckets for the hourly view, and everything
 // folded into GMT days for the daily view.
 func (s *Store) IPTrafficSeries(address string, recentSince, since int64) (IPTrafficDetail, error) {
 	detail := IPTrafficDetail{IP: address}
@@ -743,12 +790,23 @@ func (s *Store) IPTrafficSeries(address string, recentSince, since int64) (IPTra
 	return detail, nil
 }
 
+// ipBuckets sums one address's history into buckets of the given width. Day
+// rows are only readable at day width — dropped into an hourly chart they would
+// land a whole day's bytes on one midnight column and read as a spike that
+// never happened — so the hourly view reaches back only as far as ip_hourly
+// still goes, and the daily view still covers the whole cycle.
 func (s *Store) ipBuckets(address string, since, width int64) ([]IPSeriesPoint, error) {
-	return s.ipPoints(`
-SELECT bucket, SUM(in_bytes), SUM(out_bytes) FROM (
+	sources := `
     SELECT (ts/?2)*?2 AS bucket, in_bytes, out_bytes FROM ip_samples WHERE ip = ?1 AND ts >= ?3
     UNION ALL
-    SELECT (ts_hour/?2)*?2 AS bucket, in_bytes, out_bytes FROM ip_hourly WHERE ip = ?1 AND ts_hour >= ?3
+    SELECT (ts_hour/?2)*?2 AS bucket, in_bytes, out_bytes FROM ip_hourly WHERE ip = ?1 AND ts_hour >= ?3`
+	if width >= 86400 {
+		sources += `
+    UNION ALL
+    SELECT (ts_day/?2)*?2 AS bucket, in_bytes, out_bytes FROM ip_daily WHERE ip = ?1 AND ts_day >= ?3`
+	}
+	return s.ipPoints(`
+SELECT bucket, SUM(in_bytes), SUM(out_bytes) FROM (`+sources+`
 )
 GROUP BY bucket ORDER BY bucket ASC`, address, width, since)
 }
