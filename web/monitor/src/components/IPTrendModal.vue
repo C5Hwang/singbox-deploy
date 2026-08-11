@@ -63,8 +63,9 @@ function buildOption(): any {
   const unit: TimeUnit = isDaily ? "day" : "hour";
   const points = isRecent ? recent.value : isDaily ? daily.value : hourly.value;
 
-  const { narrow, option } = buildFrame({
+  const { narrow, plotHeight, option } = buildFrame({
     width: chartRef.value?.clientWidth ?? 800,
+    height: chartRef.value?.clientHeight ?? 0,
     unit,
     legend: ["Inbound", "Outbound", "Total"],
     tooltipUnit: isRecent ? "second" : unit,
@@ -81,7 +82,8 @@ function buildOption(): any {
   return {
     ...option,
     yAxis: bytesAxis(narrow),
-    series: withPeakAverage(series, { show: showPeakAverage.value, format: formatBytes, narrow }),
+    series: withPeakAverage(series, { show: showPeakAverage.value,
+      plotHeight, format: formatBytes, narrow }),
   };
 }
 

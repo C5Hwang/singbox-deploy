@@ -77,8 +77,9 @@ function trackData(targetId: string): [number, number | null][] {
 function buildOption(): any {
   const targets = shownTargets.value;
 
-  const { narrow, option } = buildFrame({
+  const { narrow, plotHeight, option } = buildFrame({
     width: chartRef.value?.clientWidth ?? 800,
+    height: chartRef.value?.clientHeight ?? 0,
     unit: "minute",
     legend: targets.map(seriesName),
     sortTooltip: true,
@@ -105,6 +106,7 @@ function buildOption(): any {
     },
     series: withPeakAverage(series, {
       show: showPeakAverage.value,
+      plotHeight,
       format: (v: number) => `${v.toFixed(0)} ms`,
       narrow,
     }),

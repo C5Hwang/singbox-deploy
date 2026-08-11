@@ -51,8 +51,9 @@ function buildOption(): any {
   const isDaily = mode.value.startsWith("daily");
   const unit: TimeUnit = isDaily ? "day" : "hour";
 
-  const { narrow, option } = buildFrame({
+  const { narrow, plotHeight, option } = buildFrame({
     width: chartRef.value?.clientWidth ?? 800,
+    height: chartRef.value?.clientHeight ?? 0,
     unit,
     legend: ["CPU %", "Memory %", "Disk IO Read", "Disk IO Write"],
     tooltipUnit: isRecent ? "second" : unit,
@@ -88,8 +89,10 @@ function buildOption(): any {
   // that series is drawn in rather than in one unit for the whole chart.
   const format = (v: number) => `${v.toFixed(1)}%`;
   const marked = [
-    ...withPeakAverage(series.slice(0, 2), { show: showPeakAverage.value, format, narrow }),
-    ...withPeakAverage(series.slice(2), { show: showPeakAverage.value, format: formatRate, narrow }),
+    ...withPeakAverage(series.slice(0, 2), { show: showPeakAverage.value,
+      plotHeight, format, narrow }),
+    ...withPeakAverage(series.slice(2), { show: showPeakAverage.value,
+      plotHeight, format: formatRate, narrow }),
   ];
   return { ...option, yAxis: [percentAxis(narrow), rateAxis(narrow)], series: marked };
 }

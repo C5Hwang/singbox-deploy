@@ -93,8 +93,9 @@ function buildOption(): any {
   const isMax = mode.value.endsWith("max");
   const unit: TimeUnit = isDaily ? "day" : "hour";
 
-  const { narrow, option } = buildFrame({
+  const { narrow, plotHeight, option } = buildFrame({
     width: chartRef.value?.clientWidth ?? 800,
+    height: chartRef.value?.clientHeight ?? 0,
     unit,
     legend: machines.value.map((m) => m.name),
     sortTooltip: true,
@@ -131,7 +132,8 @@ function buildOption(): any {
   return {
     ...option,
     yAxis: isTraffic ? bytesAxis(narrow) : percentAxis(narrow),
-    series: withPeakAverage(series, { show: showPeakAverage.value, format, narrow }),
+    series: withPeakAverage(series, { show: showPeakAverage.value,
+      plotHeight, format, narrow }),
   };
 }
 
