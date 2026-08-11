@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import LatencyMatrix from "../components/LatencyMatrix.vue";
 import LatencyTrendModal from "../components/LatencyTrendModal.vue";
 import { fetchLatency } from "../api";
+import { LATENCY_MISSING, LATENCY_STEPS, LOSS_WARNING } from "../latencyScale";
 import type { LatencySnapshot, Summary } from "../types";
 
 const props = defineProps<{ summary: Summary | null }>();
@@ -81,6 +82,16 @@ function headline(node: NodeLatency): string {
   return ms === null ? "NA" : `${ms.toFixed(ms >= 100 ? 0 : 1)} ms`;
 }
 
+// The headline is a latency, so it is coloured like one — the same four steps
+// the matrix underneath fills its cells with, in the darker grade that reads as
+// text on the card. The node's own name stays in the title ink: it is the
+// card's subject, not one of its readings.
+function headlineColor(node: NodeLatency): string {
+  const ms = medianLatency(node);
+  if (ms === null) return LATENCY_MISSING.text;
+  return LATENCY_STEPS.find((s) => ms < s.limit)!.text;
+}
+
 // The dot is the whole status report: green when every probe answered clean,
 // amber when something is losing packets, red when a route is down.
 function statusTone(node: NodeLatency): string {
@@ -107,9 +118,9 @@ function statusLabel(node: NodeLatency): string {
        every cell, so the key is a strip and two words rather than a legend. -->
   <div v-if="nodes.length" class="scale">
     <span>faster</span>
-    <i v-for="step in ['#4ade80', '#fbbf24', '#fb7a3c', '#f2544f']" :key="step" :style="{ background: step }"></i>
+    <i v-for="step in LATENCY_STEPS" :key="step.fill" :style="{ background: step.fill }"></i>
     <span>slower</span>
-    <em class="scale-loss"><i></i>packet loss</em>
+    <em class="scale-loss"><i :style="{ background: LOSS_WARNING }"></i>packet loss</em>
   </div>
 
   <section class="grid" aria-label="latency by node">
@@ -122,9 +133,9 @@ function statusLabel(node: NodeLatency): string {
       @click="node.snapshot && (openNode = node)"
     >
       <div class="head">
-        <div class="title">
-          <p class="eyebrow">{{ node.name }}</p>
-          <p class="metric-value">{{ headline(node) }}</p>
+        <div class="node-title">
+          <p class="node-name">{{ node.name }}</p>
+          <p class="node-latency" :style="{ color: headlineColor(node) }">{{ headline(node) }}</p>
         </div>
         <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
       </div>
@@ -151,10 +162,20 @@ function statusLabel(node: NodeLatency): string {
 }
 .scale i { width: 26px; height: 7px; border-radius: 2px; }
 .scale-loss { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; font-style: normal; }
-.scale-loss i { width: 18px; height: 4px; border-radius: 999px; background: #b45309; }
+.scale-loss i { width: 18px; height: 4px; border-radius: 999px; }
 .node-card { display: flex; flex-direction: column; }
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.title .metric-value { margin-top: 4px; font-size: 28px; }
+/* The node's name is the card's title and wears the title ink, the same weight
+   the metric cards give theirs. It used to be an eyebrow, which put the whole
+   head in the muted grey and left the card with nothing at full strength. */
+.node-name {
+  margin: 0 0 6px; color: var(--text); font-size: 13px; font-weight: 800;
+  letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;
+}
+.node-latency {
+  margin: 0; font-size: 28px; font-weight: 850; line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
 /* The corner carries a state, and a state is a dot. The words that were here
    said what the matrix underneath already shows. */
 .dot-only {
