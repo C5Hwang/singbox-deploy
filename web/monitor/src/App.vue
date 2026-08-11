@@ -29,8 +29,10 @@ const error = ref<string>("");
 type Shell = "checking" | "locked" | "ready";
 const shell = ref<Shell>("checking");
 // A token that was already stored and then refused is a stale one, which is
-// worth saying; a first visit to a gated dashboard is not an error.
-const tokenRejected = ref(false);
+// worth saying; a first visit to a gated dashboard is not an error. The stamp
+// is what the gate announces on — the same wrong token typed twice has to be
+// two notices, and a boolean that is already true cannot express the second.
+const tokenRejectedAt = ref(0);
 let loadTimer: number | undefined;
 
 function startPolling() {
@@ -52,8 +54,7 @@ function stopPolling() {
 // guarded: re-rendering the gate to the same state is what a viewer sees as a
 // blink.
 onUnauthorized(() => {
-  const rejected = hasStoredAccessToken();
-  if (tokenRejected.value !== rejected) tokenRejected.value = rejected;
+  if (hasStoredAccessToken()) tokenRejectedAt.value = Date.now();
   if (shell.value !== "locked") shell.value = "locked";
   stopPolling();
 });
@@ -63,7 +64,7 @@ async function load() {
     const res = await fetchSummary();
     summary.value = res;
     error.value = "";
-    if (tokenRejected.value) tokenRejected.value = false;
+    if (tokenRejectedAt.value) tokenRejectedAt.value = 0;
     if (shell.value !== "ready") shell.value = "ready";
     startPolling();
   } catch (e) {
@@ -77,7 +78,6 @@ async function load() {
 
 function unlock(token: string) {
   setAccessToken(token);
-  tokenRejected.value = false;
   load();
 }
 
@@ -100,7 +100,7 @@ onUnmounted(stopPolling);
 <template>
   <div v-if="shell === 'checking'" class="boot" aria-busy="true"></div>
 
-  <TokenGate v-else-if="shell === 'locked'" :rejected="tokenRejected" @submit="unlock" />
+  <TokenGate v-else-if="shell === 'locked'" :rejectedAt="tokenRejectedAt" @submit="unlock" />
 
   <div v-else class="app">
     <SidebarNav v-model:activeTab="activeTab" :sourceCount="sourceCount" />

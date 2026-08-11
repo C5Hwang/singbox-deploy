@@ -1,13 +1,36 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
-defineProps<{ rejected: boolean }>();
+// rejectedAt is a stamp rather than a flag: the same wrong token typed twice has
+// to announce itself twice, and a boolean that is already true cannot say
+// anything the second time.
+const props = defineProps<{ rejectedAt: number }>();
 const emit = defineEmits<{ submit: [token: string] }>();
+
+// How long the notice stays up. Long enough to read twice, short enough that it
+// is gone before the next attempt.
+const NOTICE_MS = 4500;
 
 const token = ref("");
 const input = ref<HTMLInputElement | null>(null);
+const noticeVisible = ref(false);
+let hideTimer: number | undefined;
 
 onMounted(() => nextTick(() => input.value?.focus()));
+onUnmounted(() => {
+  if (hideTimer) window.clearTimeout(hideTimer);
+});
+
+watch(
+  () => props.rejectedAt,
+  (at) => {
+    if (!at) return;
+    if (hideTimer) window.clearTimeout(hideTimer);
+    noticeVisible.value = true;
+    hideTimer = window.setTimeout(() => (noticeVisible.value = false), NOTICE_MS);
+  },
+  { immediate: true },
+);
 
 function submit() {
   const value = token.value.trim();
@@ -17,6 +40,20 @@ function submit() {
 
 <template>
   <div class="gate">
+    <!-- The notice floats above the card rather than sitting inside it: an
+         inline line appearing and disappearing would move the button under the
+         cursor every time a token is refused. -->
+    <Transition name="notice">
+      <div v-if="noticeVisible" class="gate-notice" role="alert">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" />
+          <path d="M12 7.5v5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          <circle cx="12" cy="16.4" r="1.15" fill="currentColor" />
+        </svg>
+        <span>That token was rejected. Check it on the hub's Status screen.</span>
+      </div>
+    </Transition>
+
     <form class="gate-card" @submit.prevent="submit">
       <div class="brand-logo gate-logo">M</div>
       <h1 class="gate-title">Monitor</h1>
@@ -32,7 +69,6 @@ function submit() {
         placeholder="Access token"
         aria-label="Access token"
       />
-      <p v-if="rejected" class="gate-error">That token was rejected. Check it on the hub's Status screen.</p>
 
       <button class="gate-button" type="submit" :disabled="!token.trim()">Unlock</button>
     </form>
@@ -52,12 +88,30 @@ function submit() {
   animation: gateIn 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 @keyframes gateIn { from { opacity: 0; transform: translateY(10px); } }
-/* The rejection line is the only part that changes while the gate is open, so
-   it fades in on its own instead of the card re-announcing itself. */
-.gate-error { animation: gateErrorIn 0.22s ease both; }
-@keyframes gateErrorIn { from { opacity: 0; transform: translateY(-3px); } }
+
+.gate-notice {
+  position: fixed; top: 24px; left: 50%; z-index: 50;
+  display: flex; align-items: center; gap: 10px;
+  max-width: min(92vw, 440px); padding: 12px 16px;
+  border-radius: 14px; border: 1px solid rgba(208, 59, 59, 0.22);
+  background: #fdf3f3; color: #a52121;
+  font-size: 13px; font-weight: 650; line-height: 1.35; text-align: left;
+  box-shadow: 0 16px 36px rgba(120, 20, 20, 0.14);
+}
+.gate-notice svg { width: 18px; height: 18px; flex-shrink: 0; }
+/* Translate and opacity only, so the notice slides on the compositor rather
+   than repainting the card behind it. */
+.notice-enter-active { transition: opacity 0.24s ease, transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.notice-leave-active { transition: opacity 0.3s ease, transform 0.3s ease; }
+.notice-enter-from { opacity: 0; transform: translate(-50%, -14px); }
+.notice-leave-to { opacity: 0; transform: translate(-50%, -8px); }
+.notice-enter-to, .notice-leave-from { opacity: 1; transform: translate(-50%, 0); }
+.gate-notice { transform: translate(-50%, 0); }
+
 @media (prefers-reduced-motion: reduce) {
-  .gate-card, .gate-error { animation: none; }
+  .gate-card { animation: none; }
+  .notice-enter-active, .notice-leave-active { transition: opacity 0.2s ease; }
+  .notice-enter-from, .notice-leave-to { transform: translate(-50%, 0); }
 }
 .gate-logo { width: 52px; height: 52px; font-size: 20px; }
 .gate-title { margin: 18px 0 0; font-size: 24px; letter-spacing: -0.02em; }
@@ -76,7 +130,6 @@ function submit() {
   outline-offset: 0;
   border-color: var(--blue);
 }
-.gate-error { margin: 12px 0 0; color: var(--red); font-size: 13px; font-weight: 650; }
 /* Typing the first character enables this button, and clearing the field
    disables it again. Every property that differs between the two states is
    transitioned on the same curve — the shadow used to snap from none to a wide
