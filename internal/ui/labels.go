@@ -22,7 +22,7 @@ func withCoveredZones(layout paths.Layout, fields []field) []field {
 	note := coveredZonesNote(layout)
 	for i := range fields {
 		if strings.Contains(fields[i].note, noteDNSZone) {
-			fields[i].note += " " + note
+			fields[i].note += "\n" + note
 		}
 	}
 	return fields
@@ -31,13 +31,13 @@ func withCoveredZones(layout paths.Layout, fields []field) []field {
 func coveredZonesNote(layout paths.Layout) string {
 	zones, err := certmgr.LoadCredentials(layout)
 	if err != nil || len(zones) == 0 {
-		return "No DNS zones are configured yet, so any domain sends you there first."
+		return "No DNS zones yet, so any name sends you there first."
 	}
 	names := make([]string, 0, len(zones))
 	for _, zone := range zones {
 		names = append(names, zone.Domain)
 	}
-	return "Currently covered: " + strings.Join(names, ", ") + " (and any subdomain)."
+	return "Covered: " + strings.Join(names, ", ") + " (and anything under them)."
 }
 
 // Labels and notes shared by more than one screen. Anything collected or
@@ -53,8 +53,9 @@ const (
 
 	// noteSpokeTransport replaces the four differently-worded explanations the
 	// spoke pickers used to carry.
-	noteSpokeTransport         = "The hub reaches every spoke over WireGuard."
-	noteSpokeSubscriptionAlias = "Names this spoke's nodes in client apps. Blank uses the node alias."
+	noteSpokeTransport         = "The other servers this hub manages, reached over WireGuard."
+	noteSpokeSubscriptionAlias = "The name this node shows under in client apps.\n" +
+		"Blank reuses the node name."
 
 	// Screen titles, matched to the menu item that opens each screen.
 	titleSetup         = "Setup"

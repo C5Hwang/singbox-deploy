@@ -603,7 +603,7 @@ func TestDomainFieldsNameTheZonesTheyWillAccept(t *testing.T) {
 		{key: "domain", note: "The spoke's proxy domain. " + noteDNSZone},
 		{key: "alias", note: "Names this node."},
 	})
-	for _, want := range []string{noteDNSZone, "example.com", "foo.net", "and any subdomain"} {
+	for _, want := range []string{noteDNSZone, "example.com", "foo.net", "and anything under them"} {
 		if !strings.Contains(fields[0].note, want) {
 			t.Fatalf("domain note missing %q: %q", want, fields[0].note)
 		}
@@ -615,7 +615,7 @@ func TestDomainFieldsNameTheZonesTheyWillAccept(t *testing.T) {
 
 	// With nothing configured the note says so rather than listing an empty set.
 	empty := withCoveredZones(paths.LayoutForRoot(t.TempDir()), []field{{key: "domain", note: noteDNSZone}})
-	if !strings.Contains(empty[0].note, "No DNS zones are configured yet") {
+	if !strings.Contains(empty[0].note, "No DNS zones yet") {
 		t.Fatalf("empty-zone note = %q", empty[0].note)
 	}
 }
@@ -634,7 +634,7 @@ func TestCertificateListLeadsWithTheZoneItsIssuanceDependsOn(t *testing.T) {
 	// With nothing configured the page states the order instead of leaving it to
 	// be discovered by a rejection.
 	view := m.View()
-	for _, wantText := range []string{"No DNS zones yet", "issued through the zone that contains its domain"} {
+	for _, wantText := range []string{"No DNS zones yet", "issued through the DNS zone that contains its domain"} {
 		if !strings.Contains(view, wantText) {
 			t.Fatalf("empty certificate page missing %q:\n%s", wantText, view)
 		}

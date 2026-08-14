@@ -45,9 +45,9 @@ func installFields() []field {
 	}
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
-		{key: "domain", label: "Domain (must resolve to this server)", note: noteDNSZone + " Also used for Nginx server_name and subscription URLs."},
-		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "At least one protocol is required."},
-		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "HTML5 UP template deployed to /etc/singbox-deploy/www."},
+		{key: "domain", label: "Domain (must resolve to this server)", note: "The address clients connect to, and the one subscription links use.\n" + noteDNSZone},
+		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "The protocols this server offers. Pick at least one."},
+		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "The ordinary-looking site shown to anyone who opens your domain."},
 	}
 	fields = append(fields, installProtocolParameterFields(missingProtocol, noReality)...)
 	fields = append(fields, fieldsFromParameters(uiparams.SubscriptionInstallFields())...)

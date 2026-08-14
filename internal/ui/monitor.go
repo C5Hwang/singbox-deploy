@@ -547,7 +547,7 @@ func (tm *monitorManager) startEditSpokeMonitorForm() {
 		iface = "auto"
 	}
 	fields := []field{
-		{key: "monitor", label: labelSpokeMonitorEnabled, options: []string{"yes", "no"}, note: "Choose no to stop the monitor on this spoke."},
+		{key: "monitor", label: labelSpokeMonitorEnabled, options: []string{"yes", "no"}, note: "Keep showing this node on the monitor dashboard."},
 		{key: "monitor_alias", label: labelSpokeMonitorAlias, note: uiparams.NoteSpokeMonitorAlias, skip: disabled},
 		{key: "monitor_interface", label: uiparams.LabelMonitorInterface, note: uiparams.NoteMonitorInterface, skip: disabled},
 		{key: "monitor_interval_seconds", label: uiparams.LabelMonitorInterval, note: uiparams.NoteMonitorInterval, skip: disabled},

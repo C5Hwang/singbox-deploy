@@ -371,7 +371,7 @@ func (sm *subscriptionManager) groupSelectField(key, label string) []field {
 		key:     key,
 		label:   label,
 		options: groupLabels(sm.groups, sm.nodes),
-		note:    "Each group publishes its own subscription URL.",
+		note:    "Each group has its own subscription link and node list.",
 	}}
 }
 

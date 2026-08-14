@@ -309,17 +309,17 @@ func (m *nodeManager) beginForm() {
 	}
 	monitorDisabled := func(values map[string]string) bool { return !monitorEnabled(values) }
 	fields := []field{
-		{key: "alias", label: "Node alias", note: "Names this node in the hub's management screens."},
+		{key: "alias", label: "Node alias", note: "The name for this node in these menus."},
 		{key: "subscription_alias", label: labelSpokeSubscriptionAlias + " (optional)", note: noteSpokeSubscriptionAlias},
 		{key: "ssh_host", label: "SSH host (public IP or hostname)"},
 		{key: "ssh_port", label: "SSH port", def: "22"},
 		{key: "ssh_user", label: "SSH user", def: "root"},
 		{key: "ssh_auth", label: "SSH auth method", def: "password", options: []string{"password", "key"}},
 		{key: "ssh_password", label: "SSH password", secret: true, skip: isPass},
-		{key: "ssh_key_path", label: "SSH private key path", skip: isKey, note: "Path to the private key file on this hub."},
+		{key: "ssh_key_path", label: "SSH private key path", skip: isKey, note: "Path to the private key on this machine, not on the node."},
 		{key: "ssh_key_passphrase", label: "SSH private key passphrase (optional)", secret: true, skip: isKey},
-		{key: "domain", label: "Node domain", note: "The spoke's proxy domain. " + noteDNSZone},
-		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "Credentials are generated on the spoke."},
+		{key: "domain", label: "Node domain", note: "The address clients use to reach this node.\n" + noteDNSZone},
+		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "The protocols this node offers.\nUUIDs and passwords are generated on the node."},
 	}
 	realitySNI := fieldFromParameter(uiparams.RealitySNIField())
 	realitySNI.skip = noReality
@@ -339,7 +339,7 @@ func (m *nodeManager) beginForm() {
 		}
 	}
 	fields = append(fields,
-		field{key: "monitor", label: labelSpokeMonitorEnabled, def: "yes", options: []string{"yes", "no"}, note: "Choose no to skip the monitor on this spoke."},
+		field{key: "monitor", label: labelSpokeMonitorEnabled, def: "yes", options: []string{"yes", "no"}, note: "Show this node on the monitor dashboard."},
 		field{key: "monitor_alias", label: labelSpokeMonitorAlias, note: uiparams.NoteSpokeMonitorAlias, skip: monitorDisabled},
 		field{key: "monitor_interface", label: uiparams.LabelMonitorInterface, def: "auto", note: uiparams.NoteMonitorInterface, skip: monitorDisabled},
 		field{key: "monitor_interval_seconds", label: uiparams.LabelMonitorInterval, def: strconv.Itoa(deploy.DefaultMonitorIntervalSeconds), note: uiparams.NoteMonitorInterval, skip: monitorDisabled},
@@ -360,7 +360,7 @@ func (m *nodeManager) beginForm() {
 			def:     strings.Join(labels, ","),
 			options: labels,
 			multi:   true,
-			note:    "Deselect a group to keep this spoke out of its subscription. Groups are edited under Services → Subscription settings.",
+			note:    "Untick a group to keep this node out of its subscription.",
 		})
 	}
 	m.form.begin(withCoveredZones(m.layout, fields), nil, m.validateForm)

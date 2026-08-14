@@ -1283,13 +1283,12 @@ func (pm *protocolManager) selectView() string {
 func (pm *protocolManager) editPickView() string {
 	var b strings.Builder
 	title := titleProtocols + " · Hub · Edit"
-	note := "Choose a protocol to edit its credentials and port."
+	note := "Pick a protocol to edit its credentials and port."
 	if pm.action == protocolActionEditSpoke {
 		title = titleProtocols + " · Spoke · Edit"
 		if node, ok := pm.editSpokeNode(); ok {
 			title += " · " + node.EffectiveAlias()
 		}
-		note = "Choose a protocol to edit its credentials and port."
 	}
 	b.WriteString(flowTitle.Render(title) + "\n\n")
 	b.WriteString(dimStyle.Render(note) + "\n")

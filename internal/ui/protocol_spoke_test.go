@@ -105,7 +105,7 @@ func TestProtocolManagementChangesSpokeProtocolSetByStableID(t *testing.T) {
 		t.Fatalf("open spoke selector: done=%v phase=%v id=%q", done, pm.phase, pm.editNodeID)
 	}
 	selector := pm.View()
-	for _, want := range []string{"Choose spoke", "Spoke to manage", "London UI", "10.90.0.2", "11111111", "reaches every spoke over WireGuard"} {
+	for _, want := range []string{"Choose spoke", "Spoke to manage", "London UI", "10.90.0.2", "11111111", "servers this hub manages"} {
 		if !strings.Contains(selector, want) {
 			t.Fatalf("spoke selector missing %q:\n%s", want, selector)
 		}
@@ -195,7 +195,7 @@ func TestProtocolManagementEditsInstalledSpokeProtocolCredentialAndPort(t *testi
 	if pm.phase != protocolPhaseEditPick || pm.editNodeID != node.ID {
 		t.Fatalf("select spoke: phase=%v id=%q", pm.phase, pm.editNodeID)
 	}
-	for _, want := range []string{"Spoke · Edit", "Choose a protocol to edit", "credentials and port", "hysteria2"} {
+	for _, want := range []string{"Spoke · Edit", "Pick a protocol", "credentials and port", "hysteria2"} {
 		if !strings.Contains(pm.View(), want) {
 			t.Fatalf("spoke edit picker missing %q:\n%s", want, pm.View())
 		}

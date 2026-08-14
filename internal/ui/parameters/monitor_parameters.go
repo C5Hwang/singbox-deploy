@@ -30,38 +30,48 @@ const (
 	// NoteDNSZone states the one precondition every certificate-bearing
 	// domain shares, so setup, spoke creation, and the monitor domain all word
 	// it the same way.
-	NoteDNSZone = "Needs a covering DNS zone in Certificate management."
+	NoteDNSZone = "Needs a DNS zone covering this name in Certificate management."
 
-	NoteMonitorWebUI      = "Choose no to serve the API only."
-	NoteMonitorAlias      = "Names the hub on the monitor dashboard."
-	NoteSpokeMonitorAlias = "Blank uses the node alias."
+	// NoteMonitorEnabled* say what the monitor is for before asking whether to
+	// have one, so the answer does not depend on already knowing.
+	NoteMonitorEnabledInstall = noteMonitorPurpose + "\nChoose no to skip it."
+	NoteMonitorEnabledEdit    = noteMonitorPurpose + "\nChoose no to stop it."
+	noteMonitorPurpose        = "Records traffic, resource use and latency per server."
+
+	NoteMonitorWebUI = "The dashboard you open in a browser.\n" +
+		"Choose no to serve only its data API."
+	NoteMonitorAlias      = "The name this server appears under on the dashboard."
+	NoteSpokeMonitorAlias = "The name this node appears under on the dashboard.\n" +
+		"Blank reuses the node name."
 
 	// MonitorTokenNone is the word that clears the token. Blank already means
 	// "keep the default", so turning the gate off needs a word of its own; the
 	// minimum token length keeps it from colliding with a real token.
 	MonitorTokenNone = "none"
 
-	noteMonitorTokenShared = "Guards the monitor dashboard and its API; without it the dashboard shows nothing. " +
+	noteMonitorTokenShared = "The password for opening the dashboard.\n" +
 		"At least " + minMonitorTokenLengthText + " characters, no spaces."
-	NoteMonitorTokenInstall = noteMonitorTokenShared + " Blank generates a random token."
+	NoteMonitorTokenInstall = noteMonitorTokenShared + "\nBlank generates one."
 	NoteMonitorTokenEdit    = noteMonitorTokenShared +
-		" Blank keeps the current token; enter " + MonitorTokenNone + " to publish the dashboard without one."
-	NoteMonitorDomain = "Serves the monitor under its own name, so it is not reachable through the masquerade site's domain. " +
-		NoteDNSZone + " It is not required to resolve to this server."
-	NoteMonitorPublic    = "Nginx listens on this public HTTPS port for /monitor."
-	NoteMonitorPort      = "The monitor listens on 127.0.0.1 and Nginx proxies /monitor to this port."
-	NoteMonitorInterface = "Use auto to detect the default egress interface."
-	NoteMonitorInterval  = "Lower values write more samples."
-	NoteResetDay         = "Day of month when the traffic quota cycle resets."
-	NoteResetHour        = "Hour of day in GMT when the traffic quota cycle resets."
+		"\nBlank keeps the current one; enter " + MonitorTokenNone + " to remove it."
+	NoteMonitorDomain    = "The address you open the dashboard at.\n" + NoteDNSZone
+	NoteMonitorPublic    = "The HTTPS port the dashboard is served on."
+	NoteMonitorPort      = "Internal only. Change it if another program uses this port."
+	NoteMonitorInterface = "The network card whose traffic is counted.\n" +
+		"auto picks the default one."
+	NoteMonitorInterval = "How often usage is measured.\n" +
+		"Smaller means finer charts and more stored data."
+	NoteResetDay  = "The day of the month the traffic count starts over."
+	NoteResetHour = "The hour on that day, in GMT."
 )
 
 // The quota consequence is stated once, on the first limit, rather than
 // repeated on all three.
 var (
-	NoteTrafficIn    = TrafficSizeNote("0 means unlimited. Exceeding any limit stops sing-box.")
-	NoteTrafficOut   = TrafficSizeNote("0 means unlimited.")
-	NoteTrafficTotal = TrafficSizeNote("0 means unlimited.")
+	NoteTrafficIn = TrafficSizeNote("How much this server may download per cycle.\n" +
+		"0 means no limit. Going over any limit stops the proxy.")
+	NoteTrafficOut   = TrafficSizeNote("How much this server may upload per cycle.\n0 means no limit.")
+	NoteTrafficTotal = TrafficSizeNote("Download and upload together.\n0 means no limit.")
 )
 
 // installDomainDefault prefills a setup field with the install domain already
@@ -72,7 +82,7 @@ func installDomainDefault(vals map[string]string) string {
 
 func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
-		{Key: "monitor", Label: LabelMonitorEnabled, Def: "yes", Options: []string{"yes", "no"}, Note: "Choose no to skip the monitor service."},
+		{Key: "monitor", Label: LabelMonitorEnabled, Def: "yes", Options: []string{"yes", "no"}, Note: NoteMonitorEnabledInstall},
 		{Key: "monitor_frontend", Label: LabelMonitorWebUI, Def: "yes", Options: []string{"yes", "no"}, Note: NoteMonitorWebUI, Skip: monitorDisabled},
 		{Key: "monitor_alias", Label: LabelMonitorAlias, Def: deploy.DefaultMonitorAlias, Note: NoteMonitorAlias, Skip: monitorDisabled},
 		{Key: "monitor_token", Label: LabelMonitorToken, Note: NoteMonitorTokenInstall, Secret: true, Skip: monitorDisabled},
@@ -90,7 +100,7 @@ func MonitorInstallFields(monitorDisabled func(map[string]string) bool) []Field 
 
 func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]string) bool) []Field {
 	return []Field{
-		{Key: "monitor", Label: LabelMonitorEnabled, Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: "Choose no to stop the monitor service."},
+		{Key: "monitor", Label: LabelMonitorEnabled, Def: YesNoString(cfg.DeployMonitor), Options: []string{"yes", "no"}, Note: NoteMonitorEnabledEdit},
 		{Key: "monitor_frontend", Label: LabelMonitorWebUI, Def: YesNoString(cfg.DeployMonitorFrontend), Options: []string{"yes", "no"}, Note: NoteMonitorWebUI, Skip: monitorDisabled},
 		{Key: "monitor_alias", Label: LabelMonitorAlias, Def: StringDefault(cfg.MonitorAlias, deploy.DefaultMonitorAlias), Note: NoteMonitorAlias, Skip: monitorDisabled},
 		{Key: "monitor_token", Label: LabelMonitorToken, Def: cfg.MonitorToken, Note: NoteMonitorTokenEdit, Secret: true, Skip: monitorDisabled},
@@ -109,8 +119,8 @@ func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]strin
 
 func MonitorUsageFields(inBytes, outBytes uint64) []Field {
 	return []Field{
-		{Key: "current_in_traffic", Label: "Current inbound used", Def: FormatTrafficSizeInput(inBytes), Note: TrafficSizeNote("Sets the current quota-cycle inbound total.")},
-		{Key: "current_out_traffic", Label: "Current outbound used", Def: FormatTrafficSizeInput(outBytes), Note: TrafficSizeNote("Sets the current quota-cycle outbound total.")},
+		{Key: "current_in_traffic", Label: "Current inbound used", Def: FormatTrafficSizeInput(inBytes), Note: TrafficSizeNote("Download already counted this cycle.")},
+		{Key: "current_out_traffic", Label: "Current outbound used", Def: FormatTrafficSizeInput(outBytes), Note: TrafficSizeNote("Upload already counted this cycle.")},
 	}
 }
 
@@ -261,8 +271,10 @@ func FormatTrafficSizeInput(value uint64) string {
 	}
 }
 
-func TrafficSizeNote(suffix string) string {
-	return "Accepts bytes or B/KB/MB/GB/TB suffixes, for example 500MB or 1.5GB. " + suffix
+// TrafficSizeNote states what a size means first and how to type it second, so
+// the reason for the field is not buried behind its input format.
+func TrafficSizeNote(meaning string) string {
+	return meaning + "\nAccepts bytes or a size like 500MB or 1.5GB."
 }
 
 func DefaultMonitorInterval(cfg deploy.Config) int {

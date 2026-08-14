@@ -542,8 +542,9 @@ func (m *certManager) beginHostForm(zone, host string) {
 	m.form.begin([]field{{
 		key:   "host",
 		label: "Hostname",
-		note: "The name below " + zone + ". Leave it empty to issue for " + zone +
-			" itself. To renew a domain already listed, use Renew certificate instead.",
+		note: "The part in front of " + zone + ", such as www.\n" +
+			"Blank issues for " + zone + " itself.\n" +
+			"For a name already listed, use Renew certificate.",
 		badgeFunc: func(vals map[string]string) string {
 			return "will issue: " + certificateDomainForHost(zone, vals["host"])
 		},
@@ -557,7 +558,8 @@ func (m *certManager) beginZoneForm(seedDomain string) {
 		seed["domain"] = seedDomain
 	}
 	m.form.begin([]field{
-		{key: "domain", label: "DNS zone", note: "The zone you manage at your DNS provider. Authorizes this domain and every subdomain (e.g. example.com covers a.example.com)."},
+		{key: "domain", label: "DNS zone", note: "The domain you manage at your DNS provider.\n" +
+			"Covers it and everything under it (example.com covers a.example.com)."},
 		{key: "provider", label: "DNS provider", def: certmgr.ProviderCloudflare, options: []string{certmgr.ProviderCloudflare, certmgr.ProviderAliyun}},
 		{key: "credential", label: "API token", secret: true, noteFunc: apiTokenNote},
 	}, seed, validateZoneField)
@@ -767,7 +769,8 @@ func (m *certManager) listView() string {
 		// Stating the order costs one line and saves the operator discovering it
 		// by having a domain rejected.
 		b.WriteString(statusWarn.Render("No DNS zones yet.") + "\n")
-		for _, line := range wrapFieldNote("Every certificate is issued through the zone that contains its domain, so a zone comes first. Add certificate collects one on the way.", m.width) {
+		for _, line := range wrapFieldNote("A certificate is issued through the DNS zone that contains its domain.\n"+
+			"Add certificate collects one on the way.", m.width) {
 			b.WriteString(dimStyle.Render(line) + "\n")
 		}
 		b.WriteString("\n")
@@ -789,7 +792,10 @@ func (m *certManager) zoneListView() string {
 		b.WriteString(notice + "\n\n")
 	}
 	if len(m.zones) == 0 {
-		b.WriteString(dimStyle.Render("No DNS zones yet. Add one to authorize certificate issuance.") + "\n\n")
+		for _, line := range wrapFieldNote(noteNoDNSZones, m.width) {
+			b.WriteString(dimStyle.Render(line) + "\n")
+		}
+		b.WriteString("\n")
 	} else {
 		for _, c := range m.zones {
 			b.WriteString("  " + zoneLabel(c) + "\n")
@@ -804,13 +810,17 @@ func (m *certManager) zoneListView() string {
 // always one keystroke away from the step that needs it.
 const addZoneRow = "+ Add a new DNS zone…"
 
+// noteNoDNSZones is the empty state of both zone screens, so an operator who
+// has not set one up yet reads the same next step wherever they arrive.
+const noteNoDNSZones = "No DNS zones yet. Add the domain you manage at your DNS provider."
+
 func (m *certManager) zonePickView() string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("Add certificate") + "\n\n")
 	b.WriteString("Which DNS zone issues this certificate?\n")
 	hint := "The certificate is issued for a hostname under the zone you pick."
 	if len(m.zones) == 0 {
-		hint = "No DNS zones yet. Add the zone you manage at your DNS provider; it then covers every hostname under it."
+		hint = noteNoDNSZones
 	}
 	for _, line := range wrapFieldNote(hint, m.width) {
 		b.WriteString(dimStyle.Render(line) + "\n")
@@ -847,17 +857,18 @@ func (m *certManager) pickView(title string, labels []string) string {
 
 func (m *certManager) renewConfirmView() string {
 	return flowTitle.Render("Renew certificate · Confirm") + "\n\n" +
-		statusWarn.Render("Forces a new ACME DNS-01 order now, even if the current certificate is still valid.") + "\n" +
-		"Repeated renewal is subject to Let's Encrypt rate limits.\n\n" +
+		statusWarn.Render("Places a new ACME DNS-01 order now,") + "\n" +
+		statusWarn.Render("even though the current certificate is valid.") + "\n" +
+		"Let's Encrypt rate limits how often you may ask.\n\n" +
 		"Domain: " + m.pendingRenew.Domain + "\n\n" +
-		"On success, the renewed certificate is distributed to every node that uses it.\n\n" +
+		"On success it is copied to every node that uses it.\n\n" +
 		"Press y to force renew, or n/Esc to cancel."
 }
 
 func (m *certManager) certDeleteConfirmView() string {
 	return flowTitle.Render("Delete certificate · Confirm") + "\n\n" +
-		statusWarn.Render("Removes the certificate and its private key from this hub.") + "\n" +
-		"No node currently serves it. Issuing it again means a fresh ACME order.\n\n" +
+		statusWarn.Render("Deletes the certificate and its private key.") + "\n" +
+		"No node is serving it. Issuing it again means a fresh ACME order.\n\n" +
 		"Domain: " + m.pendingDeleteCert.Domain + "\n\n" +
 		"Press y to delete, or n/Esc to cancel."
 }
@@ -865,13 +876,14 @@ func (m *certManager) certDeleteConfirmView() string {
 func (m *certManager) zoneDeleteConfirmView() string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render("Delete DNS zone · Confirm") + "\n\n")
-	b.WriteString(statusWarn.Render("Removes the zone and the API token stored with it.") + "\n")
-	b.WriteString("Certificates already on disk keep working until they expire.\n\n")
+	b.WriteString(statusWarn.Render("Deletes the zone and the API token saved with it.") + "\n")
+	b.WriteString("Certificates already issued keep working until they expire.\n\n")
 	b.WriteString("Zone: " + zoneLabel(m.pendingDeleteZone) + "\n\n")
 	if len(m.pendingZoneCovered) > 0 {
 		b.WriteString(statusBad.Render(fmt.Sprintf(
-			"%s is the DNS-01 path for %d certificate(s), which cannot be renewed without it:",
+			"%s is the DNS-01 path for %d certificate(s).",
 			m.pendingDeleteZone.Domain, len(m.pendingZoneCovered))) + "\n")
+		b.WriteString(statusBad.Render("Without it they cannot be renewed:") + "\n")
 		for _, domain := range m.pendingZoneCovered {
 			b.WriteString("  " + domain + "\n")
 		}
@@ -963,10 +975,11 @@ func zoneLabels(creds []certmgr.DNSCredential) []string {
 }
 
 func apiTokenNote(vals map[string]string) string {
+	const purpose = "\nUsed only for this zone's ACME DNS-01 challenge."
 	if vals["provider"] == certmgr.ProviderAliyun {
-		return "Aliyun: enter AccessKeyID:AccessKeySecret (colon-separated)."
+		return "Your Aliyun AccessKeyID and AccessKeySecret, joined by a colon." + purpose
 	}
-	return "Cloudflare: enter an API token with DNS edit permission for the zone."
+	return "A Cloudflare API token allowed to edit DNS for this zone." + purpose
 }
 
 // validateHostField validates the composed certificate domain rather than the
