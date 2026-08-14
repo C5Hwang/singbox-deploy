@@ -69,6 +69,19 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 	// on 443 under the same name. Given its own name it gets its own block,
 	// selected by SNI, so the two never share a certificate or a server_name.
 	sharesSiteBlock := cfg.MonitorPublicPort == 443 && monitorDomain == siteDomain
+	// The subscription is published under the same name its links are spelled
+	// with, which is the monitor's once one is deployed. Where /s/ lands follows
+	// from that name and the port it answers on: the camouflage block when both
+	// belong to the site, the monitor's own block when it is that block's name
+	// and port, and a block of its own — with the matching certificate — for
+	// every other pairing.
+	subscriptionDomain := ServerName(cfg.SubscriptionHost())
+	subscriptionCertPath, subscriptionKeyPath := CertificatePaths(layout, subscriptionDomain)
+	publicSubscription := !cfg.SpokeMode
+	monitorOwnBlock := !cfg.SpokeMode && cfg.DeployMonitor && !sharesSiteBlock
+	subscriptionInSiteBlock := publicSubscription && cfg.SubscribePort == 443 && subscriptionDomain == siteDomain
+	subscriptionInMonitorBlock := publicSubscription && monitorOwnBlock &&
+		cfg.SubscribePort == cfg.MonitorPublicPort && subscriptionDomain == monitorDomain
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
 		"SubscribePort":          cfg.SubscribePort,
 		"MonitorPublicPort":      cfg.MonitorPublicPort,
@@ -84,10 +97,16 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 		"EnableMonitor":          cfg.DeployMonitor,
 		"EnableMonitorFrontend":  cfg.DeployMonitorFrontend,
 		"MonitorPort":            cfg.MonitorPort,
-		// A spoke serves only the camouflage site; the hub also serves the public
-		// subscription and monitor endpoints.
-		"PublicSubscription": !cfg.SpokeMode,
-		"PublicMonitor":      !cfg.SpokeMode,
+		// A spoke serves only the camouflage site, so it emits none of the three
+		// subscription placements and no monitor block; the hub also serves the
+		// public subscription and monitor endpoints.
+		"SubscriptionDomain":          subscriptionDomain,
+		"SubscriptionCertificatePath": subscriptionCertPath,
+		"SubscriptionKeyPath":         subscriptionKeyPath,
+		"SubscriptionInSiteBlock":     subscriptionInSiteBlock,
+		"SubscriptionInMonitorBlock":  subscriptionInMonitorBlock,
+		"SubscriptionOwnBlock":        publicSubscription && !subscriptionInSiteBlock && !subscriptionInMonitorBlock,
+		"PublicMonitor":               !cfg.SpokeMode,
 	})
 	if err != nil {
 		return err

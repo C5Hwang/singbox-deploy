@@ -54,7 +54,7 @@ const (
 	NoteMonitorTokenInstall = noteMonitorTokenShared + "\nBlank generates one."
 	NoteMonitorTokenEdit    = noteMonitorTokenShared +
 		"\nBlank keeps the current one; enter " + MonitorTokenNone + " to remove it."
-	NoteMonitorDomain    = "The address you open the dashboard at.\n" + NoteDNSZone
+	NoteMonitorDomain    = "The address you open the dashboard at.\nSubscription links use it too.\n" + NoteDNSZone
 	NoteMonitorPublic    = "The HTTPS port the dashboard is served on."
 	NoteMonitorPort      = "Internal only. Change it if another program uses this port."
 	NoteMonitorInterface = "The network card whose traffic is counted.\n" +

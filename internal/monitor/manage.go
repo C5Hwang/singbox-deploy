@@ -110,7 +110,11 @@ type UpdateOptions struct {
 	WriteManagedNginxConfig func(layout paths.Layout, cfg ManageConfig, confPath string) error
 	RenderMonitorUnit       func(layout paths.Layout, deployBin string, cfg ManageConfig) (string, error)
 	RefreshRemoteMonitor    func(ctx context.Context, layout paths.Layout, sources []ManageMonitorSource, fetch func(context.Context, string) ([]byte, error)) error
-	RunCommands             func(runner system.Runner, cmds ...system.Command) error
+	// RefreshSubscriptions republishes the subscription outputs from the state
+	// already on disk. It is called only when the monitor move changed the
+	// hostname those outputs are published under.
+	RefreshSubscriptions func(ctx context.Context, layout paths.Layout) error
+	RunCommands          func(runner system.Runner, cmds ...system.Command) error
 }
 
 // UpdateSettings applies monitor settings to an existing installation.
@@ -329,7 +333,32 @@ func manageUpdateSteps(opts UpdateOptions, old, cfg ManageConfig, sources []Mana
 		}
 		return nil
 	}})
+	// Subscription links, and the provider URL embedded in the generated Clash
+	// and Surge profiles, are spelled with the monitor's name whenever there is a
+	// monitor. Turning it on or off, or renaming it, moves that name, so the
+	// published files no longer say where they are served from. Republishing runs
+	// after the state write because it is that state the outputs are rebuilt from.
+	if opts.SetLocal && manageSubscriptionHostChanged(old, cfg) {
+		steps = append(steps, manageUpdateStep{label: "Subscriptions", detail: "republish under the new subscription hostname", run: func(ctx context.Context, _ ManageConfig) error {
+			return opts.RefreshSubscriptions(ctx, opts.Layout)
+		}})
+	}
 	return steps
+}
+
+// manageSubscriptionHost returns the hostname the subscription endpoints are
+// published under, mirroring deploy.Config.SubscriptionHost. MonitorDomain has
+// already been resolved to the install domain where it was left unset, so a
+// monitor that never got a name of its own reports no move.
+func manageSubscriptionHost(cfg ManageConfig) string {
+	if cfg.DeployMonitor {
+		return strings.TrimSpace(cfg.MonitorDomain)
+	}
+	return strings.TrimSpace(cfg.Domain)
+}
+
+func manageSubscriptionHostChanged(old, cfg ManageConfig) bool {
+	return manageSubscriptionHost(old) != manageSubscriptionHost(cfg)
 }
 
 func manageChangedPortChecks(old, cfg ManageConfig) []system.Port {

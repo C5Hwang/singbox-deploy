@@ -82,6 +82,13 @@ func loadStatus() Status {
 	if monitorEnabled && monitorDomain != deploy.ServerName(domain) {
 		monitorCertState = certificateState(layout, monitorDomain)
 	}
+	// The subscription is published under the monitor's name whenever there is a
+	// monitor, matching deploy.Config.SubscriptionHost; without one it stays on
+	// the install domain.
+	subscriptionDomain := deploy.ServerName(domain)
+	if monitorEnabled {
+		subscriptionDomain = monitorDomain
+	}
 
 	singBoxVer := singBoxVersion(layout.SingBoxBin)
 	singBoxState := singBoxServiceState(singBoxVer, store, layout, monitorEnabled)
@@ -101,7 +108,7 @@ func loadStatus() Status {
 		MonitorUI:        monitorUIStatus(monitorDomain, monitorPublicPort, monitorEnabled),
 		MonitorToken:     monitorTokenStatus(store, monitorEnabled),
 		TrafficQuota:     trafficQuotaStatus(store),
-		Groups: subscriptionGroupStatuses(layout, domain, subscribePort,
+		Groups: subscriptionGroupStatuses(layout, subscriptionDomain, subscribePort,
 			readStatusState(store, "display_name")),
 	}
 }

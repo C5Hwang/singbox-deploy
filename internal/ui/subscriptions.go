@@ -978,7 +978,7 @@ func (sm *subscriptionManager) doneSummary() string {
 	for _, g := range sm.groups {
 		value := labelGroupNotPublished
 		if groupPublishes(g, sm.nodes) {
-			value = groupSubscriptionURLs(cfg.Domain, cfg.SubscribePort, g.Salt)["default"]
+			value = groupSubscriptionURLs(cfg.SubscriptionHost(), cfg.SubscribePort, g.Salt)["default"]
 		}
 		rows = append(rows, summaryIndentedRow(2, g.EffectiveAlias(), value))
 	}

@@ -1023,15 +1023,20 @@ func (w *installFlow) doneSummary() string {
 	return renderSummary(rows)
 }
 
+// installedLayout is the layout the finished-install summary reads the group
+// and node registries back from. It is a variable so a test can point the
+// summary at a temporary root instead of the installed one.
+var installedLayout = paths.DefaultLayout
+
 // installedSubscriptionRows lists the URL of every subscription group the hub
 // now publishes. A first install has exactly one, seeded from the salt entered
 // in the form; reinstalling a hub that already had groups keeps all of them, so
 // reading the salt directly would name a subscription no group publishes.
 func installedSubscriptionRows(cfg deploy.Config) []summaryLine {
-	groups, err := subgroups.Load(paths.DefaultLayout())
+	groups, err := subgroups.Load(installedLayout())
 	if err != nil || len(groups) == 0 {
 		token := deploy.SubscriptionToken(cfg.Salt)
-		base := fmt.Sprintf("https://%s:%d/s", cfg.Domain, cfg.SubscribePort)
+		base := fmt.Sprintf("https://%s:%d/s", cfg.SubscriptionHost(), cfg.SubscribePort)
 		return []summaryLine{
 			summaryRow("Subscription", base+"/default/"+token),
 			summaryRow("Clash", base+"/clashMetaProfiles/"+token),
@@ -1041,7 +1046,7 @@ func installedSubscriptionRows(cfg deploy.Config) []summaryLine {
 	}
 	// A reinstall keeps groups whose spokes have since been removed. Those are
 	// not served, so they are named without a URL that would answer 404.
-	list, err := nodes.Load(paths.DefaultLayout())
+	list, err := nodes.Load(installedLayout())
 	if err != nil {
 		list = nil
 	}
@@ -1052,7 +1057,7 @@ func installedSubscriptionRows(cfg deploy.Config) []summaryLine {
 			rows = append(rows, summaryIndentedRow(2, "status", labelGroupNotPublished))
 			continue
 		}
-		urls := groupSubscriptionURLs(cfg.Domain, cfg.SubscribePort, g.Salt)
+		urls := groupSubscriptionURLs(cfg.SubscriptionHost(), cfg.SubscribePort, g.Salt)
 		rows = append(rows,
 			summaryIndentedRow(2, "universal", urls["default"]),
 			summaryIndentedRow(2, "Clash", urls["clashMetaProfiles"]),

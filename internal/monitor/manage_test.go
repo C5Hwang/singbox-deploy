@@ -219,6 +219,7 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, sources []monitor.ManageMonitorSource, fetch func(context.Context, string) ([]byte, error)) error {
 			return deploy.RefreshRemoteMonitor(ctx, l, fromManageMonitorSources(sources), deploy.SubscriptionFetcher(fetch))
 		},
+		RefreshSubscriptions: func(context.Context, paths.Layout) error { return nil },
 		RunCommands: func(r system.Runner, cmds ...system.Command) error {
 			return deploy.RunCommands(r, cmds...)
 		},
@@ -331,6 +332,10 @@ func monitorDomainUpdateOptions(t *testing.T, root string, layout paths.Layout, 
 			dcfg.MonitorDomain = mcfg.MonitorDomain
 			return deploy.WriteInstallState(stateDir, dcfg)
 		},
+		RefreshSubscriptions: func(context.Context, paths.Layout) error {
+			*record = append(*record, "subscriptions")
+			return nil
+		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error {
 			return deploy.RunCommands(r, cmds...)
 		},
@@ -339,7 +344,9 @@ func monitorDomainUpdateOptions(t *testing.T, root string, layout paths.Layout, 
 
 // Moving the monitor to a new name rewrites Nginx onto that name's certificate
 // and persists it. Issuance is the caller's precondition, not a step here, so
-// the run must not carry one.
+// the run must not carry one. The subscription is published under that same
+// name, so the move also republishes it — after the state write, which is what
+// the republished outputs read the new name back from.
 func TestUpdateSettingsRewritesNginxOnAMonitorDomainMove(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
@@ -358,7 +365,7 @@ func TestUpdateSettingsRewritesNginxOnAMonitorDomainMove(t *testing.T) {
 	if updated.MonitorDomain != "monitor.example.com" {
 		t.Fatalf("updated monitor domain = %q", updated.MonitorDomain)
 	}
-	want := []string{"step:Nginx", "nginx:monitor.example.com", "step:Monitor service", "step:State"}
+	want := []string{"step:Nginx", "nginx:monitor.example.com", "step:Monitor service", "step:State", "step:Subscriptions", "subscriptions"}
 	if strings.Join(record, ",") != strings.Join(want, ",") {
 		t.Fatalf("steps = %v, want %v", record, want)
 	}
@@ -381,6 +388,55 @@ func TestUpdateSettingsRewritesNginxOnAMonitorDomainMove(t *testing.T) {
 		if !strings.Contains(string(nginx), wantLine) {
 			t.Fatalf("nginx config missing %q:\n%s", wantLine, nginx)
 		}
+	}
+}
+
+// Retiring the monitor takes its name with it, so the subscription falls back
+// to the install domain and the published links have to be rewritten to say so.
+func TestUpdateSettingsRepublishesSubscriptionsWhenTheMonitorIsTurnedOff(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorDomain = "monitor.example.com"
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	var record []string
+	opts := monitorDomainUpdateOptions(t, root, layout, &record)
+	opts.SetMonitor = true
+	opts.DeployMonitor = false
+
+	if _, err := monitor.UpdateSettings(context.Background(), opts); err != nil {
+		t.Fatalf("UpdateSettings error: %v", err)
+	}
+	if !slices.Contains(record, "subscriptions") {
+		t.Fatalf("retiring the monitor should republish the subscription: %v", record)
+	}
+	if slices.Index(record, "subscriptions") < slices.Index(record, "step:State") {
+		t.Fatalf("the republish must follow the state write it reads the name from: %v", record)
+	}
+}
+
+// A monitor edit that leaves its name alone leaves the subscription where it is
+// published, so there is nothing to rewrite.
+func TestUpdateSettingsRepublishesNoSubscriptionForAnUnmovedMonitorName(t *testing.T) {
+	root := t.TempDir()
+	layout := paths.LayoutForRoot(root)
+	cfg := testConfig(t)
+	cfg.MonitorDomain = "monitor.example.com"
+	if err := deploy.WriteInstallState(layout.StateDir, cfg); err != nil {
+		t.Fatalf("WriteInstallState: %v", err)
+	}
+	var record []string
+	opts := monitorDomainUpdateOptions(t, root, layout, &record)
+	opts.MonitorDomain = "monitor.example.com"
+	opts.MonitorPort = 19099
+
+	if _, err := monitor.UpdateSettings(context.Background(), opts); err != nil {
+		t.Fatalf("UpdateSettings error: %v", err)
+	}
+	if slices.Contains(record, "subscriptions") {
+		t.Fatalf("an unmoved monitor name should not republish the subscription: %v", record)
 	}
 }
 

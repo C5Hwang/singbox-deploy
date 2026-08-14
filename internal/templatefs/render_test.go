@@ -23,9 +23,15 @@ func nginxTemplateData(overrides map[string]any) map[string]any {
 		"SubscribeDir":           "/etc/singbox-deploy/subscribe",
 		"EnableMonitor":          true,
 		"EnableMonitorFrontend":  true,
-		"PublicSubscription":     true,
 		"PublicMonitor":          true,
 		"MonitorPort":            19090,
+
+		"SubscriptionDomain":          "example.com",
+		"SubscriptionCertificatePath": "/etc/singbox-deploy/tls/example.com.crt",
+		"SubscriptionKeyPath":         "/etc/singbox-deploy/tls/example.com.key",
+		"SubscriptionInSiteBlock":     false,
+		"SubscriptionInMonitorBlock":  false,
+		"SubscriptionOwnBlock":        true,
 	}
 	for key, value := range overrides {
 		data[key] = value
@@ -100,7 +106,9 @@ func TestRenderNginxTemplateWithoutFrontend(t *testing.T) {
 
 func TestRenderNginxTemplateSubscribeOn443(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", nginxTemplateData(map[string]any{
-		"SubscribePort": 443,
+		"SubscribePort":           443,
+		"SubscriptionInSiteBlock": true,
+		"SubscriptionOwnBlock":    false,
 	}))
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -150,6 +158,10 @@ func TestRenderNginxTemplateSeparateMonitorDomain(t *testing.T) {
 		"MonitorDomain":          "monitor.example.com",
 		"MonitorCertificatePath": "/etc/singbox-deploy/tls/monitor.example.com.crt",
 		"MonitorKeyPath":         "/etc/singbox-deploy/tls/monitor.example.com.key",
+
+		"SubscriptionDomain":          "monitor.example.com",
+		"SubscriptionCertificatePath": "/etc/singbox-deploy/tls/monitor.example.com.crt",
+		"SubscriptionKeyPath":         "/etc/singbox-deploy/tls/monitor.example.com.key",
 	}))
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -181,6 +193,10 @@ func TestRenderNginxTemplateSeparateMonitorDomainOn443(t *testing.T) {
 		"MonitorDomain":          "monitor.example.com",
 		"MonitorCertificatePath": "/etc/singbox-deploy/tls/monitor.example.com.crt",
 		"MonitorKeyPath":         "/etc/singbox-deploy/tls/monitor.example.com.key",
+
+		"SubscriptionDomain":          "monitor.example.com",
+		"SubscriptionCertificatePath": "/etc/singbox-deploy/tls/monitor.example.com.crt",
+		"SubscriptionKeyPath":         "/etc/singbox-deploy/tls/monitor.example.com.key",
 	}))
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -193,6 +209,36 @@ func TestRenderNginxTemplateSeparateMonitorDomainOn443(t *testing.T) {
 	}
 	if strings.Contains(out, "ssl_reject_handshake on;") {
 		t.Fatalf("443 already has a default server; no reject block should be emitted:\n%s", out)
+	}
+}
+
+// Answering on the monitor's name and the monitor's port, the subscription has
+// no block of its own: /s/ joins the monitor's, which already carries that name
+// and its certificate.
+func TestRenderNginxTemplateSubscriptionInsideTheMonitorBlock(t *testing.T) {
+	out, err := Render("nginx/singbox-deploy.conf.tmpl", nginxTemplateData(map[string]any{
+		"SubscribePort":          2097,
+		"MonitorDomain":          "monitor.example.com",
+		"MonitorCertificatePath": "/etc/singbox-deploy/tls/monitor.example.com.crt",
+		"MonitorKeyPath":         "/etc/singbox-deploy/tls/monitor.example.com.key",
+
+		"SubscriptionDomain":          "monitor.example.com",
+		"SubscriptionCertificatePath": "/etc/singbox-deploy/tls/monitor.example.com.crt",
+		"SubscriptionKeyPath":         "/etc/singbox-deploy/tls/monitor.example.com.key",
+		"SubscriptionInMonitorBlock":  true,
+		"SubscriptionOwnBlock":        false,
+	}))
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	if strings.Count(out, "listen 2097 ssl;") != 1 {
+		t.Fatalf("the subscription must not add a second block on the monitor's port:\n%s", out)
+	}
+	monitorBlock := out[strings.Index(out, "listen 2097 ssl;"):]
+	for _, want := range []string{"server_name monitor.example.com;", "location /s/", "proxy_pass http://127.0.0.1:19090/api/;"} {
+		if !strings.Contains(monitorBlock, want) {
+			t.Fatalf("monitor block missing %q:\n%s", want, monitorBlock)
+		}
 	}
 }
 

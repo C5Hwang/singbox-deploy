@@ -364,8 +364,9 @@ func (c Config) buildSubscriptions() (subscriptionOutputs, error) {
 
 func fillProfiles(out *subscriptionOutputs, c Config, outbounds []map[string]any) error {
 	token := SubscriptionToken(c.Salt)
-	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", c.Domain, c.SubscribePort, token)
-	surgeProviderURL := fmt.Sprintf("https://%s:%d/s/surge/%s", c.Domain, c.SubscribePort, token)
+	host := c.SubscriptionHost()
+	clashProviderURL := fmt.Sprintf("https://%s:%d/s/clashMeta/%s", host, c.SubscribePort, token)
+	surgeProviderURL := fmt.Sprintf("https://%s:%d/s/surge/%s", host, c.SubscribePort, token)
 	obJSON, err := json.MarshalIndent(outbounds, "", "  ")
 	if err != nil {
 		return err

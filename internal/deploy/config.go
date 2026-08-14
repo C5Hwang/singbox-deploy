@@ -142,6 +142,19 @@ func (c Config) MonitorHost() string {
 	return strings.TrimSpace(c.Domain)
 }
 
+// SubscriptionHost returns the hostname the subscription endpoints are
+// published under. A hub that publishes a monitor serves them under the
+// monitor's name, so the subscription is no more reachable through the
+// masquerade site's name than the monitor is; without a monitor there is no
+// such name to borrow, and a spoke publishes no public subscription at all, so
+// both keep the install domain.
+func (c Config) SubscriptionHost() string {
+	if c.DeployMonitor && !c.SpokeMode {
+		return c.MonitorHost()
+	}
+	return strings.TrimSpace(c.Domain)
+}
+
 // MonitorCertificateDomain returns the extra hostname that needs its own
 // managed certificate because the monitor is published under a name of its
 // own. It is empty when the monitor shares the install domain's certificate,

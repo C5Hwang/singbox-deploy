@@ -13,7 +13,7 @@ server {
     ssl_certificate_key {{ .KeyPath }};
 
     root {{ .WebRoot }};
-{{ if and .PublicSubscription (eq .SubscribePort 443) }}
+{{ if .SubscriptionInSiteBlock }}
     location /s/ {
         alias {{ .SubscribeDir }}/;
         default_type text/plain;
@@ -41,14 +41,14 @@ server {
     }
 }
 
-{{ if and .PublicSubscription (ne .SubscribePort 443) }}
+{{ if .SubscriptionOwnBlock }}
 server {
     listen {{ .SubscribePort }} ssl;
     http2 on;
-    server_name {{ .Domain }};
+    server_name {{ .SubscriptionDomain }};
 
-    ssl_certificate {{ .CertificatePath }};
-    ssl_certificate_key {{ .KeyPath }};
+    ssl_certificate {{ .SubscriptionCertificatePath }};
+    ssl_certificate_key {{ .SubscriptionKeyPath }};
 
     root {{ .WebRoot }};
 
@@ -71,6 +71,13 @@ server {
 
     ssl_certificate {{ .MonitorCertificatePath }};
     ssl_certificate_key {{ .MonitorKeyPath }};
+{{ if .SubscriptionInMonitorBlock }}
+    location /s/ {
+        alias {{ .SubscribeDir }}/;
+        default_type text/plain;
+        charset utf-8;
+    }
+{{ end }}
 {{ if .EnableMonitorFrontend }}
     location = / {
         return 302 /monitor/;

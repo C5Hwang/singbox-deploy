@@ -1300,6 +1300,9 @@ func monitorDeployCallbacks() monitor.UpdateOptions {
 		RefreshRemoteMonitor: func(ctx context.Context, l paths.Layout, _ []monitor.ManageMonitorSource, _ func(context.Context, string) ([]byte, error)) error {
 			return (&hubctl.Controller{Layout: l, ExpectedVersion: toolVersion}).RefreshMonitor(ctx)
 		},
+		RefreshSubscriptions: func(ctx context.Context, l paths.Layout) error {
+			return (&hubctl.Controller{Layout: l, ExpectedVersion: toolVersion}).RefreshSubscriptions(ctx)
+		},
 		RunCommands: func(r system.Runner, cmds ...system.Command) error {
 			return deploy.RunCommands(r, cmds...)
 		},
