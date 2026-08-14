@@ -32,6 +32,8 @@ func nginxTemplateData(overrides map[string]any) map[string]any {
 		"SubscriptionInSiteBlock":     false,
 		"SubscriptionInMonitorBlock":  false,
 		"SubscriptionOwnBlock":        true,
+		"SubscriptionRejectBlock":     true,
+		"MonitorRejectBlock":          true,
 	}
 	for key, value := range overrides {
 		data[key] = value
@@ -67,6 +69,7 @@ func TestRenderNginxTemplateWithoutMonitor(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", nginxTemplateData(map[string]any{
 		"EnableMonitor":         false,
 		"EnableMonitorFrontend": false,
+		"MonitorRejectBlock":    false,
 	}))
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -109,6 +112,7 @@ func TestRenderNginxTemplateSubscribeOn443(t *testing.T) {
 		"SubscribePort":           443,
 		"SubscriptionInSiteBlock": true,
 		"SubscriptionOwnBlock":    false,
+		"SubscriptionRejectBlock": false,
 	}))
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -130,6 +134,7 @@ func TestRenderNginxTemplateMonitorOn443(t *testing.T) {
 	out, err := Render("nginx/singbox-deploy.conf.tmpl", nginxTemplateData(map[string]any{
 		"MonitorPublicPort":      443,
 		"MonitorSharesSiteBlock": true,
+		"MonitorRejectBlock":     false,
 	}))
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
@@ -193,6 +198,7 @@ func TestRenderNginxTemplateSeparateMonitorDomainOn443(t *testing.T) {
 		"MonitorDomain":          "monitor.example.com",
 		"MonitorCertificatePath": "/etc/singbox-deploy/tls/monitor.example.com.crt",
 		"MonitorKeyPath":         "/etc/singbox-deploy/tls/monitor.example.com.key",
+		"MonitorRejectBlock":     false,
 
 		"SubscriptionDomain":          "monitor.example.com",
 		"SubscriptionCertificatePath": "/etc/singbox-deploy/tls/monitor.example.com.crt",
@@ -207,8 +213,11 @@ func TestRenderNginxTemplateSeparateMonitorDomainOn443(t *testing.T) {
 	if !strings.Contains(out, "listen 443 ssl;\n    http2 on;\n    server_name monitor.example.com;") {
 		t.Fatalf("rendered output missing the monitor block on 443:\n%s", out)
 	}
-	if strings.Contains(out, "ssl_reject_handshake on;") {
-		t.Fatalf("443 already has a default server; no reject block should be emitted:\n%s", out)
+	if strings.Contains(out, "listen 443 ssl default_server;\n    server_name _;") {
+		t.Fatalf("443 already has a default server; the monitor must not claim it:\n%s", out)
+	}
+	if got := strings.Count(out, "ssl_reject_handshake on;"); got != 1 {
+		t.Fatalf("expected only the subscription port's catch-all, got %d:\n%s", got, out)
 	}
 }
 
@@ -227,6 +236,7 @@ func TestRenderNginxTemplateSubscriptionInsideTheMonitorBlock(t *testing.T) {
 		"SubscriptionKeyPath":         "/etc/singbox-deploy/tls/monitor.example.com.key",
 		"SubscriptionInMonitorBlock":  true,
 		"SubscriptionOwnBlock":        false,
+		"SubscriptionRejectBlock":     false,
 	}))
 	if err != nil {
 		t.Fatalf("Render error: %v", err)

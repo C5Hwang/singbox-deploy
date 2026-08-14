@@ -71,8 +71,9 @@ func TestWriteManagedNginxConfigSeparatesTheMonitorDomain(t *testing.T) {
 	}
 }
 
-// Left on the install domain, the monitor keeps sharing its certificate and no
-// reject block is emitted for the subscription port it shares nothing with.
+// Left on the install domain, the monitor keeps sharing its certificate, and on
+// 443 it adds no catch-all: the camouflage site is already that port's default
+// server. The only one emitted is the subscription's, on its own port.
 func TestWriteManagedNginxConfigKeepsSharedMonitorDomain(t *testing.T) {
 	root := t.TempDir()
 	layout := paths.LayoutForRoot(root)
@@ -95,8 +96,11 @@ func TestWriteManagedNginxConfigKeepsSharedMonitorDomain(t *testing.T) {
 	if strings.Count(string(conf), "listen 443") != 1 {
 		t.Fatalf("monitor on 443 under the install domain should fold into the camouflage block:\n%s", conf)
 	}
-	if strings.Contains(string(conf), "ssl_reject_handshake on;") {
-		t.Fatalf("443 already has a default server; no reject block should be emitted:\n%s", conf)
+	if got := strings.Count(string(conf), "ssl_reject_handshake on;"); got != 1 {
+		t.Fatalf("expected only the subscription port's catch-all, got %d:\n%s", got, conf)
+	}
+	if !strings.Contains(string(conf), fmt.Sprintf("listen %d ssl default_server;", DefaultSubscribePort)) {
+		t.Fatalf("the catch-all should sit on the subscription port:\n%s", conf)
 	}
 }
 

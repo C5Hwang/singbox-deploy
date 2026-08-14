@@ -82,6 +82,16 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 	subscriptionInSiteBlock := publicSubscription && cfg.SubscribePort == 443 && subscriptionDomain == siteDomain
 	subscriptionInMonitorBlock := publicSubscription && monitorOwnBlock &&
 		cfg.SubscribePort == cfg.MonitorPublicPort && subscriptionDomain == monitorDomain
+	subscriptionOwnBlock := publicSubscription && !subscriptionInSiteBlock && !subscriptionInMonitorBlock
+	// A port that publishes one name and nothing else gets a catch-all that drops
+	// every other name during the handshake, so a bare-address probe learns
+	// neither a certificate nor that anything is listening. 443 needs none: the
+	// camouflage site is already its default server. Nginx accepts one
+	// default_server per port, so a port serving both endpoints is claimed by the
+	// monitor's block alone.
+	monitorRejectBlock := !cfg.SpokeMode && cfg.DeployMonitor && cfg.MonitorPublicPort != 443
+	subscriptionRejectBlock := subscriptionOwnBlock && cfg.SubscribePort != 443 &&
+		!(monitorRejectBlock && cfg.SubscribePort == cfg.MonitorPublicPort)
 	conf, err := templatefs.Render("nginx/singbox-deploy.conf.tmpl", map[string]any{
 		"SubscribePort":          cfg.SubscribePort,
 		"MonitorPublicPort":      cfg.MonitorPublicPort,
@@ -105,7 +115,9 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 		"SubscriptionKeyPath":         subscriptionKeyPath,
 		"SubscriptionInSiteBlock":     subscriptionInSiteBlock,
 		"SubscriptionInMonitorBlock":  subscriptionInMonitorBlock,
-		"SubscriptionOwnBlock":        publicSubscription && !subscriptionInSiteBlock && !subscriptionInMonitorBlock,
+		"SubscriptionOwnBlock":        subscriptionOwnBlock,
+		"SubscriptionRejectBlock":     subscriptionRejectBlock,
+		"MonitorRejectBlock":          monitorRejectBlock,
 		"PublicMonitor":               !cfg.SpokeMode,
 	})
 	if err != nil {

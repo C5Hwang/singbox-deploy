@@ -236,6 +236,89 @@ func TestFillProfilesUsesTheSubscriptionHost(t *testing.T) {
 	}
 }
 
+// A port that publishes one name and nothing else drops every other name during
+// the handshake, so a bare-address probe learns neither a certificate nor that
+// anything is there. The subscription port earns that the same way the monitor's
+// does — except where the port already has a default server, which cannot have a
+// second.
+func TestWriteManagedNginxConfigRejectsUnknownNamesOnTheSubscriptionPort(t *testing.T) {
+	cases := []struct {
+		name          string
+		subscribePort int
+		monitorPort   int
+		monitor       bool
+		wantRejects   []int
+	}{
+		{
+			name:          "its own port takes a catch-all",
+			subscribePort: DefaultSubscribePort,
+			monitorPort:   DefaultMonitorPublicPort,
+			monitor:       true,
+			wantRejects:   []int{DefaultSubscribePort, DefaultMonitorPublicPort},
+		},
+		{
+			name:          "a port serving both endpoints takes only one",
+			subscribePort: DefaultMonitorPublicPort,
+			monitorPort:   DefaultMonitorPublicPort,
+			monitor:       true,
+			wantRejects:   []int{DefaultMonitorPublicPort},
+		},
+		{
+			name:          "no monitor is no reason to leave the port open",
+			subscribePort: DefaultSubscribePort,
+			monitorPort:   DefaultMonitorPublicPort,
+			wantRejects:   []int{DefaultSubscribePort},
+		},
+		{
+			name:          "443 already has the camouflage site as its default",
+			subscribePort: 443,
+			monitorPort:   443,
+			monitor:       true,
+			wantRejects:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			layout := paths.LayoutForRoot(root)
+			confPath := filepath.Join(root, "nginx", "singbox-deploy.conf")
+			cfg := Config{
+				Domain:                "example.com",
+				MonitorDomain:         "monitor.example.com",
+				SubscribePort:         tc.subscribePort,
+				MonitorPublicPort:     tc.monitorPort,
+				MonitorPort:           DefaultMonitorPort,
+				DeployMonitor:         tc.monitor,
+				DeployMonitorFrontend: tc.monitor,
+			}
+			if err := WriteManagedNginxConfig(layout, cfg, confPath); err != nil {
+				t.Fatalf("WriteManagedNginxConfig: %v", err)
+			}
+			conf, err := os.ReadFile(confPath)
+			if err != nil {
+				t.Fatalf("read nginx config: %v", err)
+			}
+			if got := strings.Count(string(conf), "ssl_reject_handshake on;"); got != len(tc.wantRejects) {
+				t.Fatalf("catch-all blocks = %d, want %d:\n%s", got, len(tc.wantRejects), conf)
+			}
+			for _, port := range tc.wantRejects {
+				listen := fmt.Sprintf("listen %d ssl default_server;", port)
+				if !strings.Contains(string(conf), listen) {
+					t.Fatalf("no catch-all on %d:\n%s", port, conf)
+				}
+			}
+			// Nginx refuses to start with two default servers on one port, so the
+			// pair the config emits must never land on the same one.
+			for _, port := range []int{tc.subscribePort, tc.monitorPort, 443} {
+				listen := fmt.Sprintf("listen %d ssl default_server;", port)
+				if got := strings.Count(string(conf), listen); got > 1 {
+					t.Fatalf("port %d has %d default servers:\n%s", port, got, conf)
+				}
+			}
+		})
+	}
+}
+
 // subscriptionBlock returns the server block listening on port, from its listen
 // directive to the closing brace.
 func subscriptionBlock(t *testing.T, conf string, port int) string {
