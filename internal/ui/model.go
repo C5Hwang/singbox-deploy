@@ -110,7 +110,6 @@ type Model struct {
 	suspendedMonitor *monitorManager
 	selfupdate       *selfUpdateManager
 	uninstall        *uninstallManager
-	placeholder      *placeholderManager
 }
 
 // NewModel returns a Model populated with the default grouped menu.
@@ -126,7 +125,6 @@ func defaultGroups() []MenuGroup {
 		}},
 		{Title: "Proxy", Items: []MenuItem{
 			{Label: "Protocol settings", Activate: activateProtocols},
-			{Label: "Routing rules", Activate: activatePlaceholder("Routing rules")},
 		}},
 		{Title: "Services", Items: []MenuItem{
 			{Label: "Subscription settings", Activate: activateSubscriptions},
@@ -204,13 +202,6 @@ func activateUninstall(m *Model) tea.Cmd {
 	u.setSize(m.width, m.height)
 	m.uninstall = u
 	return nil
-}
-
-func activatePlaceholder(title string) func(*Model) tea.Cmd {
-	return func(m *Model) tea.Cmd {
-		m.placeholder = newPlaceholderManager(title)
-		return nil
-	}
 }
 
 // RefreshStatus reloads the status panel from the current host and state files.
@@ -387,14 +378,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
-	if m.placeholder != nil {
-		cmd, done := m.placeholder.Update(msg)
-		if done {
-			m.placeholder = nil
-		}
-		return m, cmd
-	}
-
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch {
 		case msg.String() == "ctrl+c", isSelectionCancelKey(msg):
@@ -525,7 +508,7 @@ func (m *Model) contentColumn(width, height int) string {
 func (m *Model) showsStatus() bool {
 	return m.install == nil && m.protocols == nil && m.subscribe == nil && m.monitor == nil &&
 		m.core == nil && m.certificates == nil && m.nodes == nil && m.selfupdate == nil &&
-		m.uninstall == nil && m.placeholder == nil
+		m.uninstall == nil
 }
 
 func (m *Model) contentView(width, height int) string {
@@ -565,9 +548,6 @@ func (m *Model) contentView(width, height int) string {
 		m.uninstall.setSize(width, height)
 		return m.uninstall.View()
 	}
-	if m.placeholder != nil {
-		return m.placeholder.View()
-	}
 	return m.statusView()
 }
 
@@ -595,8 +575,6 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.selfupdate.footerHints()...)
 		} else if m.uninstall != nil {
 			parts = append(parts, m.uninstall.footerHints()...)
-		} else if m.placeholder != nil {
-			parts = append(parts, m.placeholder.footerHints()...)
 		}
 	} else {
 		parts = append(parts, m.install.footerHints()...)

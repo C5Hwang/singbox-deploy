@@ -280,7 +280,7 @@ func TestBracketKeysAreInertInsideASubFlow(t *testing.T) {
 		SubscriptionGroupStatus{Alias: "Family"},
 		SubscriptionGroupStatus{Alias: "Work"},
 	)}
-	m.placeholder = newPlaceholderManager("Routing rules")
+	m.core = newCoreManager()
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	if m.groupIndex != 0 {
 		t.Fatalf("a sub-flow key must not move the group panel, groupIndex=%d", m.groupIndex)
