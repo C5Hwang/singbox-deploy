@@ -212,6 +212,12 @@
       "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
       "default": "🚀 手动切换"
     },
+    {
+      "type": "selector",
+      "tag": "Kobo",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
 {{- if .OutboundsJSON }}
     {{ .OutboundsJSON }},
 {{- end }}
@@ -255,6 +261,7 @@
       {"rule_set": "PayPal", "outbound": "PayPal"},
       {"rule_set": "Spotify", "outbound": "Spotify"},
       {"rule_set": "Games", "outbound": "游戏平台"},
+      {"domain_suffix": ["kobo.com", "kobobooks.com", "koboepubs.com"], "domain": "kbimages1-a.akamaihd.net", "outbound": "Kobo"},
       {"rule_set": ["HBO", "Hulu", "Disney", "TikTok", "YouTube", "Netflix", "SocialMedia"], "outbound": "国外媒体"},
       {"rule_set": "Scholar", "outbound": "学术网页"},
       {"rule_set": "Gits", "outbound": "Gits"},

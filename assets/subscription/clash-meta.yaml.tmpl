@@ -225,6 +225,15 @@ proxy-groups:
       - {{ .Tag }}
 {{- end }}
       - DIRECT
+  - name: Kobo
+    type: select
+    proxies:
+      - 🚀 手动切换
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
+      - DIRECT
 
 rule-providers:
   Private:
@@ -408,6 +417,10 @@ rules:
   - RULE-SET,PayPal,PayPal
   - RULE-SET,Spotify,Spotify
   - RULE-SET,Games,游戏平台
+  - DOMAIN-SUFFIX,kobo.com,Kobo
+  - DOMAIN-SUFFIX,kobobooks.com,Kobo
+  - DOMAIN-SUFFIX,koboepubs.com,Kobo
+  - DOMAIN,kbimages1-a.akamaihd.net,Kobo
   - RULE-SET,HBO,国外媒体
   - RULE-SET,Hulu,国外媒体
   - RULE-SET,Disney,国外媒体
