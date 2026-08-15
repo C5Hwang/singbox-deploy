@@ -71,10 +71,6 @@ onUnmounted(() => {
 interface Pair {
   id: string;
   name: string;
-  // host is the landing node's own address, which is what the relay forwards
-  // to and what the client's SNI still names. The probe port is dropped: it is
-  // always the same one and says nothing about this pair.
-  host: string;
   ms: number | null;
   loss: number | null;
   text: string;
@@ -94,7 +90,6 @@ function pairs(node: RelayNode): Pair[] {
     return {
       id: target.id,
       name,
-      host: target.address.replace(/:\d+$/, ""),
       ms,
       loss,
       text,
@@ -156,31 +151,6 @@ function statusLabel(node: RelayNode): string {
   return `${answering} of ${list.length} landing nodes answering`;
 }
 
-// The strip above the cards answers the questions a fleet-wide reader has
-// before they look at any single relay: how much of the fleet is relayed at
-// all, how far the hop is, and whether every pair is currently up.
-const overview = computed(() => {
-  const all = relays.value.flatMap(pairs);
-  const answering = all.filter((p) => p.ms !== null).length;
-  return {
-    relays: relays.value.length,
-    landings: all.length,
-    hop: median(all.map((p) => p.ms).filter((v): v is number => v !== null)),
-    worst: all.length ? Math.max(...all.map((p) => p.ms ?? Infinity)) : null,
-    answering,
-  };
-});
-
-const worstText = computed(() => {
-  const worst = overview.value.worst;
-  if (worst === null) return "";
-  return worst === Infinity ? "one landing node is not answering" : `slowest pair ${msText(worst)}`;
-});
-
-// A lone relay takes the full row rather than sitting in half of one with the
-// other half blank; its pairs then lay out as a grid instead of one long
-// column, so a wide card fills with content rather than with air.
-const cardSpan = computed(() => (relays.value.length === 1 ? "span-12" : "span-6"));
 </script>
 
 <template>
@@ -194,50 +164,6 @@ const cardSpan = computed(() => (relays.value.length === 1 ? "span-12" : "span-6
   </p>
 
   <template v-if="relays.length">
-    <section class="grid" aria-label="relay overview">
-      <article class="card metric-card span-3">
-        <div class="metric-head">
-          <div>
-            <p class="eyebrow">Relays</p>
-            <p class="metric-value">{{ overview.relays }}</p>
-            <p class="metric-detail">carrying other nodes' traffic</p>
-          </div>
-        </div>
-      </article>
-
-      <article class="card metric-card span-3">
-        <div class="metric-head">
-          <div>
-            <p class="eyebrow">Fronted nodes</p>
-            <p class="metric-value">{{ overview.landings }}</p>
-            <p class="metric-detail">published under a relay address</p>
-          </div>
-        </div>
-      </article>
-
-      <article class="card metric-card span-3">
-        <div class="metric-head">
-          <div>
-            <p class="eyebrow">Median hop</p>
-            <p class="metric-value" :style="{ color: msColor(overview.hop) }">{{ msText(overview.hop) }}</p>
-            <p class="metric-detail">{{ worstText }}</p>
-          </div>
-        </div>
-      </article>
-
-      <article class="card metric-card span-3">
-        <div class="metric-head">
-          <div>
-            <p class="eyebrow">Answering</p>
-            <p class="metric-value" :class="{ degraded: overview.answering < overview.landings }">
-              {{ overview.answering }} / {{ overview.landings }}
-            </p>
-            <p class="metric-detail">pairs reached on the last round</p>
-          </div>
-        </div>
-      </article>
-    </section>
-
     <div class="scale">
       <span>faster</span>
       <i v-for="step in LATENCY_STEPS" :key="step.fill" :style="{ background: step.fill }"></i>
@@ -245,12 +171,11 @@ const cardSpan = computed(() => (relays.value.length === 1 ? "span-12" : "span-6
       <em class="scale-loss"><i :style="{ background: LOSS_WARNING }"></i>packet loss</em>
     </div>
 
-    <section class="grid sources" aria-label="relay to landing latency">
+    <section class="grid" aria-label="relay to landing latency">
       <article
         v-for="node in relays"
         :key="node.key"
-        class="card node-card clickable"
-        :class="cardSpan"
+        class="card span-6 node-card clickable"
         title="Open the relay latency trend"
         @click="openRelay = node"
       >
@@ -267,10 +192,7 @@ const cardSpan = computed(() => (relays.value.length === 1 ? "span-12" : "span-6
 
         <div class="pairs" role="table" aria-label="Latency to each landing node, milliseconds">
           <div v-for="pair in pairs(node)" :key="pair.id" class="pair" role="row">
-            <span class="pair-title" role="rowheader">
-              <span class="pair-name" :title="pair.name">{{ pair.name }}</span>
-              <span class="pair-host" :title="pair.host">{{ pair.host }}</span>
-            </span>
+            <span class="pair-name" role="rowheader" :title="pair.name">{{ pair.name }}</span>
             <span class="cell" :style="pair.style" :title="pair.title" role="cell">
               <span class="value">{{ pair.text }}</span>
               <span class="loss">
@@ -296,17 +218,12 @@ const cardSpan = computed(() => (relays.value.length === 1 ? "span-12" : "span-6
 <style scoped>
 .scale {
   display: flex; align-items: center; gap: 6px;
-  margin: 18px 2px 12px; color: var(--muted); font-size: 11px; font-weight: 700;
+  margin: 0 2px 12px; color: var(--muted); font-size: 11px; font-weight: 700;
   letter-spacing: 0.03em; text-transform: uppercase;
 }
 .scale i { width: 26px; height: 7px; border-radius: 2px; }
 .scale-loss { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; font-style: normal; }
 .scale-loss i { width: 18px; height: 4px; border-radius: 999px; }
-/* The strip is four readings of the same subject, so all four cards are the
-   same shape. The metric cards elsewhere carry a quota bar; none of these four
-   has a denominator worth drawing, and a bar on one of them would read as the
-   odd one out rather than as information. */
-.degraded { color: var(--yellow); }
 .node-card { display: flex; flex-direction: column; }
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .head-side { display: flex; align-items: flex-start; gap: 10px; }
@@ -326,25 +243,13 @@ const cardSpan = computed(() => (relays.value.length === 1 ? "span-12" : "span-6
    axes, and their names are long enough that a column head would truncate.
    The rows flow into as many columns as the card is wide enough for, so a relay
    with one landing node and a relay with eight both fill their card. */
-/* auto-fill, not auto-fit: fitting two landing nodes to the full width of a
-   wide card stretches each track to ~540px and leaves a name a third of a
-   screen from its own reading. Fixed-ish tracks keep the pair legible and cost
-   only a blank track at the end of the last row. */
-.pairs {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 5px 18px; margin-top: 16px;
-}
+/* One row per pair, one column of readings: the landing nodes are a list, not
+   two axes, and stacking the cells in a single column lets the eye run down
+   them without hopping between rows of different widths. */
+.pairs { display: flex; flex-direction: column; gap: 5px; margin-top: 16px; }
 .pair { display: grid; grid-template-columns: minmax(0, 1fr) 118px; gap: 10px; align-items: center; }
-/* The landing node's own address sits under its name: it is what the relay
-   forwards to and what the client's SNI still names, so it belongs to the pair
-   rather than to a tooltip. */
-.pair-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pair-name {
   color: var(--text); font-size: 13px; font-weight: 650;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.pair-host {
-  color: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cell {
@@ -370,7 +275,6 @@ const cardSpan = computed(() => (relays.value.length === 1 ? "span-12" : "span-6
   color: var(--loss-ink);
 }
 @media (max-width: 720px) {
-  .pairs { grid-template-columns: minmax(0, 1fr); }
   .pair { grid-template-columns: minmax(0, 1fr) 104px; }
   .cell { height: 44px; }
   .value { font-size: 14px; }
