@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
@@ -21,6 +22,10 @@ import (
 type subHandler struct {
 	layout paths.Layout
 	salt   string
+	// relayPushes counts the relay jobs the hub pushed here, which is how a
+	// test tells "the hub left this node's data plane alone" from "the hub
+	// reinstalled it".
+	relayPushes atomic.Int64
 }
 
 func (h *subHandler) Health() nodeapi.HealthResponse { return nodeapi.HealthResponse{OK: true} }
@@ -34,7 +39,10 @@ func (h *subHandler) Uninstall(context.Context, nodeapi.UninstallRequest, io.Wri
 
 // A real agent installs relay forwarding as well as serving subscriptions, and
 // the reconcile pass pushes both.
-func (h *subHandler) ApplyRelay(context.Context, nodeapi.RelayRequest, io.Writer) error { return nil }
+func (h *subHandler) ApplyRelay(context.Context, nodeapi.RelayRequest, io.Writer) error {
+	h.relayPushes.Add(1)
+	return nil
+}
 
 func (h *subHandler) Subscription(format string) ([]byte, error) {
 	dir := map[string]string{

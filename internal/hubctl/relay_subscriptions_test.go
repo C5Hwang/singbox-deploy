@@ -27,6 +27,9 @@ type relayFleet struct {
 	hubCfg    deploy.Config
 	spokeCfg  deploy.Config
 	ctrl      *Controller
+	// agent is the spoke's fake agent, kept so a test can count the relay jobs
+	// the hub pushed to it.
+	agent *subHandler
 }
 
 func newRelayFleet(t *testing.T) *relayFleet {
@@ -45,10 +48,8 @@ func newRelayFleet(t *testing.T) *relayFleet {
 	if err := deploy.WriteSubscriptions(spokeLayout, spokeCfg); err != nil {
 		t.Fatalf("spoke WriteSubscriptions: %v", err)
 	}
-	srv := httptest.NewServer((&nodeapi.Server{
-		Token:   "tok",
-		Handler: &subHandler{layout: spokeLayout, salt: spokeCfg.Salt},
-	}).Mux())
+	agent := &subHandler{layout: spokeLayout, salt: spokeCfg.Salt}
+	srv := httptest.NewServer((&nodeapi.Server{Token: "tok", Handler: agent}).Mux())
 	t.Cleanup(srv.Close)
 
 	if err := nodes.Add(hubLayout, nodes.Node{
@@ -63,6 +64,7 @@ func newRelayFleet(t *testing.T) *relayFleet {
 		hubLayout: hubLayout,
 		hubCfg:    hubCfg,
 		spokeCfg:  spokeCfg,
+		agent:     agent,
 		ctrl: &Controller{
 			Layout:          hubLayout,
 			ResolveHostIPv4: fakeResolve,

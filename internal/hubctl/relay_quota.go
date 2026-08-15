@@ -126,6 +126,11 @@ func (c *Controller) ReconcileRelayPublication(ctx context.Context) error {
 // The ports are part of the line because they are what drifts silently: editing
 // a landing node's protocols moves the port its relay has to send to, and
 // nothing else about the topology changes to say so.
+//
+// A relay that is out of quota is deliberately left out of the reinstall list.
+// Its own monitor has already withdrawn its rules, and reinstalling them here
+// would put an exhausted relay straight back to carrying other nodes' traffic
+// for the rest of the cycle. It rejoins the list when its allowance returns.
 func (c *Controller) relayPublicationState() (string, []string, error) {
 	links, err := relaylinks.Load(c.Layout)
 	if err != nil {
@@ -150,7 +155,9 @@ func (c *Controller) relayPublicationState() (string, []string, error) {
 	for _, link := range links {
 		if _, duplicate := seen[link.RelayID]; !duplicate {
 			seen[link.RelayID] = struct{}{}
-			relays = append(relays, link.RelayID)
+			if available(link.RelayID) {
+				relays = append(relays, link.RelayID)
+			}
 		}
 		rewrite, fronted := rewrites[link.LandingID]
 		if !fronted {

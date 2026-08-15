@@ -259,6 +259,55 @@ func TestRelayConfigForDropsAProtocolTheLandingNodeNoLongerServes(t *testing.T) 
 	}
 }
 
+// A relay that runs out of traffic withdraws its own forwarding rules, and the
+// reconcile pass that notices must not push them straight back: reinstalling
+// them would leave an exhausted relay carrying other nodes' clients — and
+// spending an allowance it no longer has — for the rest of the cycle.
+func TestReconcileRelayPublicationLeavesAnExhaustedRelayWithdrawn(t *testing.T) {
+	f := newRelayFleet(t)
+	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
+		LandingID: relaylinks.HubNodeID, RelayID: "aa11",
+		Forwards: []relaylinks.Forward{
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
+		},
+	}); err != nil {
+		t.Fatalf("Set link: %v", err)
+	}
+	writeSpokeUsage(t, f.hubLayout, monitor.SourceSummary{ID: "aa11", TotalLimitBytes: 100, TotalRemainingBytes: 40})
+
+	ctx := context.Background()
+	if err := f.ctrl.ReconcileRelayPublication(ctx); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if pushes := f.agent.relayPushes.Load(); pushes != 1 {
+		t.Fatalf("a relay with traffic left should be installed once, got %d pushes", pushes)
+	}
+
+	writeSpokeUsage(t, f.hubLayout, monitor.SourceSummary{ID: "aa11", TotalLimitBytes: 100, TotalRemainingBytes: 0})
+	if err := f.ctrl.ReconcileRelayPublication(ctx); err != nil {
+		t.Fatalf("reconcile after the relay was spent: %v", err)
+	}
+	if pushes := f.agent.relayPushes.Load(); pushes != 1 {
+		t.Fatalf("an exhausted relay must not be re-armed, got %d pushes", pushes)
+	}
+	marker, err := f.ctrl.readRelayPublication()
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if marker != relaylinks.HubNodeID+"=direct" {
+		t.Fatalf("marker = %q", marker)
+	}
+
+	// The allowance comes back at the cycle reset, and with it the ruleset.
+	writeSpokeUsage(t, f.hubLayout, monitor.SourceSummary{ID: "aa11", TotalLimitBytes: 100, TotalRemainingBytes: 100})
+	if err := f.ctrl.ReconcileRelayPublication(ctx); err != nil {
+		t.Fatalf("reconcile after the reset: %v", err)
+	}
+	if pushes := f.agent.relayPushes.Load(); pushes != 2 {
+		t.Fatalf("a recovered relay should be installed again, got %d pushes", pushes)
+	}
+}
+
 func TestReconcileRelayPublicationIsANoOpWithoutLinks(t *testing.T) {
 	f := newRelayFleet(t)
 	if err := f.ctrl.ReconcileRelayPublication(context.Background()); err != nil {
