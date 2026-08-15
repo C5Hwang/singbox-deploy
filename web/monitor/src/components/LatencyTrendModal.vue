@@ -110,11 +110,11 @@ function trackData(targetId: string): [number, number | null][] {
 const spanLabel = computed(() => {
   const series = history.value;
   const span = recorded.value;
-  if (!series || !span) return "no rounds recorded yet";
+  if (!series || !span) return "no rounds yet";
   const hours = ((span[1] - span[0]) * series.step) / 3600;
-  if (hours < 1) return "every minute · under an hour";
-  if (hours < 48) return `every minute · last ${Math.round(hours)} h`;
-  return `every minute · last ${Math.round(hours / 24)} days`;
+  if (hours < 1) return "under an hour";
+  if (hours < 48) return `last ${Math.round(hours)} h`;
+  return `last ${Math.round(hours / 24)} days`;
 });
 
 function buildOption(): any {
@@ -186,9 +186,7 @@ const { chartRef, loading } = useTrendChart(
       <div class="modal-header">
         <div>
           <h2 class="modal-title">{{ nodeName }}</h2>
-          <p class="modal-subtitle">
-            {{ shownTargets.length }} of {{ allTargets.length }} probes · {{ spanLabel }}
-          </p>
+          <p class="modal-subtitle">Carrier probes · {{ spanLabel }}</p>
         </div>
         <div class="modal-controls">
           <PeakAverageToggle v-model="showPeakAverage" />
