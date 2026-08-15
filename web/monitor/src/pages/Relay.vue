@@ -138,8 +138,12 @@ function pairCount(node: RelayNode): string {
 
 <template>
   <p v-if="loading && relays.length === 0" class="no-data">Loading relay latency data...</p>
+  <!-- The navigation only offers this page once something is relayed, so an
+       empty one means the relays exist but none of them has reported a round —
+       most often because the relay's own monitor is switched off. -->
   <p v-else-if="relays.length === 0" class="no-data">
-    No node is relaying. A relay measures the route to each landing node it forwards to, and its readings appear here.
+    No relay is reporting yet. A relay measures the route to each landing node it forwards to, and its readings appear
+    here once its monitor has run a round.
   </p>
 
   <div v-if="relays.length" class="scale">

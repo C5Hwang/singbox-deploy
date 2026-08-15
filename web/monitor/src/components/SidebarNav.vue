@@ -4,6 +4,9 @@ import type { Tab } from "../types";
 defineProps<{
   activeTab: Tab;
   sourceCount: number;
+  // showRelay is false on a fleet where nothing is relayed, which is most of
+  // them: an entry that only ever leads to an empty page is worse than no entry.
+  showRelay: boolean;
 }>();
 defineEmits<{
   "update:activeTab": [value: Tab];
@@ -71,6 +74,7 @@ defineEmits<{
     </a>
 
     <a
+      v-if="showRelay"
       class="nav-item"
       :class="{ active: activeTab === 'relay' }"
       href="#"

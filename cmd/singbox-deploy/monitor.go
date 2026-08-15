@@ -20,6 +20,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/relay"
+	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 )
 
 // runMonitor dispatches the "monitor serve" subcommand that runs the long-lived
@@ -104,7 +105,17 @@ func runMonitor(args []string) error {
 		// A hub that relays for other nodes measures the route to each of
 		// them, on the same schedule as the carrier probes.
 		ExtraPingTargets: relay.PingTargets(layout),
-		Now:              now,
+		// The registry is the fleet's answer to "is anything relayed", and the
+		// dashboard hides its relay page entirely when nothing is.
+		RelayLinkCount: func() int {
+			links, err := relaylinks.Load(layout)
+			if err != nil {
+				log.Printf("monitor: read relay links: %v", err)
+				return 0
+			}
+			return len(links)
+		},
+		Now: now,
 	}
 	m := monitor.New(store, cfg, relay.NewQuotaController(systemdSingBox{}, layout, "/usr/bin/singbox-deploy"))
 

@@ -195,6 +195,10 @@ export interface Summary {
   resetTime: string;
   resources?: ResourceSnapshot;
   sources?: SourceSummary[];
+  // How many nodes are fronted by a relay. Zero means the fleet has no relay
+  // topology at all, and the dashboard drops the relay page rather than
+  // offering one that can only ever say "nothing here".
+  relayLinks?: number;
 }
 
 // Overview-card metric opened in the all-sources trend modal.

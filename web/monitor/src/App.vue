@@ -84,6 +84,18 @@ function unlock(token: string) {
 }
 
 const sourceCount = computed(() => summary.value?.sources?.length ?? 0);
+
+// The relay page is offered only once something is actually relayed. Until the
+// first summary lands the count is unknown, and an entry that appears a moment
+// after the page settles reads as a glitch — so it stays hidden until asked for.
+const showRelay = computed(() => (summary.value?.relayLinks ?? 0) > 0);
+
+// A relay link removed while the page is open would leave the dashboard on a
+// tab its navigation no longer offers, with no way back to it.
+watchEffect(() => {
+  if (!showRelay.value && activeTab.value === "relay") activeTab.value = "traffic";
+});
+
 const pageTitle = computed(() => PAGE_TITLES[activeTab.value]);
 
 const subtitle = computed(() => {
@@ -105,7 +117,7 @@ onUnmounted(stopPolling);
   <TokenGate v-else-if="shell === 'locked'" :rejectedAt="tokenRejectedAt" @submit="unlock" />
 
   <div v-else class="app">
-    <SidebarNav v-model:activeTab="activeTab" :sourceCount="sourceCount" />
+    <SidebarNav v-model:activeTab="activeTab" :sourceCount="sourceCount" :showRelay="showRelay" />
 
     <main class="main">
       <header class="topbar">
@@ -119,7 +131,7 @@ onUnmounted(stopPolling);
             <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">Resources</button>
             <button :class="{ active: activeTab === 'topips' }" @click="activeTab = 'topips'">Clients</button>
             <button :class="{ active: activeTab === 'latency' }" @click="activeTab = 'latency'">Latency</button>
-            <button :class="{ active: activeTab === 'relay' }" @click="activeTab = 'relay'">Relay</button>
+            <button v-if="showRelay" :class="{ active: activeTab === 'relay' }" @click="activeTab = 'relay'">Relay</button>
           </div>
           <TimezonePicker />
         </div>
@@ -129,7 +141,7 @@ onUnmounted(stopPolling);
       <Resources v-if="activeTab === 'resources'" :summary="summary" :error="error" />
       <TopIPs v-if="activeTab === 'topips'" :summary="summary" />
       <Latency v-if="activeTab === 'latency'" :summary="summary" />
-      <Relay v-if="activeTab === 'relay'" :summary="summary" />
+      <Relay v-if="activeTab === 'relay' && showRelay" :summary="summary" />
 
       <p class="footer-note">{{ error ? 'Some data is unavailable. Refresh again later.' : '' }}</p>
     </main>

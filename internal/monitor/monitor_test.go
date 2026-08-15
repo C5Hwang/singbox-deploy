@@ -72,6 +72,40 @@ func TestSummaryServesSnapshotWithoutRefreshing(t *testing.T) {
 	}
 }
 
+// The dashboard hides its relay page unless something is relayed, and this is
+// the only thing that tells it so: whether a node is fronted is a fact about
+// the hub's registry, not about any node's traffic.
+func TestSummaryReportsTheRelayLinkCount(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))
+	if err != nil {
+		t.Fatalf("OpenStore error: %v", err)
+	}
+	defer store.Close()
+
+	read := func(cfg Config) summary {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		New(store, cfg, nil).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var got summary
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode summary: %v", err)
+		}
+		return got
+	}
+
+	if got := read(Config{Alias: "local", RelayLinkCount: func() int { return 2 }}); got.RelayLinks != 2 {
+		t.Fatalf("relayLinks = %d, want 2", got.RelayLinks)
+	}
+	// A spoke's own monitor has no registry to ask, and neither does a hub
+	// running a unit written before relaying existed.
+	if got := read(Config{Alias: "local"}); got.RelayLinks != 0 {
+		t.Fatalf("relayLinks without a registry = %d, want 0", got.RelayLinks)
+	}
+}
+
 func TestSummaryKeepsOldRemoteSnapshotWhenRefreshFails(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(filepath.Join(dir, "monitor.db"))

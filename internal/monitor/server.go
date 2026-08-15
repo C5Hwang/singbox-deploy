@@ -73,7 +73,11 @@ type Config struct {
 	// once per round, so a link added or withdrawn is picked up without a
 	// restart.
 	ExtraPingTargets func() []PingTarget
-	Now              func() time.Time
+	// RelayLinkCount reports how many nodes in the fleet are fronted by a
+	// relay. Only the hub has a relay registry to answer from; a spoke leaves
+	// it nil, and its dashboard simply never offers the relay page.
+	RelayLinkCount func() int
+	Now            func() time.Time
 }
 
 // Monitor samples interface counters, enforces the quota, and serves the API/UI.
@@ -217,6 +221,11 @@ type summary struct {
 	ResetTime           string            `json:"resetTime"`
 	Resources           *ResourceSnapshot `json:"resources,omitempty"`
 	Sources             []SourceSummary   `json:"sources"`
+	// RelayLinks is how many nodes in the fleet are fronted by a relay. The
+	// dashboard uses it to decide whether the relay page is worth offering at
+	// all, which it cannot infer from the sources: whether a node relays is a
+	// fact about the hub's registry, not about any node's traffic.
+	RelayLinks int `json:"relayLinks"`
 }
 
 // SourceSummary is one traffic source shown by the monitor UI.
@@ -291,7 +300,18 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 		ResetTime:           local.ResetTime,
 		Resources:           local.Resources,
 		Sources:             sources,
+		RelayLinks:          m.relayLinkCount(),
 	})
+}
+
+// relayLinkCount reports how many nodes are relayed, or zero on a deployment
+// that has no registry to ask — a spoke's own monitor, or one built before
+// relaying existed.
+func (m *Monitor) relayLinkCount() int {
+	if m.cfg.RelayLinkCount == nil {
+		return 0
+	}
+	return m.cfg.RelayLinkCount()
 }
 
 func (m *Monitor) refreshRemoteSources(ctx context.Context) {
