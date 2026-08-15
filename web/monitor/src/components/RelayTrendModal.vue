@@ -5,8 +5,11 @@ import { buildFrame, lineSeries, withPeakAverage, SOURCE_COLORS } from "../chart
 import { fetchLatencySeries } from "../api";
 import { tzOffsetMinutes } from "../timezone";
 import { useTrendChart } from "../useTrendChart";
-import { carrierTargets, type LatencySnapshot, type PingSeries, type PingTarget } from "../types";
+import { relayTargets, type LatencySnapshot, type PingSeries, type PingTarget } from "../types";
 
+// The week of relay-to-landing rounds for one relay. The pairs are a flat list
+// — one landing node each — so unlike the carrier chart there is one filter
+// group rather than two.
 const props = defineProps<{ nodeKey: string; nodeName: string; snapshot: LatencySnapshot }>();
 const emit = defineEmits<{ close: [] }>();
 
@@ -14,48 +17,22 @@ const showPeakAverage = ref(false);
 const history = ref<PingSeries | null>(null);
 const loadError = ref("");
 
-// This chart is about the fixed probe list; a relay's probes have their own
-// page and are filtered out here the same way the matrix filters them.
-const allTargets = computed(() => carrierTargets(props.snapshot.targets));
-
-// Carriers and cities are filtered independently: the interesting comparisons
-// are one carrier across three cities and one city across three carriers, and a
-// single flat list of nine lines cannot express either.
-const carriers = computed(() => uniqueBy((t) => t.carrier ?? ""));
-const cities = computed(() => uniqueBy((t) => t.city ?? ""));
-
-function uniqueBy(pick: (t: PingTarget) => string): string[] {
-  const seen: string[] = [];
-  for (const target of allTargets.value) {
-    const value = pick(target);
-    if (!seen.includes(value)) seen.push(value);
-  }
-  return seen;
-}
-
-const selectedCarriers = ref<string[]>([...carriers.value]);
-const selectedCities = ref<string[]>([...cities.value]);
+const allTargets = computed(() => relayTargets(props.snapshot.targets));
+const selected = ref<string[]>(allTargets.value.map((t) => t.id));
 
 // Clearing the last box would leave an empty chart with no way back other than
-// guessing which box to tick, so the last one in a group stays on.
-function toggle(group: "carrier" | "city", value: string) {
-  const list = group === "carrier" ? selectedCarriers : selectedCities;
-  if (list.value.includes(value)) {
-    if (list.value.length === 1) return;
-    list.value = list.value.filter((v) => v !== value);
+// guessing which box to tick, so the last one stays on.
+function toggle(id: string) {
+  if (selected.value.includes(id)) {
+    if (selected.value.length === 1) return;
+    selected.value = selected.value.filter((v) => v !== id);
   } else {
-    list.value = [...list.value, value];
+    selected.value = [...selected.value, id];
   }
 }
 
-const shownTargets = computed(() =>
-  allTargets.value.filter(
-    (t) => selectedCarriers.value.includes(t.carrier ?? "") && selectedCities.value.includes(t.city ?? ""),
-  ),
-);
+const shownTargets = computed(() => allTargets.value.filter((t) => selected.value.includes(t.id)));
 
-// The card that opened this modal carries only the newest round, so the week is
-// fetched here — once, on open, rather than on the page's minute poll.
 async function load() {
   try {
     history.value = await fetchLatencySeries(props.nodeKey);
@@ -64,15 +41,10 @@ async function load() {
   }
 }
 
-// The grid the node sends is always a full week, one slot a minute, whether or
-// not anything was recorded in each — that is what makes it a grid. The chart
-// only draws the part of it that was: a node installed yesterday would
-// otherwise get an axis six days of which are empty, which reads as a broken
-// chart rather than as a young one.
-//
-// A round that answered nothing still counts as recorded, so an outage is
-// inside the window as a gap rather than trimmed off the end of it. loss is
-// what says a round happened; ms is null for the ones that answered nothing.
+// The node sends a full week of one-minute slots whether or not anything was
+// recorded in each. Only the recorded part is drawn: a link created yesterday
+// would otherwise get an axis six days of which are empty, which reads as a
+// broken chart rather than as a young one. loss is what says a round happened.
 const recorded = computed<[number, number] | null>(() => {
   const series = history.value;
   if (!series) return null;
@@ -90,9 +62,6 @@ const recorded = computed<[number, number] | null>(() => {
   return first < 0 ? null : [first, last];
 });
 
-// Every round the node recorded, at the minute it recorded it. A slot with no
-// value — a round that answered nothing, or a minute the monitor was not
-// running — becomes a null, which draws as a gap rather than as zero latency.
 function trackData(targetId: string): [number, number | null][] {
   const series = history.value;
   const track = series?.series[targetId];
@@ -105,8 +74,6 @@ function trackData(targetId: string): [number, number | null][] {
   return points;
 }
 
-// What the subtitle claims has to be what the axis shows, so it reports the
-// span that was actually recorded rather than the week that was asked for.
 const spanLabel = computed(() => {
   const series = history.value;
   const span = recorded.value;
@@ -116,6 +83,10 @@ const spanLabel = computed(() => {
   if (hours < 48) return `every minute · last ${Math.round(hours)} h`;
   return `every minute · last ${Math.round(hours / 24)} days`;
 });
+
+function seriesName(target: PingTarget): string {
+  return target.name || target.id;
+}
 
 function buildOption(): any {
   const targets = shownTargets.value;
@@ -156,27 +127,11 @@ function buildOption(): any {
   };
 }
 
-function seriesName(target: PingTarget): string {
-  return `${shortCarrier(target.carrier ?? "")} · ${target.city ?? ""}`;
-}
-
-// The filter chips and the legend both carry the carrier, and "China" on every
-// one of them is three words the reader already knows.
-function shortCarrier(name: string): string {
-  return name.replace(/^China\s+/, "");
-}
-
 function close() {
   emit("close");
 }
 
-const { chartRef, loading } = useTrendChart(
-  load,
-  buildOption,
-  [tzOffsetMinutes, selectedCarriers, selectedCities],
-  close,
-  [showPeakAverage],
-);
+const { chartRef, loading } = useTrendChart(load, buildOption, [tzOffsetMinutes, selected], close, [showPeakAverage]);
 </script>
 
 <template>
@@ -187,7 +142,7 @@ const { chartRef, loading } = useTrendChart(
         <div>
           <h2 class="modal-title">{{ nodeName }}</h2>
           <p class="modal-subtitle">
-            {{ shownTargets.length }} of {{ allTargets.length }} probes · {{ spanLabel }}
+            {{ shownTargets.length }} of {{ allTargets.length }} landing nodes · {{ spanLabel }}
           </p>
         </div>
         <div class="modal-controls">
@@ -197,31 +152,17 @@ const { chartRef, loading } = useTrendChart(
 
       <div class="filters">
         <div class="filter-group">
-          <span class="eyebrow">Carrier</span>
+          <span class="eyebrow">Landing node</span>
           <button
-            v-for="carrier in carriers"
-            :key="carrier"
+            v-for="target in allTargets"
+            :key="target.id"
             type="button"
             class="check"
-            :class="{ on: selectedCarriers.includes(carrier) }"
-            :aria-pressed="selectedCarriers.includes(carrier)"
-            @click="toggle('carrier', carrier)"
+            :class="{ on: selected.includes(target.id) }"
+            :aria-pressed="selected.includes(target.id)"
+            @click="toggle(target.id)"
           >
-            <i class="tick" aria-hidden="true"></i>{{ shortCarrier(carrier) }}
-          </button>
-        </div>
-        <div class="filter-group">
-          <span class="eyebrow">City</span>
-          <button
-            v-for="city in cities"
-            :key="city"
-            type="button"
-            class="check"
-            :class="{ on: selectedCities.includes(city) }"
-            :aria-pressed="selectedCities.includes(city)"
-            @click="toggle('city', city)"
-          >
-            <i class="tick" aria-hidden="true"></i>{{ city }}
+            <i class="tick" aria-hidden="true"></i>{{ seriesName(target) }}
           </button>
         </div>
       </div>
@@ -240,9 +181,9 @@ const { chartRef, loading } = useTrendChart(
 }
 .filter-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .filter-group .eyebrow { margin: 0 2px 0 0; }
-/* A button with aria-pressed rather than a checkbox: the last chip in a group
-   refuses to switch itself off, and a native checkbox that has already toggled
-   itself in the DOM would be left contradicting the state that refused it. */
+/* A button with aria-pressed rather than a checkbox: the last chip refuses to
+   switch itself off, and a native checkbox that has already toggled itself in
+   the DOM would be left contradicting the state that refused it. */
 .check {
   display: inline-flex; align-items: center; gap: 7px;
   font: inherit; font-size: 13px; font-weight: 650; color: var(--muted); cursor: pointer;

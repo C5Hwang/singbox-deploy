@@ -70,6 +70,21 @@ defineEmits<{
       Latency
     </a>
 
+    <a
+      class="nav-item"
+      :class="{ active: activeTab === 'relay' }"
+      href="#"
+      @click.prevent="$emit('update:activeTab', 'relay')"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="5" cy="12" r="2.5" />
+        <circle cx="19" cy="12" r="2.5" />
+        <path d="M7.5 12h9" />
+        <path d="M14 9l3 3-3 3" />
+      </svg>
+      Relay
+    </a>
+
     <div class="mini-card">
       <strong>Sources {{ sourceCount }}</strong>
     </div>

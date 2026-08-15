@@ -8,19 +8,22 @@ import {
   LOSS_CRITICAL,
   LOSS_WARNING,
 } from "../latencyScale";
-import type { LatencySnapshot, PingLatestPoint, PingTarget } from "../types";
+import { carrierTargets, type LatencySnapshot, type PingLatestPoint, type PingTarget } from "../types";
 
 // One carrier per row, one city per column: the two comparisons an operator
 // actually makes — this carrier across the country, this city across carriers —
 // are a row and a column rather than a search through nine text lines.
 const props = defineProps<{ snapshot: LatencySnapshot }>();
 
-const carriers = computed(() => unique((t) => t.carrier));
-const cities = computed(() => unique((t) => t.city));
+// Only the fixed probe list belongs in this grid. A relay's probes have no
+// carrier and no city, and would each add an empty row and column.
+const targets = computed(() => carrierTargets(props.snapshot.targets));
+const carriers = computed(() => unique((t) => t.carrier ?? ""));
+const cities = computed(() => unique((t) => t.city ?? ""));
 
 function unique(pick: (t: PingTarget) => string): string[] {
   const seen: string[] = [];
-  for (const target of props.snapshot.targets) {
+  for (const target of targets.value) {
     const value = pick(target);
     if (!seen.includes(value)) seen.push(value);
   }
@@ -28,7 +31,7 @@ function unique(pick: (t: PingTarget) => string): string[] {
 }
 
 function latestAt(carrier: string, city: string): PingLatestPoint | undefined {
-  const target = props.snapshot.targets.find((t) => t.carrier === carrier && t.city === city);
+  const target = targets.value.find((t) => t.carrier === carrier && t.city === city);
   return target ? props.snapshot.latest.find((p) => p.target === target.id) : undefined;
 }
 

@@ -4,7 +4,7 @@ import LatencyMatrix from "../components/LatencyMatrix.vue";
 import LatencyTrendModal from "../components/LatencyTrendModal.vue";
 import { fetchLatency } from "../api";
 import { LATENCY_MISSING, LATENCY_STEPS, LOSS_WARNING } from "../latencyScale";
-import type { LatencySnapshot, Summary } from "../types";
+import { carrierTargets, type LatencySnapshot, type PingLatestPoint, type Summary } from "../types";
 
 const props = defineProps<{ summary: Summary | null }>();
 
@@ -66,10 +66,20 @@ onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer);
 });
 
+// This page reports the fixed carrier probes only. A node that also relays runs
+// probes against its landing nodes, and those belong to the relay page — folding
+// them in here would move a node's headline for a reason the matrix never shows.
+function carrierLatest(node: NodeLatency): PingLatestPoint[] {
+  const snapshot = node.snapshot;
+  if (!snapshot) return [];
+  const ids = new Set(carrierTargets(snapshot.targets).map((t) => t.id));
+  return snapshot.latest.filter((p) => ids.has(p.target));
+}
+
 // The card's headline is the node's median reachable probe: a mean would let
 // one black-holed carrier speak for the whole node.
 function medianLatency(node: NodeLatency): number | null {
-  const values = (node.snapshot?.latest ?? [])
+  const values = carrierLatest(node)
     .map((p) => p.avgMs)
     .filter((v): v is number => v !== null)
     .sort((a, b) => a - b);
@@ -95,7 +105,7 @@ function headlineColor(node: NodeLatency): string {
 // The dot is the whole status report: green when every probe answered clean,
 // amber when something is losing packets, red when a route is down.
 function statusTone(node: NodeLatency): string {
-  const latest = node.snapshot?.latest ?? [];
+  const latest = carrierLatest(node);
   if (node.error || latest.length === 0) return "gray";
   if (latest.some((p) => p.lossPct >= 100)) return "danger";
   if (latest.some((p) => p.lossPct > 0)) return "warn";
@@ -103,7 +113,7 @@ function statusTone(node: NodeLatency): string {
 }
 
 function statusLabel(node: NodeLatency): string {
-  const latest = node.snapshot?.latest ?? [];
+  const latest = carrierLatest(node);
   const answering = latest.filter((p) => p.lossPct < 100).length;
   if (node.error) return "unavailable";
   if (latest.length === 0) return "no data";

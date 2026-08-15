@@ -5,6 +5,7 @@ import TimezonePicker from "./components/TimezonePicker.vue";
 import TokenGate from "./components/TokenGate.vue";
 import Latency from "./pages/Latency.vue";
 import NetworkTraffic from "./pages/NetworkTraffic.vue";
+import Relay from "./pages/Relay.vue";
 import Resources from "./pages/Resources.vue";
 import TopIPs from "./pages/TopIPs.vue";
 import { fetchSummary, hasStoredAccessToken, onUnauthorized, setAccessToken, UnauthorizedError } from "./api";
@@ -15,6 +16,7 @@ const PAGE_TITLES: Record<Tab, string> = {
   resources: "Resources",
   topips: "Clients",
   latency: "Latency",
+  relay: "Relay",
 };
 
 const activeTab = ref<Tab>("traffic");
@@ -117,6 +119,7 @@ onUnmounted(stopPolling);
             <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">Resources</button>
             <button :class="{ active: activeTab === 'topips' }" @click="activeTab = 'topips'">Clients</button>
             <button :class="{ active: activeTab === 'latency' }" @click="activeTab = 'latency'">Latency</button>
+            <button :class="{ active: activeTab === 'relay' }" @click="activeTab = 'relay'">Relay</button>
           </div>
           <TimezonePicker />
         </div>
@@ -126,6 +129,7 @@ onUnmounted(stopPolling);
       <Resources v-if="activeTab === 'resources'" :summary="summary" :error="error" />
       <TopIPs v-if="activeTab === 'topips'" :summary="summary" />
       <Latency v-if="activeTab === 'latency'" :summary="summary" />
+      <Relay v-if="activeTab === 'relay'" :summary="summary" />
 
       <p class="footer-note">{{ error ? 'Some data is unavailable. Refresh again later.' : '' }}</p>
     </main>

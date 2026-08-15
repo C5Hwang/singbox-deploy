@@ -48,7 +48,7 @@ export interface ResourceHourlyPoint {
 }
 
 // The dashboard's top-level pages, in sidebar order.
-export type Tab = "traffic" | "resources" | "topips" | "latency";
+export type Tab = "traffic" | "resources" | "topips" | "latency" | "relay";
 
 // One bucket of an address's history, at whichever granularity it was read at.
 export interface IPSeriesPoint {
@@ -104,11 +104,32 @@ export interface IPSort {
   descending: boolean;
 }
 
+// RELAY_TARGET_KIND marks the probes a relay runs against the landing nodes it
+// fronts, so they get their own page instead of appearing as carriers with no
+// carrier and no city.
+export const RELAY_TARGET_KIND = "relay";
+
 export interface PingTarget {
   id: string;
-  carrier: string;
-  city: string;
+  // carrier and city name a probe from the fixed list. A relay probe has
+  // neither and carries name instead.
+  carrier?: string;
+  city?: string;
   address: string;
+  kind?: string;
+  name?: string;
+}
+
+export function isRelayTarget(target: PingTarget): boolean {
+  return target.kind === RELAY_TARGET_KIND;
+}
+
+export function carrierTargets(targets: PingTarget[]): PingTarget[] {
+  return targets.filter((t) => !t.kind);
+}
+
+export function relayTargets(targets: PingTarget[]): PingTarget[] {
+  return targets.filter(isRelayTarget);
 }
 
 // avgMs is null when every probe was lost, which draws as a gap rather than as
