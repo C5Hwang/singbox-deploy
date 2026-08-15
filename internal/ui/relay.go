@@ -478,10 +478,14 @@ func (rm *relayManager) View() string {
 }
 
 func (rm *relayManager) landingPrompt() string {
-	if rm.action == relayActionAdd {
+	switch rm.action {
+	case relayActionAdd:
 		return "Choose the node to be fronted. Its subscription entries will point at the relay you pick next."
+	case relayActionRemove:
+		return "Choose the node to stop fronting. Its subscription entries go back to its own address."
+	default:
+		return "Choose the node whose relay you want to change."
 	}
-	return "Choose the node whose relay you want to change."
 }
 
 func (rm *relayManager) menuView() string {

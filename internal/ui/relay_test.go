@@ -201,6 +201,11 @@ func TestRelayRemoveFlowWithdrawsTheLink(t *testing.T) {
 	rm.Update(keyDownMsg)
 	rm.Update(keyDownMsg) // Remove relay
 	rm.Update(keyEnterMsg)
+	// The picker has to say what it is about to do. Removing and changing are
+	// the same screen, and one of them takes the relay away entirely.
+	if picker := rm.View(); !strings.Contains(picker, "stop fronting") {
+		t.Fatalf("the removal picker should say the relay goes away:\n%s", picker)
+	}
 	rm.Update(keyEnterMsg) // the hub is the only fronted node
 	if rm.phase != relayPhaseConfirm {
 		t.Fatalf("removing should skip the relay picker: phase = %v", rm.phase)
