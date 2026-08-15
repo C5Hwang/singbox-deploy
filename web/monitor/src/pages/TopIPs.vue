@@ -197,12 +197,50 @@ watch([selected, () => sources.value.length], load, { immediate: true });
 let refreshTimer: number | undefined;
 onMounted(() => {
   refreshTimer = window.setInterval(load, 60000);
+  document.addEventListener("click", onDocumentClick);
+  document.addEventListener("keydown", onKeydown);
 });
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer);
+  document.removeEventListener("click", onDocumentClick);
+  document.removeEventListener("keydown", onKeydown);
 });
 
 const cycleLabel = computed(() => (cycleStart.value > 0 ? formatDateTime(cycleStart.value * 1000) : ""));
+
+// The node picker is the same control as the clock in the page corner, so it
+// behaves the same way too: click outside or press Escape to dismiss it.
+const nodeMenuOpen = ref(false);
+const nodeMenuRef = ref<HTMLElement>();
+
+const selectedNodeLabel = computed(() => {
+  if (selected.value === ALL_NODES) return "All nodes";
+  const source = sources.value.find((s) => sourceKey(s) === selected.value);
+  return source?.name ?? selected.value;
+});
+
+function chooseNode(value: string) {
+  selected.value = value;
+  nodeMenuOpen.value = false;
+}
+
+function onDocumentClick(e: MouseEvent) {
+  if (nodeMenuOpen.value && nodeMenuRef.value && !nodeMenuRef.value.contains(e.target as Node)) {
+    nodeMenuOpen.value = false;
+  }
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") nodeMenuOpen.value = false;
+}
+
+// A node that disappears from the fleet would otherwise leave the table filtered
+// to nothing with a chip naming a node that is gone.
+watch(sources, (list) => {
+  if (selected.value !== ALL_NODES && !list.some((s) => sourceKey(s) === selected.value)) {
+    selected.value = ALL_NODES;
+  }
+});
 
 // The modal drills into whichever nodes the table is currently showing, so the
 // chart it opens describes the same numbers the row does.
@@ -214,18 +252,55 @@ const modalSources = computed(() =>
 <template>
   <section class="grid">
     <article class="card span-12 topips-head">
-      <div>
-        <p class="eyebrow">Busiest first</p>
+      <div class="head-figures">
         <p class="metric-value small">{{ rows.length }} client address{{ rows.length === 1 ? "" : "es" }}</p>
         <p v-if="cycleLabel" class="metric-detail">Cycle from {{ cycleLabel }}</p>
       </div>
-      <label class="picker">
-        <span class="eyebrow">Node</span>
-        <select v-model="selected">
-          <option :value="ALL_NODES">All nodes</option>
-          <option v-for="source in sources" :key="sourceKey(source)" :value="sourceKey(source)">{{ source.name }}</option>
-        </select>
-      </label>
+
+      <!-- Same dropdown as the clock in the corner: a chip carrying the current
+           value, and a popover headed by what is being chosen. -->
+      <div ref="nodeMenuRef" class="menu-picker">
+        <button
+          class="chip menu-chip"
+          :class="{ open: nodeMenuOpen }"
+          aria-haspopup="listbox"
+          :aria-expanded="nodeMenuOpen"
+          aria-label="Node"
+          @click="nodeMenuOpen = !nodeMenuOpen"
+        >
+          {{ selectedNodeLabel }}
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6l4 4 4-4" />
+          </svg>
+        </button>
+
+        <div v-if="nodeMenuOpen" class="menu-pop" role="listbox" aria-label="Node">
+          <div class="menu-pop-head">Node</div>
+          <div class="menu-pop-list">
+            <button
+              class="menu-option"
+              role="option"
+              :aria-selected="selected === ALL_NODES"
+              :class="{ active: selected === ALL_NODES }"
+              @click="chooseNode(ALL_NODES)"
+            >
+              All nodes
+              <span class="menu-note">{{ sources.length }}</span>
+            </button>
+            <button
+              v-for="source in sources"
+              :key="sourceKey(source)"
+              class="menu-option"
+              role="option"
+              :aria-selected="selected === sourceKey(source)"
+              :class="{ active: selected === sourceKey(source) }"
+              @click="chooseNode(sourceKey(source))"
+            >
+              {{ source.name }}
+            </button>
+          </div>
+        </div>
+      </div>
     </article>
   </section>
 
@@ -344,13 +419,20 @@ const modalSources = computed(() =>
 </template>
 
 <style scoped>
-.topips-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
-.picker { display: flex; flex-direction: column; gap: 7px; }
-.picker select {
-  border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px;
-  background: white; color: var(--text); font: inherit; font-size: 14px; font-weight: 650;
-  min-width: 180px; cursor: pointer;
+/* The count is the headline and the cycle is its footnote; the picker sits
+   opposite, centred against the pair rather than pinned to the baseline of a
+   label it no longer has.
+
+   The card is raised because every .card carries an animation that affects
+   transform, which makes it a stacking context: without this the picker's
+   popover is trapped inside this card and the table card — a later sibling —
+   paints straight over it, however high the popover's own z-index is. */
+.topips-head {
+  position: relative; z-index: 5;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px;
 }
+.head-figures { min-width: 0; }
+.head-figures .metric-detail { margin-top: 5px; }
 .table-card { padding: 8px 8px 12px; overflow: hidden; }
 .table-scroll { overflow-x: auto; }
 /* Fixed layout so the colgroup widths below are the layout, not a hint the
