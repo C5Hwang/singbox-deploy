@@ -624,7 +624,7 @@ func TestMenuUsesFunctionalGroups(t *testing.T) {
 		items []string
 	}{
 		{title: "Deployment", items: []string{"Setup", "Certificate management"}},
-		{title: "Proxy", items: []string{"Protocol settings"}},
+		{title: "Proxy", items: []string{"Protocol settings", "Relay"}},
 		{title: "Services", items: []string{"Subscription settings", "Monitoring"}},
 		{title: "Spoke", items: []string{"Spoke nodes"}},
 		{title: "System", items: []string{"sing-box core", "Self-update", "Uninstall"}},
