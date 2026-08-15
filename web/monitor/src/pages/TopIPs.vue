@@ -440,13 +440,14 @@ const modalSources = computed(() =>
    column and pushed the last group of numbers off the card. */
 .ip-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
 
-/* The header is one solid band rather than two rows of loose text: a tinted
-   surface with rounded top corners, sticky so it stays legible while the reader
-   scrolls a long page, and a firm rule where it meets the rows. Inside it the
+/* The header sits on the card's own surface rather than on a tint of its own:
+   a panel a shade off the card it lives in reads as a separate slab pasted on
+   top. It stays opaque because it is sticky — rows scroll under it — and it is
+   the rule underneath, not a fill, that separates it from them. Inside it the
    window names sit in their own chips over the columns they cover. */
 .ip-table thead th {
   position: sticky; top: 0; z-index: 2;
-  background: #f5f8fd;
+  background: var(--card);
 }
 .band th { padding: 12px 0 2px; border: 0; }
 .band-label { text-align: center; }
@@ -460,8 +461,6 @@ const modalSources = computed(() =>
   letter-spacing: 0.05em; text-transform: uppercase; text-align: left; white-space: nowrap;
   box-shadow: inset 0 -1px 0 #dde5f2;
 }
-.band th:first-child { border-top-left-radius: 14px; }
-.band th:last-child { border-top-right-radius: 14px; }
 .heads th.num { text-align: right; }
 /* Groups are separated by air, not by lines. */
 .ip-table th.lead, .ip-table td.lead { padding-left: 14px; }
