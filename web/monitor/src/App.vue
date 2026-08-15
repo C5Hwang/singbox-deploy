@@ -235,43 +235,68 @@ body {
   line-height: 1; white-space: nowrap;
 }
 
-/* ── Timezone picker ──────────────────────────────────────── */
-.tz-picker { position: relative; }
-.tz-chip {
+/* ── Menu picker ──────────────────────────────────────────────
+   One dropdown vocabulary, used by every picker on the page: a chip carrying
+   the current value and a popover of options headed by what is being chosen.
+   The timezone control and the Clients node control share it by construction
+   rather than by two style blocks that agree today. */
+.menu-picker { position: relative; }
+.menu-chip {
   display: inline-flex; align-items: center; gap: 7px;
   font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
   cursor: pointer; transition: color 0.15s, border-color 0.15s;
 }
-.tz-chip:hover, .tz-chip.open {
+.menu-chip:hover, .menu-chip.open {
   color: var(--blue);
   border-color: color-mix(in srgb, var(--blue), transparent 55%);
 }
-.tz-chip svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform 0.2s; }
-.tz-chip.open svg { transform: rotate(180deg); }
-.tz-menu {
+.menu-chip svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform 0.2s; }
+.menu-chip.open svg { transform: rotate(180deg); }
+.menu-pop {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 600;
   width: 224px; overflow: hidden;
   background: white; border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 18px 45px rgba(18, 32, 64, 0.16);
   animation: fadeIn 0.15s ease;
 }
-.tz-menu-head {
+.menu-pop-head {
   padding: 11px 14px 9px; border-bottom: 1px solid var(--line);
   color: var(--muted); font-size: 11px; font-weight: 750;
   letter-spacing: 0.04em; text-transform: uppercase;
 }
-.tz-menu-list { max-height: 296px; overflow-y: auto; padding: 6px; }
-.tz-option {
+.menu-pop-list { max-height: 296px; overflow-y: auto; padding: 6px; }
+.menu-option {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   width: 100%; border: none; border-radius: 9px; padding: 8px 10px;
   background: transparent; color: var(--text); text-align: left;
   font: inherit; font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums;
   cursor: pointer; transition: background 0.15s, color 0.15s;
 }
-.tz-option:hover { background: #f0f4f8; }
-.tz-option.active { background: #edf4ff; color: var(--blue); }
-.tz-note { color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
-.tz-option.active .tz-note { color: inherit; opacity: 0.75; }
+.menu-option:hover { background: #f0f4f8; }
+.menu-option.active { background: #edf4ff; color: var(--blue); }
+.menu-note { color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.menu-option.active .menu-note { color: inherit; opacity: 0.75; }
+
+/* ── Node status dot ──────────────────────────────────────────
+   A card head reports state as a dot rather than as words the body already
+   spells out. Shared by the latency and relay cards so the two read as the
+   siblings they are. */
+.dot-only {
+  width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0; margin-top: 6px;
+  position: relative;
+}
+.dot-only::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: currentColor; animation: pulseDot 2.4s ease-in-out infinite;
+}
+.dot-only.ok { background: #0ca30c; color: #0ca30c; }
+.dot-only.warn { background: #fab219; color: #fab219; }
+.dot-only.danger { background: #d03b3b; color: #d03b3b; }
+.dot-only.gray { background: #98a2b3; color: #98a2b3; }
+.dot-only.gray::before { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .dot-only::before { animation: none; }
+}
 
 /* ── Grid & Cards ─────────────────────────────────────────── */
 .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 18px; }

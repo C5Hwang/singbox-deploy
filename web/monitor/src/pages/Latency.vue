@@ -186,22 +186,6 @@ function statusLabel(node: NodeLatency): string {
   margin: 0; font-size: 28px; font-weight: 850; line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
-/* The corner carries a state, and a state is a dot. The words that were here
-   said what the matrix underneath already shows. */
-.dot-only {
-  width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0; margin-top: 6px;
-  position: relative;
-}
-.dot-only::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit;
-  background: currentColor; animation: pulseDot 2.4s ease-in-out infinite;
-}
-.dot-only.ok { background: #0ca30c; color: #0ca30c; }
-.dot-only.warn { background: #fab219; color: #fab219; }
-.dot-only.danger { background: #d03b3b; color: #d03b3b; }
-.dot-only.gray { background: #98a2b3; color: #98a2b3; }
-.dot-only.gray::before { animation: none; }
-@media (prefers-reduced-motion: reduce) {
-  .dot-only::before { animation: none; }
-}
+/* The corner carries a state, and a state is a dot. .dot-only itself is global:
+   the relay cards wear the same one. */
 </style>

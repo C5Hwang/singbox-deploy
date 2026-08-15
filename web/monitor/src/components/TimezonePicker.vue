@@ -59,9 +59,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="rootRef" class="tz-picker">
+  <div ref="rootRef" class="menu-picker">
     <button
-      class="chip tz-chip"
+      class="chip menu-chip"
       :class="{ open }"
       aria-haspopup="listbox"
       :aria-expanded="open"
@@ -74,23 +74,23 @@ onUnmounted(() => {
       </svg>
     </button>
 
-    <div v-if="open" class="tz-menu" role="listbox" aria-label="Display timezone">
-      <div class="tz-menu-head">Display Timezone</div>
-      <div class="tz-menu-list">
+    <div v-if="open" class="menu-pop" role="listbox" aria-label="Display timezone">
+      <div class="menu-pop-head">Display Timezone</div>
+      <div class="menu-pop-list">
         <button
-          class="tz-option"
+          class="menu-option"
           role="option"
           :aria-selected="!tzOverridden"
           :class="{ active: !tzOverridden }"
           @click="chooseAuto"
         >
           Auto
-          <span class="tz-note">Browser · {{ detectedLabel }}</span>
+          <span class="menu-note">Browser · {{ detectedLabel }}</span>
         </button>
         <button
           v-for="opt in options"
           :key="opt.minutes"
-          class="tz-option"
+          class="menu-option"
           role="option"
           :aria-selected="tzOverridden && opt.minutes === tzOffsetMinutes"
           :class="{ active: tzOverridden && opt.minutes === tzOffsetMinutes }"
