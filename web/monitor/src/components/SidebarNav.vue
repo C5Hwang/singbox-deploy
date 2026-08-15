@@ -80,11 +80,14 @@ defineEmits<{
       href="#"
       @click.prevent="$emit('update:activeTab', 'relay')"
     >
+      <!-- A waypoint: a route that passes through a node on its way. The rest of
+           this list is built from one circle and a few strokes, so this is too —
+           the old two-dots-and-an-arrowhead was the only glyph here wearing an
+           arrow, and at 19px it read as a "next" button rather than a hop. -->
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="5" cy="12" r="2.5" />
-        <circle cx="19" cy="12" r="2.5" />
-        <path d="M7.5 12h9" />
-        <path d="M14 9l3 3-3 3" />
+        <path d="M3 12h4" />
+        <circle cx="12" cy="12" r="3" />
+        <path d="M17 12h4" />
       </svg>
       Relay
     </a>
