@@ -308,6 +308,83 @@ func TestReconcileRelayPublicationLeavesAnExhaustedRelayWithdrawn(t *testing.T) 
 	}
 }
 
+// A landing node that runs out of traffic has its own sing-box stopped, so the
+// relay in front of it must stop forwarding rather than spend its allowance
+// carrying clients to a dead port — and the published address goes back to the
+// landing node, which is where it will answer again once its cycle resets.
+func TestReconcileRelayPublicationStandsDownAnExhaustedLandingNode(t *testing.T) {
+	f := newRelayFleet(t)
+	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
+		LandingID: "aa11", RelayID: relaylinks.HubNodeID,
+		Forwards: []relaylinks.Forward{
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
+		},
+	}); err != nil {
+		t.Fatalf("Set link: %v", err)
+	}
+	writeSpokeUsage(t, f.hubLayout, monitor.SourceSummary{ID: "aa11", TotalLimitBytes: 100, TotalRemainingBytes: 40})
+
+	relayed, _, _ := f.publish(t)
+	if !strings.Contains(relayed, "@hub.example.com:34568?") {
+		t.Fatalf("the spoke should be fronted while it has traffic left:\n%s", relayed)
+	}
+
+	// The landing node spends its allowance. Its relay has plenty left.
+	writeSpokeUsage(t, f.hubLayout, monitor.SourceSummary{ID: "aa11", TotalLimitBytes: 100, TotalRemainingBytes: 0})
+
+	ctx := context.Background()
+	if err := f.ctrl.ReconcileRelayPublication(ctx); err != nil {
+		t.Fatalf("reconcile after the landing node was spent: %v", err)
+	}
+	marker, err := f.ctrl.readRelayPublication()
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if marker != "aa11=direct" {
+		t.Fatalf("marker = %q", marker)
+	}
+
+	direct, _, _ := f.publish(t)
+	if strings.Contains(direct, ":34568") {
+		t.Fatalf("no relay port should be published for a spent landing node:\n%s", direct)
+	}
+	if !strings.Contains(direct, "@spoke.example.com:8443?") {
+		t.Fatalf("the spoke should be published at its own address:\n%s", direct)
+	}
+
+	// And the ruleset the relay is told to run no longer mentions it at all,
+	// so the forwarding ports are closed rather than pointed at a dead port.
+	links, err := relaylinks.Load(f.hubLayout)
+	if err != nil {
+		t.Fatalf("Load links: %v", err)
+	}
+	endpoints, err := f.ctrl.RelayEndpoints()
+	if err != nil {
+		t.Fatalf("RelayEndpoints: %v", err)
+	}
+	cfg, err := f.ctrl.RelayConfigFor(relaylinks.HubNodeID, links, endpoints)
+	if err != nil {
+		t.Fatalf("RelayConfigFor: %v", err)
+	}
+	if !cfg.Empty() {
+		t.Fatalf("the relay should forward nothing for a spent landing node: %#v", cfg.Landings)
+	}
+
+	// The landing node's cycle resets and the relay picks it back up.
+	writeSpokeUsage(t, f.hubLayout, monitor.SourceSummary{ID: "aa11", TotalLimitBytes: 100, TotalRemainingBytes: 100})
+	restored, _, _ := f.publish(t)
+	if !strings.Contains(restored, "@hub.example.com:34568?") {
+		t.Fatalf("the relay should front it again after its reset:\n%s", restored)
+	}
+	cfg, err = f.ctrl.RelayConfigFor(relaylinks.HubNodeID, links, endpoints)
+	if err != nil {
+		t.Fatalf("RelayConfigFor after the reset: %v", err)
+	}
+	if len(cfg.Landings) != 1 {
+		t.Fatalf("the ruleset should carry it again: %#v", cfg.Landings)
+	}
+}
+
 func TestReconcileRelayPublicationIsANoOpWithoutLinks(t *testing.T) {
 	f := newRelayFleet(t)
 	if err := f.ctrl.ReconcileRelayPublication(context.Background()); err != nil {

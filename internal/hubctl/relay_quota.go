@@ -22,11 +22,12 @@ import (
 // is what keeps a periodic reconcile from doing that on every tick.
 const relayPublicationFile = "relay_publication"
 
-// RelayAvailable reports whether a relay is currently carrying traffic. A relay
-// that has used up its quota is not: its monitor stops it forwarding, so a
-// landing node published under its address would be unreachable until the
-// cycle resets. Anything the hub has no usage figures for counts as available,
-// because the alternative is withdrawing a relay that is working fine.
+// RelayAvailable reports whether a node still has traffic to spend. It answers
+// for both ends of a relay link: a relay that has used up its quota stops
+// forwarding, and a landing node that has used up its own is not answering
+// anyway, so in both cases the link has to be stood down until the cycle
+// resets. Anything the hub has no usage figures for counts as available,
+// because the alternative is withdrawing a link that is working fine.
 func (c *Controller) RelayAvailable() (func(relayID string) bool, error) {
 	c.defaults()
 	exhausted := make(map[string]bool, 8)

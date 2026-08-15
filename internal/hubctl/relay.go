@@ -169,8 +169,19 @@ func spokeProtocolPort(n nodes.Node, protocol config.Protocol) int {
 // RelayConfigFor assembles the complete data-plane job relayNodeID performs,
 // from the relay registry and each landing node's current address. It is the
 // full job rather than one link, because a relay's ruleset is replaced whole.
+//
+// A landing node that is out of quota is left out: its own monitor has stopped
+// its sing-box, so forwarding to it would spend the relay's allowance on
+// connections that die at the far end. It comes back at the landing node's
+// cycle reset, which the reconcile pass notices.
 func (c *Controller) RelayConfigFor(relayNodeID string, links []relaylinks.Link, endpoints []RelayEndpoint) (relay.Config, error) {
 	c.defaults()
+	// An unreadable snapshot means "no evidence anything is spent", which is
+	// the same benefit of the doubt the publication side gives.
+	available, err := c.RelayAvailable()
+	if err != nil {
+		available = func(string) bool { return true }
+	}
 	var cfg relay.Config
 	for _, link := range relaylinks.ServedBy(links, relayNodeID) {
 		landing, ok := RelayEndpointByID(endpoints, link.LandingID)
@@ -179,6 +190,9 @@ func (c *Controller) RelayConfigFor(relayNodeID string, links []relaylinks.Link,
 		}
 		if landing.Domain == "" {
 			return relay.Config{}, fmt.Errorf("landing node %s has no domain to forward to", landing.Name)
+		}
+		if !available(link.LandingID) {
+			continue
 		}
 		forwards := make([]relay.Forward, 0, len(link.Forwards))
 		for _, f := range link.Forwards {
@@ -264,9 +278,13 @@ func (c *Controller) ApplyRelay(ctx context.Context, relayNodeID string, cfg rel
 
 // RelayRewrites returns, per landing node ID, the endpoint rewrite that
 // redirects that node's published address to the relay fronting it. available
-// reports whether a relay is currently carrying traffic; a landing node whose
-// relay is not available is left out, so its own address is published again.
-// A nil predicate treats every installed relay as available.
+// reports whether a node still has traffic to spend; a landing node whose relay
+// is not available is left out, so its own address is published again. A nil
+// predicate treats every installed relay as available.
+//
+// A landing node that is itself out of quota is also left out. It is off the
+// air either way, and pointing its clients at the relay would only spend the
+// relay's allowance carrying them to a stopped sing-box.
 //
 // A relay that is not installed is never used: its ruleset cannot be there, so
 // publishing its address would black-hole the landing node.
@@ -281,7 +299,7 @@ func RelayRewrites(links []relaylinks.Link, endpoints []RelayEndpoint, available
 		if !ok || !relayNode.Installed || relayNode.Domain == "" {
 			continue
 		}
-		if available != nil && !available(link.RelayID) {
+		if available != nil && (!available(link.RelayID) || !available(link.LandingID)) {
 			continue
 		}
 		// The landing node's own port is read from its current state, so a
