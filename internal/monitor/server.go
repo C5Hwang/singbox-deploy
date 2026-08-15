@@ -68,7 +68,12 @@ type Config struct {
 	// browser never receives overlay addresses or bearer tokens. The values are
 	// this process's own, not the caller's.
 	FetchRemoteData func(ctx context.Context, sourceID, path string, query url.Values) ([]byte, error)
-	Now             func() time.Time
+	// ExtraPingTargets contributes latency probe destinations beyond the fixed
+	// carrier list — on a relay, one per landing node it fronts. It is called
+	// once per round, so a link added or withdrawn is picked up without a
+	// restart.
+	ExtraPingTargets func() []PingTarget
+	Now              func() time.Time
 }
 
 // Monitor samples interface counters, enforces the quota, and serves the API/UI.
@@ -133,7 +138,7 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 		cfg:           cfg,
 		control:       control,
 		resCollector:  NewResourceCollector("/"),
-		pingCollector: NewPingCollector(),
+		pingCollector: newPingCollectorWithExtra(cfg.ExtraPingTargets),
 		ipAccounting:  NewIPAccounting(),
 	}
 	if m.ipAccounting == nil {

@@ -101,7 +101,10 @@ func runMonitor(args []string) error {
 			}
 			return ctrl.MonitorData(ctx, sourceID, endpoint, query.Get("ip"))
 		},
-		Now: now,
+		// A hub that relays for other nodes measures the route to each of
+		// them, on the same schedule as the carrier probes.
+		ExtraPingTargets: relay.PingTargets(layout),
+		Now:              now,
 	}
 	m := monitor.New(store, cfg, relay.NewQuotaController(systemdSingBox{}, layout, "/usr/bin/singbox-deploy"))
 

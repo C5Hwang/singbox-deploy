@@ -37,6 +37,51 @@ func TestCollectDropsFailedProbes(t *testing.T) {
 	}
 }
 
+// A relay contributes one probe per landing node it fronts, and the list is
+// read per round so a link added or withdrawn takes effect without a restart.
+func TestCollectSamplesRuntimeTargetsToo(t *testing.T) {
+	avg := 7.5
+	extra := []PingTarget{{ID: "relay:aa11", Kind: "relay", Name: "HK", Address: "192.0.2.9:443"}}
+	c := &PingCollector{
+		targets: []PingTarget{{ID: "telecom-beijing", Address: "192.0.2.1:80"}},
+		extra:   func() []PingTarget { return extra },
+		probe: func(context.Context, string) (PingSample, error) {
+			return PingSample{AvgMS: &avg}, nil
+		},
+	}
+	if got := c.Collect(context.Background()); len(got) != 2 || got["relay:aa11"].AvgMS == nil {
+		t.Fatalf("samples = %#v", got)
+	}
+	if targets := c.Targets(); len(targets) != 2 || targets[1].Kind != "relay" || targets[1].Name != "HK" {
+		t.Fatalf("targets = %#v", targets)
+	}
+
+	extra = nil
+	if got := c.Collect(context.Background()); len(got) != 1 {
+		t.Fatalf("a withdrawn relay link should stop being probed: %#v", got)
+	}
+}
+
+// Two entries for one target would each overwrite the other's sample, so a
+// runtime target that repeats a fixed one is dropped rather than sampled twice.
+func TestTargetsDropDuplicatesAndIncompleteEntries(t *testing.T) {
+	c := &PingCollector{
+		targets: []PingTarget{{ID: "telecom-beijing", Address: "192.0.2.1:80"}},
+		extra: func() []PingTarget {
+			return []PingTarget{
+				{ID: "telecom-beijing", Address: "192.0.2.9:443"},
+				{ID: "", Address: "192.0.2.9:443"},
+				{ID: "relay:aa11", Address: ""},
+				{ID: "relay:bb22", Address: "192.0.2.8:443"},
+			}
+		},
+	}
+	targets := c.Targets()
+	if len(targets) != 2 || targets[0].Address != "192.0.2.1:80" || targets[1].ID != "relay:bb22" {
+		t.Fatalf("targets = %#v", targets)
+	}
+}
+
 func newLatencyTestMonitor(t *testing.T, now time.Time) *Monitor {
 	t.Helper()
 	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))

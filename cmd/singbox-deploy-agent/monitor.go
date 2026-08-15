@@ -218,7 +218,10 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 		ResetHour:         readInt(store, "reset_hour", deploy.DefaultResetHour),
 		Alias:             readString(store, "monitor_alias", deploy.DefaultMonitorAlias),
 		LocalPositionPath: s.layout.StateDir + "/local_monitor_position",
-		Now:               now,
+		// A spoke that relays for other nodes measures the route to each of
+		// them, on the same schedule as the carrier probes.
+		ExtraPingTargets: relay.PingTargets(s.layout),
+		Now:              now,
 	}, nil
 }
 

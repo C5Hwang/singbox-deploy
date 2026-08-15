@@ -32,13 +32,22 @@ const (
 	pingRetention = 7 * 24 * time.Hour
 )
 
-// PingTarget is one latency probe destination: a carrier's node in one city,
-// addressed as host:port.
+// PingTarget is one latency probe destination, addressed as host:port.
+//
+// The fixed list below is a carrier's node in one city. A target contributed at
+// runtime — one landing node this host relays for — carries Kind and Name
+// instead, so the dashboard can tell the two apart and give them their own
+// panels without either side hardcoding the other's list.
 type PingTarget struct {
 	ID      string `json:"id"`
-	Carrier string `json:"carrier"`
-	City    string `json:"city"`
+	Carrier string `json:"carrier,omitempty"`
+	City    string `json:"city,omitempty"`
 	Address string `json:"address"`
+	// Kind is empty for the carrier probes and names the group a runtime
+	// target belongs to.
+	Kind string `json:"kind,omitempty"`
+	// Name labels a runtime target, which has no carrier or city to name it by.
+	Name string `json:"name,omitempty"`
 }
 
 // DefaultPingTargets is the probe list: three carriers by three cities.
@@ -73,6 +82,10 @@ type PingSample struct {
 // PingCollector measures TCP connect latency to the probe targets.
 type PingCollector struct {
 	targets []PingTarget
+	// extra contributes destinations that come and go while the monitor runs,
+	// so a relay link added or withdrawn takes effect on the next round rather
+	// than on the next restart. nil means the fixed list is all there is.
+	extra func() []PingTarget
 	// probe is the test seam. Production opens real connections.
 	probe func(context.Context, string) (PingSample, error)
 }
@@ -84,12 +97,37 @@ func NewPingCollector() *PingCollector {
 	return &PingCollector{targets: DefaultPingTargets, probe: tcpPing}
 }
 
-// Targets returns the probe list this collector samples.
+// newPingCollectorWithExtra returns a collector that also samples whatever
+// extra contributes on each round.
+func newPingCollectorWithExtra(extra func() []PingTarget) *PingCollector {
+	c := NewPingCollector()
+	c.extra = extra
+	return c
+}
+
+// Targets returns the probe list for this moment: the fixed carrier list plus
+// whatever the runtime contributes. A duplicate ID is dropped, because two
+// entries for one target would each overwrite the other's sample.
 func (c *PingCollector) Targets() []PingTarget {
 	if c == nil {
 		return nil
 	}
-	return c.targets
+	if c.extra == nil {
+		return c.targets
+	}
+	seen := make(map[string]struct{}, len(c.targets))
+	targets := make([]PingTarget, 0, len(c.targets))
+	for _, target := range append(append([]PingTarget(nil), c.targets...), c.extra()...) {
+		if target.ID == "" || target.Address == "" {
+			continue
+		}
+		if _, duplicate := seen[target.ID]; duplicate {
+			continue
+		}
+		seen[target.ID] = struct{}{}
+		targets = append(targets, target)
+	}
+	return targets
 }
 
 // Collect probes every target. The probes run concurrently so one unreachable
@@ -100,9 +138,12 @@ func (c *PingCollector) Collect(ctx context.Context) map[string]PingSample {
 	if c == nil {
 		return nil
 	}
-	samples := make([]*PingSample, len(c.targets))
+	// The list is read once per round rather than per probe, so every sample in
+	// a round describes the same set of targets.
+	targets := c.Targets()
+	samples := make([]*PingSample, len(targets))
 	var wg sync.WaitGroup
-	for i, target := range c.targets {
+	for i, target := range targets {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -114,8 +155,8 @@ func (c *PingCollector) Collect(ctx context.Context) map[string]PingSample {
 		}()
 	}
 	wg.Wait()
-	out := make(map[string]PingSample, len(c.targets))
-	for i, target := range c.targets {
+	out := make(map[string]PingSample, len(targets))
+	for i, target := range targets {
 		if samples[i] != nil {
 			out[target.ID] = *samples[i]
 		}
