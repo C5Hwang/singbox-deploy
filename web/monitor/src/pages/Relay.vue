@@ -71,6 +71,12 @@ onUnmounted(() => {
 interface Pair {
   id: string;
   name: string;
+  // host is the landing node's own address, which is what the relay forwards
+  // to and what the client's SNI still names. The probe port is dropped: it is
+  // always the same one and says nothing about this pair.
+  host: string;
+  ms: number | null;
+  loss: number | null;
   text: string;
   lossText: string;
   style: Record<string, string>;
@@ -88,6 +94,9 @@ function pairs(node: RelayNode): Pair[] {
     return {
       id: target.id,
       name,
+      host: target.address.replace(/:\d+$/, ""),
+      ms,
+      loss,
       text,
       // The zero is printed like every other figure: a number that only appears
       // when something is wrong makes its absence ambiguous.
@@ -106,34 +115,72 @@ function pairs(node: RelayNode): Pair[] {
   });
 }
 
-// The card's headline is the relay's median reachable landing node, so one
-// unreachable landing node cannot speak for the whole relay.
-function medianLatency(node: RelayNode): number | null {
-  const ids = new Set(relayTargets(node.snapshot.targets).map((t) => t.id));
-  const values = node.snapshot.latest
-    .filter((p) => ids.has(p.target))
-    .map((p) => p.avgMs)
-    .filter((v): v is number => v !== null)
-    .sort((a, b) => a - b);
+function median(values: number[]): number | null {
   if (values.length === 0) return null;
-  return values[Math.floor((values.length - 1) / 2)];
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) / 2)];
 }
 
-function headline(node: RelayNode): string {
-  const ms = medianLatency(node);
+function msText(ms: number | null): string {
   return ms === null ? "NA" : `${ms.toFixed(ms >= 100 ? 0 : 1)} ms`;
 }
 
-function headlineColor(node: RelayNode): string {
-  const ms = medianLatency(node);
-  if (ms === null) return LATENCY_MISSING.text;
-  return LATENCY_STEPS.find((s) => ms < s.limit)!.text;
+function msColor(ms: number | null): string {
+  return ms === null ? LATENCY_MISSING.text : LATENCY_STEPS.find((s) => ms < s.limit)!.text;
+}
+
+// The card's headline is the relay's median reachable landing node, so one
+// unreachable landing node cannot speak for the whole relay.
+function medianLatency(node: RelayNode): number | null {
+  return median(pairs(node).map((p) => p.ms).filter((v): v is number => v !== null));
 }
 
 function pairCount(node: RelayNode): string {
   const count = relayTargets(node.snapshot.targets).length;
   return `${count} landing node${count === 1 ? "" : "s"}`;
 }
+
+// One dot for the whole relay: green when every landing answered clean, amber
+// when something is losing packets, red when a route is down.
+function statusTone(node: RelayNode): string {
+  const list = pairs(node);
+  if (list.length === 0) return "gray";
+  if (list.some((p) => p.ms === null || (p.loss ?? 0) >= 100)) return "danger";
+  if (list.some((p) => (p.loss ?? 0) > 0)) return "warn";
+  return "ok";
+}
+
+function statusLabel(node: RelayNode): string {
+  const list = pairs(node);
+  const answering = list.filter((p) => p.ms !== null).length;
+  return `${answering} of ${list.length} landing nodes answering`;
+}
+
+// The strip above the cards answers the questions a fleet-wide reader has
+// before they look at any single relay: how much of the fleet is relayed at
+// all, how far the hop is, and whether every pair is currently up.
+const overview = computed(() => {
+  const all = relays.value.flatMap(pairs);
+  const answering = all.filter((p) => p.ms !== null).length;
+  return {
+    relays: relays.value.length,
+    landings: all.length,
+    hop: median(all.map((p) => p.ms).filter((v): v is number => v !== null)),
+    worst: all.length ? Math.max(...all.map((p) => p.ms ?? Infinity)) : null,
+    answering,
+  };
+});
+
+const worstText = computed(() => {
+  const worst = overview.value.worst;
+  if (worst === null) return "";
+  return worst === Infinity ? "one landing node is not answering" : `slowest pair ${msText(worst)}`;
+});
+
+// A lone relay takes the full row rather than sitting in half of one with the
+// other half blank; its pairs then lay out as a grid instead of one long
+// column, so a wide card fills with content rather than with air.
+const cardSpan = computed(() => (relays.value.length === 1 ? "span-12" : "span-6"));
 </script>
 
 <template>
@@ -146,43 +193,96 @@ function pairCount(node: RelayNode): string {
     here once its monitor has run a round.
   </p>
 
-  <div v-if="relays.length" class="scale">
-    <span>faster</span>
-    <i v-for="step in LATENCY_STEPS" :key="step.fill" :style="{ background: step.fill }"></i>
-    <span>slower</span>
-    <em class="scale-loss"><i :style="{ background: LOSS_WARNING }"></i>packet loss</em>
-  </div>
-
-  <section class="grid" aria-label="relay to landing latency">
-    <article
-      v-for="node in relays"
-      :key="node.key"
-      class="card span-6 node-card clickable"
-      title="Open the relay latency trend"
-      @click="openRelay = node"
-    >
-      <div class="head">
-        <div class="node-title">
-          <p class="node-name">{{ node.name }}</p>
-          <p class="node-latency" :style="{ color: headlineColor(node) }">{{ headline(node) }}</p>
+  <template v-if="relays.length">
+    <section class="grid" aria-label="relay overview">
+      <article class="card metric-card span-3">
+        <div class="metric-head">
+          <div>
+            <p class="eyebrow">Relays</p>
+            <p class="metric-value">{{ overview.relays }}</p>
+            <p class="metric-detail">carrying other nodes' traffic</p>
+          </div>
         </div>
-        <span class="pair-count">{{ pairCount(node) }}</span>
-      </div>
+      </article>
 
-      <div class="pairs" role="table" aria-label="Latency to each landing node, milliseconds">
-        <div v-for="pair in pairs(node)" :key="pair.id" class="pair" role="row">
-          <span class="pair-name" role="rowheader" :title="pair.name">{{ pair.name }}</span>
-          <span class="cell" :style="pair.style" :title="pair.title" role="cell">
-            <span class="value">{{ pair.text }}</span>
-            <span class="loss">
-              <i class="track" aria-hidden="true"><i class="fill"></i></i>
-              <span class="pct">{{ pair.lossText }}</span>
+      <article class="card metric-card span-3">
+        <div class="metric-head">
+          <div>
+            <p class="eyebrow">Fronted nodes</p>
+            <p class="metric-value">{{ overview.landings }}</p>
+            <p class="metric-detail">published under a relay address</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="card metric-card span-3">
+        <div class="metric-head">
+          <div>
+            <p class="eyebrow">Median hop</p>
+            <p class="metric-value" :style="{ color: msColor(overview.hop) }">{{ msText(overview.hop) }}</p>
+            <p class="metric-detail">{{ worstText }}</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="card metric-card span-3">
+        <div class="metric-head">
+          <div>
+            <p class="eyebrow">Answering</p>
+            <p class="metric-value" :class="{ degraded: overview.answering < overview.landings }">
+              {{ overview.answering }} / {{ overview.landings }}
+            </p>
+            <p class="metric-detail">pairs reached on the last round</p>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <div class="scale">
+      <span>faster</span>
+      <i v-for="step in LATENCY_STEPS" :key="step.fill" :style="{ background: step.fill }"></i>
+      <span>slower</span>
+      <em class="scale-loss"><i :style="{ background: LOSS_WARNING }"></i>packet loss</em>
+    </div>
+
+    <section class="grid sources" aria-label="relay to landing latency">
+      <article
+        v-for="node in relays"
+        :key="node.key"
+        class="card node-card clickable"
+        :class="cardSpan"
+        title="Open the relay latency trend"
+        @click="openRelay = node"
+      >
+        <div class="head">
+          <div class="node-title">
+            <p class="node-name">{{ node.name }}</p>
+            <p class="node-latency" :style="{ color: msColor(medianLatency(node)) }">{{ msText(medianLatency(node)) }}</p>
+          </div>
+          <div class="head-side">
+            <span class="pair-count">{{ pairCount(node) }}</span>
+            <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
+          </div>
+        </div>
+
+        <div class="pairs" role="table" aria-label="Latency to each landing node, milliseconds">
+          <div v-for="pair in pairs(node)" :key="pair.id" class="pair" role="row">
+            <span class="pair-title" role="rowheader">
+              <span class="pair-name" :title="pair.name">{{ pair.name }}</span>
+              <span class="pair-host" :title="pair.host">{{ pair.host }}</span>
             </span>
-          </span>
+            <span class="cell" :style="pair.style" :title="pair.title" role="cell">
+              <span class="value">{{ pair.text }}</span>
+              <span class="loss">
+                <i class="track" aria-hidden="true"><i class="fill"></i></i>
+                <span class="pct">{{ pair.lossText }}</span>
+              </span>
+            </span>
+          </div>
         </div>
-      </div>
-    </article>
-  </section>
+      </article>
+    </section>
+  </template>
 
   <RelayTrendModal
     v-if="openRelay"
@@ -196,14 +296,20 @@ function pairCount(node: RelayNode): string {
 <style scoped>
 .scale {
   display: flex; align-items: center; gap: 6px;
-  margin: 0 2px 12px; color: var(--muted); font-size: 11px; font-weight: 700;
+  margin: 18px 2px 12px; color: var(--muted); font-size: 11px; font-weight: 700;
   letter-spacing: 0.03em; text-transform: uppercase;
 }
 .scale i { width: 26px; height: 7px; border-radius: 2px; }
 .scale-loss { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; font-style: normal; }
 .scale-loss i { width: 18px; height: 4px; border-radius: 999px; }
+/* The strip is four readings of the same subject, so all four cards are the
+   same shape. The metric cards elsewhere carry a quota bar; none of these four
+   has a denominator worth drawing, and a bar on one of them would read as the
+   odd one out rather than as information. */
+.degraded { color: var(--yellow); }
 .node-card { display: flex; flex-direction: column; }
 .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.head-side { display: flex; align-items: flex-start; gap: 10px; }
 .node-name {
   margin: 0 0 6px; color: var(--text); font-size: 13px; font-weight: 800;
   letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;
@@ -216,12 +322,29 @@ function pairCount(node: RelayNode): string {
   color: var(--muted); font-size: 11px; font-weight: 750;
   letter-spacing: 0.03em; text-transform: uppercase; margin-top: 4px; white-space: nowrap;
 }
-.pairs { display: flex; flex-direction: column; gap: 5px; margin-top: 16px; }
 /* One row per pair rather than a matrix: the landing nodes are a list, not two
-   axes, and their names are long enough that a column head would truncate. */
+   axes, and their names are long enough that a column head would truncate.
+   The rows flow into as many columns as the card is wide enough for, so a relay
+   with one landing node and a relay with eight both fill their card. */
+/* auto-fill, not auto-fit: fitting two landing nodes to the full width of a
+   wide card stretches each track to ~540px and leaves a name a third of a
+   screen from its own reading. Fixed-ish tracks keep the pair legible and cost
+   only a blank track at the end of the last row. */
+.pairs {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 5px 18px; margin-top: 16px;
+}
 .pair { display: grid; grid-template-columns: minmax(0, 1fr) 118px; gap: 10px; align-items: center; }
+/* The landing node's own address sits under its name: it is what the relay
+   forwards to and what the client's SNI still names, so it belongs to the pair
+   rather than to a tooltip. */
+.pair-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pair-name {
   color: var(--text); font-size: 13px; font-weight: 650;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pair-host {
+  color: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cell {
@@ -247,6 +370,7 @@ function pairCount(node: RelayNode): string {
   color: var(--loss-ink);
 }
 @media (max-width: 720px) {
+  .pairs { grid-template-columns: minmax(0, 1fr); }
   .pair { grid-template-columns: minmax(0, 1fr) 104px; }
   .cell { height: 44px; }
   .value { font-size: 14px; }
