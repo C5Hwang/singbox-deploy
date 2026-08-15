@@ -240,7 +240,8 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 		if err != nil {
 			return subscriptionOutputs{}, fmt.Errorf("fetch remote surge %s: %w", remote.Domain, err)
 		}
-		parts, err := remoteSourcePartsFromBodies(remote.Domain, alias, defaultBody, clashBody, singBoxBody, surgeBody)
+		parts, err := remoteSourcePartsFromBodies(remote.Domain, alias, subscription.EndpointRewrite{},
+			defaultBody, clashBody, singBoxBody, surgeBody)
 		if err != nil {
 			return subscriptionOutputs{}, err
 		}
@@ -252,7 +253,7 @@ func (c Config) buildSubscriptionsWithRemotes(ctx context.Context, remotes []Rem
 // remoteSourcePartsFromBodies processes one remote node's four subscription
 // format bodies (default base64, clash fragment, sing-box profile, surge
 // fragment), renaming its nodes to alias. label identifies the source in errors.
-func remoteSourcePartsFromBodies(label, alias string, defaultBody, clashBody, singBoxBody, surgeBody []byte) (subscriptionSourceParts, error) {
+func remoteSourcePartsFromBodies(label, alias string, rewrite subscription.EndpointRewrite, defaultBody, clashBody, singBoxBody, surgeBody []byte) (subscriptionSourceParts, error) {
 	decodedDefault, err := subscription.DecodeBase64(string(defaultBody))
 	if err != nil {
 		return subscriptionSourceParts{}, fmt.Errorf("decode remote default %s: %w", label, err)
@@ -274,11 +275,11 @@ func remoteSourcePartsFromBodies(label, alias string, defaultBody, clashBody, si
 		clashPart:    stripClashHeader(subscription.RenameClashFragment(string(clashBody), alias)),
 		surgePart:    subscription.RenameSurgeFragment(string(surgeBody), alias),
 		outbounds:    remoteOutbounds,
-	}, nil
+	}.rewriteEndpoints(rewrite), nil
 }
 
 // localSubscriptionParts builds the source parts for this node's own outputs.
-func (c Config) localSubscriptionParts(out subscriptionOutputs) (subscriptionSourceParts, error) {
+func (c Config) localSubscriptionParts(out subscriptionOutputs, rewrite subscription.EndpointRewrite) (subscriptionSourceParts, error) {
 	defaultBody, err := subscription.DecodeBase64(out.DefaultBase64)
 	if err != nil {
 		return subscriptionSourceParts{}, err
@@ -292,23 +293,44 @@ func (c Config) localSubscriptionParts(out subscriptionOutputs) (subscriptionSou
 		clashPart:    stripClashHeader(out.ClashFragment),
 		surgePart:    strings.TrimRight(out.SurgeFragment, "\n"),
 		outbounds:    localOutbounds,
-	}, nil
+	}.rewriteEndpoints(rewrite), nil
+}
+
+// rewriteEndpoints redirects every node in these parts through the relay that
+// fronts them. It runs on the assembled parts rather than on each format's
+// generator so one rule covers all four outputs and cannot drift between them.
+func (p subscriptionSourceParts) rewriteEndpoints(rewrite subscription.EndpointRewrite) subscriptionSourceParts {
+	if !rewrite.Valid() {
+		return p
+	}
+	lines := make([]string, 0, len(p.defaultLines))
+	for _, line := range p.defaultLines {
+		lines = append(lines, subscription.RewriteDefaultLinkEndpoint(line, rewrite))
+	}
+	p.defaultLines = lines
+	p.clashPart = subscription.RewriteClashEndpoints(p.clashPart, rewrite)
+	p.surgePart = subscription.RewriteSurgeEndpoints(p.surgePart, rewrite)
+	for _, outbound := range p.outbounds {
+		subscription.RewriteOutboundEndpoint(outbound, rewrite)
+	}
+	return p
 }
 
 // assembleCombinedSubscriptions merges the local node's parts with the remote
 // parts at localPosition and rebuilds every output format.
 func (c Config) assembleCombinedSubscriptions(out subscriptionOutputs, remoteParts []subscriptionSourceParts, localPosition int) (subscriptionOutputs, error) {
-	return c.assembleSourceSubscriptions(out, remoteParts, localPosition, true)
+	return c.assembleSourceSubscriptions(out, remoteParts, localPosition, true, subscription.EndpointRewrite{})
 }
 
 // assembleSourceSubscriptions rebuilds every output format from the remote
 // parts, optionally splicing this node's own parts in at localPosition. A
 // subscription group that does not include the hub passes includeLocal=false
-// and publishes spoke nodes only.
-func (c Config) assembleSourceSubscriptions(out subscriptionOutputs, remoteParts []subscriptionSourceParts, localPosition int, includeLocal bool) (subscriptionOutputs, error) {
+// and publishes spoke nodes only. localRewrite redirects this node's own nodes
+// through the relay fronting it, and is empty when the hub is not relayed.
+func (c Config) assembleSourceSubscriptions(out subscriptionOutputs, remoteParts []subscriptionSourceParts, localPosition int, includeLocal bool, localRewrite subscription.EndpointRewrite) (subscriptionOutputs, error) {
 	ordered := remoteParts
 	if includeLocal {
-		local, err := c.localSubscriptionParts(out)
+		local, err := c.localSubscriptionParts(out, localRewrite)
 		if err != nil {
 			return subscriptionOutputs{}, err
 		}

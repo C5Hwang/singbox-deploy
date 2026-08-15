@@ -14,6 +14,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
+	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -78,10 +79,14 @@ func hubRelayEndpoint(layout paths.Layout, cfg deploy.Config) RelayEndpoint {
 		reserved = append(reserved, identity.ListenPort)
 	}
 	endpoint := RelayEndpoint{
-		ID:        relaylinks.HubNodeID,
-		Name:      strings.TrimSpace(cfg.DisplayName),
-		Domain:    strings.TrimSpace(cfg.Domain),
-		Installed: nodes.HubInstalled(layout),
+		ID:     relaylinks.HubNodeID,
+		Name:   strings.TrimSpace(cfg.DisplayName),
+		Domain: strings.TrimSpace(cfg.Domain),
+		// Reaching here means the hub's own install state loaded, which is the
+		// deployment a relay ruleset would be installed alongside. The separate
+		// hub-and-spoke readiness flag is a different question and is not
+		// recorded at all by an installation that predates it.
+		Installed: true,
 	}
 	for _, protocol := range cfg.EnabledProtocols() {
 		if port := hubProtocolPort(cfg, protocol); port > 0 {
@@ -239,6 +244,40 @@ func (c *Controller) ApplyRelay(ctx context.Context, relayNodeID string, cfg rel
 		return c.NewClient(checked).ApplyRelay(ctx, relayRequest(cfg), log)
 	}
 	return fmt.Errorf("relay node %s not found", relayNodeID)
+}
+
+// RelayRewrites returns, per landing node ID, the endpoint rewrite that
+// redirects that node's published address to the relay fronting it. available
+// reports whether a relay is currently carrying traffic; a landing node whose
+// relay is not available is left out, so its own address is published again.
+// A nil predicate treats every installed relay as available.
+//
+// A relay that is not installed is never used: its ruleset cannot be there, so
+// publishing its address would black-hole the landing node.
+func RelayRewrites(links []relaylinks.Link, endpoints []RelayEndpoint, available func(relayID string) bool) map[string]subscription.EndpointRewrite {
+	rewrites := make(map[string]subscription.EndpointRewrite, len(links))
+	for _, link := range links {
+		landing, ok := RelayEndpointByID(endpoints, link.LandingID)
+		if !ok {
+			continue
+		}
+		relayNode, ok := RelayEndpointByID(endpoints, link.RelayID)
+		if !ok || !relayNode.Installed || relayNode.Domain == "" {
+			continue
+		}
+		if available != nil && !available(link.RelayID) {
+			continue
+		}
+		ports := make(map[int]int, len(link.Forwards))
+		for _, forward := range link.Forwards {
+			ports[forward.TargetPort] = forward.RelayPort
+		}
+		rewrite := subscription.EndpointRewrite{Host: landing.Domain, To: relayNode.Domain, Ports: ports}
+		if rewrite.Valid() {
+			rewrites[link.LandingID] = rewrite
+		}
+	}
+	return rewrites
 }
 
 // ApplyRelayFor installs the job relayNodeID currently owes according to the

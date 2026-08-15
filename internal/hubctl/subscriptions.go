@@ -10,8 +10,10 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
+	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
+	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 )
 
 // spokeSubscriptionCacheDir holds the last successfully fetched subscription
@@ -55,6 +57,12 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// A relayed node is published under its relay's address. Nothing else about
+	// it changes, so the aggregation below is unaware of the difference.
+	rewrites, err := c.relayRewrites()
+	if err != nil {
+		return err
+	}
 
 	var errs []error
 	fetched := make(map[string]deploy.SubscriptionSource, len(list))
@@ -89,6 +97,7 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 			Salt:          g.Salt,
 			IncludeLocal:  g.HasMember(subgroups.HubMemberID),
 			LocalPosition: pos,
+			LocalRewrite:  rewrites[relaylinks.HubNodeID],
 		}
 		// Aliases only have to be distinct within one published subscription, so
 		// each group gets its own labeler. The hub's display name is reserved
@@ -116,6 +125,7 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 				}
 				src.Alias = distinct
 			}
+			src.Rewrite = rewrites[n.ID]
 			spec.Sources = append(spec.Sources, src)
 		}
 		if !spec.PublishesNodes() {
@@ -134,6 +144,25 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	return joinErrors(errs)
+}
+
+// relayRewrites resolves the current relay topology into one endpoint rewrite
+// per fronted node. It is read fresh on every refresh, so a relay that was just
+// added, withdrawn, or ran out of quota is reflected in the next publish
+// without any spoke having to be reconfigured.
+func (c *Controller) relayRewrites() (map[string]subscription.EndpointRewrite, error) {
+	links, err := relaylinks.Load(c.Layout)
+	if err != nil {
+		return nil, fmt.Errorf("load relay links: %w", err)
+	}
+	if len(links) == 0 {
+		return nil, nil
+	}
+	endpoints, err := c.RelayEndpoints()
+	if err != nil {
+		return nil, err
+	}
+	return RelayRewrites(links, endpoints, nil), nil
 }
 
 // EnsureSubscriptionGroups returns the hub's subscription groups, seeding the

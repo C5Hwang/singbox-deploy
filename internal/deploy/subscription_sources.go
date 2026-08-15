@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 )
 
 // SubscriptionSource is one remote node's already-fetched subscription bodies,
@@ -16,6 +17,11 @@ type SubscriptionSource struct {
 	ClashBody   []byte // Clash Meta proxies fragment
 	SingBoxBody []byte // sing-box client profile (nodes extracted from it)
 	SurgeBody   []byte // Surge proxies fragment
+	// Rewrite redirects this node's published address through the relay that
+	// fronts it. It is empty for a node that is served directly, and the node's
+	// name, tag and TLS settings are untouched either way, so a client cannot
+	// tell the two apart.
+	Rewrite subscription.EndpointRewrite
 }
 
 // WriteSubscriptionsWithSources generates subscription outputs aggregating the
@@ -46,6 +52,9 @@ type SubscriptionGroupSpec struct {
 	Sources       []SubscriptionSource
 	IncludeLocal  bool
 	LocalPosition int
+	// LocalRewrite redirects the hub's own nodes through the relay fronting the
+	// hub, the same way each source carries its own.
+	LocalRewrite subscription.EndpointRewrite
 }
 
 // PublishesNodes reports whether this group contributes at least one node.
@@ -97,17 +106,20 @@ func (c Config) buildSubscriptionGroup(spec SubscriptionGroupSpec) (subscription
 	if err != nil {
 		return subscriptionOutputs{}, err
 	}
-	if spec.IncludeLocal && len(spec.Sources) == 0 {
+	// A hub-only group publishes what buildSubscriptions already produced —
+	// unless the hub is itself relayed, in which case its nodes still have to go
+	// through the rewrite the assembly path performs.
+	if spec.IncludeLocal && len(spec.Sources) == 0 && !spec.LocalRewrite.Valid() {
 		return out, nil
 	}
 	remoteParts := make([]subscriptionSourceParts, 0, len(spec.Sources))
 	for _, s := range spec.Sources {
 		label := strings.TrimSpace(s.Alias)
-		parts, err := remoteSourcePartsFromBodies(label, s.Alias, s.DefaultBody, s.ClashBody, s.SingBoxBody, s.SurgeBody)
+		parts, err := remoteSourcePartsFromBodies(label, s.Alias, s.Rewrite, s.DefaultBody, s.ClashBody, s.SingBoxBody, s.SurgeBody)
 		if err != nil {
 			return subscriptionOutputs{}, err
 		}
 		remoteParts = append(remoteParts, parts)
 	}
-	return c.assembleSourceSubscriptions(out, remoteParts, spec.LocalPosition, spec.IncludeLocal)
+	return c.assembleSourceSubscriptions(out, remoteParts, spec.LocalPosition, spec.IncludeLocal, spec.LocalRewrite)
 }
