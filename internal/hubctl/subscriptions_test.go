@@ -31,6 +31,11 @@ func (h *subHandler) ApplyCert(context.Context, nodeapi.CertRequest, io.Writer) 
 func (h *subHandler) Uninstall(context.Context, nodeapi.UninstallRequest, io.Writer) error {
 	return nil
 }
+
+// A real agent installs relay forwarding as well as serving subscriptions, and
+// the reconcile pass pushes both.
+func (h *subHandler) ApplyRelay(context.Context, nodeapi.RelayRequest, io.Writer) error { return nil }
+
 func (h *subHandler) Subscription(format string) ([]byte, error) {
 	dir := map[string]string{
 		nodeapi.FormatDefault:         "default",

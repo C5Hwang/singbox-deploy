@@ -54,7 +54,7 @@ var (
 func TestRelayLandingCandidatesHideNodesAlreadyInALink(t *testing.T) {
 	stubRelayState(t,
 		[]relaylinks.Link{{LandingID: "aa11", RelayID: "bb22", Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34567, TargetPort: 41234},
+			{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34567},
 		}}},
 		[]hubctl.RelayEndpoint{
 			relayEndpoint(relaylinks.HubNodeID, "HUB", "hub.example.com", 9443),
@@ -118,12 +118,14 @@ func TestRelayAddFlowGeneratesPortsAndAppliesTheLink(t *testing.T) {
 		}
 		seen[forward.RelayPort] = true
 	}
-	if rm.forwards[0].TargetPort != 9443 || rm.forwards[1].TargetPort != 9444 {
-		t.Fatalf("the landing node's own ports should be the targets: %#v", rm.forwards)
-	}
 	view := rm.View()
 	if !strings.Contains(view, "HUB") || !strings.Contains(view, "tokyo") {
 		t.Fatalf("the confirm screen should name both nodes:\n%s", view)
+	}
+	// The forwards name protocols; the landing node's own ports are looked up
+	// from its current state and shown for confirmation.
+	if !strings.Contains(view, "→ 9443") || !strings.Contains(view, "→ 9444") {
+		t.Fatalf("the confirm screen should show each landing port:\n%s", view)
 	}
 
 	rm.Update(keyEnterMsg) // apply
@@ -148,7 +150,7 @@ func TestRelayAddFlowGeneratesPortsAndAppliesTheLink(t *testing.T) {
 func TestRelayChangeFlowReinstallsBothRelays(t *testing.T) {
 	applied := stubRelayState(t,
 		[]relaylinks.Link{{LandingID: relaylinks.HubNodeID, RelayID: "aa11", Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 9443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		}}},
 		[]hubctl.RelayEndpoint{
 			relayEndpoint(relaylinks.HubNodeID, "HUB", "hub.example.com", 9443),
@@ -187,7 +189,7 @@ func TestRelayChangeFlowReinstallsBothRelays(t *testing.T) {
 func TestRelayRemoveFlowWithdrawsTheLink(t *testing.T) {
 	applied := stubRelayState(t,
 		[]relaylinks.Link{{LandingID: relaylinks.HubNodeID, RelayID: "aa11", Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 9443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		}}},
 		[]hubctl.RelayEndpoint{
 			relayEndpoint(relaylinks.HubNodeID, "HUB", "hub.example.com", 9443),

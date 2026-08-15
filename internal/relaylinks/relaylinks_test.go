@@ -18,15 +18,15 @@ func link(landing, relay string, forwards ...relaylinks.Forward) relaylinks.Link
 	return relaylinks.Link{LandingID: landing, RelayID: relay, Forwards: forwards}
 }
 
-func tcpForward(protocol config.Protocol, relayPort, targetPort int) relaylinks.Forward {
-	return relaylinks.Forward{Protocol: protocol, Network: "tcp", RelayPort: relayPort, TargetPort: targetPort}
+func tcpForward(protocol config.Protocol, relayPort int) relaylinks.Forward {
+	return relaylinks.Forward{Protocol: protocol, Network: "tcp", RelayPort: relayPort}
 }
 
 func TestSetLoadRoundTrip(t *testing.T) {
 	layout := testLayout(t)
 	want := link("aa11", relaylinks.HubNodeID,
-		tcpForward(config.ProtocolRealityVision, 30001, 41001),
-		relaylinks.Forward{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 30002, TargetPort: 41002},
+		tcpForward(config.ProtocolRealityVision, 30001),
+		relaylinks.Forward{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 30002},
 	)
 	if err := relaylinks.Set(layout, want); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -54,10 +54,10 @@ func TestSetLoadRoundTrip(t *testing.T) {
 // than leaving it fronted by two relays at once.
 func TestSetReplacesTheExistingRelay(t *testing.T) {
 	layout := testLayout(t)
-	if err := relaylinks.Set(layout, link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001, 41001))); err != nil {
+	if err := relaylinks.Set(layout, link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001))); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if err := relaylinks.Set(layout, link("aa11", "cc33", tcpForward(config.ProtocolAnyTLS, 30009, 41001))); err != nil {
+	if err := relaylinks.Set(layout, link("aa11", "cc33", tcpForward(config.ProtocolAnyTLS, 30009))); err != nil {
 		t.Fatalf("Set replacement: %v", err)
 	}
 	list, err := relaylinks.Load(layout)
@@ -70,7 +70,7 @@ func TestSetReplacesTheExistingRelay(t *testing.T) {
 }
 
 func TestValidateRefusesSelfRelay(t *testing.T) {
-	err := relaylinks.Validate(nil, link("aa11", "aa11", tcpForward(config.ProtocolAnyTLS, 30001, 41001)))
+	err := relaylinks.Validate(nil, link("aa11", "aa11", tcpForward(config.ProtocolAnyTLS, 30001)))
 	if err == nil || !strings.Contains(err.Error(), "cannot relay for itself") {
 		t.Fatalf("self relay error = %v", err)
 	}
@@ -79,34 +79,34 @@ func TestValidateRefusesSelfRelay(t *testing.T) {
 // Chaining is refused from both ends: neither A→B→C nor C→B→A may be built by
 // adding one link to an existing one.
 func TestValidateRefusesChaining(t *testing.T) {
-	existing := []relaylinks.Link{link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001, 41001))}
+	existing := []relaylinks.Link{link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001))}
 
-	err := relaylinks.Validate(existing, link("bb22", "cc33", tcpForward(config.ProtocolAnyTLS, 30002, 41002)))
+	err := relaylinks.Validate(existing, link("bb22", "cc33", tcpForward(config.ProtocolAnyTLS, 30002)))
 	if err == nil || !strings.Contains(err.Error(), "already relays for another node") {
 		t.Fatalf("relaying an existing relay = %v", err)
 	}
 
-	err = relaylinks.Validate(existing, link("cc33", "aa11", tcpForward(config.ProtocolAnyTLS, 30002, 41002)))
+	err = relaylinks.Validate(existing, link("cc33", "aa11", tcpForward(config.ProtocolAnyTLS, 30002)))
 	if err == nil || !strings.Contains(err.Error(), "already relayed") {
 		t.Fatalf("relaying through an existing landing node = %v", err)
 	}
 }
 
 func TestValidateRefusesAPortAlreadyForwardedOnTheSameRelay(t *testing.T) {
-	existing := []relaylinks.Link{link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001, 41001))}
-	err := relaylinks.Validate(existing, link("cc33", "bb22", tcpForward(config.ProtocolAnyTLS, 30001, 42001)))
+	existing := []relaylinks.Link{link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001))}
+	err := relaylinks.Validate(existing, link("cc33", "bb22", tcpForward(config.ProtocolAnyTLS, 30001)))
 	if err == nil || !strings.Contains(err.Error(), "already forwarding") {
 		t.Fatalf("duplicate relay port = %v", err)
 	}
 	// The same number on a different relay is a different socket entirely.
-	if err := relaylinks.Validate(existing, link("cc33", "dd44", tcpForward(config.ProtocolAnyTLS, 30001, 42001))); err != nil {
+	if err := relaylinks.Validate(existing, link("cc33", "dd44", tcpForward(config.ProtocolAnyTLS, 30001))); err != nil {
 		t.Fatalf("same port on another relay: %v", err)
 	}
 }
 
 func TestValidateRefusesAMismatchedNetwork(t *testing.T) {
 	err := relaylinks.Validate(nil, link("aa11", "bb22",
-		relaylinks.Forward{Protocol: config.ProtocolHysteria2, Network: "tcp", RelayPort: 30001, TargetPort: 41001}))
+		relaylinks.Forward{Protocol: config.ProtocolHysteria2, Network: "tcp", RelayPort: 30001}))
 	if err == nil || !strings.Contains(err.Error(), "udp protocol") {
 		t.Fatalf("mismatched network = %v", err)
 	}
@@ -123,12 +123,12 @@ func TestAllocateForwardsAvoidsReservedAndClaimedPorts(t *testing.T) {
 			reserved = append(reserved, port)
 		}
 	}
-	existing := []relaylinks.Link{link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001, 41001))}
+	existing := []relaylinks.Link{link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001))}
 
 	forwards, err := relaylinks.AllocateForwards(existing, "bb22", reserved, []relaylinks.Target{
-		{Protocol: config.ProtocolRealityVision, Port: 42001},
-		{Protocol: config.ProtocolHysteria2, Port: 42002},
-		{Protocol: config.ProtocolTUIC, Port: 42003},
+		{Protocol: config.ProtocolRealityVision},
+		{Protocol: config.ProtocolHysteria2},
+		{Protocol: config.ProtocolTUIC},
 	})
 	if err != nil {
 		t.Fatalf("AllocateForwards: %v", err)
@@ -152,9 +152,6 @@ func TestAllocateForwardsAvoidsReservedAndClaimedPorts(t *testing.T) {
 	if forwards[1].Network != "udp" || forwards[0].Network != "tcp" {
 		t.Fatalf("networks = %#v", forwards)
 	}
-	if forwards[2].TargetPort != 42003 {
-		t.Fatalf("landing port should be carried through: %#v", forwards[2])
-	}
 	if err := relaylinks.Validate(existing, link("cc33", "bb22", forwards...)); err != nil {
 		t.Fatalf("a generated link should validate: %v", err)
 	}
@@ -166,7 +163,7 @@ func TestAllocateForwardsReportsAnExhaustedRange(t *testing.T) {
 		reserved = append(reserved, port)
 	}
 	_, err := relaylinks.AllocateForwards(nil, "bb22", reserved, []relaylinks.Target{
-		{Protocol: config.ProtocolAnyTLS, Port: 41001},
+		{Protocol: config.ProtocolAnyTLS},
 	})
 	if err == nil || !strings.Contains(err.Error(), "already in use on this relay") {
 		t.Fatalf("exhausted range = %v", err)
@@ -174,7 +171,7 @@ func TestAllocateForwardsReportsAnExhaustedRange(t *testing.T) {
 }
 
 func TestAllocateForwardsRejectsUnsupportedProtocol(t *testing.T) {
-	_, err := relaylinks.AllocateForwards(nil, "bb22", nil, []relaylinks.Target{{Protocol: "shadowsocks", Port: 41001}})
+	_, err := relaylinks.AllocateForwards(nil, "bb22", nil, []relaylinks.Target{{Protocol: "shadowsocks"}})
 	if err == nil || !strings.Contains(err.Error(), "unsupported protocol") {
 		t.Fatalf("unsupported protocol = %v", err)
 	}
@@ -183,9 +180,9 @@ func TestAllocateForwardsRejectsUnsupportedProtocol(t *testing.T) {
 func TestDropNodeClearsBothSidesAndReportsOrphanedRelays(t *testing.T) {
 	layout := testLayout(t)
 	for _, l := range []relaylinks.Link{
-		link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001, 41001)),
-		link("cc33", "bb22", tcpForward(config.ProtocolAnyTLS, 30002, 41002)),
-		link("dd44", "ee55", tcpForward(config.ProtocolAnyTLS, 30003, 41003)),
+		link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001)),
+		link("cc33", "bb22", tcpForward(config.ProtocolAnyTLS, 30002)),
+		link("dd44", "ee55", tcpForward(config.ProtocolAnyTLS, 30003)),
 	} {
 		if err := relaylinks.Set(layout, l); err != nil {
 			t.Fatalf("Set %s: %v", l.LandingID, err)
@@ -217,7 +214,7 @@ func TestRemoveIsIdempotent(t *testing.T) {
 	if err := relaylinks.Remove(layout, "aa11"); err != nil {
 		t.Fatalf("Remove on an empty registry: %v", err)
 	}
-	if err := relaylinks.Set(layout, link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001, 41001))); err != nil {
+	if err := relaylinks.Set(layout, link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001))); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	if err := relaylinks.Remove(layout, "AA11"); err != nil {
@@ -237,8 +234,8 @@ func TestRemoveIsIdempotent(t *testing.T) {
 
 func TestServedByAndRoleQueries(t *testing.T) {
 	list := []relaylinks.Link{
-		link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001, 41001)),
-		link("cc33", "bb22", tcpForward(config.ProtocolAnyTLS, 30002, 41002)),
+		link("aa11", "bb22", tcpForward(config.ProtocolAnyTLS, 30001)),
+		link("cc33", "bb22", tcpForward(config.ProtocolAnyTLS, 30002)),
 	}
 	if served := relaylinks.ServedBy(list, "BB22"); len(served) != 2 {
 		t.Fatalf("ServedBy = %#v", served)
@@ -263,7 +260,7 @@ func TestMalformedForwardRecordsAreDropped(t *testing.T) {
 		LandingID: "aa11",
 		RelayID:   "bb22",
 		Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 30001, TargetPort: 41001},
+			{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 30001},
 		},
 	}}); err != nil {
 		t.Fatalf("Save: %v", err)

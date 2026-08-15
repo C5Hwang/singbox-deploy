@@ -23,6 +23,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -85,6 +86,10 @@ type Controller struct {
 	// overlay identity/config state is written. Tests may inject a deterministic
 	// checker; production inspects /proc/net/route.
 	CheckOverlaySubnet func(subnet string) error
+	// NewRelayApplier builds the installer for the hub's own relay data plane.
+	// Tests replace it so a hub-side relay change never reaches the host's
+	// nftables; a spoke's goes over the agent API and needs no seam.
+	NewRelayApplier func() *relay.Applier
 	// ResolveHostIPv4 records a landing node's address when a relay link is
 	// provisioned, so the relay has a fallback if its own resolver is not up
 	// yet at boot. It returns "" for a name it cannot resolve, which is not an
@@ -149,6 +154,11 @@ func (c *Controller) defaults() {
 	}
 	if c.ResolveHostIPv4 == nil {
 		c.ResolveHostIPv4 = resolveHostIPv4
+	}
+	if c.NewRelayApplier == nil {
+		c.NewRelayApplier = func() *relay.Applier {
+			return &relay.Applier{Layout: c.Layout, Firewall: system.DetectFirewall(), Runner: c.Runner}
+		}
 	}
 }
 

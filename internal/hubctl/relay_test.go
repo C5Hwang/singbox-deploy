@@ -108,15 +108,19 @@ func containsPort(ports []int, want int) bool {
 func TestRelayConfigForCarriesEveryLandingTheRelayServes(t *testing.T) {
 	endpoints := []RelayEndpoint{
 		{ID: relaylinks.HubNodeID, Name: "HUB", Domain: "hub.example.com"},
-		{ID: "aa11", Name: "tokyo", Domain: "tokyo.example.com"},
-		{ID: "bb22", Name: "osaka", Domain: "osaka.example.com"},
+		{ID: "aa11", Name: "tokyo", Domain: "tokyo.example.com", Protocols: []RelayProtocolPort{
+			{Protocol: config.ProtocolAnyTLS, Port: 41234},
+		}},
+		{ID: "bb22", Name: "osaka", Domain: "osaka.example.com", Protocols: []RelayProtocolPort{
+			{Protocol: config.ProtocolTUIC, Port: 41235},
+		}},
 	}
 	links := []relaylinks.Link{
 		{LandingID: "aa11", RelayID: relaylinks.HubNodeID, Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34567, TargetPort: 41234},
+			{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34567},
 		}},
 		{LandingID: "bb22", RelayID: relaylinks.HubNodeID, Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolTUIC, Network: "udp", RelayPort: 34568, TargetPort: 41235},
+			{Protocol: config.ProtocolTUIC, Network: "udp", RelayPort: 34568},
 		}},
 	}
 
@@ -148,7 +152,7 @@ func TestRelayConfigForCarriesEveryLandingTheRelayServes(t *testing.T) {
 
 func TestRelayConfigForRefusesALandingThatLeftTheFleet(t *testing.T) {
 	links := []relaylinks.Link{{LandingID: "gone", RelayID: relaylinks.HubNodeID, Forwards: []relaylinks.Forward{
-		{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34567, TargetPort: 41234},
+		{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34567},
 	}}}
 	ctrl := &Controller{Layout: paths.LayoutForRoot(t.TempDir()), ResolveHostIPv4: fakeResolve}
 	_, err := ctrl.RelayConfigFor(relaylinks.HubNodeID, links, []RelayEndpoint{{ID: relaylinks.HubNodeID}})
@@ -172,7 +176,7 @@ func TestApplyRelayForPushesTheWholeJobToASpoke(t *testing.T) {
 	if err := relaylinks.Set(layout, relaylinks.Link{
 		LandingID: relaylinks.HubNodeID, RelayID: "aa11",
 		Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 9443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		},
 	}); err != nil {
 		t.Fatalf("Set link: %v", err)

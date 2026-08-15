@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -318,7 +319,7 @@ func (rm *relayManager) planForwards() error {
 	}
 	targets := make([]relaylinks.Target, 0, len(landing.Protocols))
 	for _, protocol := range landing.Protocols {
-		targets = append(targets, relaylinks.Target{Protocol: protocol.Protocol, Port: protocol.Port})
+		targets = append(targets, relaylinks.Target{Protocol: protocol.Protocol})
 	}
 	forwards, err := relaylinks.AllocateForwards(rm.links, relayNode.ID, relayNode.ReservedPorts, targets)
 	if err != nil {
@@ -572,9 +573,14 @@ func (rm *relayManager) summaryRows() []summaryLine {
 		rows = append(rows, summaryRow("Replaces", rm.nodeName(rm.previousRelayID)))
 	}
 	rows = append(rows, summaryBlank(), summaryText("Generated forwarding ports:"))
+	landing, _ := hubctl.RelayEndpointByID(rm.endpoints, rm.landingID)
 	for _, forward := range rm.forwards {
+		target := "not served"
+		if port, served := landing.ProtocolPort(forward.Protocol); served {
+			target = strconv.Itoa(port)
+		}
 		rows = append(rows, summaryIndentedRow(2, string(forward.Protocol),
-			fmt.Sprintf("%s/%d → %d", forward.Network, forward.RelayPort, forward.TargetPort)))
+			fmt.Sprintf("%s/%d → %s", forward.Network, forward.RelayPort, target)))
 	}
 	return rows
 }

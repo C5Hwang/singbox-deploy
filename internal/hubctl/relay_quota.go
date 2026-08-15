@@ -2,7 +2,9 @@ package hubctl
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -74,17 +76,19 @@ func (c *Controller) hubQuotaExhausted(cfg deploy.Config) bool {
 	return limits.Exceeded(used)
 }
 
-// ReconcileRelayPublication republishes the subscriptions when the set of
-// relays carrying traffic has changed — a relay crossed its quota, or a cycle
-// reset gave one its allowance back. A client recovers by refetching alone,
-// because only the address inside each node changes.
+// ReconcileRelayPublication converges the fleet on the relay topology the
+// registries currently describe. It republishes the subscriptions and reinstalls
+// the affected rulesets whenever that topology has moved — a relay crossed its
+// quota or got its allowance back at a cycle reset, or a landing node's ports or
+// address were edited out from under the relay fronting it. A client recovers by
+// refetching alone, because only the address inside each node changes.
 //
-// It is called on the hub monitor's refresh timer, so the comparison against
-// the last published topology is what keeps it from rewriting every group's
-// files every tick.
+// It is called on the hub monitor's refresh timer, so the comparison against the
+// last converged state is what keeps it from rewriting every group's files and
+// re-pushing every ruleset on every tick.
 func (c *Controller) ReconcileRelayPublication(ctx context.Context) error {
 	c.defaults()
-	published, err := c.relayPublicationState()
+	desired, relays, err := c.relayPublicationState()
 	if err != nil {
 		return err
 	}
@@ -92,47 +96,77 @@ func (c *Controller) ReconcileRelayPublication(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if published == previous {
+	if desired == previous {
 		return nil
 	}
-	if err := c.RefreshSubscriptions(ctx); err != nil {
-		// The marker is left untouched so the next tick retries rather than
-		// treating a failed publish as the state clients are being served.
-		return fmt.Errorf("republish subscriptions after a relay availability change: %w", err)
+	var errs []error
+	// The rulesets are installed before the addresses are published, so a
+	// client is never handed a relay that is not forwarding yet.
+	for _, relayID := range relays {
+		if err := c.ApplyRelayFor(ctx, relayID, io.Discard); err != nil {
+			errs = append(errs, fmt.Errorf("reinstall relay forwarding on %s: %w", relayID, err))
+		}
 	}
-	return c.writeRelayPublication(published)
+	if err := c.RefreshSubscriptions(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("republish subscriptions after a relay change: %w", err))
+	}
+	if len(errs) > 0 {
+		// The marker is left untouched so the next tick retries rather than
+		// treating a half-converged fleet as the state clients are served.
+		return errors.Join(errs...)
+	}
+	return c.writeRelayPublication(desired)
 }
 
-// relayPublicationState renders the topology the next publish would produce:
-// one line per fronted node naming the relay actually carrying it, or "direct"
-// when none is.
-func (c *Controller) relayPublicationState() (string, error) {
+// relayPublicationState renders the topology the next convergence would produce
+// — one line per fronted node naming the relay actually carrying it and the
+// exact ports it forwards, or "direct" when no relay is — together with every
+// relay that would have to be reinstalled to get there.
+//
+// The ports are part of the line because they are what drifts silently: editing
+// a landing node's protocols moves the port its relay has to send to, and
+// nothing else about the topology changes to say so.
+func (c *Controller) relayPublicationState() (string, []string, error) {
 	links, err := relaylinks.Load(c.Layout)
 	if err != nil {
-		return "", fmt.Errorf("load relay links: %w", err)
+		return "", nil, fmt.Errorf("load relay links: %w", err)
 	}
 	if len(links) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	endpoints, err := c.RelayEndpoints()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	available, err := c.RelayAvailable()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	rewrites := RelayRewrites(links, endpoints, available)
+
 	lines := make([]string, 0, len(links))
+	relays := make([]string, 0, len(links))
+	seen := make(map[string]struct{}, len(links))
 	for _, link := range links {
-		target := "direct"
-		if _, fronted := rewrites[link.LandingID]; fronted {
-			target = link.RelayID
+		if _, duplicate := seen[link.RelayID]; !duplicate {
+			seen[link.RelayID] = struct{}{}
+			relays = append(relays, link.RelayID)
 		}
-		lines = append(lines, link.LandingID+"="+target)
+		rewrite, fronted := rewrites[link.LandingID]
+		if !fronted {
+			lines = append(lines, link.LandingID+"=direct")
+			continue
+		}
+		mappings := make([]string, 0, len(rewrite.Ports))
+		for target, relayPort := range rewrite.Ports {
+			mappings = append(mappings, fmt.Sprintf("%d>%d", relayPort, target))
+		}
+		sort.Strings(mappings)
+		lines = append(lines, link.LandingID+"="+link.RelayID+"|"+rewrite.To+"|"+strings.Join(mappings, ","))
 	}
 	sort.Strings(lines)
-	return strings.Join(lines, "\n"), nil
+	sort.Strings(relays)
+	return strings.Join(lines, "\n"), relays, nil
 }
 
 func (c *Controller) relayPublicationPath() string {

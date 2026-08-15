@@ -18,6 +18,10 @@ are managed from the hub's terminal UI.
   distributes them to the spokes.
 - Subscriptions aggregate every node in the fleet, served in share-link,
   Clash Meta, sing-box, and Surge formats.
+- Any node can relay another: an nftables port forward carries the traffic
+  without unwrapping it, subscriptions publish the relayed node under the
+  relay's address, and they fall back to its own address when the relay runs
+  out of traffic. Node names never change, so clients only refetch.
 - A web dashboard watches the whole fleet: resource usage and per-node quotas,
   per-client-IP traffic rankings, and latency to Chinese carriers.
 - Nginx serves a masquerade site, chosen from bundled

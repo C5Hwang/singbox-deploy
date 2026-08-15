@@ -15,7 +15,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
-	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
 // RelayProtocolPort is one protocol a node serves and the port it listens on.
@@ -60,6 +59,17 @@ func (c *Controller) RelayEndpoints() ([]RelayEndpoint, error) {
 		out = append(out, spokeRelayEndpoint(n))
 	}
 	return out, nil
+}
+
+// ProtocolPort returns the port this node currently serves a protocol on, and
+// whether it serves it at all.
+func (e RelayEndpoint) ProtocolPort(protocol config.Protocol) (int, bool) {
+	for _, served := range e.Protocols {
+		if served.Protocol == protocol && served.Port > 0 {
+			return served.Port, true
+		}
+	}
+	return 0, false
 }
 
 // RelayEndpointByID finds one endpoint in a list returned by RelayEndpoints.
@@ -172,12 +182,23 @@ func (c *Controller) RelayConfigFor(relayNodeID string, links []relaylinks.Link,
 		}
 		forwards := make([]relay.Forward, 0, len(link.Forwards))
 		for _, f := range link.Forwards {
+			// The landing node's port is read from its current state, so moving
+			// a protocol follows through to the ruleset. A protocol it no longer
+			// serves has nothing to forward to and is dropped: leaving the rule
+			// in place would send that traffic to a closed port.
+			target, served := landing.ProtocolPort(f.Protocol)
+			if !served {
+				continue
+			}
 			forwards = append(forwards, relay.Forward{
 				Protocol:   string(f.Protocol),
 				Network:    f.Network,
 				ListenPort: f.RelayPort,
-				TargetPort: f.TargetPort,
+				TargetPort: target,
 			})
+		}
+		if len(forwards) == 0 {
+			continue
 		}
 		cfg.Landings = append(cfg.Landings, relay.Landing{
 			NodeID:   link.LandingID,
@@ -219,12 +240,7 @@ func resolveHostIPv4(domain string) string {
 func (c *Controller) ApplyRelay(ctx context.Context, relayNodeID string, cfg relay.Config, log io.Writer) error {
 	c.defaults()
 	if strings.EqualFold(strings.TrimSpace(relayNodeID), relaylinks.HubNodeID) {
-		applier := &relay.Applier{
-			Layout:   c.Layout,
-			Firewall: system.DetectFirewall(),
-			Runner:   c.Runner,
-		}
-		return applier.Apply(ctx, cfg)
+		return c.NewRelayApplier().Apply(ctx, cfg)
 	}
 	list, err := nodes.Load(c.Layout)
 	if err != nil {
@@ -268,9 +284,14 @@ func RelayRewrites(links []relaylinks.Link, endpoints []RelayEndpoint, available
 		if available != nil && !available(link.RelayID) {
 			continue
 		}
+		// The landing node's own port is read from its current state, so a
+		// protocol that moved is still matched — and one it no longer serves
+		// simply has no entry to match.
 		ports := make(map[int]int, len(link.Forwards))
 		for _, forward := range link.Forwards {
-			ports[forward.TargetPort] = forward.RelayPort
+			if target, served := landing.ProtocolPort(forward.Protocol); served {
+				ports[target] = forward.RelayPort
+			}
 		}
 		rewrite := subscription.EndpointRewrite{Host: landing.Domain, To: relayNode.Domain, Ports: ports}
 		if rewrite.Valid() {

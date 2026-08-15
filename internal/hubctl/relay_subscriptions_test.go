@@ -14,8 +14,10 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
+	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
 // relayFleet is a hub publishing its own Hysteria2 node plus one spoke's, with
@@ -64,6 +66,9 @@ func newRelayFleet(t *testing.T) *relayFleet {
 		ctrl: &Controller{
 			Layout:          hubLayout,
 			ResolveHostIPv4: fakeResolve,
+			// The hub applies its own relay ruleset locally, and a test must
+			// never load one into the machine it is running on.
+			NewRelayApplier: func() *relay.Applier { return recordingApplier(hubLayout, t) },
 			NewClient: func(n nodes.Node) *nodeapi.Client {
 				return &nodeapi.Client{BaseURL: srv.URL, Token: n.Token, HTTP: srv.Client()}
 			},
@@ -99,7 +104,7 @@ func TestRefreshSubscriptionsPublishesARelayedSpokeUnderTheRelayAddress(t *testi
 	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
 		LandingID: "aa11", RelayID: relaylinks.HubNodeID,
 		Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 8443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		},
 	}); err != nil {
 		t.Fatalf("Set link: %v", err)
@@ -136,7 +141,7 @@ func TestRefreshSubscriptionsFallsBackWhenTheRelayLinkIsRemoved(t *testing.T) {
 	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
 		LandingID: "aa11", RelayID: relaylinks.HubNodeID,
 		Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 8443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		},
 	}); err != nil {
 		t.Fatalf("Set link: %v", err)
@@ -169,7 +174,7 @@ func TestRefreshSubscriptionsPublishesARelayedHubUnderItsRelay(t *testing.T) {
 	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
 		LandingID: relaylinks.HubNodeID, RelayID: "aa11",
 		Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 9443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		},
 	}); err != nil {
 		t.Fatalf("Set link: %v", err)
@@ -200,7 +205,7 @@ func TestRefreshSubscriptionsIgnoresARelayThatIsNotInstalled(t *testing.T) {
 	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
 		LandingID: relaylinks.HubNodeID, RelayID: "aa11",
 		Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 9443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		},
 	}); err != nil {
 		t.Fatalf("Set link: %v", err)
@@ -242,3 +247,22 @@ func relayedOutbound(t *testing.T, profile, alias, host string, port int, sni st
 	}
 	return false
 }
+
+// recordingApplier installs a relay ruleset nowhere: it accepts every command
+// and every nft load, so the hub's own relay path can be exercised without
+// touching the host's firewall or nftables.
+func recordingApplier(layout paths.Layout, t *testing.T) *relay.Applier {
+	return &relay.Applier{
+		Layout:     layout,
+		Bin:        "/usr/bin/singbox-deploy",
+		SystemdDir: t.TempDir(),
+		Firewall:   system.FirewallNone,
+		Runner:     noopRunner{},
+		NFT:        func(context.Context, string, ...string) ([]byte, error) { return nil, nil },
+		Resolve:    func(_ context.Context, host string) (string, error) { return fakeResolve(host), nil },
+	}
+}
+
+type noopRunner struct{}
+
+func (noopRunner) Run(system.Command) error { return nil }

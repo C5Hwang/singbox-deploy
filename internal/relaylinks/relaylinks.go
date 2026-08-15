@@ -46,18 +46,20 @@ const (
 )
 
 // Forward is one protocol's port mapping on the relay node.
+//
+// Only the relay's own listen port is recorded. The landing node's port is
+// looked up from that node's current state wherever the mapping is used, so
+// moving a protocol to a different port on the landing node is followed rather
+// than leaving the relay forwarding to a port nobody listens on.
 type Forward struct {
-	// Protocol names the landing node's protocol this mapping fronts. The
-	// subscription rewrite matches on it, so it survives a port change on
-	// either side.
+	// Protocol names the landing node's protocol this mapping fronts, and is
+	// what its current listen port is looked up by.
 	Protocol config.Protocol
 	// Network is the transport the protocol listens on: "tcp" or "udp". It
 	// decides which nftables rule and which firewall port is opened.
 	Network string
 	// RelayPort is the generated port the relay listens on.
 	RelayPort int
-	// TargetPort is the landing node's own listen port for this protocol.
-	TargetPort int
 }
 
 // Link fronts one landing node with one relay node.
@@ -70,10 +72,10 @@ type Link struct {
 	Forwards []Forward
 }
 
-// Target is one landing-node protocol a caller wants relay ports generated for.
+// Target is one landing-node protocol a caller wants a relay port generated
+// for.
 type Target struct {
 	Protocol config.Protocol
-	Port     int
 }
 
 // NetworkFor returns the transport a protocol listens on. It mirrors the
@@ -235,19 +237,11 @@ func AllocateForwards(list []Link, relayID string, reserved []int, targets []Tar
 		if !ok {
 			return nil, fmt.Errorf("cannot relay unsupported protocol %q", target.Protocol)
 		}
-		if target.Port < 1 || target.Port > 65535 {
-			return nil, fmt.Errorf("%s listen port %d is out of range on the landing node", target.Protocol, target.Port)
-		}
 		port, err := randomRelayPort(used)
 		if err != nil {
 			return nil, err
 		}
-		forwards = append(forwards, Forward{
-			Protocol:   target.Protocol,
-			Network:    network,
-			RelayPort:  port,
-			TargetPort: target.Port,
-		})
+		forwards = append(forwards, Forward{Protocol: target.Protocol, Network: network, RelayPort: port})
 	}
 	return forwards, nil
 }
@@ -290,9 +284,6 @@ func validate(list []Link, link Link, skip int) error {
 		seenProtocol[forward.Protocol] = struct{}{}
 		if forward.RelayPort < 1 || forward.RelayPort > 65535 {
 			return fmt.Errorf("%s relay port must be between 1 and 65535", forward.Protocol)
-		}
-		if forward.TargetPort < 1 || forward.TargetPort > 65535 {
-			return fmt.Errorf("%s landing port must be between 1 and 65535", forward.Protocol)
 		}
 		if _, duplicate := claimed[forward.RelayPort]; duplicate {
 			return fmt.Errorf("relay port %d is claimed twice in one relay link", forward.RelayPort)
@@ -389,30 +380,29 @@ func encodeLink(l Link) map[string]string {
 	}
 }
 
-// decodeForwards parses the compact "protocol:network:relayPort:targetPort"
-// records the registry stores one per comma. A malformed record is dropped
-// rather than failing the whole read: validation refuses a link with no usable
-// forward, which is a clearer failure than a registry that will not load.
+// decodeForwards parses the compact "protocol:network:relayPort" records the
+// registry stores one per comma. A malformed record is dropped rather than
+// failing the whole read: validation refuses a link with no usable forward,
+// which is a clearer failure than a registry that will not load.
+//
+// A record written before the landing port stopped being stored carries it as a
+// fourth field. It is ignored rather than rejected, so an existing link keeps
+// working and simply starts following its landing node.
 func decodeForwards(value string) []Forward {
 	var out []Forward
 	for _, record := range strings.Split(value, ",") {
 		fields := strings.Split(strings.TrimSpace(record), ":")
-		if len(fields) != 4 {
+		if len(fields) != 3 && len(fields) != 4 {
 			continue
 		}
 		relayPort, err := strconv.Atoi(fields[2])
 		if err != nil {
 			continue
 		}
-		targetPort, err := strconv.Atoi(fields[3])
-		if err != nil {
-			continue
-		}
 		out = append(out, Forward{
-			Protocol:   config.Protocol(fields[0]),
-			Network:    fields[1],
-			RelayPort:  relayPort,
-			TargetPort: targetPort,
+			Protocol:  config.Protocol(fields[0]),
+			Network:   fields[1],
+			RelayPort: relayPort,
 		})
 	}
 	return out
@@ -421,7 +411,7 @@ func decodeForwards(value string) []Forward {
 func encodeForwards(forwards []Forward) string {
 	records := make([]string, 0, len(forwards))
 	for _, f := range forwards {
-		records = append(records, fmt.Sprintf("%s:%s:%d:%d", f.Protocol, f.Network, f.RelayPort, f.TargetPort))
+		records = append(records, fmt.Sprintf("%s:%s:%d", f.Protocol, f.Network, f.RelayPort))
 	}
 	return strings.Join(records, ",")
 }

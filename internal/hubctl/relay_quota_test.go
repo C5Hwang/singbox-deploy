@@ -9,6 +9,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 )
@@ -72,7 +73,7 @@ func TestRefreshSubscriptionsFallsBackWhenTheRelayIsOutOfQuota(t *testing.T) {
 	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
 		LandingID: relaylinks.HubNodeID, RelayID: "aa11",
 		Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 9443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		},
 	}); err != nil {
 		t.Fatalf("Set link: %v", err)
@@ -108,7 +109,7 @@ func TestReconcileRelayPublicationRepublishesOnlyOnAChange(t *testing.T) {
 	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
 		LandingID: relaylinks.HubNodeID, RelayID: "aa11",
 		Forwards: []relaylinks.Forward{
-			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568, TargetPort: 9443},
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
 		},
 	}); err != nil {
 		t.Fatalf("Set link: %v", err)
@@ -123,7 +124,7 @@ func TestReconcileRelayPublicationRepublishesOnlyOnAChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read marker: %v", err)
 	}
-	if marker != relaylinks.HubNodeID+"=aa11" {
+	if marker != relaylinks.HubNodeID+"=aa11|spoke.example.com|34568>9443" {
 		t.Fatalf("marker = %q", marker)
 	}
 
@@ -159,6 +160,102 @@ func TestReconcileRelayPublicationRepublishesOnlyOnAChange(t *testing.T) {
 	}
 	if marker != relaylinks.HubNodeID+"=direct" {
 		t.Fatalf("marker = %q", marker)
+	}
+}
+
+// Editing a landing node's protocols moves the port its relay has to forward
+// to, and nothing else about the topology says so. The reconcile has to notice
+// and push the corrected ruleset, or the relay keeps sending to a closed port.
+func TestReconcileRelayPublicationFollowsALandingPortChange(t *testing.T) {
+	f := newRelayFleet(t)
+	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
+		LandingID: "aa11", RelayID: relaylinks.HubNodeID,
+		Forwards: []relaylinks.Forward{
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
+		},
+	}); err != nil {
+		t.Fatalf("Set link: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := f.ctrl.ReconcileRelayPublication(ctx); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	marker, err := f.ctrl.readRelayPublication()
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if !strings.HasSuffix(marker, "34568>8443") {
+		t.Fatalf("marker should carry the landing node's current port: %q", marker)
+	}
+
+	// The operator moves the spoke's Hysteria2 port. The relay link never
+	// mentioned a port, so it follows.
+	if err := nodes.Mutate(f.hubLayout, "aa11", func(n *nodes.Node) error {
+		n.Hysteria2Port = 8500
+		return nil
+	}); err != nil {
+		t.Fatalf("move the landing port: %v", err)
+	}
+	if err := f.ctrl.ReconcileRelayPublication(ctx); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	marker, err = f.ctrl.readRelayPublication()
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if !strings.HasSuffix(marker, "34568>8500") {
+		t.Fatalf("the relay should follow the landing port: %q", marker)
+	}
+
+	links, err := relaylinks.Load(f.hubLayout)
+	if err != nil {
+		t.Fatalf("Load links: %v", err)
+	}
+	endpoints, err := f.ctrl.RelayEndpoints()
+	if err != nil {
+		t.Fatalf("RelayEndpoints: %v", err)
+	}
+	cfg, err := f.ctrl.RelayConfigFor(relaylinks.HubNodeID, links, endpoints)
+	if err != nil {
+		t.Fatalf("RelayConfigFor: %v", err)
+	}
+	if len(cfg.Landings) != 1 || cfg.Landings[0].Forwards[0].TargetPort != 8500 {
+		t.Fatalf("the ruleset should forward to the new port: %#v", cfg.Landings)
+	}
+}
+
+// A landing node that stops serving a protocol has nothing left to forward to,
+// so the mapping is dropped rather than left pointing at a closed port.
+func TestRelayConfigForDropsAProtocolTheLandingNodeNoLongerServes(t *testing.T) {
+	f := newRelayFleet(t)
+	if err := relaylinks.Set(f.hubLayout, relaylinks.Link{
+		LandingID: "aa11", RelayID: relaylinks.HubNodeID,
+		Forwards: []relaylinks.Forward{
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
+			{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34569},
+		},
+	}); err != nil {
+		t.Fatalf("Set link: %v", err)
+	}
+	links, err := relaylinks.Load(f.hubLayout)
+	if err != nil {
+		t.Fatalf("Load links: %v", err)
+	}
+	endpoints, err := f.ctrl.RelayEndpoints()
+	if err != nil {
+		t.Fatalf("RelayEndpoints: %v", err)
+	}
+	cfg, err := f.ctrl.RelayConfigFor(relaylinks.HubNodeID, links, endpoints)
+	if err != nil {
+		t.Fatalf("RelayConfigFor: %v", err)
+	}
+	// The spoke serves Hysteria2 only, so the AnyTLS mapping has no target.
+	if len(cfg.Landings) != 1 || len(cfg.Landings[0].Forwards) != 1 {
+		t.Fatalf("forwards = %#v", cfg.Landings)
+	}
+	if cfg.Landings[0].Forwards[0].ListenPort != 34568 {
+		t.Fatalf("the served protocol should survive: %#v", cfg.Landings[0].Forwards[0])
 	}
 }
 
