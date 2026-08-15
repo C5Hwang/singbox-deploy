@@ -17,6 +17,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 )
 
@@ -126,7 +127,7 @@ func (s *monitorSupervisor) reload() {
 	var active *monitor.Monitor
 	if newMonitor == nil {
 		newMonitor = func(store *monitor.Store, cfg monitor.Config) (http.Handler, func(context.Context) error) {
-			m := monitor.New(store, cfg, systemdSingBox{})
+			m := monitor.New(store, cfg, relay.NewQuotaController(systemdSingBox{}, s.layout, agentBinaryPath))
 			active = m
 			return m.Handler(), m.Run
 		}

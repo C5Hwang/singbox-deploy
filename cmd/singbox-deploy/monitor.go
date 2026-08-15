@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relay"
 )
 
 // runMonitor dispatches the "monitor serve" subcommand that runs the long-lived
@@ -86,7 +88,11 @@ func runMonitor(args []string) error {
 		// The hub pulls every spoke's monitor summary over the WireGuard overlay,
 		// so monitor data never traverses the public internet.
 		RefreshRemoteSources: func(ctx context.Context) error {
-			return ctrl.RefreshMonitor(ctx)
+			refreshErr := ctrl.RefreshMonitor(ctx)
+			// The snapshot that was just refreshed is what says whether each
+			// relay still has traffic left, so this is the moment to republish
+			// if any of them crossed its limit — or came back after a reset.
+			return errors.Join(refreshErr, ctrl.ReconcileRelayPublication(ctx))
 		},
 		FetchRemoteData: func(ctx context.Context, sourceID, path string, query url.Values) ([]byte, error) {
 			endpoint, err := monitorEndpointForPath(path)
@@ -97,7 +103,7 @@ func runMonitor(args []string) error {
 		},
 		Now: now,
 	}
-	m := monitor.New(store, cfg, systemdSingBox{})
+	m := monitor.New(store, cfg, relay.NewQuotaController(systemdSingBox{}, layout, "/usr/bin/singbox-deploy"))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

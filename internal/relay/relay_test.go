@@ -3,6 +3,7 @@ package relay_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,6 +302,111 @@ func TestReapplyOnANodeThatForwardsNothingClearsTheTable(t *testing.T) {
 	}
 	if len(nft.stdin) != 1 || strings.Contains(nft.stdin[0], "dnat") {
 		t.Fatalf("nft rulesets = %#v", nft.stdin)
+	}
+}
+
+// fakeSingBox records the service half of quota enforcement.
+type fakeSingBox struct {
+	started, stopped int
+	active           bool
+}
+
+func (f *fakeSingBox) Start() error            { f.started++; f.active = true; return nil }
+func (f *fakeSingBox) Stop() error             { f.stopped++; f.active = false; return nil }
+func (f *fakeSingBox) IsActive() (bool, error) { return f.active, nil }
+
+// A relay that ran out of traffic must stop forwarding as well as stop serving:
+// the rules are in the kernel and would otherwise keep spending its allowance
+// on other nodes' clients.
+func TestQuotaControllerWithdrawsAndRestoresForwarding(t *testing.T) {
+	run, nft := &recorder{}, &nftLog{}
+	applier := testApplier(t, run, nft)
+	if err := applier.Apply(context.Background(), sampleConfig()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	nft.stdin = nil
+
+	singBox := &fakeSingBox{active: true}
+	controller := relay.QuotaController{SingBox: singBox, Applier: applier, Logf: func(string, ...any) {}}
+
+	if err := controller.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if singBox.stopped != 1 {
+		t.Fatalf("sing-box stops = %d", singBox.stopped)
+	}
+	if len(nft.stdin) != 1 || strings.Contains(nft.stdin[0], "dnat") {
+		t.Fatalf("the forwarding rules should be withdrawn: %#v", nft.stdin)
+	}
+	if stored, err := relay.Load(applier.Layout); err != nil || stored.Empty() {
+		t.Fatalf("a suspension must keep the stored job: %#v (%v)", stored, err)
+	}
+	if _, err := os.Stat(filepath.Join(applier.SystemdDir, system.RelayService)); err != nil {
+		t.Fatalf("a suspension must keep the boot unit: %v", err)
+	}
+
+	nft.stdin = nil
+	if err := controller.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if singBox.started != 1 {
+		t.Fatalf("sing-box starts = %d", singBox.started)
+	}
+	if len(nft.stdin) != 1 || !strings.Contains(nft.stdin[0], "dnat to 203.0.113.9:41234") {
+		t.Fatalf("the forwarding rules should be restored: %#v", nft.stdin)
+	}
+}
+
+// Quota enforcement runs on every node, so an ordinary one must not have its
+// nftables touched at all.
+func TestQuotaControllerLeavesANodeThatForwardsNothingAlone(t *testing.T) {
+	run, nft := &recorder{}, &nftLog{}
+	singBox := &fakeSingBox{active: true}
+	controller := relay.QuotaController{
+		SingBox: singBox,
+		Applier: testApplier(t, run, nft),
+		Logf:    func(string, ...any) {},
+	}
+	if err := controller.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := controller.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(nft.stdin) != 0 {
+		t.Fatalf("nft should not run on a node that forwards nothing: %#v", nft.stdin)
+	}
+	if singBox.stopped != 1 || singBox.started != 1 {
+		t.Fatalf("sing-box should still be governed: %+v", singBox)
+	}
+}
+
+// Forwarding that cannot be withdrawn must never keep sing-box running: the
+// hub republishes the landing node's own address either way.
+func TestQuotaControllerStopsSingBoxEvenIfTheRulesetFails(t *testing.T) {
+	run, nft := &recorder{}, &nftLog{err: errors.New("nft refused")}
+	applier := testApplier(t, run, nft)
+	applier.NFT = (&nftLog{}).run
+	if err := applier.Apply(context.Background(), sampleConfig()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	applier.NFT = nft.run
+
+	singBox := &fakeSingBox{active: true}
+	var logged []string
+	controller := relay.QuotaController{
+		SingBox: singBox,
+		Applier: applier,
+		Logf:    func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	if err := controller.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if singBox.stopped != 1 {
+		t.Fatal("sing-box must still be stopped")
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "nft refused") {
+		t.Fatalf("the failure should be reported: %#v", logged)
 	}
 }
 

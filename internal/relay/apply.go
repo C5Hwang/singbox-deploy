@@ -129,6 +129,36 @@ func (a *Applier) Reapply(ctx context.Context) error {
 	return a.install(ctx, cfg)
 }
 
+// Suspend withdraws the forwarding rules while leaving the stored job, its
+// firewall rules and its boot-time unit in place, so Reapply puts it straight
+// back. It is what quota enforcement uses: a relay over its allowance must stop
+// carrying traffic, but it has not stopped being a relay.
+func (a *Applier) Suspend(ctx context.Context) error {
+	a.defaults()
+	cfg, err := Load(a.Layout)
+	if err != nil || cfg.Empty() {
+		// A node that forwards nothing has no rules of ours to withdraw, and
+		// running nft on it would be pure noise on every quota round.
+		return err
+	}
+	return a.clearRules(ctx)
+}
+
+// Resume reinstalls the rules a suspension withdrew. Unlike Reapply it leaves a
+// node that forwards nothing entirely alone, so quota recovery on an ordinary
+// node never touches the host's nftables.
+func (a *Applier) Resume(ctx context.Context) error {
+	a.defaults()
+	cfg, err := Load(a.Layout)
+	if err != nil || cfg.Empty() {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	return a.install(ctx, cfg)
+}
+
 // Clear withdraws the relay data plane completely and forgets the
 // configuration, so this node goes back to being an ordinary one.
 func (a *Applier) Clear(ctx context.Context) error {

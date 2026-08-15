@@ -162,7 +162,11 @@ func (c *Controller) relayRewrites() (map[string]subscription.EndpointRewrite, e
 	if err != nil {
 		return nil, err
 	}
-	return RelayRewrites(links, endpoints, nil), nil
+	available, err := c.RelayAvailable()
+	if err != nil {
+		return nil, err
+	}
+	return RelayRewrites(links, endpoints, available), nil
 }
 
 // EnsureSubscriptionGroups returns the hub's subscription groups, seeding the
