@@ -27,5 +27,16 @@ func seedSubscriptionGroups(layout paths.Layout, expectedVersion string) error {
 // They must remain read-only so a later update failure can still roll back the
 // whole transaction without having published target-version output early.
 func shouldMigrateHubSubscriptions(args []string) bool {
-	return len(args) < 2 || (args[1] != "--version" && args[1] != "agent")
+	if len(args) < 2 {
+		return true
+	}
+	switch args[1] {
+	// "relay" runs from a boot-time unit and must reinstall the forwarding
+	// rules immediately; the subscription migration reaches the network and
+	// would hold that up for as long as its timeout.
+	case "--version", "agent", "relay":
+		return false
+	default:
+		return true
+	}
 }

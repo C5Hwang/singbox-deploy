@@ -70,6 +70,42 @@ func TestFirewallCommandsFirewalld(t *testing.T) {
 	}
 }
 
+func TestFirewallForwardCommands(t *testing.T) {
+	routes := []ForwardRoute{{Proto: "tcp", Address: "203.0.113.9", Port: 41234}}
+
+	ufw := FirewallForwardCommands(FirewallUFW, routes, false)
+	if len(ufw) != 1 || ufw[0].String() != "ufw route allow proto tcp from any to 203.0.113.9 port 41234" {
+		t.Fatalf("ufw forward cmds = %#v", ufw)
+	}
+	removal := FirewallForwardCommands(FirewallUFW, routes, true)
+	if len(removal) != 1 || removal[0].String() != "ufw route delete allow proto tcp from any to 203.0.113.9 port 41234" {
+		t.Fatalf("ufw forward removal = %#v", removal)
+	}
+
+	fd := FirewallForwardCommands(FirewallFirewalld, routes, false)
+	want := []string{
+		"firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -p tcp -d 203.0.113.9 --dport 41234 -j ACCEPT",
+		"firewall-cmd --reload",
+	}
+	if len(fd) != len(want) {
+		t.Fatalf("firewalld forward cmds = %#v", fd)
+	}
+	for i := range want {
+		if fd[i].String() != want[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, fd[i].String(), want[i])
+		}
+	}
+
+	if len(FirewallForwardCommands(FirewallNone, routes, false)) != 0 {
+		t.Fatal("no firewall should yield no commands")
+	}
+	// A route with nothing to match on would widen the rule to everything.
+	incomplete := []ForwardRoute{{Proto: "tcp", Port: 41234}, {Proto: "sctp", Address: "203.0.113.9", Port: 41234}}
+	if got := FirewallForwardCommands(FirewallUFW, incomplete, false); len(got) != 0 {
+		t.Fatalf("incomplete routes = %#v", got)
+	}
+}
+
 func TestFirewallRemoveCommands(t *testing.T) {
 	ufw := FirewallRemoveCommands(FirewallUFW, []Port{{Number: 9443, Proto: "udp"}})
 	if len(ufw) != 1 || ufw[0].String() != "ufw delete allow 9443/udp" {

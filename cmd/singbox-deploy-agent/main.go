@@ -20,15 +20,31 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+// agentBinaryPath is where the hub installs this binary on a spoke. It matches
+// bootstrap.AgentBinaryPath, which is not imported here: that package carries
+// the SSH client the spoke has no use for.
+const agentBinaryPath = "/usr/bin/singbox-deploy-agent"
+
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
 		fmt.Println(version)
+		return
+	}
+	// The relay data plane is reinstalled by a boot-time unit, which runs this
+	// binary rather than the daemon: the rules have to be back before the agent
+	// itself is reachable.
+	if len(os.Args) > 1 && os.Args[1] == "relay" {
+		if err := relay.Command(context.Background(), os.Args[2:], agentBinaryPath); err != nil {
+			fmt.Fprintln(os.Stderr, "singbox-deploy-agent relay:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if err := run(); err != nil {

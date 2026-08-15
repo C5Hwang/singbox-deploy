@@ -1,0 +1,14 @@
+[Unit]
+Description=singbox-deploy relay forwarding
+Documentation=https://github.com/C5Hwang/singbox-deploy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+ExecStart={{ .Bin }} relay apply
+
+[Install]
+WantedBy=multi-user.target

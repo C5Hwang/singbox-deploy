@@ -9,6 +9,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
@@ -62,6 +63,7 @@ func (o *Options) defaults() {
 
 func (o Options) steps() []deploy.Step {
 	return []deploy.Step{
+		{Label: "Relay", Detail: "withdraw any relay forwarding this node performs", Run: o.stepRelay},
 		{Label: "Stop services", Detail: "stop and disable managed systemd units", Run: o.stepStopServices},
 		{Label: "Firewall", Detail: "close managed protocol and subscription ports", Run: o.stepFirewall},
 		{Label: "Systemd units", Detail: "remove managed systemd unit and timer files", Run: o.stepSystemdUnits},
@@ -94,6 +96,28 @@ func (o Options) stepFirewall(context.Context) error {
 	for _, cmd := range system.FirewallRemoveCommands(fw, kept) {
 		_ = o.Runner.Run(cmd)
 	}
+	return nil
+}
+
+// stepRelay drops the forwarding ruleset, its firewall rules and its boot-time
+// unit. It runs first: a node that is being removed must stop carrying other
+// nodes' traffic before anything else about it is torn down. It is best-effort
+// for the same reason stepFirewall is — a node that never relayed has nothing
+// to withdraw, and a failure here must not strand the uninstall.
+func (o Options) stepRelay(ctx context.Context) error {
+	// The stored configuration is this node's record of the job, so a node with
+	// none has nothing to withdraw and no reason to touch the host's nftables.
+	cfg, err := relay.Load(o.Layout)
+	if err != nil || cfg.Empty() {
+		return nil
+	}
+	applier := &relay.Applier{
+		Layout:     o.Layout,
+		SystemdDir: o.SystemdDir,
+		Firewall:   system.DetectFirewall(),
+		Runner:     o.Runner,
+	}
+	_ = applier.Clear(ctx)
 	return nil
 }
 

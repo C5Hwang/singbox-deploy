@@ -12,6 +12,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/ui"
 )
 
@@ -67,6 +68,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		if err := runAgentAsset(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "agent:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "relay" {
+		if err := relay.Command(context.Background(), os.Args[2:], "/usr/bin/singbox-deploy"); err != nil {
+			fmt.Fprintln(os.Stderr, "relay:", err)
 			os.Exit(1)
 		}
 		return

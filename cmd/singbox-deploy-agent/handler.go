@@ -892,7 +892,7 @@ func stopAgentAndOverlayWith(run func(string, ...string) error) {
 }
 
 func agentTeardownPaths() []string {
-	const agentPath = "/usr/bin/singbox-deploy-agent"
+	const agentPath = agentBinaryPath
 	return []string{
 		"/etc/systemd/system/singbox-deploy-agent.service",
 		"/etc/wireguard/sbwg0.conf",
