@@ -23,6 +23,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 	"github.com/C5Hwang/singbox-deploy/internal/subgroups"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/templatefs"
@@ -84,6 +85,11 @@ type Controller struct {
 	// overlay identity/config state is written. Tests may inject a deterministic
 	// checker; production inspects /proc/net/route.
 	CheckOverlaySubnet func(subnet string) error
+	// ResolveHostIPv4 records a landing node's address when a relay link is
+	// provisioned, so the relay has a fallback if its own resolver is not up
+	// yet at boot. It returns "" for a name it cannot resolve, which is not an
+	// error: the relay resolves the name itself on every apply.
+	ResolveHostIPv4 func(host string) string
 }
 
 func (c *Controller) defaults() {
@@ -140,6 +146,9 @@ func (c *Controller) defaults() {
 		c.CheckOverlaySubnet = func(subnet string) error {
 			return wgnet.CheckSubnetRouteConflict(subnet, wgnet.InterfaceName)
 		}
+	}
+	if c.ResolveHostIPv4 == nil {
+		c.ResolveHostIPv4 = resolveHostIPv4
 	}
 }
 
@@ -773,6 +782,18 @@ func (c *Controller) detachNode(ctx context.Context, node nodes.Node, log io.Wri
 	// TUI and could hand its membership to a later node reusing the ID.
 	if err := subgroups.DropMember(c.Layout, identifier); err != nil {
 		fmt.Fprintf(log, "warning: could not drop %s from subscription groups: %v\n", node.EffectiveAlias(), err)
+	}
+	// A node that leaves the fleet stops being relayed and stops relaying. The
+	// relays it was fronted by keep their rules until they are told otherwise,
+	// so each of them is reapplied from the registry the removal just changed.
+	orphaned, err := relaylinks.DropNode(c.Layout, identifier)
+	if err != nil {
+		fmt.Fprintf(log, "warning: could not drop %s from the relay registry: %v\n", node.EffectiveAlias(), err)
+	}
+	for _, relayID := range orphaned {
+		if err := c.ApplyRelayFor(ctx, relayID, log); err != nil {
+			fmt.Fprintf(log, "warning: could not withdraw relay forwarding for %s: %v\n", node.EffectiveAlias(), err)
+		}
 	}
 	// Drop the removed spoke's nodes from the hub's published subscription.
 	if err := c.RefreshSubscriptions(ctx); err != nil {

@@ -35,6 +35,13 @@ type CoreHandler interface {
 	ChangeCore(ctx context.Context, req CoreRequest, log io.Writer) error
 }
 
+// RelayHandler is implemented by agents that can front another node's traffic.
+// Keeping it optional lets a newer Hub report an agent that predates relaying
+// instead of failing an install with a routing error.
+type RelayHandler interface {
+	ApplyRelay(ctx context.Context, req RelayRequest, log io.Writer) error
+}
+
 // ProtocolStateHandler is implemented by agents that support full protocol
 // editing. Keeping it optional lets a newer Hub diagnose an older Agent
 // cleanly instead of changing the base lifecycle interface.
@@ -73,6 +80,7 @@ func (s *Server) Mux() http.Handler {
 	s.handle(mux, http.MethodPost, "/api/uninstall", s.handleUninstall)
 	s.handle(mux, http.MethodPost, "/api/upgrade", s.handleUpgrade)
 	s.handle(mux, http.MethodPost, "/api/core", s.handleCore)
+	s.handle(mux, http.MethodPost, "/api/relay", s.handleRelay)
 	s.handle(mux, http.MethodGet, "/api/subscription", s.handleSubscription)
 	mux.HandleFunc("/api/monitor/usage", s.auth(s.handleTrafficUsage))
 	for _, endpoint := range monitorEndpoints {
@@ -226,6 +234,26 @@ func (s *Server) handleCore(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
+	var req RelayRequest
+	if err := decodeJSON(w, r, &req, maxRelayRequestBody); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ValidateRelayRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	handler, ok := s.Handler.(RelayHandler)
+	if !ok {
+		http.Error(w, "relay forwarding is not supported by this agent", http.StatusNotImplemented)
+		return
+	}
+	streamOperation(w, func(log io.Writer) error {
+		return handler.ApplyRelay(r.Context(), req, log)
+	})
+}
+
 func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 	body, err := s.Handler.Subscription(format)
@@ -355,6 +383,9 @@ const (
 	maxUninstallRequestBody    int64 = 16 << 10
 	maxCoreRequestBody         int64 = 4 << 10
 	maxTrafficUsageRequestBody int64 = 4 << 10
+	// A relay job is a handful of small records per landing node, and a hub
+	// fronting a large fleet through one relay is still far inside this.
+	maxRelayRequestBody int64 = 256 << 10
 	// []byte expands by 4/3 when JSON/base64 encoded. Leave a small allowance
 	// for field names and the version/digest strings.
 	maxUpgradeRequestBody int64 = (MaxAgentBinarySize+2)/3*4 + 4096

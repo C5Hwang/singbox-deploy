@@ -19,6 +19,7 @@ type fakeHandler struct {
 	installReq     InstallRequest
 	upgradeReq     UpgradeRequest
 	coreReq        CoreRequest
+	relayReq       RelayRequest
 	failWith       string
 	monitor        http.Handler
 	protocolState  ProtocolStateResponse
@@ -67,6 +68,15 @@ func (h *fakeHandler) Upgrade(_ context.Context, req UpgradeRequest, log io.Writ
 func (h *fakeHandler) ChangeCore(_ context.Context, req CoreRequest, log io.Writer) error {
 	h.coreReq = req
 	fmt.Fprintf(log, "changed core to %s\n", req.SingBoxVersion)
+	if h.failWith != "" {
+		return fmt.Errorf("%s", h.failWith)
+	}
+	return nil
+}
+
+func (h *fakeHandler) ApplyRelay(_ context.Context, req RelayRequest, log io.Writer) error {
+	h.relayReq = req
+	fmt.Fprintf(log, "forwarding for %d landing node(s)\n", len(req.Landings))
 	if h.failWith != "" {
 		return fmt.Errorf("%s", h.failWith)
 	}
@@ -862,6 +872,105 @@ func TestCoreEndpointRejectsInvalidTagBeforeHandler(t *testing.T) {
 		t.Fatalf("invalid core request reached handler: %+v", h.coreReq)
 	}
 }
+
+func sampleRelayRequest() RelayRequest {
+	return RelayRequest{Landings: []RelayLanding{{
+		NodeID: "aa11", Name: "HK", Host: "land.example.com", Address: "203.0.113.9",
+		Forwards: []RelayForward{
+			{Protocol: "anytls", Network: "tcp", ListenPort: 34567, TargetPort: 41234},
+			{Protocol: "hysteria2", Network: "udp", ListenPort: 34568, TargetPort: 41235},
+		},
+	}}}
+}
+
+func TestRelayRoundTrip(t *testing.T) {
+	h := &fakeHandler{}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+
+	var log bytes.Buffer
+	if err := client.ApplyRelay(context.Background(), sampleRelayRequest(), &log); err != nil {
+		t.Fatalf("ApplyRelay: %v", err)
+	}
+	if !strings.Contains(log.String(), "forwarding for 1 landing node(s)") {
+		t.Fatalf("streamed log = %q", log.String())
+	}
+	if len(h.relayReq.Landings) != 1 || h.relayReq.Landings[0].Host != "land.example.com" {
+		t.Fatalf("relay request = %+v", h.relayReq)
+	}
+	if got := h.relayReq.Landings[0].Forwards[1]; got.Network != "udp" || got.ListenPort != 34568 || got.TargetPort != 41235 {
+		t.Fatalf("forward round trip = %+v", got)
+	}
+
+	// An empty job is the withdrawal, so it must reach the agent rather than
+	// being treated as a malformed request.
+	if err := client.ApplyRelay(context.Background(), RelayRequest{}, io.Discard); err != nil {
+		t.Fatalf("empty ApplyRelay: %v", err)
+	}
+	if len(h.relayReq.Landings) != 0 {
+		t.Fatalf("withdrawal should carry no landing: %+v", h.relayReq)
+	}
+}
+
+func TestRelayEndpointRejectsAnUnusableJobBeforeTheHandler(t *testing.T) {
+	h := &fakeHandler{}
+	handler := (&Server{Token: "secret", Handler: h}).Mux()
+	for name, req := range map[string]RelayRequest{
+		"no node ID":    {Landings: []RelayLanding{{Host: "a.example.com", Forwards: []RelayForward{{Network: "tcp", ListenPort: 1, TargetPort: 2}}}}},
+		"no host":       {Landings: []RelayLanding{{NodeID: "aa11", Forwards: []RelayForward{{Network: "tcp", ListenPort: 1, TargetPort: 2}}}}},
+		"no forward":    {Landings: []RelayLanding{{NodeID: "aa11", Host: "a.example.com"}}},
+		"bad transport": {Landings: []RelayLanding{{NodeID: "aa11", Host: "a.example.com", Forwards: []RelayForward{{Network: "sctp", ListenPort: 1, TargetPort: 2}}}}},
+		"port out of range": {Landings: []RelayLanding{{NodeID: "aa11", Host: "a.example.com",
+			Forwards: []RelayForward{{Network: "tcp", ListenPort: 70000, TargetPort: 2}}}}},
+		"duplicate listen port": {Landings: []RelayLanding{
+			{NodeID: "aa11", Host: "a.example.com", Forwards: []RelayForward{{Network: "tcp", ListenPort: 34567, TargetPort: 2}}},
+			{NodeID: "bb22", Host: "b.example.com", Forwards: []RelayForward{{Network: "tcp", ListenPort: 34567, TargetPort: 3}}},
+		}},
+	} {
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		httpReq := httptest.NewRequest(http.MethodPost, "/api/relay", bytes.NewReader(body))
+		httpReq.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httpReq)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want %d; body=%q", name, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+	}
+	if len(h.relayReq.Landings) != 0 {
+		t.Fatalf("an invalid relay job reached the handler: %+v", h.relayReq)
+	}
+}
+
+// An agent shipped before relaying has to say so, rather than answering as if
+// it had installed the rules.
+func TestRelayEndpointReportsAnAgentThatCannotRelay(t *testing.T) {
+	handler := (&Server{Token: "secret", Handler: baseHandler{}}).Mux()
+	body, err := json.Marshal(sampleRelayRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/relay", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body=%q", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	}
+}
+
+// baseHandler implements only the lifecycle interface every agent has ever had.
+type baseHandler struct{}
+
+func (baseHandler) Health() HealthResponse                                   { return HealthResponse{OK: true} }
+func (baseHandler) Install(context.Context, InstallRequest, io.Writer) error { return nil }
+func (baseHandler) ApplyCert(context.Context, CertRequest, io.Writer) error  { return nil }
+func (baseHandler) Uninstall(context.Context, UninstallRequest, io.Writer) error {
+	return nil
+}
+func (baseHandler) Subscription(string) ([]byte, error) { return nil, nil }
 
 func TestGenerateTokenUnique(t *testing.T) {
 	a, err := GenerateToken()

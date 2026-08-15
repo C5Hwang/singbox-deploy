@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"golang.org/x/mod/semver"
@@ -213,6 +214,77 @@ type InstallRequest struct {
 
 	CertificatePEM string `json:"certificatePEM"`
 	PrivateKeyPEM  string `json:"privateKeyPEM"`
+}
+
+// RelayForward is one fronted protocol's port mapping on a relay node: the
+// port the relay answers on and the landing node's own listen port it hands
+// the packets to.
+type RelayForward struct {
+	Protocol   string `json:"protocol"`
+	Network    string `json:"network"`
+	ListenPort int    `json:"listenPort"`
+	TargetPort int    `json:"targetPort"`
+}
+
+// RelayLanding is one node a relay fronts.
+type RelayLanding struct {
+	NodeID string `json:"nodeID"`
+	Name   string `json:"name"`
+	Host   string `json:"host"`
+	// Address is the IPv4 address the Hub resolved for Host. The Agent resolves
+	// Host itself on every apply and falls back to this, so a resolver that is
+	// unavailable at boot does not take the forwarding down.
+	Address  string         `json:"address,omitempty"`
+	Forwards []RelayForward `json:"forwards"`
+}
+
+// RelayRequest replaces a spoke's complete relay job. It is a full replacement
+// rather than a patch: the Hub owns the relay registry, so a request that named
+// only additions would leave a withdrawn landing node forwarding forever.
+// An empty Landings list withdraws the data plane entirely.
+type RelayRequest struct {
+	Landings []RelayLanding `json:"landings"`
+}
+
+// ValidateRelayRequest rejects a relay job that could not become a ruleset.
+// The Agent validates the same invariants again before installing anything;
+// this is the check at the trust boundary.
+func ValidateRelayRequest(req RelayRequest) error {
+	claimed := make(map[string]string, 8)
+	seen := make(map[string]struct{}, len(req.Landings))
+	for _, landing := range req.Landings {
+		if strings.TrimSpace(landing.NodeID) == "" {
+			return fmt.Errorf("relay landing node ID is required")
+		}
+		if _, duplicate := seen[landing.NodeID]; duplicate {
+			return fmt.Errorf("relay landing node %s appears twice", landing.NodeID)
+		}
+		seen[landing.NodeID] = struct{}{}
+		if strings.TrimSpace(landing.Host) == "" {
+			return fmt.Errorf("relay landing node %s needs a hostname", landing.NodeID)
+		}
+		if len(landing.Forwards) == 0 {
+			return fmt.Errorf("relay landing node %s needs at least one forwarded protocol", landing.NodeID)
+		}
+		for _, forward := range landing.Forwards {
+			if forward.Network != "tcp" && forward.Network != "udp" {
+				return fmt.Errorf("relay forward transport %q is neither tcp nor udp", forward.Network)
+			}
+			if forward.ListenPort < 1 || forward.ListenPort > 65535 {
+				return fmt.Errorf("relay listen port must be between 1 and 65535")
+			}
+			if forward.TargetPort < 1 || forward.TargetPort > 65535 {
+				return fmt.Errorf("relay landing port must be between 1 and 65535")
+			}
+			key := forward.Network + "/" + strconv.Itoa(forward.ListenPort)
+			if owner, clash := claimed[key]; clash {
+				return fmt.Errorf("relay port %d/%s is claimed by both %s and %s",
+					forward.ListenPort, forward.Network, owner, landing.NodeID)
+			}
+			claimed[key] = landing.NodeID
+		}
+	}
+	return nil
 }
 
 // CoreRequest asks an agent to replace its local sing-box core with one exact

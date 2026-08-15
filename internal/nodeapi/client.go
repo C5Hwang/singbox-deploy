@@ -135,6 +135,15 @@ func (c *Client) ChangeCore(ctx context.Context, req CoreRequest, log io.Writer)
 	return c.stream(ctx, "/api/core", req, log)
 }
 
+// ApplyRelay replaces the spoke's complete relay job: which landing nodes it
+// fronts and on which ports. An empty request withdraws the data plane.
+func (c *Client) ApplyRelay(ctx context.Context, req RelayRequest, log io.Writer) error {
+	if err := ValidateRelayRequest(req); err != nil {
+		return err
+	}
+	return c.stream(ctx, "/api/relay", req, log)
+}
+
 // Subscription fetches one subscription format body from the agent.
 func (c *Client) Subscription(ctx context.Context, format string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
