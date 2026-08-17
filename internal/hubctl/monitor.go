@@ -149,6 +149,15 @@ func (c *Controller) MonitorData(ctx context.Context, nodeID string, endpoint no
 		if !node.Installed || !node.Monitor {
 			return nil, fmt.Errorf("monitor is not enabled for node %s", node.EffectiveAlias())
 		}
+		// A node that did not answer its last liveness probe is not dialed again
+		// on a dashboard's behalf. Dialing one costs the full connect timeout —
+		// a powered-off spoke drops packets inside the tunnel rather than
+		// refusing them — and the page is asking about every node at once, so
+		// one that is down would otherwise set the pace for all of them. The
+		// refresh timer keeps probing, so the answer resumes on its own.
+		if unreachable, ok := c.reach().lastFailure(node.ID); ok {
+			return nil, fmt.Errorf("node %s did not answer its last liveness probe: %w", node.EffectiveAlias(), unreachable)
+		}
 		return c.NewClient(node).Monitor(ctx, endpoint, address)
 	}
 	return nil, fmt.Errorf("monitor node %s not found", nodeID)

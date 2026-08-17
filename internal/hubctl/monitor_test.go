@@ -215,6 +215,100 @@ func TestRefreshMonitorNeverMutatesTheSpoke(t *testing.T) {
 	}
 }
 
+// A dashboard asks about every node at once, so a node that is down must not
+// set the pace: dialing a powered-off spoke costs the whole connect timeout,
+// because its packets are dropped inside the tunnel rather than refused.
+func TestMonitorDataSkipsANodeThatFailedItsLastProbe(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "Tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "node-secret", Installed: true, Monitor: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := nodes.Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dialed []string
+	ctrl := &Controller{
+		Layout:       layout,
+		reachTracker: newReachability(),
+		NewClient: func(node nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{
+				BaseURL: "http://offline.invalid", Token: node.Token,
+				HTTP: &http.Client{Transport: monitorRoundTripper(func(req *http.Request) (*http.Response, error) {
+					dialed = append(dialed, req.URL.Path)
+					return nil, fmt.Errorf("overlay unreachable")
+				})},
+			}
+		},
+	}
+	if err := ctrl.RefreshMonitor(context.Background()); err == nil {
+		t.Fatal("RefreshMonitor should report the unreachable node")
+	}
+	attempted := len(dialed)
+
+	_, err = ctrl.MonitorData(context.Background(), list[0].ID, nodeapi.MonitorPingTrend, "")
+	if err == nil || !strings.Contains(err.Error(), "liveness probe") {
+		t.Fatalf("MonitorData error = %v, want the recorded probe failure", err)
+	}
+	if len(dialed) != attempted {
+		t.Fatalf("drill-down dialed a node known to be down: %v", dialed[attempted:])
+	}
+}
+
+// An agent that answers with a status is reachable, however unwelcome its
+// answer. Treating that as unreachable would let one endpoint an older agent
+// does not serve silence every other endpoint on the same node.
+func TestMonitorDataStillReadsANodeWhoseAgentAnsweredWithAStatus(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	if err := nodes.Add(layout, nodes.Node{
+		Alias: "Tokyo", Domain: "spoke.example.com", WGIP: "10.90.0.2",
+		Token: "node-secret", Installed: true, Monitor: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := nodes.Load(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dialed []string
+	ctrl := &Controller{
+		Layout:       layout,
+		reachTracker: newReachability(),
+		NewClient: func(node nodes.Node) *nodeapi.Client {
+			return &nodeapi.Client{
+				BaseURL: "http://agent.invalid", Token: node.Token,
+				HTTP: &http.Client{Transport: monitorRoundTripper(func(req *http.Request) (*http.Response, error) {
+					dialed = append(dialed, req.URL.Path)
+					status, body := http.StatusInternalServerError, "agent is confused"
+					if req.URL.Path == "/api/monitor/ping-trend" {
+						status, body = http.StatusOK, `{"latency":{"targets":[],"latest":[]}}`
+					}
+					return &http.Response{
+						StatusCode: status, Header: make(http.Header),
+						Body: io.NopCloser(strings.NewReader(body)), Request: req,
+					}, nil
+				})},
+			}
+		},
+	}
+	if err := ctrl.RefreshMonitor(context.Background()); err == nil {
+		t.Fatal("RefreshMonitor should report the failing health endpoint")
+	}
+	body, err := ctrl.MonitorData(context.Background(), list[0].ID, nodeapi.MonitorPingTrend, "")
+	if err != nil {
+		t.Fatalf("MonitorData: %v", err)
+	}
+	if !strings.Contains(string(body), `"latency"`) {
+		t.Fatalf("drill-down body = %s", body)
+	}
+	if !strings.Contains(strings.Join(dialed, ","), "/api/monitor/ping-trend") {
+		t.Fatalf("drill-down never reached the agent: %v", dialed)
+	}
+}
+
 func TestRefreshMonitorReportsFailureAndKeepsPreviousSnapshot(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
 	if err := nodes.Add(layout, nodes.Node{

@@ -7,12 +7,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
 	"time"
 )
+
+// dialTimeout bounds how long establishing a connection to an agent may take.
+// It matters because a spoke that is powered off does not refuse the
+// connection: its packets are dropped inside the tunnel, so the dial otherwise
+// waits out the kernel's SYN retries and every read pays its caller's full
+// timeout instead of failing in seconds. Four seconds still connects
+// comfortably over a distant, lossy tunnel.
+const dialTimeout = 4 * time.Second
+
+// readTransport is shared by every fixed-size request/response call. Sharing it
+// also keeps the overlay connection pool warm across polls.
+var readTransport = &http.Transport{
+	DialContext:         (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+	MaxIdleConnsPerHost: 4,
+	IdleConnTimeout:     90 * time.Second,
+}
+
+var readClient = &http.Client{Transport: readTransport}
 
 // Client is the hub's connection to one spoke agent over the overlay.
 type Client struct {
@@ -31,6 +50,16 @@ func (c *Client) httpClient() *http.Client {
 	// so there is no overall client timeout; per-request timeouts come from the
 	// caller's context instead.
 	return &http.Client{}
+}
+
+// readHTTPClient serves the calls that exchange one bounded request for one
+// bounded response. They get the dial timeout; the streaming operations keep
+// httpClient, whose absence of one is deliberate.
+func (c *Client) readHTTPClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return readClient
 }
 
 func (c *Client) url(path string) string {
@@ -54,7 +83,7 @@ func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
 	if err != nil {
 		return HealthResponse{}, err
 	}
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.readHTTPClient().Do(req)
 	if err != nil {
 		return HealthResponse{}, err
 	}
@@ -79,7 +108,7 @@ func (c *Client) ProtocolState(ctx context.Context) (ProtocolStateResponse, erro
 	if err != nil {
 		return ProtocolStateResponse{}, err
 	}
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.readHTTPClient().Do(req)
 	if err != nil {
 		return ProtocolStateResponse{}, err
 	}
@@ -152,7 +181,7 @@ func (c *Client) Subscription(ctx context.Context, format string) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.readHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +191,11 @@ func (c *Client) Subscription(ctx context.Context, format string) ([]byte, error
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 }
+
+// monitorReadTimeout bounds one monitor read. Nothing downstream of it is
+// interactive on the agent side — the spoke answers from its own database — so
+// the only thing this has to cover is a small host running a wide query.
+const monitorReadTimeout = 12 * time.Second
 
 // Monitor reads one fixed monitor resource through the authenticated agent
 // API. endpoint is a typed allow-list value, not a caller-supplied path or URL.
@@ -180,13 +214,17 @@ func (c *Client) Monitor(ctx context.Context, endpoint MonitorEndpoint, address 
 		}
 		apiPath += "?" + url.Values{"ip": []string{parsed.String()}}.Encode()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// A dashboard is waiting on this read, so the ceiling is what a slow node
+	// may spend answering rather than what a batch job would tolerate. It is
+	// generous on purpose: a node that is merely slow should still answer, and
+	// an unreachable one now fails on the dial instead of here.
+	ctx, cancel := context.WithTimeout(ctx, monitorReadTimeout)
 	defer cancel()
 	req, err := c.newRequest(ctx, http.MethodGet, apiPath, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.readHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +252,7 @@ func (c *Client) TrafficUsage(ctx context.Context) (TrafficUsage, error) {
 	if err != nil {
 		return TrafficUsage{}, err
 	}
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.readHTTPClient().Do(req)
 	if err != nil {
 		return TrafficUsage{}, err
 	}
@@ -243,7 +281,7 @@ func (c *Client) SetTrafficUsage(ctx context.Context, usage TrafficUsageRequest)
 		return TrafficUsageUpdate{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.readHTTPClient().Do(req)
 	if err != nil {
 		return TrafficUsageUpdate{}, err
 	}
@@ -346,11 +384,24 @@ func (c *Client) stream(ctx context.Context, path string, payload any, log io.Wr
 	return opErr
 }
 
+// StatusError is an agent answer that carried a non-2xx status. It exists so a
+// caller can tell "the agent replied and refused" from "the hub could not talk
+// to the agent at all": the second means the node is unreachable, and only the
+// second should make the hub stop dialing it.
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("agent request failed (%d): %s", e.Code, e.Body)
+}
+
 func statusError(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	msg := strings.TrimSpace(string(body))
 	if msg == "" {
 		msg = resp.Status
 	}
-	return fmt.Errorf("agent request failed (%d): %s", resp.StatusCode, msg)
+	return &StatusError{Code: resp.StatusCode, Body: msg}
 }

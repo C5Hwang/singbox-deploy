@@ -4,7 +4,15 @@ import IPTrendModal from "../components/IPTrendModal.vue";
 import { fetchIPTraffic } from "../api";
 import { flagFor, locations, resolveLocations } from "../geo";
 import { formatBytesCompact, formatDateTime } from "../utils";
-import type { IPDirectionKey, IPTrafficRow, IPTrafficWindow, IPWindowKey, IPSort, Summary } from "../types";
+import type {
+  IPDirectionKey,
+  IPTrafficRow,
+  IPTrafficSnapshot,
+  IPTrafficWindow,
+  IPWindowKey,
+  IPSort,
+  Summary,
+} from "../types";
 
 // Every address a node still has is listed; thirty of them fit on a page.
 const PAGE_SIZE = 30;
@@ -26,13 +34,29 @@ const selected = ref<string>(ALL_NODES);
 // Ranking defaults to the window the quota is counted over, largest first,
 // which is the question the page exists to answer.
 const sort = ref<IPSort>({ window: "cycle", direction: "totalBytes", descending: true });
-const rows = ref<IPTrafficRow[]>([]);
-const cycleStart = ref(0);
-const unavailableNodes = ref<string[]>([]);
-const disabledNodes = ref<string[]>([]);
-const loading = ref(false);
-const loadError = ref("");
 const modalRow = ref<IPTrafficRow | null>(null);
+
+// What each node has answered: its snapshot, or null for a node that could not
+// be read. A node missing from the map has not answered yet. Keeping the answers
+// rather than one merged table is what lets the ranking be rebuilt from the
+// nodes that have replied while the rest are still in flight.
+interface NodeAnswer {
+  name: string;
+  snapshot: IPTrafficSnapshot | null;
+}
+const answers = ref(new Map<string, NodeAnswer>());
+let round = 0;
+
+// The nodes the table is currently showing.
+const targets = computed(() =>
+  selected.value === ALL_NODES ? sources.value : sources.value.filter((s) => sourceKey(s) === selected.value),
+);
+const answered = computed(() =>
+  targets.value
+    .map((source) => answers.value.get(sourceKey(source)))
+    .filter((answer): answer is NodeAnswer => answer !== undefined),
+);
+const pending = computed(() => answered.value.length < targets.value.length);
 
 // Nine numbers per row is a lot of header. The window names carry the words and
 // the directions are reduced to arrows, so the second header row is three
@@ -58,35 +82,32 @@ function addWindow(into: IPTrafficWindow, from: IPTrafficWindow) {
   into.totalBytes += from.totalBytes;
 }
 
-// Nodes are queried in parallel and merged by address: the same client reaching
-// two nodes is one row whose totals are the sum, which is what a "top 30" over
-// a fleet has to mean.
-async function load() {
-  const targets = selected.value === ALL_NODES ? sources.value : sources.value.filter((s) => sourceKey(s) === selected.value);
-  if (targets.length === 0) return;
-  loading.value = true;
+// Nodes are queried in parallel and each answer is folded in as it lands, so a
+// node that is powered off — which can only fail by timing out — no longer holds
+// the table back while the rest of the fleet is already known.
+function load() {
+  const list = targets.value;
+  if (list.length === 0) return;
+  const current = ++round;
+  for (const source of list) {
+    const key = sourceKey(source);
+    const name = source.name ?? key;
+    fetchIPTraffic(key)
+      .then((snapshot): NodeAnswer => ({ name, snapshot }))
+      .catch((): NodeAnswer => ({ name, snapshot: null }))
+      .then((answer) => {
+        if (current === round) answers.value.set(key, answer);
+      });
+  }
+}
+
+// Addresses are merged across nodes: the same client reaching two nodes is one
+// row whose totals are the sum, which is what a "top 30" over a fleet has to
+// mean.
+const rows = computed<IPTrafficRow[]>(() => {
   const merged = new Map<string, IPTrafficRow>();
-  const unavailable: string[] = [];
-  const disabled: string[] = [];
-  let latestCycle = 0;
-
-  const results = await Promise.all(
-    targets.map(async (source) => {
-      try {
-        return { source, snapshot: await fetchIPTraffic(sourceKey(source)) };
-      } catch {
-        return { source, snapshot: null };
-      }
-    }),
-  );
-
-  for (const { source, snapshot } of results) {
-    if (!snapshot) {
-      unavailable.push(source.name ?? sourceKey(source));
-      continue;
-    }
-    if (!snapshot.enabled) disabled.push(source.name ?? sourceKey(source));
-    latestCycle = Math.max(latestCycle, snapshot.cycleStart);
+  for (const { name, snapshot } of answered.value) {
+    if (!snapshot) continue;
     for (const entry of snapshot.entries) {
       const row = merged.get(entry.ip) ?? {
         ip: entry.ip,
@@ -95,22 +116,28 @@ async function load() {
         today: emptyWindow(),
         last7: emptyWindow(),
       };
-      row.nodes.push(source.name ?? sourceKey(source));
+      row.nodes.push(name);
       addWindow(row.cycle, entry.cycle);
       addWindow(row.today, entry.today);
       addWindow(row.last7, entry.last7);
       merged.set(entry.ip, row);
     }
   }
+  return [...merged.values()];
+});
 
-  rows.value = [...merged.values()];
-  cycleStart.value = latestCycle;
-  unavailableNodes.value = unavailable;
-  disabledNodes.value = disabled;
-  loadError.value = unavailable.length === targets.length && targets.length > 0 ? "no node returned per-IP data" : "";
-  loading.value = false;
-  resolveLocations(visible.value.map((r) => r.ip));
-}
+const cycleStart = computed(() => Math.max(0, ...answered.value.map((a) => a.snapshot?.cycleStart ?? 0)));
+const unavailableNodes = computed(() => answered.value.filter((a) => !a.snapshot).map((a) => a.name));
+const disabledNodes = computed(() =>
+  answered.value.filter((a) => a.snapshot && !a.snapshot.enabled).map((a) => a.name),
+);
+// Only a verdict once every node has reported: while one is still in flight the
+// table is incomplete rather than unavailable.
+const loadError = computed(() =>
+  !pending.value && targets.value.length > 0 && unavailableNodes.value.length === targets.value.length
+    ? "no node returned per-IP data"
+    : "",
+);
 
 // Clicking a cell sorts by it; clicking the same cell again reverses it. A new
 // cell always starts descending, because "who used the most" is the question
@@ -190,7 +217,7 @@ function placeLabel(ip: string): string {
 }
 
 watch(visible, (list) => resolveLocations(list.map((r) => r.ip)));
-watch([selected, () => sources.value.length], load, { immediate: true });
+watch(() => targets.value.map(sourceKey).join(","), load, { immediate: true });
 
 // Counters advance once per sampling interval, so a slow refresh keeps the
 // table current without hammering every node in the fleet.
@@ -313,7 +340,7 @@ const modalSources = computed(() =>
 
   <section class="grid sources">
     <article class="card span-12 table-card">
-      <p v-if="loading && rows.length === 0" class="no-data">Loading per-IP traffic...</p>
+      <p v-if="pending && rows.length === 0" class="no-data">Loading per-IP traffic...</p>
       <p v-else-if="loadError" class="no-data">Per-IP traffic is unavailable: {{ loadError }}.</p>
       <p v-else-if="visible.length === 0" class="no-data">
         No client traffic recorded in this quota cycle yet.

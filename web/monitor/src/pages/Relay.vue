@@ -21,43 +21,61 @@ function sourceKey(source: { id?: string; name?: string }): string {
   return source.id || source.name || "";
 }
 
+// The hub's registry names which nodes relay, so those are the only ones asked.
+// Asking the whole fleet and discarding the answers with no relay probes let any
+// unrelated node — including one that is powered off, which can only fail by
+// timing out — set the pace of a page it has nothing to do with. A deployment
+// that sends no list has no registry to ask, and then every node is asked as
+// before.
+const relaySources = computed<{ id?: string; name?: string }[]>(() => {
+  const ids = props.summary?.relayNodes ?? [];
+  if (ids.length === 0) return sources.value;
+  const byKey = new Map(sources.value.map((source) => [sourceKey(source), source]));
+  return ids.map((id) => byKey.get(id)).filter((source) => source !== undefined);
+});
+
 interface RelayNode {
   key: string;
   name: string;
   snapshot: LatencySnapshot;
 }
 
-const relays = ref<RelayNode[]>([]);
-const loading = ref(false);
+// One entry per node that has answered: the relay it describes, or null for a
+// node that answered without relay probes or could not be read at all. A node
+// that is missing from the map has not answered yet.
+const answers = ref(new Map<string, RelayNode | null>());
 const openRelay = ref<RelayNode | null>(null);
+let round = 0;
 
-// Every node is asked, and only the ones that answer with relay probes get a
-// card: a node that forwards for nobody has nothing to show here, and a node
-// that cannot be reached is already reported on the latency page.
-async function load() {
-  const targets = sources.value;
+const relays = computed(() =>
+  relaySources.value
+    .map((source) => answers.value.get(sourceKey(source)))
+    .filter((node): node is RelayNode => !!node),
+);
+const pending = computed(() => relaySources.value.some((source) => !answers.value.has(sourceKey(source))));
+
+// Each relay's card appears the moment that relay answers. A node that cannot be
+// reached is already reported on the latency page, so here it simply never gets
+// a card — but it no longer delays the ones that did answer.
+function load() {
+  const targets = relaySources.value;
   if (targets.length === 0) return;
-  loading.value = true;
-  const answered = await Promise.all(
-    targets.map(async (source) => {
-      const key = sourceKey(source);
-      try {
-        const snapshot = await fetchLatency(key);
-        if (relayTargets(snapshot.targets).length === 0) return null;
-        return { key, name: source.name ?? key, snapshot };
-      } catch {
-        return null;
-      }
-    }),
-  );
-  relays.value = answered.filter((node): node is RelayNode => node !== null);
-  loading.value = false;
-  if (openRelay.value) {
-    openRelay.value = relays.value.find((n) => n.key === openRelay.value?.key) ?? null;
+  const current = ++round;
+  for (const source of targets) {
+    const key = sourceKey(source);
+    const name = source.name ?? key;
+    fetchLatency(key)
+      .then((snapshot) => (relayTargets(snapshot.targets).length === 0 ? null : { key, name, snapshot }))
+      .catch(() => null)
+      .then((node) => {
+        if (current !== round) return;
+        answers.value.set(key, node);
+        if (openRelay.value?.key === key) openRelay.value = node;
+      });
   }
 }
 
-watch(() => sources.value.map(sourceKey).join(","), load, { immediate: true });
+watch(() => relaySources.value.map(sourceKey).join(","), load, { immediate: true });
 
 // Probes run every minute, and the card only shows the newest round.
 let refreshTimer: number | undefined;
@@ -154,7 +172,7 @@ function statusLabel(node: RelayNode): string {
 </script>
 
 <template>
-  <p v-if="loading && relays.length === 0" class="no-data">Loading relay latency data...</p>
+  <p v-if="relays.length === 0 && pending" class="no-data">Loading relay latency data...</p>
   <!-- The navigation only offers this page once something is relayed, so an
        empty one means the relays exist but none of them has reported a round —
        most often because the relay's own monitor is switched off. -->

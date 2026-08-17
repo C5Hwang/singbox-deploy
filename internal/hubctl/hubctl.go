@@ -95,6 +95,23 @@ type Controller struct {
 	// yet at boot. It returns "" for a name it cannot resolve, which is not an
 	// error: the relay resolves the name itself on every apply.
 	ResolveHostIPv4 func(host string) string
+
+	// reachTracker overrides the tracker liveness probes report to; tests set it
+	// to keep their observations to themselves.
+	reachTracker *reachability
+}
+
+// reach returns the tracker every liveness probe reports to. Reachability is a
+// property of the hub process's view of the fleet, keyed by the stable node IDs
+// the whole process shares, so it lives outside the struct: a Controller copied
+// to tweak one field — the rollback controllers the TUI builds — must observe and
+// consult the same one, and a lazily created per-value tracker would also race
+// between the monitor service's refresh goroutine and its request handlers.
+func (c *Controller) reach() *reachability {
+	if c.reachTracker != nil {
+		return c.reachTracker
+	}
+	return fleetReachability
 }
 
 func (c *Controller) defaults() {
@@ -1034,6 +1051,10 @@ func (c *Controller) syncCertificate(ctx context.Context, node nodes.Node, log i
 func (c *Controller) probeAgent(ctx context.Context, node *nodes.Node) (nodeapi.HealthResponse, error) {
 	client := c.NewClient(*node)
 	health, err := client.Health(ctx)
+	// This call is the only place in the hub that learns whether a node answers
+	// at all, so it is where reachability is recorded — before any of the checks
+	// below, which are about what the answer said rather than whether one came.
+	c.reach().observe(node.ID, err)
 	if err != nil {
 		return nodeapi.HealthResponse{}, err
 	}

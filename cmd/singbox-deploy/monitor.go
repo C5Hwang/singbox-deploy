@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -106,14 +107,28 @@ func runMonitor(args []string) error {
 		// them, on the same schedule as the carrier probes.
 		ExtraPingTargets: relay.PingTargets(layout),
 		// The registry is the fleet's answer to "is anything relayed", and the
-		// dashboard hides its relay page entirely when nothing is.
-		RelayLinkCount: func() int {
+		// dashboard hides its relay page entirely when nothing is. It also names
+		// the relays, so the page asks them for their probes instead of asking
+		// the whole fleet and discarding most of the answers.
+		RelayRegistry: func() ([]string, int) {
 			links, err := relaylinks.Load(layout)
 			if err != nil {
 				log.Printf("monitor: read relay links: %v", err)
-				return 0
+				return nil, 0
 			}
-			return len(links)
+			relays := make([]string, 0, len(links))
+			seen := map[string]bool{}
+			for _, link := range links {
+				// One relay commonly fronts several landing nodes, and the
+				// dashboard wants each relay once.
+				id := monitorSourceID(link.RelayID)
+				if id == "" || seen[id] {
+					continue
+				}
+				seen[id] = true
+				relays = append(relays, id)
+			}
+			return relays, len(links)
 		},
 		Now: now,
 	}
@@ -122,6 +137,17 @@ func runMonitor(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return m.Run(ctx)
+}
+
+// monitorSourceID maps a relay registry node ID onto the ID the dashboard knows
+// that node by: the hub is its own "local" source there, and a spoke keeps its
+// stable registry ID.
+func monitorSourceID(nodeID string) string {
+	id := strings.TrimSpace(nodeID)
+	if id == relaylinks.HubNodeID {
+		return "local"
+	}
+	return id
 }
 
 func monitorEndpointForPath(path string) (nodeapi.MonitorEndpoint, error) {

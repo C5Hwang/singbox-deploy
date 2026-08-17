@@ -25,33 +25,52 @@ interface NodeLatency {
   name: string;
   snapshot: LatencySnapshot | null;
   error: string;
+  // pending is a card that has been asked and has not answered yet. A node that
+  // has answered before keeps its previous reading across a refresh instead of
+  // going back to this state.
+  pending: boolean;
 }
 
 const nodes = ref<NodeLatency[]>([]);
-const loading = ref(false);
 const openNode = ref<NodeLatency | null>(null);
+// Each round is numbered so a reply from a superseded one — the fleet changed,
+// or the node it was waiting on took longer than the poll interval — cannot
+// write over the round that replaced it.
+let round = 0;
 
-// Every node is fetched in parallel and gets its own card, so one unreachable
-// spoke costs its own card rather than the page.
-async function load() {
+// Every node is fetched in parallel and each card is filled in the moment its
+// own node answers. Nothing waits for the slowest one: a spoke that is powered
+// off drops its packets rather than refusing them, so it can only fail by
+// timing out, and it used to hold the whole page in its loading state while it
+// did.
+function load() {
   const targets = sources.value;
   if (targets.length === 0) return;
-  loading.value = true;
-  nodes.value = await Promise.all(
-    targets.map(async (source) => {
-      const key = sourceKey(source);
-      try {
-        return { key, name: source.name ?? key, snapshot: await fetchLatency(key), error: "" };
-      } catch (e) {
-        return { key, name: source.name ?? key, snapshot: null, error: e instanceof Error ? e.message : String(e) };
-      }
-    }),
-  );
-  loading.value = false;
-  // The modal holds a snapshot by value, so it is re-pointed at the refreshed
-  // one rather than left showing the round it was opened on.
-  if (openNode.value) {
-    openNode.value = nodes.value.find((n) => n.key === openNode.value?.key) ?? null;
+  const current = ++round;
+  const previous = new Map(nodes.value.map((node) => [node.key, node]));
+  nodes.value = targets.map((source) => {
+    const key = sourceKey(source);
+    const name = source.name ?? key;
+    const carried = previous.get(key);
+    // The reading is carried over; the name is not, so a node renamed between
+    // rounds is not labelled with its old alias until it answers.
+    return carried ? { ...carried, name } : { key, name, snapshot: null, error: "", pending: true };
+  });
+  for (const source of targets) {
+    const key = sourceKey(source);
+    const name = source.name ?? key;
+    fetchLatency(key)
+      .then((snapshot) => ({ key, name, snapshot, error: "", pending: false }))
+      .catch((e) => ({ key, name, snapshot: null, error: e instanceof Error ? e.message : String(e), pending: false }))
+      .then((node) => {
+        if (current !== round) return;
+        const at = nodes.value.findIndex((n) => n.key === key);
+        if (at < 0) return;
+        nodes.value[at] = node;
+        // The modal holds a snapshot by value, so it is re-pointed at the
+        // refreshed one rather than left showing the round it was opened on.
+        if (openNode.value?.key === key) openNode.value = node;
+      });
   }
 }
 
@@ -88,6 +107,7 @@ function medianLatency(node: NodeLatency): number | null {
 }
 
 function headline(node: NodeLatency): string {
+  if (node.pending) return "…";
   const ms = medianLatency(node);
   return ms === null ? "NA" : `${ms.toFixed(ms >= 100 ? 0 : 1)} ms`;
 }
@@ -115,6 +135,7 @@ function statusTone(node: NodeLatency): string {
 function statusLabel(node: NodeLatency): string {
   const latest = carrierLatest(node);
   const answering = latest.filter((p) => p.lossPct < 100).length;
+  if (node.pending) return "waiting for this node";
   if (node.error) return "unavailable";
   if (latest.length === 0) return "no data";
   return `${answering} of ${latest.length} probes answering`;
@@ -122,7 +143,7 @@ function statusLabel(node: NodeLatency): string {
 </script>
 
 <template>
-  <p v-if="loading && nodes.length === 0" class="no-data">Loading latency data...</p>
+  <p v-if="nodes.length === 0" class="no-data">Loading latency data...</p>
 
   <!-- The colour is a second reading of a number that is already printed on
        every cell, so the key is a strip and two words rather than a legend. -->
@@ -150,7 +171,8 @@ function statusLabel(node: NodeLatency): string {
         <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
       </div>
 
-      <p v-if="node.error" class="no-data">Latency is unavailable for this node.</p>
+      <p v-if="node.pending" class="no-data">Reading this node's latest round...</p>
+      <p v-else-if="node.error" class="no-data">Latency is unavailable for this node.</p>
       <LatencyMatrix v-else-if="node.snapshot" :snapshot="node.snapshot" />
     </article>
   </section>

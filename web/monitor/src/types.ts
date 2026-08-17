@@ -199,6 +199,10 @@ export interface Summary {
   // topology at all, and the dashboard drops the relay page rather than
   // offering one that can only ever say "nothing here".
   relayLinks?: number;
+  // Which sources do the relaying. The relay page asks these and only these for
+  // their probes, so a node that relays for nobody — including one that is down
+  // — cannot slow down a page it has nothing to do with.
+  relayNodes?: string[];
 }
 
 // Overview-card metric opened in the all-sources trend modal.

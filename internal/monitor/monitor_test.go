@@ -72,10 +72,11 @@ func TestSummaryServesSnapshotWithoutRefreshing(t *testing.T) {
 	}
 }
 
-// The dashboard hides its relay page unless something is relayed, and this is
-// the only thing that tells it so: whether a node is fronted is a fact about
-// the hub's registry, not about any node's traffic.
-func TestSummaryReportsTheRelayLinkCount(t *testing.T) {
+// The dashboard hides its relay page unless something is relayed, and asks only
+// the relays for their probes once it shows one. Both facts come from here:
+// whether a node relays is a fact about the hub's registry, not about any node's
+// traffic.
+func TestSummaryReportsTheRelayRegistry(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))
 	if err != nil {
 		t.Fatalf("OpenStore error: %v", err)
@@ -96,13 +97,18 @@ func TestSummaryReportsTheRelayLinkCount(t *testing.T) {
 		return got
 	}
 
-	if got := read(Config{Alias: "local", RelayLinkCount: func() int { return 2 }}); got.RelayLinks != 2 {
-		t.Fatalf("relayLinks = %d, want 2", got.RelayLinks)
+	registry := func() ([]string, int) { return []string{"local", "spoke-a"}, 3 }
+	got := read(Config{Alias: "local", RelayRegistry: registry})
+	if got.RelayLinks != 3 {
+		t.Fatalf("relayLinks = %d, want 3", got.RelayLinks)
+	}
+	if len(got.RelayNodes) != 2 || got.RelayNodes[0] != "local" || got.RelayNodes[1] != "spoke-a" {
+		t.Fatalf("relayNodes = %#v, want the two relays", got.RelayNodes)
 	}
 	// A spoke's own monitor has no registry to ask, and neither does a hub
 	// running a unit written before relaying existed.
-	if got := read(Config{Alias: "local"}); got.RelayLinks != 0 {
-		t.Fatalf("relayLinks without a registry = %d, want 0", got.RelayLinks)
+	if got := read(Config{Alias: "local"}); got.RelayLinks != 0 || len(got.RelayNodes) != 0 {
+		t.Fatalf("relay registry without one = %d links, %#v nodes, want none", got.RelayLinks, got.RelayNodes)
 	}
 }
 

@@ -54,16 +54,34 @@ export function onUnauthorized(handler: () => void) {
   unauthorizedHandler = handler;
 }
 
+// REQUEST_TIMEOUT_MS bounds the wait on one request. The node this asks about
+// may be on the other side of a hub that is proxying to a spoke, and a page
+// asks about every node at once, so a request that is going nowhere has to give
+// up on its own: without this the fetch would sit there until the browser lost
+// interest, keeping a card in its loading state through several polls.
+const REQUEST_TIMEOUT_MS = 20000;
+
 async function getJSON(path: string): Promise<any> {
   const headers: Record<string, string> = {};
   if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
-  const res = await fetch(path, { cache: "no-store", headers });
-  if (res.status === 401) {
-    unauthorizedHandler?.();
-    throw new UnauthorizedError();
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(path, { cache: "no-store", headers, signal: controller.signal });
+    if (res.status === 401) {
+      unauthorizedHandler?.();
+      throw new UnauthorizedError();
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    // An abort is this timeout firing, not a transport error, and it reads as
+    // one to whoever reports it on a card.
+    if (controller.signal.aborted) throw new Error(`timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+    throw e;
+  } finally {
+    window.clearTimeout(timer);
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 
 function sourceQuery(source?: string): string {
