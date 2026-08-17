@@ -45,7 +45,7 @@ func installFields() []field {
 	}
 	monitorDisabled := func(v map[string]string) bool { return !monitorEnabled(v) }
 	fields := []field{
-		{key: "domain", label: "Domain (must resolve to this server)", note: "The address clients connect to, and the one subscription links use.\n" + noteDNSZone},
+		{key: "domain", label: "Domain (must resolve to this server)", note: "The address clients connect to, and the one subscription links use without a monitor.\n" + noteDNSZone},
 		{key: "protocols", label: "Protocols to install", def: defaultProtocolValue(), options: protocolOptions(), multi: true, note: "The protocols this server offers. Pick at least one."},
 		{key: "site_template", label: "Masquerade site template", def: deploy.DefaultSiteTemplate, options: deploy.SiteTemplateOptions(), note: "The ordinary-looking site shown to anyone who opens your domain."},
 	}
