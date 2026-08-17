@@ -84,10 +84,11 @@ export function fmtTime(value: number): string {
   return shiftToTz(value).toLocaleTimeString("en-US", HOUR_MIN);
 }
 
-// A week of minutes is too long an axis for bare clock times — 14:00 turns up
-// seven times — and too short for dates alone. The tick that lands on midnight
-// carries the date and the rest carry the time, so the axis reads correctly at
-// both ends of the zoom the slider covers.
+// Any axis finer than a day runs into the same thing: a span of several days is
+// too long for bare clock times — 14:00 turns up once a day — and too short for
+// dates alone. The tick that lands on midnight carries the date and the rest
+// carry the time, so the axis reads correctly at both ends of the zoom the
+// slider covers, whether its slots are minutes, hours or raw samples.
 export function fmtDayOrTime(value: number): string {
   const d = shiftToTz(value);
   return d.getUTCHours() === 0 && d.getUTCMinutes() === 0 ? fmtDate(value) : fmtTime(value);
@@ -147,7 +148,9 @@ export interface ChartFrame {
 
 // Shared chart skeleton: tooltip, legend, grid, time axis and zoom slider,
 // sized for the available width so axes and legend never collide on phones.
-export function buildFrame({ width, height, unit, legend, tooltipUnit, tooltipValue, sortTooltip }: FrameParams): ChartFrame {
+// Reached only through buildTrendOption, so a chart cannot take the frame and
+// then quietly disagree with the rest of the dashboard about the other half.
+function buildFrame({ width, height, unit, legend, tooltipUnit, tooltipValue, sortTooltip }: FrameParams): ChartFrame {
   const narrow = width < 600;
   // Slider handle labels render outside the track; keep enough inset on both
   // sides so the two-line "date / time" label stays inside the canvas.
@@ -199,8 +202,11 @@ export function buildFrame({ width, height, unit, legend, tooltipUnit, tooltipVa
         color: "#7a869a",
         fontSize: narrow ? 10 : 12,
         hideOverlap: true,
-        formatter: (value: number) =>
-          unit === "day" ? fmtDate(value) : unit === "minute" ? fmtDayOrTime(value) : fmtTime(value),
+        // One rule for every chart: a daily axis is dates all the way along, and
+        // anything finer is times with the date on the tick that crosses into a
+        // new day. The traffic and resource charts used to drop that date, so the
+        // same week read as a single unlabelled day there and as seven here.
+        formatter: (value: number) => (unit === "day" ? fmtDate(value) : fmtDayOrTime(value)),
       },
     },
     dataZoom: [
@@ -440,6 +446,30 @@ function layOutChips(series: any[], step: number): Placements {
   return { peaks, averages };
 }
 
+// Chips are laid out one y-axis at a time. A dual-axis chart draws percentages
+// against one axis and byte rates against the other, and the two have no shared
+// scale: measured together, a rate of a few megabytes a second would put every
+// percentage on the floor of the plot and report them all as colliding.
+function layOutByAxis(series: any[], step: number): Placements {
+  const peaks: (PeakPlacement | null)[] = series.map(() => null);
+  const averages: (AveragePlacement | null)[] = series.map(() => null);
+  const byAxis = new Map<number, number[]>();
+  series.forEach((s, i) => {
+    const axis = s.yAxisIndex ?? 0;
+    const group = byAxis.get(axis);
+    if (group) group.push(i);
+    else byAxis.set(axis, [i]);
+  });
+  for (const indices of byAxis.values()) {
+    const placed = layOutChips(indices.map((i) => series[i]), step);
+    indices.forEach((index, k) => {
+      peaks[index] = placed.peaks[k];
+      averages[index] = placed.averages[k];
+    });
+  }
+  return { peaks, averages };
+}
+
 // A gap in a series is null, and Number(null) is 0 — a finite number, and a
 // wrong one. Reading a point has to reject the gap before the coercion, or a
 // week of one-minute rounds with nine tenths of its slots empty reports an
@@ -460,6 +490,8 @@ function seriesValues(data: any[]): number[] {
   return values;
 }
 
+export type PeakAverageFormat = (value: number, series: any) => string;
+
 // withPeakAverage overlays each series with its own average line and peak
 // marker. ECharts computes both from the data already on the chart, so the
 // overlay can never disagree with the curve it annotates, and nulls — a fully
@@ -474,14 +506,19 @@ function seriesValues(data: any[]): number[] {
 // by merging rather than rebuilding it, and a merge only removes what it is
 // handed. That is also what keeps the transition to the curve itself: the lines
 // stay where they are while the annotations fade in over them.
-export function withPeakAverage(
+//
+// format is given the series as well as the value, because a chart whose lines
+// are not all in the same unit — percentages against one axis, byte rates
+// against the other — has to label each chip in the unit its own line is drawn
+// in.
+function withPeakAverage(
   series: any[],
   {
     show,
     format,
     narrow,
     plotHeight,
-  }: { show: boolean; format: (v: number) => string; narrow: boolean; plotHeight?: number },
+  }: { show: boolean; format: PeakAverageFormat; narrow: boolean; plotHeight?: number },
 ): any[] {
   const fontSize = narrow ? 10 : 11;
   const levelHeight = narrow ? CHIP_PX_NARROW : CHIP_PX;
@@ -494,7 +531,7 @@ export function withPeakAverage(
     fontSize,
     fontWeight: 700,
   });
-  const { peaks, averages } = layOutChips(series, step);
+  const { peaks, averages } = layOutByAxis(series, step);
   return series.map((s, i) => {
     const color = s.itemStyle?.color ?? "#2563eb";
     const values = seriesValues(s.data);
@@ -524,7 +561,7 @@ export function withPeakAverage(
           position: averagePosition,
           distance: 4,
           offset: [0, averageOffset],
-          formatter: ({ value }: any) => `avg ${format(Number(value))}`,
+          formatter: ({ value }: any) => `avg ${format(Number(value), s)}`,
         },
         emphasis: { disabled: true },
         data: hasData ? [{ type: "average" }] : [],
@@ -544,7 +581,7 @@ export function withPeakAverage(
           // Negative y is up, and a level is positive upwards, so a chip that
           // would land on one already placed moves clear of it.
           offset: [0, -(peak?.level ?? 0) * levelHeight],
-          formatter: ({ value }: any) => `peak ${format(Number(value))}`,
+          formatter: ({ value }: any) => `peak ${format(Number(value), s)}`,
         },
         emphasis: { disabled: true },
         data: hasData ? [{ type: "max" }] : [],
@@ -583,5 +620,76 @@ export function rateAxis(narrow: boolean) {
     axisLine: { show: false },
     splitLine: { show: false },
     axisLabel: { color: "#7a869a", fontSize: narrow ? 10 : 12, formatter: (v: number) => `${formatBytes(v)}/s` },
+  };
+}
+
+export function msAxis(narrow: boolean) {
+  return {
+    type: "value",
+    name: narrow ? "" : "ms",
+    // A latency axis that started at the lowest reading would turn the noise
+    // between 30 and 32 ms into a mountain range.
+    min: 0,
+    axisLine: { show: false },
+    splitLine: { lineStyle: { color: "#f0f4f8" } },
+    axisLabel: { color: "#7a869a", fontSize: narrow ? 10 : 12, formatter: (v: number) => `${v}` },
+  };
+}
+
+// Whatever the bucket, a traffic point is a timestamp and three byte counts,
+// so the raw samples, the hourly buckets and one address's history are all the
+// same shape here once the caller has said which field carries the timestamp.
+export interface TrafficPoint {
+  ts: number;
+  inBytes: number;
+  outBytes: number;
+  totalBytes: number;
+}
+
+const TRAFFIC_LINES: { name: string; color: string; key: "inBytes" | "outBytes" | "totalBytes" }[] = [
+  { name: "Inbound", color: "#2563eb", key: "inBytes" },
+  { name: "Outbound", color: "#06b6d4", key: "outBytes" },
+  { name: "Total", color: "#22c55e", key: "totalBytes" },
+];
+
+export const TRAFFIC_LEGEND = TRAFFIC_LINES.map((line) => line.name);
+
+// The same three lines in the same three colours wherever traffic is charted —
+// a node's own modal and one address's — so a reader who has learnt the colours
+// on one page has learnt them on the other.
+export function trafficSeries(points: TrafficPoint[], showSymbol: boolean): any[] {
+  return TRAFFIC_LINES.map((line) =>
+    lineSeries(line.name, line.color, points.map((p) => [p.ts * 1000, p[line.key]]), { showSymbol }),
+  );
+}
+
+export interface TrendParams extends Omit<FrameParams, "width" | "height"> {
+  // The chart's own element, which is what the frame is sized against. It does
+  // not exist until the modal has rendered once, and a desktop width is assumed
+  // until it does.
+  el?: HTMLElement | null;
+  // Both are given the frame's own answer to whether the chart is narrow, so a
+  // series can drop its point symbols and an axis its name on the same terms
+  // the frame drops legend rows.
+  yAxis: (narrow: boolean) => any;
+  series: (narrow: boolean) => any[];
+  peakAverage: { show: boolean; format: PeakAverageFormat };
+}
+
+// The whole option for one trend chart: the shared frame, the value axis and
+// the annotated series. Every trend modal in the dashboard is built through
+// here and differs only in what it hands over, which is what makes them one
+// chart shown five times rather than five charts that merely resemble each
+// other.
+export function buildTrendOption({ el, yAxis, series, peakAverage, ...frame }: TrendParams): Record<string, any> {
+  const { narrow, plotHeight, option } = buildFrame({
+    ...frame,
+    width: el?.clientWidth ?? 800,
+    height: el?.clientHeight ?? 0,
+  });
+  return {
+    ...option,
+    yAxis: yAxis(narrow),
+    series: withPeakAverage(series(narrow), { ...peakAverage, narrow, plotHeight }),
   };
 }

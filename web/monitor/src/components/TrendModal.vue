@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
+import TrendShell from "./TrendShell.vue";
 import { fetchTrafficTrend, fetchTrafficRecent } from "../api";
 import { formatBytes } from "../utils";
-import PeakAverageToggle from "./PeakAverageToggle.vue";
-import { buildFrame, lineSeries, bytesAxis, aggregateTrafficDaily, withPeakAverage, type TimeUnit } from "../chartOptions";
+import {
+  aggregateTrafficDaily,
+  buildTrendOption,
+  bytesAxis,
+  trafficSeries,
+  TRAFFIC_LEGEND,
+  type TrafficPoint,
+} from "../chartOptions";
+import { modeShape, TRAFFIC_MODES, type TrendMode } from "../trendModes";
 import { tzOffsetMinutes } from "../timezone";
 import { useTrendChart } from "../useTrendChart";
 import type { SourceSummary, HourlyPoint, TrafficRawPoint } from "../types";
@@ -11,8 +19,7 @@ import type { SourceSummary, HourlyPoint, TrafficRawPoint } from "../types";
 const props = defineProps<{ source: SourceSummary }>();
 const emit = defineEmits<{ close: [] }>();
 
-type Granularity = "recent" | "hourly" | "daily";
-const granularity = ref<Granularity>("hourly");
+const mode = ref<TrendMode>("hourly");
 const showPeakAverage = ref(false);
 const trend = ref<HourlyPoint[]>([]);
 const recentPoints = ref<TrafficRawPoint[]>([]);
@@ -31,69 +38,48 @@ async function load() {
   }
 }
 
+// The buckets are timestamped by the hour or day they opened and the raw
+// samples by themselves; past here they are all just points in time.
+const points = computed<TrafficPoint[]>(() => {
+  const { isRecent, isDaily } = modeShape(mode.value);
+  if (isRecent) return recentPoints.value;
+  const buckets = isDaily ? aggregateTrafficDaily(trend.value) : trend.value;
+  return buckets.map((p) => ({ ts: p.hourTs, inBytes: p.inBytes, outBytes: p.outBytes, totalBytes: p.totalBytes }));
+});
+
 function buildOption(): any {
-  const isRecent = granularity.value === "recent";
-  const isDaily = granularity.value === "daily";
-  const unit: TimeUnit = isDaily ? "day" : "hour";
-
-  const { narrow, plotHeight, option } = buildFrame({
-    width: chartRef.value?.clientWidth ?? 800,
-    height: chartRef.value?.clientHeight ?? 0,
+  const { isRecent, unit, tooltipUnit } = modeShape(mode.value);
+  return buildTrendOption({
+    el: chartRef.value,
     unit,
-    legend: ["Inbound", "Outbound", "Total"],
-    tooltipUnit: isRecent ? "second" : unit,
+    tooltipUnit,
+    legend: TRAFFIC_LEGEND,
     tooltipValue: (p) => formatBytes(Array.isArray(p.value) ? p.value[1] : p.value),
+    yAxis: bytesAxis,
+    // A marker on every point is a smear once the points are seconds apart, so
+    // only the bucketed views carry them, and only where there is room.
+    series: (narrow) => trafficSeries(points.value, !narrow && !isRecent),
+    peakAverage: { show: showPeakAverage.value, format: formatBytes },
   });
-
-  let series;
-  if (isRecent) {
-    const data = recentPoints.value;
-    series = [
-      lineSeries("Inbound", "#2563eb", data.map((p) => [p.ts * 1000, p.inBytes])),
-      lineSeries("Outbound", "#06b6d4", data.map((p) => [p.ts * 1000, p.outBytes])),
-      lineSeries("Total", "#22c55e", data.map((p) => [p.ts * 1000, p.totalBytes])),
-    ];
-  } else {
-    const data = isDaily ? aggregateTrafficDaily(trend.value) : trend.value;
-    const showSymbol = !narrow;
-    series = [
-      lineSeries("Inbound", "#2563eb", data.map((p) => [p.hourTs * 1000, p.inBytes]), { showSymbol }),
-      lineSeries("Outbound", "#06b6d4", data.map((p) => [p.hourTs * 1000, p.outBytes]), { showSymbol }),
-      lineSeries("Total", "#22c55e", data.map((p) => [p.hourTs * 1000, p.totalBytes]), { showSymbol }),
-    ];
-  }
-
-  return { ...option, yAxis: bytesAxis(narrow), series: withPeakAverage(series, { show: showPeakAverage.value,
-      plotHeight, format: formatBytes, narrow }) };
 }
 
 function close() {
   emit("close");
 }
 
-const { chartRef, loading } = useTrendChart(load, buildOption, [granularity, tzOffsetMinutes], close, [showPeakAverage]);
+const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMinutes], close, [showPeakAverage]);
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="close">
-    <div class="modal-content">
-      <button class="close-btn" @click="close" aria-label="Close">&times;</button>
-      <div class="modal-header">
-        <div>
-          <h2 class="modal-title">{{ source.name }}</h2>
-          <p class="modal-subtitle">Traffic Trend</p>
-        </div>
-        <div class="modal-controls">
-          <div class="toggle-group">
-            <button :class="{ active: granularity === 'recent' }" @click="granularity = 'recent'">Recent</button>
-            <button :class="{ active: granularity === 'hourly' }" @click="granularity = 'hourly'">Hourly</button>
-            <button :class="{ active: granularity === 'daily' }" @click="granularity = 'daily'">Daily</button>
-          </div>
-          <PeakAverageToggle v-model="showPeakAverage" />
-        </div>
-      </div>
-      <div v-if="loading" class="chart-loading">Loading trend data...</div>
-      <div v-show="!loading" ref="chartRef" class="chart-container"></div>
-    </div>
-  </div>
+  <TrendShell
+    :title="source.name"
+    subtitle="Traffic Trend"
+    :modes="TRAFFIC_MODES"
+    v-model:mode="mode"
+    v-model:peakAverage="showPeakAverage"
+    :loading="loading"
+    @close="close"
+  >
+    <div ref="chartRef" class="chart-container"></div>
+  </TrendShell>
 </template>

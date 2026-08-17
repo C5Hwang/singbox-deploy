@@ -1,19 +1,18 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import TrendShell from "./TrendShell.vue";
 import { fetchTrafficTrend, fetchTrafficRecent, fetchResourceTrend, fetchResourceRecent } from "../api";
 import { formatBytes } from "../utils";
-import PeakAverageToggle from "./PeakAverageToggle.vue";
 import {
-  buildFrame,
-  lineSeries,
-  bytesAxis,
-  percentAxis,
   aggregateTrafficDaily,
   aggregateResourceDaily,
-  withPeakAverage,
+  buildTrendOption,
+  bytesAxis,
+  lineSeries,
+  percentAxis,
   SOURCE_COLORS,
-  type TimeUnit,
 } from "../chartOptions";
+import { modeShape, RESOURCE_MODES, TRAFFIC_MODES, type TrendMode } from "../trendModes";
 import { tzOffsetMinutes } from "../timezone";
 import { useTrendChart } from "../useTrendChart";
 import type {
@@ -30,21 +29,10 @@ const emit = defineEmits<{ close: [] }>();
 
 const isTraffic = props.metric.kind === "traffic";
 
-type Mode = "recent" | "hourly" | "daily" | "hourly-avg" | "hourly-max" | "daily-avg" | "daily-max";
-const modes: { key: Mode; label: string }[] = isTraffic
-  ? [
-      { key: "recent", label: "Recent" },
-      { key: "hourly", label: "Hourly" },
-      { key: "daily", label: "Daily" },
-    ]
-  : [
-      { key: "recent", label: "Recent" },
-      { key: "hourly-avg", label: "Hourly (Avg)" },
-      { key: "hourly-max", label: "Hourly (Max)" },
-      { key: "daily-avg", label: "Daily (Avg)" },
-      { key: "daily-max", label: "Daily (Max)" },
-    ];
-const mode = ref<Mode>(isTraffic ? "hourly" : "hourly-avg");
+// One metric across every machine, at the granularities that metric has: a
+// total for traffic, an average and a peak for a resource.
+const modes = isTraffic ? TRAFFIC_MODES : RESOURCE_MODES;
+const mode = ref<TrendMode>(isTraffic ? "hourly" : "hourly-avg");
 const showPeakAverage = ref(false);
 
 interface MachineSeries {
@@ -87,54 +75,45 @@ function hourlyValue(p: HourlyPoint | ResourceHourlyPoint, isMax: boolean): numb
   return isMax ? rp.diskMax : rp.diskAvg;
 }
 
+function formatValue(value: number): string {
+  if (isTraffic) return formatBytes(value);
+  return Number.isFinite(value) ? `${value.toFixed(1)}%` : "NA";
+}
+
 function buildOption(): any {
-  const isRecent = mode.value === "recent";
-  const isDaily = mode.value.startsWith("daily");
-  const isMax = mode.value.endsWith("max");
-  const unit: TimeUnit = isDaily ? "day" : "hour";
+  const { isRecent, isDaily, isMax, unit, tooltipUnit } = modeShape(mode.value);
 
-  const { narrow, plotHeight, option } = buildFrame({
-    width: chartRef.value?.clientWidth ?? 800,
-    height: chartRef.value?.clientHeight ?? 0,
+  return buildTrendOption({
+    el: chartRef.value,
     unit,
+    tooltipUnit,
     legend: machines.value.map((m) => m.name),
+    // The question this chart answers is which machine is highest, so the
+    // tooltip ranks them rather than listing them in fleet order.
     sortTooltip: true,
-    tooltipUnit: isRecent ? "second" : unit,
-    tooltipValue: (p) => {
-      const value = Array.isArray(p.value) ? p.value[1] : p.value;
-      if (isTraffic) return formatBytes(value);
-      const n = Number(value);
-      return Number.isFinite(n) ? `${n.toFixed(1)}%` : "NA";
-    },
+    tooltipValue: (p) => formatValue(Number(Array.isArray(p.value) ? p.value[1] : p.value)),
+    yAxis: isTraffic ? bytesAxis : percentAxis,
+    series: (narrow) =>
+      machines.value.map((m, i) => {
+        const color = SOURCE_COLORS[i % SOURCE_COLORS.length];
+        if (isRecent) {
+          return lineSeries(m.name, color, m.recent.map((p) => [p.ts * 1000, recentValue(p)]));
+        }
+        let points = m.trend;
+        if (isDaily) {
+          points = isTraffic
+            ? aggregateTrafficDaily(m.trend as HourlyPoint[])
+            : aggregateResourceDaily(m.trend as ResourceHourlyPoint[], isMax);
+        }
+        return lineSeries(
+          m.name,
+          color,
+          points.map((p) => [p.hourTs * 1000, hourlyValue(p, isMax)]),
+          { showSymbol: !narrow },
+        );
+      }),
+    peakAverage: { show: showPeakAverage.value, format: formatValue },
   });
-
-  const showSymbol = !narrow;
-  const series = machines.value.map((m, i) => {
-    const color = SOURCE_COLORS[i % SOURCE_COLORS.length];
-    if (isRecent) {
-      return lineSeries(m.name, color, m.recent.map((p) => [p.ts * 1000, recentValue(p)]));
-    }
-    let points = m.trend;
-    if (isDaily) {
-      points = isTraffic
-        ? aggregateTrafficDaily(m.trend as HourlyPoint[])
-        : aggregateResourceDaily(m.trend as ResourceHourlyPoint[], isMax);
-    }
-    return lineSeries(
-      m.name,
-      color,
-      points.map((p) => [p.hourTs * 1000, hourlyValue(p, isMax)]),
-      { showSymbol },
-    );
-  });
-
-  const format = (v: number) => (isTraffic ? formatBytes(v) : `${v.toFixed(1)}%`);
-  return {
-    ...option,
-    yAxis: isTraffic ? bytesAxis(narrow) : percentAxis(narrow),
-    series: withPeakAverage(series, { show: showPeakAverage.value,
-      plotHeight, format, narrow }),
-  };
 }
 
 function close() {
@@ -145,23 +124,15 @@ const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMi
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="close">
-    <div class="modal-content">
-      <button class="close-btn" @click="close" aria-label="Close">&times;</button>
-      <div class="modal-header">
-        <div>
-          <h2 class="modal-title">{{ metric.title }}</h2>
-          <p class="modal-subtitle">All Sources · {{ sources.length }} machine{{ sources.length > 1 ? "s" : "" }}</p>
-        </div>
-        <div class="modal-controls">
-          <div class="toggle-group">
-            <button v-for="m in modes" :key="m.key" :class="{ active: mode === m.key }" @click="mode = m.key">{{ m.label }}</button>
-          </div>
-          <PeakAverageToggle v-model="showPeakAverage" />
-        </div>
-      </div>
-      <div v-if="loading" class="chart-loading">Loading trend data...</div>
-      <div v-show="!loading" ref="chartRef" class="chart-container"></div>
-    </div>
-  </div>
+  <TrendShell
+    :title="metric.title"
+    :subtitle="`All Sources · ${sources.length} machine${sources.length > 1 ? 's' : ''}`"
+    :modes="modes"
+    v-model:mode="mode"
+    v-model:peakAverage="showPeakAverage"
+    :loading="loading"
+    @close="close"
+  >
+    <div ref="chartRef" class="chart-container"></div>
+  </TrendShell>
 </template>

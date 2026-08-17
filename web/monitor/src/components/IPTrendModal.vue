@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import PeakAverageToggle from "./PeakAverageToggle.vue";
+import { computed, ref } from "vue";
+import TrendShell from "./TrendShell.vue";
 import { fetchIPDetail } from "../api";
 import { formatBytes } from "../utils";
-import { buildFrame, lineSeries, bytesAxis, withPeakAverage, type TimeUnit } from "../chartOptions";
+import { buildTrendOption, bytesAxis, trafficSeries, TRAFFIC_LEGEND, type TrafficPoint } from "../chartOptions";
+import { modeShape, TRAFFIC_MODES, type TrendMode } from "../trendModes";
 import { tzOffsetMinutes } from "../timezone";
 import { useTrendChart } from "../useTrendChart";
 import type { IPSeriesPoint, IPTrafficRow } from "../types";
@@ -14,8 +15,7 @@ const emit = defineEmits<{ close: [] }>();
 // The same three granularities the node's own traffic modal offers, reading the
 // same three tables underneath, so an address's chart and its node's chart are
 // the same measurement at different scopes.
-type Granularity = "recent" | "hourly" | "daily";
-const granularity = ref<Granularity>("hourly");
+const mode = ref<TrendMode>("hourly");
 const showPeakAverage = ref(false);
 
 const recent = ref<IPSeriesPoint[]>([]);
@@ -57,66 +57,49 @@ async function load() {
   daily.value = mergeSeries(present.map((d) => d.daily));
 }
 
+// The address tables are stored one per granularity rather than rolled up, so
+// picking the mode is picking the table.
+const points = computed<TrafficPoint[]>(() => {
+  const { isRecent, isDaily } = modeShape(mode.value);
+  return isRecent ? recent.value : isDaily ? daily.value : hourly.value;
+});
+
+const subtitle = computed(() => {
+  const place = props.location || "Location unresolved";
+  return props.row.nodes.length ? `${place} · ${props.row.nodes.join(", ")}` : place;
+});
+
 function buildOption(): any {
-  const isRecent = granularity.value === "recent";
-  const isDaily = granularity.value === "daily";
-  const unit: TimeUnit = isDaily ? "day" : "hour";
-  const points = isRecent ? recent.value : isDaily ? daily.value : hourly.value;
-
-  const { narrow, plotHeight, option } = buildFrame({
-    width: chartRef.value?.clientWidth ?? 800,
-    height: chartRef.value?.clientHeight ?? 0,
+  const { isRecent, unit, tooltipUnit } = modeShape(mode.value);
+  return buildTrendOption({
+    el: chartRef.value,
     unit,
-    legend: ["Inbound", "Outbound", "Total"],
-    tooltipUnit: isRecent ? "second" : unit,
+    tooltipUnit,
+    legend: TRAFFIC_LEGEND,
     tooltipValue: (p) => formatBytes(Array.isArray(p.value) ? p.value[1] : p.value),
+    yAxis: bytesAxis,
+    series: (narrow) => trafficSeries(points.value, !narrow && !isRecent),
+    peakAverage: { show: showPeakAverage.value, format: formatBytes },
   });
-
-  const showSymbol = !narrow && !isRecent;
-  const series = [
-    lineSeries("Inbound", "#2563eb", points.map((p) => [p.ts * 1000, p.inBytes]), { showSymbol }),
-    lineSeries("Outbound", "#06b6d4", points.map((p) => [p.ts * 1000, p.outBytes]), { showSymbol }),
-    lineSeries("Total", "#22c55e", points.map((p) => [p.ts * 1000, p.totalBytes]), { showSymbol }),
-  ];
-
-  return {
-    ...option,
-    yAxis: bytesAxis(narrow),
-    series: withPeakAverage(series, { show: showPeakAverage.value,
-      plotHeight, format: formatBytes, narrow }),
-  };
 }
 
 function close() {
   emit("close");
 }
 
-const { chartRef, loading } = useTrendChart(load, buildOption, [granularity, tzOffsetMinutes], close, [showPeakAverage]);
+const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMinutes], close, [showPeakAverage]);
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="close">
-    <div class="modal-content">
-      <button class="close-btn" @click="close" aria-label="Close">&times;</button>
-      <div class="modal-header">
-        <div>
-          <h2 class="modal-title">{{ row.ip }}</h2>
-          <p class="modal-subtitle">
-            {{ location || "Location unresolved" }}
-            <span v-if="row.nodes.length"> · {{ row.nodes.join(", ") }}</span>
-          </p>
-        </div>
-        <div class="modal-controls">
-          <div class="toggle-group">
-            <button :class="{ active: granularity === 'recent' }" @click="granularity = 'recent'">Recent</button>
-            <button :class="{ active: granularity === 'hourly' }" @click="granularity = 'hourly'">Hourly</button>
-            <button :class="{ active: granularity === 'daily' }" @click="granularity = 'daily'">Daily</button>
-          </div>
-          <PeakAverageToggle v-model="showPeakAverage" />
-        </div>
-      </div>
-      <div v-if="loading" class="chart-loading">Loading trend data...</div>
-      <div v-show="!loading" ref="chartRef" class="chart-container"></div>
-    </div>
-  </div>
+  <TrendShell
+    :title="row.ip"
+    :subtitle="subtitle"
+    :modes="TRAFFIC_MODES"
+    v-model:mode="mode"
+    v-model:peakAverage="showPeakAverage"
+    :loading="loading"
+    @close="close"
+  >
+    <div ref="chartRef" class="chart-container"></div>
+  </TrendShell>
 </template>
