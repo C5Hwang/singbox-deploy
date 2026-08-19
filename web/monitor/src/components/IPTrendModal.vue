@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import TrendShell from "./TrendShell.vue";
-import { fetchIPDetail } from "../api";
+import { fetchIPDetail, ipDetailKey } from "../api";
 import { formatBytes } from "../utils";
 import { buildTrendOption, bytesAxis, trafficSeries, TRAFFIC_LEGEND, type TrafficPoint } from "../chartOptions";
 import { modeShape, TRAFFIC_MODES, type TrendMode } from "../trendModes";
@@ -42,10 +42,12 @@ function mergeSeries(all: IPSeriesPoint[][]): IPSeriesPoint[] {
 }
 
 async function load() {
+  // The key carries the row's relay marker, so a relay-observed row charts its
+  // own history rather than the address's direct one.
   const details = await Promise.all(
     props.sources.map(async (source) => {
       try {
-        return await fetchIPDetail(props.row.ip, source);
+        return await fetchIPDetail(ipDetailKey(props.row), source);
       } catch {
         return null;
       }
@@ -65,8 +67,10 @@ const points = computed<TrafficPoint[]>(() => {
 });
 
 const subtitle = computed(() => {
-  const place = props.location || "Location unresolved";
-  return props.row.nodes.length ? `${place} · ${props.row.nodes.join(", ")}` : place;
+  const parts = [props.location || "Location unresolved"];
+  if (props.row.nodes.length) parts.push(props.row.nodes.join(", "));
+  if (props.row.relayed) parts.push("via relay");
+  return parts.join(" · ");
 });
 
 function buildOption(): any {

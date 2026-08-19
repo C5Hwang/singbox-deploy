@@ -97,6 +97,39 @@ func (c Config) ListenPorts() []system.Port {
 	return ports
 }
 
+// ForwardListenPorts returns the ports the relay at layout answers on,
+// deduplicated and sorted, as the seam the monitor's per-IP accounting meters
+// forwarded flows by. The stored job is read on every call, so a link the hub
+// adds or withdraws reaches the forward counters on the next sample round
+// rather than at the next monitor restart. A node that relays for nobody
+// yields none, which leaves the forward chain uninstalled.
+func ForwardListenPorts(layout paths.Layout) func() []int {
+	return func() []int {
+		cfg, err := Load(layout)
+		if err != nil {
+			return nil
+		}
+		seen := make(map[int]struct{}, 8)
+		var ports []int
+		for _, landing := range cfg.Landings {
+			for _, forward := range landing.Forwards {
+				// A port outside the range would render an unloadable ruleset
+				// and take every counter down with it.
+				if forward.ListenPort < 1 || forward.ListenPort > 65535 {
+					continue
+				}
+				if _, duplicate := seen[forward.ListenPort]; duplicate {
+					continue
+				}
+				seen[forward.ListenPort] = struct{}{}
+				ports = append(ports, forward.ListenPort)
+			}
+		}
+		sort.Ints(ports)
+		return ports
+	}
+}
+
 // Validate rejects a configuration that could not be turned into a ruleset.
 func (c Config) Validate() error {
 	claimed := make(map[string]string, 8)

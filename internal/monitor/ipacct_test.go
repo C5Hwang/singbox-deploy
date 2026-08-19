@@ -279,6 +279,65 @@ func TestIPDetailServesRecentHourlyAndDaily(t *testing.T) {
 	}
 }
 
+// A client whose traffic this node forwards for a landing node is listed apart
+// from the same address's direct traffic — marked as relayed in the table, and
+// drilled into through the marked key.
+func TestIPTrafficDistinguishesRelayedClients(t *testing.T) {
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{
+		"peer_in4":   {"203.0.113.7": 1000},
+		"relay_in4":  {"203.0.113.7": 400},
+		"relay_out4": {"203.0.113.7": 90},
+	}}}
+	m := newIPTrafficTestMonitor(t, now, nft)
+	m.ipSampleOnce(context.Background(), now)
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/ip-traffic", nil))
+	var listPayload struct {
+		IPTraffic IPTrafficSnapshot `json:"ipTraffic"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	entries := listPayload.IPTraffic.Entries
+	if len(entries) != 2 {
+		t.Fatalf("entries = %#v, want the direct and the relayed row", entries)
+	}
+	byKind := map[bool]IPTrafficEntry{}
+	for _, entry := range entries {
+		if entry.IP != "203.0.113.7" {
+			t.Fatalf("entry address = %q, want the bare address on both rows", entry.IP)
+		}
+		byKind[entry.Relayed] = entry
+	}
+	if got := byKind[false].Cycle; got.InBytes != 1000 || got.OutBytes != 0 {
+		t.Fatalf("direct cycle = %#v", got)
+	}
+	if got := byKind[true].Cycle; got.InBytes != 400 || got.OutBytes != 90 {
+		t.Fatalf("relayed cycle = %#v", got)
+	}
+
+	detail := httptest.NewRecorder()
+	m.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/ip-detail?ip=relay:203.0.113.7", nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", detail.Code, detail.Body.String())
+	}
+	var detailPayload struct {
+		IPDetail IPTrafficDetail `json:"ipDetail"`
+	}
+	if err := json.Unmarshal(detail.Body.Bytes(), &detailPayload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	series := detailPayload.IPDetail
+	if series.IP != "203.0.113.7" || !series.Relayed {
+		t.Fatalf("detail = %#v, want the bare address marked as relayed", series)
+	}
+	if len(series.Recent) != 1 || series.Recent[0].InBytes != 400 || series.Recent[0].OutBytes != 90 {
+		t.Fatalf("recent = %#v, want only the relayed bytes", series.Recent)
+	}
+}
+
 // Raw samples fold into hourly buckets on the same cutoff the node's own
 // samples do, and a window total spans both tables so nothing is lost or
 // counted twice across the fold.
@@ -491,6 +550,96 @@ func TestPruneIPTrafficKeepsOnlyTheBusiestAddresses(t *testing.T) {
 		if entries[i].IP != want {
 			t.Fatalf("entries[%d] = %q, want %q", i, entries[i].IP, want)
 		}
+	}
+}
+
+// A flow the relay DNATs is routed, not delivered, so the input/output chains
+// never see it. The forward chain is what meters it, pinned to the relay's own
+// flows by the DNAT status and the pre-rewrite listen port that survives in the
+// conntrack original tuple, and attributed to the client: the source of an
+// original packet, the destination of a reply.
+func TestIPAccountingRulesetCountsRelayedFlowsByClientAddress(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}}
+	acct := newFakeIPAccounting(nft)
+	acct.relayPorts = func() []int { return []int{30001, 30002} }
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for _, want := range []string{
+		"type filter hook forward priority 0; policy accept;",
+		"ct status dnat ct original proto-dst { 30001, 30002 } ct direction original update @relay_in4 { ip saddr }",
+		"ct status dnat ct original proto-dst { 30001, 30002 } ct direction reply update @relay_out4 { ip daddr }",
+	} {
+		if !strings.Contains(nft.rulesets[0], want) {
+			t.Fatalf("ruleset is missing %q:\n%s", want, nft.rulesets[0])
+		}
+	}
+}
+
+// A node that relays for nobody renders no forward chain, but the relay sets
+// are still declared so the collector can read all of them either way.
+func TestIPAccountingRulesetOmitsTheForwardChainWithoutRelayPorts(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}}
+	acct := newFakeIPAccounting(nft)
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if strings.Contains(nft.rulesets[0], "hook forward") {
+		t.Fatalf("ruleset carries a forward chain with no relay job:\n%s", nft.rulesets[0])
+	}
+	for _, want := range []string{"set relay_in4", "set relay_out4"} {
+		if !strings.Contains(nft.rulesets[0], want) {
+			t.Fatalf("ruleset is missing %q:\n%s", want, nft.rulesets[0])
+		}
+	}
+}
+
+// The same address can be a direct client and sit behind the relay at once, and
+// the two histories must not blend: the relay sets report under the marked key.
+func TestIPAccountingKeysRelayedTrafficApartFromDirect(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{
+		"peer_in4":   {"203.0.113.7": 1000},
+		"relay_in4":  {"203.0.113.7": 400},
+		"relay_out4": {"203.0.113.7": 90},
+	}}}
+	acct := newFakeIPAccounting(nft)
+	deltas, err := acct.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := deltas["203.0.113.7"]; got.InBytes != 1000 || got.OutBytes != 0 {
+		t.Fatalf("direct delta = %#v", got)
+	}
+	if got := deltas["relay:203.0.113.7"]; got.InBytes != 400 || got.OutBytes != 90 {
+		t.Fatalf("relayed delta = %#v", got)
+	}
+}
+
+// The hub pushes and withdraws relay jobs between samples, so a changed port
+// list has to rebuild the table the same way a changed overlay port does.
+func TestIPAccountingRebuildsTheTableWhenTheRelayJobChanges(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}}
+	acct := newFakeIPAccounting(nft)
+	var ports []int
+	acct.relayPorts = func() []int { return ports }
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(nft.rulesets) != 1 {
+		t.Fatalf("ruleset loads = %d, want the empty job to be reused", len(nft.rulesets))
+	}
+	ports = []int{30001}
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(nft.rulesets) != 2 {
+		t.Fatalf("ruleset loads = %d, want a rebuild for the new relay job", len(nft.rulesets))
+	}
+	if !strings.Contains(nft.rulesets[1], "ct original proto-dst { 30001 }") {
+		t.Fatalf("rebuilt ruleset does not meter the new port:\n%s", nft.rulesets[1])
 	}
 }
 

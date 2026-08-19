@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
+
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 )
 
 // Handler is the agent-side implementation the server dispatches to. Streaming
@@ -352,17 +353,18 @@ func (s *Server) handleMonitor(endpoint MonitorEndpoint) http.HandlerFunc {
 		// particular, dropping `source` prevents its multi-source handler from
 		// proxying to a URL stored in a remote snapshot.
 		//
-		// One endpoint drills into a single address, so it needs a parameter.
-		// The address is parsed and written back out rather than forwarded, so
-		// what reaches the monitor is still a value this process produced.
+		// One endpoint drills into a single address, optionally behind the
+		// monitor's relay marker, so it needs a parameter. The key is parsed
+		// and written back out rather than forwarded, so what reaches the
+		// monitor is still a value this process produced.
 		query := ""
 		if endpoint == MonitorIPDetail {
-			address, err := netip.ParseAddr(strings.TrimSpace(r.URL.Query().Get("ip")))
+			key, err := monitor.ParseIPKey(r.URL.Query().Get("ip"))
 			if err != nil {
 				http.Error(w, "ip must be an IP address", http.StatusBadRequest)
 				return
 			}
-			query = url.Values{"ip": []string{address.String()}}.Encode()
+			query = url.Values{"ip": []string{key}}.Encode()
 		}
 		monitorRequest := r.Clone(r.Context())
 		monitorRequest.Method = http.MethodGet

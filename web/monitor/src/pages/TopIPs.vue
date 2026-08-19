@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import IPTrendModal from "../components/IPTrendModal.vue";
-import { fetchIPTraffic } from "../api";
+import { fetchIPTraffic, ipDetailKey } from "../api";
 import { flagFor, locations, resolveLocations } from "../geo";
 import { formatBytesCompact, formatDateTime } from "../utils";
 import type {
@@ -103,14 +103,17 @@ function load() {
 
 // Addresses are merged across nodes: the same client reaching two nodes is one
 // row whose totals are the sum, which is what a "top 30" over a fleet has to
-// mean.
+// mean. Relay-observed traffic merges under its own key, so a client a relay
+// carries keeps that row apart from what it did against any node directly.
 const rows = computed<IPTrafficRow[]>(() => {
   const merged = new Map<string, IPTrafficRow>();
   for (const { name, snapshot } of answered.value) {
     if (!snapshot) continue;
     for (const entry of snapshot.entries) {
-      const row = merged.get(entry.ip) ?? {
+      const key = ipDetailKey(entry);
+      const row = merged.get(key) ?? {
         ip: entry.ip,
+        relayed: entry.relayed ?? false,
         nodes: [],
         cycle: emptyWindow(),
         today: emptyWindow(),
@@ -120,7 +123,7 @@ const rows = computed<IPTrafficRow[]>(() => {
       addWindow(row.cycle, entry.cycle);
       addWindow(row.today, entry.today);
       addWindow(row.last7, entry.last7);
-      merged.set(entry.ip, row);
+      merged.set(key, row);
     }
   }
   return [...merged.values()];
@@ -391,9 +394,12 @@ const modalSources = computed(() =>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, i) in visible" :key="row.ip" class="ip-row" @click="modalRow = row">
+            <tr v-for="(row, i) in visible" :key="ipDetailKey(row)" class="ip-row" @click="modalRow = row">
               <td class="rank">{{ firstRank + i }}</td>
-              <td class="address" :style="shareStyle(row)"><span>{{ row.ip }}</span></td>
+              <td class="address" :style="shareStyle(row)">
+                <span>{{ row.ip }}</span>
+                <span v-if="row.relayed" class="relay-chip" title="Forwarded by a relay to a landing node">relay</span>
+              </td>
               <td class="country" :title="placeOf(row.ip).country">
                 <span v-if="placeOf(row.ip).code" class="flag">{{ flagFor(placeOf(row.ip).code) }}</span>
                 <span class="country-name">{{ placeOf(row.ip).country || "—" }}</span>
@@ -495,10 +501,13 @@ const modalSources = computed(() =>
    middle of its own three rather than drifting toward whichever column happens
    to hold the widest number. */
 .c-num { width: 62px; }
-.c-address { width: 132px; }
+/* Wide enough for a full dotted quad with the relay chip beside it. The extra
+   room comes out of the two place columns, whose names ellipsize gracefully,
+   rather than out of the numeric columns, which clip. */
+.c-address { width: 176px; }
 .c-rank { width: 34px; }
-.c-country { width: 126px; }
-.c-place { width: 98px; }
+.c-country { width: 112px; }
+.c-place { width: 92px; }
 .c-nodes { width: 112px; }
 
 /* The sort affordance is a chip around the glyph, not a fill of the whole cell.
@@ -548,7 +557,8 @@ const modalSources = computed(() =>
 
 /* The address cell doubles as the rank bar: a tint sized to the row's share of
    the leading value, so the shape of the distribution is visible without a
-   column of its own. */
+   column of its own. It stays a table cell — a flex cell would drop out of the
+   column grid — so the column is simply sized for its longest content. */
 .address { position: relative; font-weight: 750; font-variant-numeric: tabular-nums; }
 .address::before {
   content: ""; position: absolute; left: 4px; top: 4px; bottom: 4px;
@@ -565,6 +575,14 @@ const modalSources = computed(() =>
   display: inline-block; margin-right: 4px; padding: 2px 7px;
   border-radius: 999px; background: #f0f4f9; color: #5f6b7e;
   font-size: 11px; font-weight: 700;
+}
+/* Same chip vocabulary as the window bands, in a warm tint of its own: the row
+   describes traffic this fleet forwarded, not a client of the node it sits
+   under. */
+.relay-chip {
+  margin-left: 5px; padding: 2px 6px;
+  border-radius: 999px; background: #fdf0dc; color: #955d10;
+  font-size: 9px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
 }
 .num { text-align: right; font-variant-numeric: tabular-nums; color: #5f6b7e; }
 .num.strong { font-weight: 800; color: var(--text); }

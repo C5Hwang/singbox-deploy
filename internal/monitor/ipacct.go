@@ -38,9 +38,17 @@ const ipAcctCommandTimeout = 10 * time.Second
 // the destination port inbound and the source port outbound, so one port per
 // interface covers both directions on both ends of a tunnel.
 //
+// The peers chains describe only traffic this host terminates. A flow the
+// relay data plane DNATs (internal/relay) is routed, not delivered, so it
+// crosses the forward hook instead — which is where the relay_* sets count it,
+// still attributed to the client's address. The relay sets are declared even on
+// a node that relays for nobody, so the collector can read all of them without
+// caring whether the forward chain was rendered. They have no v6 counterparts
+// because the relay's own ruleset is a `table ip`.
+//
 // The empty table declaration before the delete is the standard atomic-replace
 // idiom: it makes the delete succeed whether or not the table already exists.
-func ipAcctRuleset(overlayPorts []int) string {
+func ipAcctRuleset(overlayPorts, relayPorts []int) string {
 	return `
 table inet ` + ipAcctTable + ` {}
 delete table inet ` + ipAcctTable + `
@@ -74,6 +82,20 @@ table inet ` + ipAcctTable + ` {
 		timeout 2h
 		counter
 	}
+	set relay_in4 {
+		type ipv4_addr
+		size 65535
+		flags dynamic
+		timeout 2h
+		counter
+	}
+	set relay_out4 {
+		type ipv4_addr
+		size 65535
+		flags dynamic
+		timeout 2h
+		counter
+	}
 
 	chain peers_in {
 		type filter hook input priority 0; policy accept;
@@ -92,7 +114,36 @@ table inet ` + ipAcctTable + ` {
 		update @peer_out4 { ip daddr }
 		update @peer_out6 { ip6 daddr }
 	}
+` + relayForwardChain(relayPorts) + `}
+`
 }
+
+// relayForwardChain renders the chain that counts the relay's forwarded flows,
+// or nothing on a node that relays for nobody. The conntrack entry is created
+// before the DNAT rewrites anything, so the original tuple still carries the
+// relay's own listen port; requiring it alongside the DNAT status pins these
+// rules to the relay's flows and to nothing else this host might forward.
+//
+// Direction reads inverted on this path: an original packet travels
+// client-to-landing, so the client is its source, and a reply travels
+// landing-to-client, so the client is its destination. The private-range
+// excludes of the peers chains are not repeated here, because the port test
+// already restricts the chain to flows the relay accepted on its listeners.
+func relayForwardChain(ports []int) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	values := make([]string, 0, len(ports))
+	for _, port := range ports {
+		values = append(values, strconv.Itoa(port))
+	}
+	match := "ct status dnat ct original proto-dst { " + strings.Join(values, ", ") + " }"
+	return `
+	chain peers_fwd {
+		type filter hook forward priority 0; policy accept;
+		` + match + ` ct direction original update @relay_in4 { ip saddr }
+		` + match + ` ct direction reply update @relay_out4 { ip daddr }
+	}
 `
 }
 
@@ -109,15 +160,19 @@ func overlayReturn(direction string, ports []int) string {
 	return "\t\tudp " + direction + " { " + strings.Join(values, ", ") + " } return\n"
 }
 
-// ipAcctSets pairs each counter set with the direction it accumulates.
+// ipAcctSets pairs each counter set with the direction it accumulates and
+// whether it meters the relay's forwarded flows rather than direct peers.
 var ipAcctSets = []struct {
 	name    string
 	inbound bool
+	relayed bool
 }{
 	{name: "peer_in4", inbound: true},
 	{name: "peer_in6", inbound: true},
 	{name: "peer_out4"},
 	{name: "peer_out6"},
+	{name: "relay_in4", inbound: true, relayed: true},
+	{name: "relay_out4", relayed: true},
 }
 
 // IPTrafficDelta is one remote address's traffic since the previous read.
@@ -135,18 +190,25 @@ type IPAccounting struct {
 	// overlayPorts reports the WireGuard listen ports to keep out of the
 	// counters. It is a seam for the same reason run is.
 	overlayPorts func(ctx context.Context) []int
+	// relayPorts reports the relay listen ports whose forwarded flows the
+	// forward chain meters. It is a seam like the two above.
+	relayPorts func() []int
 	// previous holds the last counter value read per set and address, so a
 	// sample can be turned into a delta.
 	previous map[string]uint64
-	// ports is the overlay port list the loaded ruleset was built from. A
-	// wg-quick restart hands the interface a new ephemeral port, so a changed
-	// list has to rebuild the table rather than keep counting the tunnel.
-	ports  []int
-	loaded bool
+	// applied is the ruleset text the loaded table was built from. A wg-quick
+	// restart hands the interface a new ephemeral port and the hub pushes or
+	// withdraws relay jobs between samples; comparing the rendered ruleset
+	// catches every such drift with one test, and rebuilds the table rather
+	// than keep counting flows the configuration no longer describes.
+	applied string
+	loaded  bool
 }
 
 // NewIPAccounting returns a sampler, or nil when the host has no nft utility.
-func NewIPAccounting() *IPAccounting {
+// relayPorts reports the relay listen ports to meter on the forward path; nil
+// stands for a node that never relays.
+func NewIPAccounting(relayPorts func() []int) *IPAccounting {
 	binary, err := exec.LookPath("nft")
 	if err != nil {
 		return nil
@@ -156,6 +218,7 @@ func NewIPAccounting() *IPAccounting {
 			return runNFT(ctx, binary, stdin, args...)
 		},
 		overlayPorts: wireGuardListenPorts,
+		relayPorts:   relayPorts,
 		previous:     map[string]uint64{},
 	}
 }
@@ -217,15 +280,17 @@ func runNFT(ctx context.Context, binary, stdin string, args ...string) ([]byte, 
 // Enabled reports whether per-IP accounting can run on this host.
 func (a *IPAccounting) Enabled() bool { return a != nil }
 
-// Collect returns the traffic each remote address moved since the previous
-// call. The ruleset is installed on first use and reinstalled if it disappears,
-// so a firewall reload that flushes it self-heals on the next sample.
+// Collect returns the traffic each accounting key moved since the previous
+// call: the bare address for a direct peer, the relay-marked form for a client
+// whose traffic this node forwarded. The ruleset is installed on first use and
+// reinstalled if it disappears, so a firewall reload that flushes it self-heals
+// on the next sample.
 func (a *IPAccounting) Collect(ctx context.Context) (map[string]IPTrafficDelta, error) {
 	if a == nil {
 		return nil, nil
 	}
-	if ports := a.currentOverlayPorts(ctx); !a.loaded || !slices.Equal(ports, a.ports) {
-		if err := a.apply(ctx, ports); err != nil {
+	if ruleset := ipAcctRuleset(a.currentOverlayPorts(ctx), a.currentRelayPorts()); !a.loaded || ruleset != a.applied {
+		if err := a.apply(ctx, ruleset); err != nil {
 			return nil, err
 		}
 	}
@@ -254,13 +319,14 @@ func (a *IPAccounting) Collect(ctx context.Context) (map[string]IPTrafficDelta, 
 			if delta == 0 {
 				continue
 			}
-			entry := deltas[address]
+			accountKey := EncodeIPKey(address, set.relayed)
+			entry := deltas[accountKey]
 			if set.inbound {
 				entry.InBytes += delta
 			} else {
 				entry.OutBytes += delta
 			}
-			deltas[address] = entry
+			deltas[accountKey] = entry
 		}
 	}
 	a.previous = previous
@@ -275,6 +341,14 @@ func (a *IPAccounting) currentOverlayPorts(ctx context.Context) []int {
 	return a.overlayPorts(ctx)
 }
 
+// currentRelayPorts reads the relay's listen ports for this round.
+func (a *IPAccounting) currentRelayPorts() []int {
+	if a.relayPorts == nil {
+		return nil
+	}
+	return a.relayPorts()
+}
+
 // counterDelta treats a counter that moved backwards as one that restarted:
 // nftables evicts an element after its idle timeout, and the address's next
 // packet re-adds it from zero.
@@ -285,11 +359,11 @@ func counterDelta(previous, current uint64) uint64 {
 	return current
 }
 
-func (a *IPAccounting) apply(ctx context.Context, overlayPorts []int) error {
-	if _, err := a.run(ctx, ipAcctRuleset(overlayPorts), "-f", "-"); err != nil {
+func (a *IPAccounting) apply(ctx context.Context, ruleset string) error {
+	if _, err := a.run(ctx, ruleset, "-f", "-"); err != nil {
 		return fmt.Errorf("install per-IP accounting ruleset: %w", err)
 	}
-	a.ports = overlayPorts
+	a.applied = ruleset
 	a.loaded = true
 	// A fresh table starts at zero, so nothing carried over from the previous
 	// one may be subtracted from it.

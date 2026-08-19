@@ -1003,8 +1003,20 @@ func TestMonitorIPDetailForwardsOnlyAParsedAddress(t *testing.T) {
 		t.Fatalf("internal request path=%q query=%q", gotPath, gotQuery)
 	}
 
+	// The monitor's relay marker survives both hops, so a relay-observed
+	// history can be drilled into across the fleet.
+	if _, err := client.Monitor(context.Background(), MonitorIPDetail, "relay:203.0.113.7"); err != nil {
+		t.Fatalf("Monitor(ip-detail, relayed): %v", err)
+	}
+	if gotQuery != "ip=relay%3A203.0.113.7" {
+		t.Fatalf("internal request query=%q", gotQuery)
+	}
+
 	if _, err := client.Monitor(context.Background(), MonitorIPDetail, "../../etc/passwd"); err == nil {
 		t.Fatal("client forwarded a non-address")
+	}
+	if _, err := client.Monitor(context.Background(), MonitorIPDetail, "relay:not-an-address"); err == nil {
+		t.Fatal("client forwarded a marked non-address")
 	}
 
 	// A direct caller that skips the client cannot smuggle text either.

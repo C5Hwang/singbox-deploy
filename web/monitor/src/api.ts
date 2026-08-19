@@ -144,7 +144,14 @@ export async function fetchIPTraffic(source?: string): Promise<IPTrafficSnapshot
   };
 }
 
-// One address's own history. The address goes in the query the node validates,
+// The wire key for one accounted address: a relay-observed history is stored
+// and queried apart from the same address's direct one, and the marker rides
+// inside the ip parameter every hop already validates.
+export function ipDetailKey(entry: { ip: string; relayed?: boolean }): string {
+  return entry.relayed ? `relay:${entry.ip}` : entry.ip;
+}
+
+// One address's own history. The key goes in the query the node validates,
 // so a row that cannot be parsed as an address never reaches a node.
 export async function fetchIPDetail(ip: string, source?: string): Promise<IPTrafficDetail> {
   const scope = sourceQuery(source);

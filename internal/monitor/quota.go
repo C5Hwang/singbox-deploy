@@ -153,10 +153,14 @@ func (w *IPTrafficWindow) Add(other IPTrafficWindow) {
 // sorts by. Every window carries all three directions so the dashboard can sort
 // on any column without a second request.
 type IPTrafficEntry struct {
-	IP    string          `json:"ip"`
-	Cycle IPTrafficWindow `json:"cycle"`
-	Today IPTrafficWindow `json:"today"`
-	Last7 IPTrafficWindow `json:"last7"`
+	IP string `json:"ip"`
+	// Relayed marks a client observed on the relay's forward path rather than
+	// as a direct peer: this node carried its traffic to a landing node. The
+	// same address can hold one entry of each kind.
+	Relayed bool            `json:"relayed,omitempty"`
+	Cycle   IPTrafficWindow `json:"cycle"`
+	Today   IPTrafficWindow `json:"today"`
+	Last7   IPTrafficWindow `json:"last7"`
 }
 
 // IPTrafficSnapshot is the payload behind /api/ip-traffic. Enabled is false on
@@ -169,12 +173,15 @@ type IPTrafficSnapshot struct {
 }
 
 // IPTrafficDetail is one address's history behind /api/ip-detail, at the same
-// three granularities the node's own traffic modal offers.
+// three granularities the node's own traffic modal offers. Relayed carries the
+// same distinction the entry list makes: a relay-observed history is a series
+// of its own, apart from the address's direct one.
 type IPTrafficDetail struct {
-	IP     string          `json:"ip"`
-	Recent []IPSeriesPoint `json:"recent"`
-	Hourly []IPSeriesPoint `json:"hourly"`
-	Daily  []IPSeriesPoint `json:"daily"`
+	IP      string          `json:"ip"`
+	Relayed bool            `json:"relayed,omitempty"`
+	Recent  []IPSeriesPoint `json:"recent"`
+	Hourly  []IPSeriesPoint `json:"hourly"`
+	Daily   []IPSeriesPoint `json:"daily"`
 }
 
 // PingLatestPoint is one target's most recent probe.

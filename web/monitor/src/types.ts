@@ -67,6 +67,9 @@ export interface IPTrafficWindow {
 
 export interface IPTrafficEntry {
   ip: string;
+  // Traffic the node forwarded to a landing node as a relay, kept apart from
+  // what the same address did against the node directly.
+  relayed?: boolean;
   cycle: IPTrafficWindow;
   today: IPTrafficWindow;
   last7: IPTrafficWindow;
@@ -86,8 +89,10 @@ export interface IPTrafficDetail {
 }
 
 // A merged row: one address's traffic summed across the nodes it reached.
+// Relay-observed traffic keeps its own row, so relayed carries through.
 export interface IPTrafficRow {
   ip: string;
+  relayed: boolean;
   nodes: string[];
   cycle: IPTrafficWindow;
   today: IPTrafficWindow;

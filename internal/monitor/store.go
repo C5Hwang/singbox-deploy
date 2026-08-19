@@ -749,13 +749,19 @@ LIMIT ?4`, cycleStart, todayStart, weekStart, limit)
 	var entries []IPTrafficEntry
 	for rows.Next() {
 		var e IPTrafficEntry
-		if err := rows.Scan(&e.IP,
+		var key string
+		if err := rows.Scan(&key,
 			&e.Cycle.InBytes, &e.Cycle.OutBytes,
 			&e.Today.InBytes, &e.Today.OutBytes,
 			&e.Last7.InBytes, &e.Last7.OutBytes,
 		); err != nil {
 			return nil, err
 		}
+		// Relay-observed traffic is stored under a marked key, so the same
+		// address ranks separately for what it did directly and what the relay
+		// carried for it. Rows written before the marker existed have none and
+		// keep reading as direct traffic.
+		e.IP, e.Relayed = DecodeIPKey(key)
 		e.Cycle.total()
 		e.Today.total()
 		e.Last7.total()
@@ -764,25 +770,28 @@ LIMIT ?4`, cycleStart, todayStart, weekStart, limit)
 	return entries, rows.Err()
 }
 
-// IPTrafficSeries returns one address's history at the three granularities the
-// dashboard draws, each read the same way the node's own series is: raw rows
-// for the recent window, hourly buckets for the hourly view, and everything
-// folded into GMT days for the daily view.
-func (s *Store) IPTrafficSeries(address string, recentSince, since int64) (IPTrafficDetail, error) {
-	detail := IPTrafficDetail{IP: address}
-	recent, err := s.ipPoints(`SELECT ts, in_bytes, out_bytes FROM ip_samples WHERE ip = ? AND ts >= ? ORDER BY ts ASC`, address, recentSince)
+// IPTrafficSeries returns one accounting key's history at the three
+// granularities the dashboard draws, each read the same way the node's own
+// series is: raw rows for the recent window, hourly buckets for the hourly
+// view, and everything folded into GMT days for the daily view. key is the
+// stored form ParseIPKey produces, so an address's relay-observed history and
+// its direct one are two different series.
+func (s *Store) IPTrafficSeries(key string, recentSince, since int64) (IPTrafficDetail, error) {
+	address, relayed := DecodeIPKey(key)
+	detail := IPTrafficDetail{IP: address, Relayed: relayed}
+	recent, err := s.ipPoints(`SELECT ts, in_bytes, out_bytes FROM ip_samples WHERE ip = ? AND ts >= ? ORDER BY ts ASC`, key, recentSince)
 	if err != nil {
 		return IPTrafficDetail{}, err
 	}
 	detail.Recent = recent
 	// The hourly view has to include the samples not folded yet, or its most
 	// recent hours read as empty until maintenance catches up.
-	hourly, err := s.ipBuckets(address, since, 3600)
+	hourly, err := s.ipBuckets(key, since, 3600)
 	if err != nil {
 		return IPTrafficDetail{}, err
 	}
 	detail.Hourly = hourly
-	daily, err := s.ipBuckets(address, since, 86400)
+	daily, err := s.ipBuckets(key, since, 86400)
 	if err != nil {
 		return IPTrafficDetail{}, err
 	}
@@ -790,12 +799,12 @@ func (s *Store) IPTrafficSeries(address string, recentSince, since int64) (IPTra
 	return detail, nil
 }
 
-// ipBuckets sums one address's history into buckets of the given width. Day
+// ipBuckets sums one accounting key's history into buckets of the given width. Day
 // rows are only readable at day width — dropped into an hourly chart they would
 // land a whole day's bytes on one midnight column and read as a spike that
 // never happened — so the hourly view reaches back only as far as ip_hourly
 // still goes, and the daily view still covers the whole cycle.
-func (s *Store) ipBuckets(address string, since, width int64) ([]IPSeriesPoint, error) {
+func (s *Store) ipBuckets(key string, since, width int64) ([]IPSeriesPoint, error) {
 	sources := `
     SELECT (ts/?2)*?2 AS bucket, in_bytes, out_bytes FROM ip_samples WHERE ip = ?1 AND ts >= ?3
     UNION ALL
@@ -808,7 +817,7 @@ func (s *Store) ipBuckets(address string, since, width int64) ([]IPSeriesPoint, 
 	return s.ipPoints(`
 SELECT bucket, SUM(in_bytes), SUM(out_bytes) FROM (`+sources+`
 )
-GROUP BY bucket ORDER BY bucket ASC`, address, width, since)
+GROUP BY bucket ORDER BY bucket ASC`, key, width, since)
 }
 
 func (s *Store) ipPoints(query string, args ...any) ([]IPSeriesPoint, error) {

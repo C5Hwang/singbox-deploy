@@ -463,3 +463,33 @@ func TestLoadOnANodeThatNeverRelayedIsEmpty(t *testing.T) {
 		t.Fatalf("Load = %#v", cfg)
 	}
 }
+
+// ForwardListenPorts reads the stored job on every call, so the monitor's
+// forward counters follow a pushed or withdrawn link without a restart.
+func TestForwardListenPortsFollowTheStoredJob(t *testing.T) {
+	layout := paths.LayoutForRoot(t.TempDir())
+	ports := relay.ForwardListenPorts(layout)
+	if got := ports(); got != nil {
+		t.Fatalf("ports = %v on a node that never relayed, want none", got)
+	}
+	cfg := relay.Config{Landings: []relay.Landing{
+		{NodeID: "aa11", Name: "HK", Host: "a.example.com", Forwards: []relay.Forward{
+			{Protocol: "anytls", Network: "tcp", ListenPort: 34568, TargetPort: 41234},
+			// One port carrying both transports is still one number to meter.
+			{Protocol: "hysteria2", Network: "udp", ListenPort: 34567, TargetPort: 41235},
+			{Protocol: "tuic", Network: "tcp", ListenPort: 34567, TargetPort: 41236},
+		}},
+	}}
+	if err := relay.Save(layout, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if got := ports(); len(got) != 2 || got[0] != 34567 || got[1] != 34568 {
+		t.Fatalf("ports = %v, want the two distinct ports sorted", got)
+	}
+	if err := relay.Save(layout, relay.Config{}); err != nil {
+		t.Fatalf("Save empty: %v", err)
+	}
+	if got := ports(); got != nil {
+		t.Fatalf("ports = %v after the job was withdrawn, want none", got)
+	}
+}

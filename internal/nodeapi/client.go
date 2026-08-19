@@ -9,10 +9,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 )
 
 // dialTimeout bounds how long establishing a connection to an agent may take.
@@ -199,20 +200,21 @@ const monitorReadTimeout = 12 * time.Second
 
 // Monitor reads one fixed monitor resource through the authenticated agent
 // API. endpoint is a typed allow-list value, not a caller-supplied path or URL.
-// address drills into one remote address and is ignored by every endpoint that
-// does not take one. It is parsed here rather than concatenated, so the request
-// carries a value this process produced.
+// address drills into one remote address — optionally behind the monitor's
+// relay marker — and is ignored by every endpoint that does not take one. It is
+// parsed here rather than concatenated, so the request carries a value this
+// process produced.
 func (c *Client) Monitor(ctx context.Context, endpoint MonitorEndpoint, address string) ([]byte, error) {
 	apiPath, _, ok := endpoint.paths()
 	if !ok {
 		return nil, fmt.Errorf("unsupported agent monitor endpoint %q", endpoint)
 	}
 	if endpoint == MonitorIPDetail {
-		parsed, err := netip.ParseAddr(strings.TrimSpace(address))
+		key, err := monitor.ParseIPKey(address)
 		if err != nil {
 			return nil, fmt.Errorf("agent monitor endpoint %q needs an IP address: %w", endpoint, err)
 		}
-		apiPath += "?" + url.Values{"ip": []string{parsed.String()}}.Encode()
+		apiPath += "?" + url.Values{"ip": []string{key}}.Encode()
 	}
 	// A dashboard is waiting on this read, so the ceiling is what a slow node
 	// may spend answering rather than what a batch job would tolerate. It is

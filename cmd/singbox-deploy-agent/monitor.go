@@ -221,7 +221,10 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 		// A spoke that relays for other nodes measures the route to each of
 		// them, on the same schedule as the carrier probes.
 		ExtraPingTargets: relay.PingTargets(s.layout),
-		Now:              now,
+		// It also meters the flows it forwards, per client address, which the
+		// input/output counters alone would never see.
+		RelayForwardPorts: relay.ForwardListenPorts(s.layout),
+		Now:               now,
 	}, nil
 }
 

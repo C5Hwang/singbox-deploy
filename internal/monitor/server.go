@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -73,6 +72,13 @@ type Config struct {
 	// once per round, so a link added or withdrawn is picked up without a
 	// restart.
 	ExtraPingTargets func() []PingTarget
+	// RelayForwardPorts reports the ports this node's relay data plane answers
+	// on. The relay forwards with a DNAT, which moves those flows onto the
+	// forward path where the per-IP peer counters never see them; the ports are
+	// what lets the accounting meter them anyway, attributed to the client's
+	// address and marked as relayed. It is read once per sample round like
+	// ExtraPingTargets; nil stands for a node that never relays.
+	RelayForwardPorts func() []int
 	// RelayRegistry reports the fleet's relay topology: the dashboard source IDs
 	// of the nodes that front another node, and how many nodes are fronted in
 	// total. Only the hub has a relay registry to answer from; a spoke leaves it
@@ -144,7 +150,7 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 		control:       control,
 		resCollector:  NewResourceCollector("/"),
 		pingCollector: newPingCollectorWithExtra(cfg.ExtraPingTargets),
-		ipAccounting:  NewIPAccounting(),
+		ipAccounting:  NewIPAccounting(cfg.RelayForwardPorts),
 	}
 	if m.ipAccounting == nil {
 		log.Printf("monitor: no nft utility found; per-IP traffic accounting is disabled")
@@ -452,11 +458,12 @@ func (m *Monitor) handleIPTraffic(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleIPDetail serves one address's history. The address is parsed before it
-// reaches the store, so the only thing that ever reaches a query is a value
-// this process re-serialized.
+// handleIPDetail serves one accounting key's history: an address, optionally
+// behind the relay marker. The key is parsed before it reaches the store, so
+// the only thing that ever reaches a query is a value this process
+// re-serialized.
 func (m *Monitor) handleIPDetail(w http.ResponseWriter, r *http.Request) {
-	address, err := netip.ParseAddr(strings.TrimSpace(r.URL.Query().Get("ip")))
+	key, err := ParseIPKey(r.URL.Query().Get("ip"))
 	if err != nil {
 		http.Error(w, "ip must be an IP address", http.StatusBadRequest)
 		return
@@ -467,8 +474,8 @@ func (m *Monitor) handleIPDetail(w http.ResponseWriter, r *http.Request) {
 	m.serveSourceData(r.Context(), w, sourceQuery(r), sourceEndpoint{
 		key:        "ipDetail",
 		proxyPath:  "/api/ip-detail",
-		proxyQuery: url.Values{"ip": []string{address.String()}},
-		local:      func() (any, error) { return m.store.IPTrafficSeries(address.String(), recentSince, cycleStart) },
+		proxyQuery: url.Values{"ip": []string{key}},
+		local:      func() (any, error) { return m.store.IPTrafficSeries(key, recentSince, cycleStart) },
 	})
 }
 
