@@ -373,6 +373,19 @@ func TestCoordinatedHealthRejectsMatchingAgentWithInactiveCore(t *testing.T) {
 	}
 }
 
+func TestCoordinatedHealthAcceptsQuotaStoppedCore(t *testing.T) {
+	node := nodes.Node{Alias: "tokyo", Domain: "spoke.example.com"}
+	health := nodeapi.HealthResponse{
+		OK: true, Version: "v2.0.0", Installed: true,
+		SingBoxVersion: "v1.13.16", SingBoxActive: false, QuotaStopped: true,
+		Domain: node.Domain,
+	}
+	ctrl := &Controller{RequireOperationalAgent: true}
+	if err := ctrl.validateOperationalAgent(context.Background(), node, health, nil); err != nil {
+		t.Fatalf("quota-stopped sing-box should count as operational: %v", err)
+	}
+}
+
 func TestCoordinatedHealthValidatesInstalledDomainAndCoreVersion(t *testing.T) {
 	node := nodes.Node{Alias: "tokyo", Domain: "spoke.example.com"}
 	base := nodeapi.HealthResponse{

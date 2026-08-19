@@ -6,6 +6,23 @@ import (
 	"os"
 )
 
+// QuotaStopState reports whether the monitor currently owns a quota stop of
+// sing-box. A missing database means no monitor ever ran here, so no stop.
+func QuotaStopState(dbPath string) (bool, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat monitor store: %w", err)
+	}
+	store, err := OpenStore(dbPath)
+	if err != nil {
+		return false, fmt.Errorf("open monitor store: %w", err)
+	}
+	defer store.Close()
+	return store.QuotaStopped()
+}
+
 // ReleaseQuotaStop restores sing-box when the monitor owns its stopped state.
 //
 // A missing database or an unset marker is a no-op. The ownership marker is

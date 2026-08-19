@@ -684,8 +684,12 @@ type HealthResponse struct {
 	Installed      bool   `json:"installed"`
 	SingBoxVersion string `json:"singBoxVersion,omitempty"`
 	SingBoxActive  bool   `json:"singBoxActive"`
-	Domain         string `json:"domain,omitempty"`
-	Error          string `json:"error,omitempty"`
+	// QuotaStopped reports that sing-box is inactive because the agent's own
+	// monitor stopped it to enforce the traffic quota. It distinguishes that
+	// deliberate, recoverable state from a failed deployment.
+	QuotaStopped bool   `json:"quotaStopped,omitempty"`
+	Domain       string `json:"domain,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 // Subscription formats the agent can return over the overlay. These mirror the

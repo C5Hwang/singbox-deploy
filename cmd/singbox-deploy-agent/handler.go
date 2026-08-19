@@ -68,6 +68,9 @@ type agentHandler struct {
 	readCoreVersion func(context.Context) (string, error)
 	coreActive      func(context.Context) bool
 	runCoreManager  func(context.Context, core.Action, string, io.Writer) (core.Result, error)
+	// quotaStopped is a seam over the monitor store's quota-stop marker so
+	// health tests do not need a SQLite database on disk.
+	quotaStopped func() (bool, error)
 }
 
 func (h *agentHandler) Health() nodeapi.HealthResponse {
@@ -92,6 +95,7 @@ func (h *agentHandler) Health() nodeapi.HealthResponse {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	active := h.isCoreActive(ctx)
+	quotaStopped := !active && h.isQuotaStopped()
 	coreVersion, err := h.currentCoreVersion(ctx)
 	if err != nil {
 		return nodeapi.HealthResponse{
@@ -99,6 +103,7 @@ func (h *agentHandler) Health() nodeapi.HealthResponse {
 			Version:       version,
 			Installed:     true,
 			SingBoxActive: active,
+			QuotaStopped:  quotaStopped,
 			Domain:        domain,
 			Error:         fmt.Sprintf("inspect sing-box core version: %v", err),
 		}
@@ -109,8 +114,23 @@ func (h *agentHandler) Health() nodeapi.HealthResponse {
 		Installed:      true,
 		SingBoxVersion: coreVersion,
 		SingBoxActive:  active,
+		QuotaStopped:   quotaStopped,
 		Domain:         domain,
 	}
+}
+
+// isQuotaStopped reports whether the monitor owns the current sing-box stop.
+// A read failure reads as false: the hub then treats the spoke as genuinely
+// down, which fails closed for coordinated self-update.
+func (h *agentHandler) isQuotaStopped() bool {
+	read := h.quotaStopped
+	if read == nil {
+		read = func() (bool, error) {
+			return monitor.QuotaStopState(h.layout.MonitorDB)
+		}
+	}
+	stopped, err := read()
+	return err == nil && stopped
 }
 
 func (h *agentHandler) ProtocolState(ctx context.Context) (nodeapi.ProtocolStateResponse, error) {

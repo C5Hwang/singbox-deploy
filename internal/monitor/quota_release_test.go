@@ -43,6 +43,25 @@ func readQuotaStopMarker(t *testing.T, dbPath string) bool {
 	return stopped
 }
 
+func TestQuotaStopStateReportsMarkerWithoutCreatingStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "monitor", "monitor.db")
+	stopped, err := QuotaStopState(dbPath)
+	if err != nil || stopped {
+		t.Fatalf("QuotaStopState(missing store) = %v, %v; want false, nil", stopped, err)
+	}
+	if _, err := os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing monitor store was created: %v", err)
+	}
+	writeQuotaStopMarker(t, dbPath, true)
+	if stopped, err = QuotaStopState(dbPath); err != nil || !stopped {
+		t.Fatalf("QuotaStopState(marker set) = %v, %v; want true, nil", stopped, err)
+	}
+	writeQuotaStopMarker(t, dbPath, false)
+	if stopped, err = QuotaStopState(dbPath); err != nil || stopped {
+		t.Fatalf("QuotaStopState(marker cleared) = %v, %v; want false, nil", stopped, err)
+	}
+}
+
 func TestReleaseQuotaStopDoesNotCreateMissingStoreOrStartService(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "monitor", "monitor.db")
 	starts := 0

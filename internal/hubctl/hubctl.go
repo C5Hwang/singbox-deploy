@@ -53,7 +53,8 @@ type Controller struct {
 	// RequireOperationalAgent makes a health check prove that the managed
 	// deployment, sing-box core, configured domain, and enabled monitor are
 	// operational in addition to checking the Agent process/version. Coordinated
-	// self-update enables this before committing the Hub binary.
+	// self-update enables this before committing the Hub binary. A sing-box
+	// stopped by the spoke's own quota enforcement still counts as operational.
 	RequireOperationalAgent bool
 	// ExpectedCoreVersion pins a full spoke install to the exact sing-box
 	// release already running on the Hub. It is normally detected from the Hub
@@ -1147,7 +1148,9 @@ func (c *Controller) validateOperationalAgent(
 	switch {
 	case !health.Installed:
 		return fmt.Errorf("agent %s reports that its managed deployment is not installed", label)
-	case !health.SingBoxActive:
+	// A sing-box the spoke's own monitor stopped for quota enforcement is a
+	// deliberate, recoverable state, not a broken deployment.
+	case !health.SingBoxActive && !health.QuotaStopped:
 		return fmt.Errorf("agent %s reports that sing-box is inactive", label)
 	case strings.TrimSpace(health.SingBoxVersion) == "":
 		return fmt.Errorf("agent %s did not report its sing-box version", label)

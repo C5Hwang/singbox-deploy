@@ -217,6 +217,50 @@ func TestAgentHealthReportsCoreInspectionFailure(t *testing.T) {
 	}
 }
 
+func TestAgentHealthReportsQuotaStop(t *testing.T) {
+	newHandler := func(t *testing.T, active bool, quotaStopped func() (bool, error)) *agentHandler {
+		t.Helper()
+		layout := paths.LayoutForRoot(t.TempDir())
+		if err := state.NewStore(layout.StateDir).WriteString("domain", "spoke.example.com\n", 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return &agentHandler{
+			layout: layout,
+			readCoreVersion: func(context.Context) (string, error) {
+				return "v1.12.4", nil
+			},
+			coreActive:   func(context.Context) bool { return active },
+			quotaStopped: quotaStopped,
+		}
+	}
+	t.Run("inactive with quota marker", func(t *testing.T) {
+		h := newHandler(t, false, func() (bool, error) { return true, nil })
+		health := h.Health()
+		if !health.OK || health.SingBoxActive || !health.QuotaStopped {
+			t.Fatalf("Health = %+v", health)
+		}
+	})
+	t.Run("active never reads the marker", func(t *testing.T) {
+		h := newHandler(t, true, func() (bool, error) {
+			t.Fatal("quota state must not be read while sing-box is active")
+			return true, nil
+		})
+		health := h.Health()
+		if !health.OK || !health.SingBoxActive || health.QuotaStopped {
+			t.Fatalf("Health = %+v", health)
+		}
+	})
+	t.Run("marker read failure fails closed", func(t *testing.T) {
+		h := newHandler(t, false, func() (bool, error) {
+			return true, errors.New("monitor store is locked")
+		})
+		health := h.Health()
+		if !health.OK || health.SingBoxActive || health.QuotaStopped {
+			t.Fatalf("Health = %+v", health)
+		}
+	})
+}
+
 func TestAgentCoreChangeUsesManagerAndVerifiesResult(t *testing.T) {
 	var (
 		gotAction core.Action
