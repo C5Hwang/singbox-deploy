@@ -757,11 +757,13 @@ LIMIT ?4`, cycleStart, todayStart, weekStart, limit)
 		); err != nil {
 			return nil, err
 		}
-		// Relay-observed traffic is stored under a marked key, so the same
-		// address ranks separately for what it did directly and what the relay
-		// carried for it. Rows written before the marker existed have none and
-		// keep reading as direct traffic.
-		e.IP, e.Relayed = DecodeIPKey(key)
+		// Relay-observed traffic is stored under a marked key naming the landing
+		// node, so the same address ranks separately for what it did directly
+		// and for each node the relay carried it to. Rows written before the
+		// marker existed have neither and keep reading as direct traffic; rows
+		// written before the landing was recorded keep reading as relayed
+		// traffic to an unnamed destination.
+		e.IP, e.Landing, e.Relayed = DecodeIPKey(key)
 		e.Cycle.total()
 		e.Today.total()
 		e.Last7.total()
@@ -774,11 +776,11 @@ LIMIT ?4`, cycleStart, todayStart, weekStart, limit)
 // granularities the dashboard draws, each read the same way the node's own
 // series is: raw rows for the recent window, hourly buckets for the hourly
 // view, and everything folded into GMT days for the daily view. key is the
-// stored form ParseIPKey produces, so an address's relay-observed history and
-// its direct one are two different series.
+// stored form ParseIPKey produces, so an address's direct history and each of
+// its per-landing relayed ones are separate series.
 func (s *Store) IPTrafficSeries(key string, recentSince, since int64) (IPTrafficDetail, error) {
-	address, relayed := DecodeIPKey(key)
-	detail := IPTrafficDetail{IP: address, Relayed: relayed}
+	address, landing, relayed := DecodeIPKey(key)
+	detail := IPTrafficDetail{IP: address, Landing: landing, Relayed: relayed}
 	recent, err := s.ipPoints(`SELECT ts, in_bytes, out_bytes FROM ip_samples WHERE ip = ? AND ts >= ? ORDER BY ts ASC`, key, recentSince)
 	if err != nil {
 		return IPTrafficDetail{}, err

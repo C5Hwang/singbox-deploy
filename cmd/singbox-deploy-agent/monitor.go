@@ -223,8 +223,8 @@ func (s *monitorSupervisor) buildConfig(store state.Store) (monitor.Config, erro
 		ExtraPingTargets: relay.PingTargets(s.layout),
 		// It also meters the flows it forwards, per client address, which the
 		// input/output counters alone would never see.
-		RelayForwardPorts: relay.ForwardListenPorts(s.layout),
-		Now:               now,
+		RelayForwards: relay.MonitorForwards(s.layout),
+		Now:           now,
 	}, nil
 }
 

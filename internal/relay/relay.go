@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -97,20 +98,22 @@ func (c Config) ListenPorts() []system.Port {
 	return ports
 }
 
-// ForwardListenPorts returns the ports the relay at layout answers on,
-// deduplicated and sorted, as the seam the monitor's per-IP accounting meters
-// forwarded flows by. The stored job is read on every call, so a link the hub
-// adds or withdraws reaches the forward counters on the next sample round
-// rather than at the next monitor restart. A node that relays for nobody
-// yields none, which leaves the forward chain uninstalled.
-func ForwardListenPorts(layout paths.Layout) func() []int {
-	return func() []int {
+// MonitorForwards returns the port mappings the relay at layout answers on, as
+// the seam the monitor's per-IP accounting meters forwarded flows by. Each port
+// carries the landing node behind it, which is what lets the counters say where
+// a client's forwarded bytes went rather than only that they were forwarded.
+//
+// The stored job is read on every call, so a link the hub adds or withdraws
+// reaches the forward counters on the next sample round rather than at the next
+// monitor restart. A node that relays for nobody yields none, which leaves the
+// forward chain uninstalled.
+func MonitorForwards(layout paths.Layout) func() []monitor.RelayForward {
+	return func() []monitor.RelayForward {
 		cfg, err := Load(layout)
 		if err != nil {
 			return nil
 		}
-		seen := make(map[int]struct{}, 8)
-		var ports []int
+		var forwards []monitor.RelayForward
 		for _, landing := range cfg.Landings {
 			for _, forward := range landing.Forwards {
 				// A port outside the range would render an unloadable ruleset
@@ -118,15 +121,17 @@ func ForwardListenPorts(layout paths.Layout) func() []int {
 				if forward.ListenPort < 1 || forward.ListenPort > 65535 {
 					continue
 				}
-				if _, duplicate := seen[forward.ListenPort]; duplicate {
-					continue
-				}
-				seen[forward.ListenPort] = struct{}{}
-				ports = append(ports, forward.ListenPort)
+				forwards = append(forwards, monitor.RelayForward{
+					ListenPort:  forward.ListenPort,
+					LandingID:   landing.NodeID,
+					LandingName: landing.DisplayName(),
+				})
 			}
 		}
-		sort.Ints(ports)
-		return ports
+		sort.Slice(forwards, func(i, j int) bool {
+			return forwards[i].ListenPort < forwards[j].ListenPort
+		})
+		return forwards
 	}
 }
 

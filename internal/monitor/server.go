@@ -72,13 +72,14 @@ type Config struct {
 	// once per round, so a link added or withdrawn is picked up without a
 	// restart.
 	ExtraPingTargets func() []PingTarget
-	// RelayForwardPorts reports the ports this node's relay data plane answers
-	// on. The relay forwards with a DNAT, which moves those flows onto the
-	// forward path where the per-IP peer counters never see them; the ports are
-	// what lets the accounting meter them anyway, attributed to the client's
-	// address and marked as relayed. It is read once per sample round like
-	// ExtraPingTargets; nil stands for a node that never relays.
-	RelayForwardPorts func() []int
+	// RelayForwards reports the port mappings this node's relay data plane
+	// answers on. The relay forwards with a DNAT, which moves those flows onto
+	// the forward path where the per-IP peer counters never see them; the ports
+	// are what lets the accounting meter them anyway, and the landing node
+	// behind each port is what lets a client's forwarded bytes be reported per
+	// destination. It is read once per sample round like ExtraPingTargets; nil
+	// stands for a node that never relays.
+	RelayForwards func() []RelayForward
 	// RelayRegistry reports the fleet's relay topology: the dashboard source IDs
 	// of the nodes that front another node, and how many nodes are fronted in
 	// total. Only the hub has a relay registry to answer from; a spoke leaves it
@@ -150,7 +151,7 @@ func New(store *Store, cfg Config, control ServiceController) *Monitor {
 		control:       control,
 		resCollector:  NewResourceCollector("/"),
 		pingCollector: newPingCollectorWithExtra(cfg.ExtraPingTargets),
-		ipAccounting:  NewIPAccounting(cfg.RelayForwardPorts),
+		ipAccounting:  NewIPAccounting(cfg.RelayForwards),
 	}
 	if m.ipAccounting == nil {
 		log.Printf("monitor: no nft utility found; per-IP traffic accounting is disabled")
@@ -449,6 +450,10 @@ func (m *Monitor) handleIPTraffic(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return nil, err
 			}
+			names := m.relayLandingNames()
+			for i := range entries {
+				entries[i].LandingName = names[entries[i].Landing]
+			}
 			return IPTrafficSnapshot{
 				Enabled:    m.ipAccounting.Enabled(),
 				CycleStart: cycleStart,
@@ -475,8 +480,34 @@ func (m *Monitor) handleIPDetail(w http.ResponseWriter, r *http.Request) {
 		key:        "ipDetail",
 		proxyPath:  "/api/ip-detail",
 		proxyQuery: url.Values{"ip": []string{key}},
-		local:      func() (any, error) { return m.store.IPTrafficSeries(key, recentSince, cycleStart) },
+		local: func() (any, error) {
+			detail, err := m.store.IPTrafficSeries(key, recentSince, cycleStart)
+			if err != nil {
+				return nil, err
+			}
+			detail.LandingName = m.relayLandingNames()[detail.Landing]
+			return detail, nil
+		},
 	})
+}
+
+// relayLandingNames labels each landing node this relay fronts. A history whose
+// landing node has since been un-fronted keeps its ID and loses its name, which
+// is the honest reading: the bytes were forwarded, and the relay no longer has
+// anything to say about where.
+func (m *Monitor) relayLandingNames() map[string]string {
+	if m.cfg.RelayForwards == nil {
+		return nil
+	}
+	forwards := m.cfg.RelayForwards()
+	names := make(map[string]string, len(forwards))
+	for _, forward := range forwards {
+		if forward.LandingID == "" || forward.LandingName == "" {
+			continue
+		}
+		names[forward.LandingID] = forward.LandingName
+	}
+	return names
 }
 
 func sourceQuery(r *http.Request) string { return r.URL.Query().Get("source") }

@@ -41,10 +41,14 @@ const ipAcctCommandTimeout = 10 * time.Second
 // The peers chains describe only traffic this host terminates. A flow the
 // relay data plane DNATs (internal/relay) is routed, not delivered, so it
 // crosses the forward hook instead — which is where the relay_* sets count it,
-// still attributed to the client's address. The relay sets are declared even on
-// a node that relays for nobody, so the collector can read all of them without
-// caring whether the forward chain was rendered. They have no v6 counterparts
-// because the relay's own ruleset is a `table ip`.
+// still attributed to the client's address. Those two are keyed by the address
+// and the port it arrived on, because one relay commonly fronts several landing
+// nodes and the port is what says which: the DNAT rewrites the destination, but
+// conntrack still remembers the listen port the client reached, and every
+// listen port belongs to exactly one landing node. The relay sets are declared
+// even on a node that relays for nobody, so the collector can read all of them
+// without caring whether the forward chain was rendered. They have no v6
+// counterparts because the relay's own ruleset is a `table ip`.
 //
 // The empty table declaration before the delete is the standard atomic-replace
 // idiom: it makes the delete succeed whether or not the table already exists.
@@ -83,14 +87,14 @@ table inet ` + ipAcctTable + ` {
 		counter
 	}
 	set relay_in4 {
-		type ipv4_addr
+		type ipv4_addr . inet_service
 		size 65535
 		flags dynamic
 		timeout 2h
 		counter
 	}
 	set relay_out4 {
-		type ipv4_addr
+		type ipv4_addr . inet_service
 		size 65535
 		flags dynamic
 		timeout 2h
@@ -141,8 +145,8 @@ func relayForwardChain(ports []int) string {
 	return `
 	chain peers_fwd {
 		type filter hook forward priority 0; policy accept;
-		` + match + ` ct direction original update @relay_in4 { ip saddr }
-		` + match + ` ct direction reply update @relay_out4 { ip daddr }
+		` + match + ` ct direction original update @relay_in4 { ip saddr . ct original proto-dst }
+		` + match + ` ct direction reply update @relay_out4 { ip daddr . ct original proto-dst }
 	}
 `
 }
@@ -158,6 +162,55 @@ func overlayReturn(direction string, ports []int) string {
 		values = append(values, strconv.Itoa(port))
 	}
 	return "\t\tudp " + direction + " { " + strings.Join(values, ", ") + " } return\n"
+}
+
+// RelayForward is one port the relay data plane answers on and the landing node
+// it fronts. The monitor needs both: the ports pin the forward chain to the
+// relay's own flows, and the landing behind each one is what lets a client's
+// forwarded bytes be reported per destination instead of as one relayed lump.
+type RelayForward struct {
+	ListenPort int
+	// LandingID is the landing node's stable registry identity. It is the half
+	// of the accounting key that survives a rename, so a landing node relabelled
+	// mid-cycle keeps its history.
+	LandingID string
+	// LandingName is the landing node's display alias, attached to the entries
+	// the API returns rather than stored, so the dashboard never has to resolve
+	// an ID it has no registry for.
+	LandingName string
+}
+
+// relayForwardPorts reduces the relay's job to the ports the forward chain
+// matches on, deduplicated and ordered so the rendered ruleset is stable.
+func relayForwardPorts(forwards []RelayForward) []int {
+	seen := make(map[int]struct{}, len(forwards))
+	ports := make([]int, 0, len(forwards))
+	for _, forward := range forwards {
+		if forward.ListenPort < 1 || forward.ListenPort > 65535 {
+			continue
+		}
+		if _, duplicate := seen[forward.ListenPort]; duplicate {
+			continue
+		}
+		seen[forward.ListenPort] = struct{}{}
+		ports = append(ports, forward.ListenPort)
+	}
+	slices.Sort(ports)
+	return ports
+}
+
+// relayLandingsByPort maps each relay listen port onto the landing node behind
+// it. A port claimed twice cannot happen — relay.Config.Validate refuses it —
+// so the first mapping wins and the ruleset stays the authority on the ports.
+func relayLandingsByPort(forwards []RelayForward) map[int]string {
+	landings := make(map[int]string, len(forwards))
+	for _, forward := range forwards {
+		if _, taken := landings[forward.ListenPort]; taken {
+			continue
+		}
+		landings[forward.ListenPort] = forward.LandingID
+	}
+	return landings
 }
 
 // ipAcctSets pairs each counter set with the direction it accumulates and
@@ -190,11 +243,12 @@ type IPAccounting struct {
 	// overlayPorts reports the WireGuard listen ports to keep out of the
 	// counters. It is a seam for the same reason run is.
 	overlayPorts func(ctx context.Context) []int
-	// relayPorts reports the relay listen ports whose forwarded flows the
-	// forward chain meters. It is a seam like the two above.
-	relayPorts func() []int
-	// previous holds the last counter value read per set and address, so a
-	// sample can be turned into a delta.
+	// relayForwards reports the relay's listen ports and the landing node each
+	// one fronts, which is what the forward chain meters. It is a seam like the
+	// two above.
+	relayForwards func() []RelayForward
+	// previous holds the last counter value read per set element, so a sample
+	// can be turned into a delta.
 	previous map[string]uint64
 	// applied is the ruleset text the loaded table was built from. A wg-quick
 	// restart hands the interface a new ephemeral port and the hub pushes or
@@ -206,9 +260,9 @@ type IPAccounting struct {
 }
 
 // NewIPAccounting returns a sampler, or nil when the host has no nft utility.
-// relayPorts reports the relay listen ports to meter on the forward path; nil
-// stands for a node that never relays.
-func NewIPAccounting(relayPorts func() []int) *IPAccounting {
+// relayForwards reports the relay's port mappings to meter on the forward path;
+// nil stands for a node that never relays.
+func NewIPAccounting(relayForwards func() []RelayForward) *IPAccounting {
 	binary, err := exec.LookPath("nft")
 	if err != nil {
 		return nil
@@ -217,9 +271,9 @@ func NewIPAccounting(relayPorts func() []int) *IPAccounting {
 		run: func(ctx context.Context, stdin string, args ...string) ([]byte, error) {
 			return runNFT(ctx, binary, stdin, args...)
 		},
-		overlayPorts: wireGuardListenPorts,
-		relayPorts:   relayPorts,
-		previous:     map[string]uint64{},
+		overlayPorts:  wireGuardListenPorts,
+		relayForwards: relayForwards,
+		previous:      map[string]uint64{},
 	}
 }
 
@@ -281,19 +335,24 @@ func runNFT(ctx context.Context, binary, stdin string, args ...string) ([]byte, 
 func (a *IPAccounting) Enabled() bool { return a != nil }
 
 // Collect returns the traffic each accounting key moved since the previous
-// call: the bare address for a direct peer, the relay-marked form for a client
-// whose traffic this node forwarded. The ruleset is installed on first use and
-// reinstalled if it disappears, so a firewall reload that flushes it self-heals
-// on the next sample.
+// call: the bare address for a direct peer, the relay-marked form naming the
+// landing node for a client whose traffic this node forwarded. The ruleset is
+// installed on first use and reinstalled if it disappears, so a firewall reload
+// that flushes it self-heals on the next sample.
 func (a *IPAccounting) Collect(ctx context.Context) (map[string]IPTrafficDelta, error) {
 	if a == nil {
 		return nil, nil
 	}
-	if ruleset := ipAcctRuleset(a.currentOverlayPorts(ctx), a.currentRelayPorts()); !a.loaded || ruleset != a.applied {
+	forwards := a.currentRelayForwards()
+	if ruleset := ipAcctRuleset(a.currentOverlayPorts(ctx), relayForwardPorts(forwards)); !a.loaded || ruleset != a.applied {
 		if err := a.apply(ctx, ruleset); err != nil {
 			return nil, err
 		}
 	}
+	// Read once per round rather than per element: the mapping is the same for
+	// every counter in the round, and it is what turns a listen port back into
+	// the landing node the bytes went to.
+	landings := relayLandingsByPort(forwards)
 	deltas := map[string]IPTrafficDelta{}
 	// Rebuilt rather than updated in place: an element nftables evicted after
 	// its idle timeout has to leave with it, or a node facing a long tail of
@@ -312,14 +371,18 @@ func (a *IPAccounting) Collect(ctx context.Context) (map[string]IPTrafficDelta, 
 			a.previous = map[string]uint64{}
 			return nil, err
 		}
-		for address, current := range counters {
-			key := set.name + "|" + address
-			delta := counterDelta(a.previous[key], current)
-			previous[key] = current
+		for _, counter := range counters {
+			key := set.name + "|" + counter.element()
+			delta := counterDelta(a.previous[key], counter.Bytes)
+			previous[key] = counter.Bytes
 			if delta == 0 {
 				continue
 			}
-			accountKey := EncodeIPKey(address, set.relayed)
+			// A port with no landing behind it is one the hub withdrew between
+			// the ruleset load and this read. Its bytes are still relayed
+			// traffic and are recorded as such, under the same key an older
+			// release wrote, rather than dropped.
+			accountKey := EncodeIPKey(counter.Address, landings[counter.Port], set.relayed)
 			entry := deltas[accountKey]
 			if set.inbound {
 				entry.InBytes += delta
@@ -341,12 +404,12 @@ func (a *IPAccounting) currentOverlayPorts(ctx context.Context) []int {
 	return a.overlayPorts(ctx)
 }
 
-// currentRelayPorts reads the relay's listen ports for this round.
-func (a *IPAccounting) currentRelayPorts() []int {
-	if a.relayPorts == nil {
+// currentRelayForwards reads the relay's port mappings for this round.
+func (a *IPAccounting) currentRelayForwards() []RelayForward {
+	if a.relayForwards == nil {
 		return nil
 	}
-	return a.relayPorts()
+	return a.relayForwards()
 }
 
 // counterDelta treats a counter that moved backwards as one that restarted:
@@ -382,12 +445,32 @@ func (a *IPAccounting) Remove(ctx context.Context) error {
 	return err
 }
 
-func (a *IPAccounting) readSet(ctx context.Context, name string) (map[string]uint64, error) {
+func (a *IPAccounting) readSet(ctx context.Context, name string) ([]nftCounter, error) {
 	out, err := a.run(ctx, "", "-j", "list", "set", "inet", ipAcctTable, name)
 	if err != nil {
 		return nil, fmt.Errorf("read per-IP counter set %s: %w", name, err)
 	}
 	return parseNFTCounterSet(out)
+}
+
+// nftCounter is one element of a counter set. Port is zero for the peer sets,
+// which are keyed by address alone; the relay sets concatenate the relay listen
+// port onto the address, so their elements carry both.
+type nftCounter struct {
+	Address string
+	Port    int
+	Bytes   uint64
+}
+
+// element renders the set key this counter was read under, which is what the
+// previous-value map has to be keyed by: two ports of the same address are two
+// independent counters, and folding them onto one address would make each
+// read subtract the other's total.
+func (c nftCounter) element() string {
+	if c.Port == 0 {
+		return c.Address
+	}
+	return c.Address + "/" + strconv.Itoa(c.Port)
 }
 
 // nftSetListing is the subset of `nft -j list set` this needs. Elements are
@@ -402,21 +485,31 @@ type nftSetListing struct {
 	} `json:"nftables"`
 }
 
+// nftCounterElement decodes one element. Val is left raw because a set keyed by
+// one type prints it as a bare string while a concatenated set prints an object
+// holding the parts, and both shapes appear in the same field.
 type nftCounterElement struct {
 	Elem *struct {
-		Val     string `json:"val"`
+		Val     json.RawMessage `json:"val"`
 		Counter *struct {
 			Bytes uint64 `json:"bytes"`
 		} `json:"counter"`
 	} `json:"elem"`
 }
 
-func parseNFTCounterSet(raw []byte) (map[string]uint64, error) {
+// nftConcatValue is the object form of a concatenated key. The parts keep their
+// own JSON types — an address stays a string, a port stays a number — so they
+// are decoded as raw messages and read positionally.
+type nftConcatValue struct {
+	Concat []json.RawMessage `json:"concat"`
+}
+
+func parseNFTCounterSet(raw []byte) ([]nftCounter, error) {
 	var listing nftSetListing
 	if err := json.Unmarshal(raw, &listing); err != nil {
 		return nil, fmt.Errorf("decode nft output: %w", err)
 	}
-	counters := map[string]uint64{}
+	var counters []nftCounter
 	for _, entry := range listing.Nftables {
 		if entry.Set == nil {
 			continue
@@ -426,11 +519,38 @@ func parseNFTCounterSet(raw []byte) (map[string]uint64, error) {
 			if err := json.Unmarshal(raw, &element); err != nil {
 				continue // a bare address string: no counter to read
 			}
-			if element.Elem == nil || element.Elem.Counter == nil || element.Elem.Val == "" {
+			if element.Elem == nil || element.Elem.Counter == nil {
 				continue
 			}
-			counters[element.Elem.Val] = element.Elem.Counter.Bytes
+			counter, ok := parseNFTCounterKey(element.Elem.Val)
+			if !ok {
+				continue
+			}
+			counter.Bytes = element.Elem.Counter.Bytes
+			counters = append(counters, counter)
 		}
 	}
 	return counters, nil
+}
+
+// parseNFTCounterKey reads an element's key in either of the two shapes the
+// sets produce: a bare address, or an address concatenated with the relay
+// listen port the flow arrived on.
+func parseNFTCounterKey(raw json.RawMessage) (nftCounter, bool) {
+	var address string
+	if err := json.Unmarshal(raw, &address); err == nil {
+		return nftCounter{Address: address}, address != ""
+	}
+	var value nftConcatValue
+	if err := json.Unmarshal(raw, &value); err != nil || len(value.Concat) != 2 {
+		return nftCounter{}, false
+	}
+	if err := json.Unmarshal(value.Concat[0], &address); err != nil || address == "" {
+		return nftCounter{}, false
+	}
+	var port int
+	if err := json.Unmarshal(value.Concat[1], &port); err != nil || port < 1 || port > 65535 {
+		return nftCounter{}, false
+	}
+	return nftCounter{Address: address, Port: port}, true
 }

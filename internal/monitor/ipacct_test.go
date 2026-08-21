@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,12 +49,16 @@ func (f *fakeNFT) run(_ context.Context, stdin string, args ...string) ([]byte, 
 	return marshalNFTSet(name, round[name]), nil
 }
 
+// marshalNFTSet renders one set listing. A counter key carrying "<address>/<port>"
+// is emitted the way nft prints a concatenated key, which is the shape the relay
+// sets have; anything else is a bare address, which is the shape the peer sets
+// have. One helper covers both because one parser has to read both.
 func marshalNFTSet(name string, counters map[string]uint64) []byte {
 	type counter struct {
 		Bytes uint64 `json:"bytes"`
 	}
 	type elemBody struct {
-		Val     string  `json:"val"`
+		Val     any     `json:"val"`
 		Counter counter `json:"counter"`
 	}
 	type elem struct {
@@ -61,7 +66,7 @@ func marshalNFTSet(name string, counters map[string]uint64) []byte {
 	}
 	elems := make([]elem, 0, len(counters))
 	for address, bytes := range counters {
-		elems = append(elems, elem{Elem: elemBody{Val: address, Counter: counter{Bytes: bytes}}})
+		elems = append(elems, elem{Elem: elemBody{Val: nftSetKey(address), Counter: counter{Bytes: bytes}}})
 	}
 	payload := map[string]any{
 		"nftables": []any{
@@ -71,6 +76,18 @@ func marshalNFTSet(name string, counters map[string]uint64) []byte {
 	}
 	out, _ := json.Marshal(payload)
 	return out
+}
+
+func nftSetKey(address string) any {
+	addr, port, ok := strings.Cut(address, "/")
+	if !ok {
+		return address
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil {
+		return address
+	}
+	return map[string]any{"concat": []any{addr, number}}
 }
 
 func newFakeIPAccounting(nft *fakeNFT) *IPAccounting {
@@ -172,7 +189,23 @@ func TestParseNFTCounterSetSkipsElementsWithoutCounters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseNFTCounterSet: %v", err)
 	}
-	if len(counters) != 1 || counters["198.51.100.4"] != 900 {
+	if len(counters) != 1 || counters[0] != (nftCounter{Address: "198.51.100.4", Bytes: 900}) {
+		t.Fatalf("counters = %#v", counters)
+	}
+}
+
+// The relay sets concatenate the listen port onto the address, and nft prints
+// that key as an object rather than a string. Both shapes reach the same parser.
+func TestParseNFTCounterSetReadsConcatenatedRelayKeys(t *testing.T) {
+	raw := []byte(`{"nftables":[{"set":{"name":"relay_in4","elem":[
+        {"elem":{"val":{"concat":["203.0.113.7",30001]},"counter":{"packets":3,"bytes":900}}},
+        {"elem":{"val":{"concat":["203.0.113.7"]},"counter":{"bytes":1}}},
+        {"elem":{"val":{"concat":["203.0.113.7",70000]},"counter":{"bytes":2}}}]}}]}`)
+	counters, err := parseNFTCounterSet(raw)
+	if err != nil {
+		t.Fatalf("parseNFTCounterSet: %v", err)
+	}
+	if len(counters) != 1 || counters[0] != (nftCounter{Address: "203.0.113.7", Port: 30001, Bytes: 900}) {
 		t.Fatalf("counters = %#v", counters)
 	}
 }
@@ -561,14 +594,16 @@ func TestPruneIPTrafficKeepsOnlyTheBusiestAddresses(t *testing.T) {
 func TestIPAccountingRulesetCountsRelayedFlowsByClientAddress(t *testing.T) {
 	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}}
 	acct := newFakeIPAccounting(nft)
-	acct.relayPorts = func() []int { return []int{30001, 30002} }
+	acct.relayForwards = func() []RelayForward {
+		return []RelayForward{{ListenPort: 30001, LandingID: "aaaa"}, {ListenPort: 30002, LandingID: "bbbb"}}
+	}
 	if _, err := acct.Collect(context.Background()); err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
 	for _, want := range []string{
 		"type filter hook forward priority 0; policy accept;",
-		"ct status dnat ct original proto-dst { 30001, 30002 } ct direction original update @relay_in4 { ip saddr }",
-		"ct status dnat ct original proto-dst { 30001, 30002 } ct direction reply update @relay_out4 { ip daddr }",
+		"ct status dnat ct original proto-dst { 30001, 30002 } ct direction original update @relay_in4 { ip saddr . ct original proto-dst }",
+		"ct status dnat ct original proto-dst { 30001, 30002 } ct direction reply update @relay_out4 { ip daddr . ct original proto-dst }",
 	} {
 		if !strings.Contains(nft.rulesets[0], want) {
 			t.Fatalf("ruleset is missing %q:\n%s", want, nft.rulesets[0])
@@ -596,13 +631,21 @@ func TestIPAccountingRulesetOmitsTheForwardChainWithoutRelayPorts(t *testing.T) 
 
 // The same address can be a direct client and sit behind the relay at once, and
 // the two histories must not blend: the relay sets report under the marked key.
-func TestIPAccountingKeysRelayedTrafficApartFromDirect(t *testing.T) {
+// Nor may two landing nodes blend, so the marked key names the one the listen
+// port belongs to.
+func TestIPAccountingKeysRelayedTrafficApartByLanding(t *testing.T) {
 	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{
 		"peer_in4":   {"203.0.113.7": 1000},
-		"relay_in4":  {"203.0.113.7": 400},
-		"relay_out4": {"203.0.113.7": 90},
+		"relay_in4":  {"203.0.113.7/30001": 400, "203.0.113.7/30002": 250},
+		"relay_out4": {"203.0.113.7/30001": 90},
 	}}}
 	acct := newFakeIPAccounting(nft)
+	acct.relayForwards = func() []RelayForward {
+		return []RelayForward{
+			{ListenPort: 30001, LandingID: "aaaa", LandingName: "Tokyo"},
+			{ListenPort: 30002, LandingID: "bbbb", LandingName: "Osaka"},
+		}
+	}
 	deltas, err := acct.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -610,8 +653,58 @@ func TestIPAccountingKeysRelayedTrafficApartFromDirect(t *testing.T) {
 	if got := deltas["203.0.113.7"]; got.InBytes != 1000 || got.OutBytes != 0 {
 		t.Fatalf("direct delta = %#v", got)
 	}
-	if got := deltas["relay:203.0.113.7"]; got.InBytes != 400 || got.OutBytes != 90 {
-		t.Fatalf("relayed delta = %#v", got)
+	if got := deltas["relay:aaaa|203.0.113.7"]; got.InBytes != 400 || got.OutBytes != 90 {
+		t.Fatalf("first landing delta = %#v", got)
+	}
+	if got := deltas["relay:bbbb|203.0.113.7"]; got.InBytes != 250 || got.OutBytes != 0 {
+		t.Fatalf("second landing delta = %#v", got)
+	}
+}
+
+// A port whose link the hub withdrew between the ruleset load and this read has
+// no landing left to name. Its bytes were still forwarded, so they are recorded
+// under the unnamed relay key an older release wrote rather than dropped.
+func TestIPAccountingKeepsRelayedTrafficWithNoLandingLeft(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{
+		"relay_in4": {"203.0.113.7/30001": 400},
+	}}}
+	acct := newFakeIPAccounting(nft)
+	deltas, err := acct.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := deltas["relay:203.0.113.7"]; got.InBytes != 400 {
+		t.Fatalf("unnamed relay delta = %#v", got)
+	}
+}
+
+// Two ports of one address are two counters. Keying the previous-value map by
+// the address alone would make each read subtract the other's total and report
+// deltas that never happened.
+func TestIPAccountingTracksEachRelayPortSeparately(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{
+		{"relay_in4": {"203.0.113.7/30001": 400, "203.0.113.7/30002": 250}},
+		{"relay_in4": {"203.0.113.7/30001": 900, "203.0.113.7/30002": 250}},
+	}}
+	acct := newFakeIPAccounting(nft)
+	acct.relayForwards = func() []RelayForward {
+		return []RelayForward{
+			{ListenPort: 30001, LandingID: "aaaa"},
+			{ListenPort: 30002, LandingID: "bbbb"},
+		}
+	}
+	if _, err := acct.Collect(context.Background()); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	deltas, err := acct.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := deltas["relay:aaaa|203.0.113.7"]; got.InBytes != 500 {
+		t.Fatalf("first landing delta = %#v, want the 400 to 900 rise", got)
+	}
+	if _, moved := deltas["relay:bbbb|203.0.113.7"]; moved {
+		t.Fatalf("a landing whose counter did not move reported a delta: %#v", deltas)
 	}
 }
 
@@ -620,8 +713,8 @@ func TestIPAccountingKeysRelayedTrafficApartFromDirect(t *testing.T) {
 func TestIPAccountingRebuildsTheTableWhenTheRelayJobChanges(t *testing.T) {
 	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{"peer_in4": {"203.0.113.7": 700}}}}
 	acct := newFakeIPAccounting(nft)
-	var ports []int
-	acct.relayPorts = func() []int { return ports }
+	var forwards []RelayForward
+	acct.relayForwards = func() []RelayForward { return forwards }
 	if _, err := acct.Collect(context.Background()); err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
@@ -631,7 +724,7 @@ func TestIPAccountingRebuildsTheTableWhenTheRelayJobChanges(t *testing.T) {
 	if len(nft.rulesets) != 1 {
 		t.Fatalf("ruleset loads = %d, want the empty job to be reused", len(nft.rulesets))
 	}
-	ports = []int{30001}
+	forwards = []RelayForward{{ListenPort: 30001, LandingID: "aaaa"}}
 	if _, err := acct.Collect(context.Background()); err != nil {
 		t.Fatalf("Collect: %v", err)
 	}

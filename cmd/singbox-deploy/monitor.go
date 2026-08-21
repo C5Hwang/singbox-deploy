@@ -108,7 +108,7 @@ func runMonitor(args []string) error {
 		ExtraPingTargets: relay.PingTargets(layout),
 		// It also meters the flows it forwards, per client address, which the
 		// input/output counters alone would never see.
-		RelayForwardPorts: relay.ForwardListenPorts(layout),
+		RelayForwards: relay.MonitorForwards(layout),
 		// The registry is the fleet's answer to "is anything relayed", and the
 		// dashboard hides its relay page entirely when nothing is. It also names
 		// the relays, so the page asks them for their probes instead of asking

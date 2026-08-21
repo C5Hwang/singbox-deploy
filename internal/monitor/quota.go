@@ -156,11 +156,19 @@ type IPTrafficEntry struct {
 	IP string `json:"ip"`
 	// Relayed marks a client observed on the relay's forward path rather than
 	// as a direct peer: this node carried its traffic to a landing node. The
-	// same address can hold one entry of each kind.
-	Relayed bool            `json:"relayed,omitempty"`
-	Cycle   IPTrafficWindow `json:"cycle"`
-	Today   IPTrafficWindow `json:"today"`
-	Last7   IPTrafficWindow `json:"last7"`
+	// same address can hold a direct entry and one relayed entry per landing.
+	Relayed bool `json:"relayed,omitempty"`
+	// Landing is the registry ID of the node the traffic was forwarded to. It
+	// is empty on a direct entry, and also on a relayed one recorded before the
+	// counters told landing nodes apart.
+	Landing string `json:"landing,omitempty"`
+	// LandingName is that node's display alias, filled in from the relay's own
+	// job rather than stored, so a landing node renamed mid-cycle is named
+	// correctly without rewriting its history.
+	LandingName string          `json:"landingName,omitempty"`
+	Cycle       IPTrafficWindow `json:"cycle"`
+	Today       IPTrafficWindow `json:"today"`
+	Last7       IPTrafficWindow `json:"last7"`
 }
 
 // IPTrafficSnapshot is the payload behind /api/ip-traffic. Enabled is false on
@@ -173,15 +181,21 @@ type IPTrafficSnapshot struct {
 }
 
 // IPTrafficDetail is one address's history behind /api/ip-detail, at the same
-// three granularities the node's own traffic modal offers. Relayed carries the
-// same distinction the entry list makes: a relay-observed history is a series
-// of its own, apart from the address's direct one.
+// three granularities the node's own traffic modal offers. Relayed and Landing
+// carry the same distinction the entry list makes: traffic relayed to one
+// landing node is a series of its own, apart from the address's direct history
+// and from what the relay carried for it to anywhere else.
 type IPTrafficDetail struct {
-	IP      string          `json:"ip"`
-	Relayed bool            `json:"relayed,omitempty"`
-	Recent  []IPSeriesPoint `json:"recent"`
-	Hourly  []IPSeriesPoint `json:"hourly"`
-	Daily   []IPSeriesPoint `json:"daily"`
+	IP      string `json:"ip"`
+	Relayed bool   `json:"relayed,omitempty"`
+	// Landing names the destination a relayed series was forwarded to, the same
+	// way the entry list does, so a modal opened on one landing node's row draws
+	// that landing node's traffic and not the address's whole relayed total.
+	Landing     string          `json:"landing,omitempty"`
+	LandingName string          `json:"landingName,omitempty"`
+	Recent      []IPSeriesPoint `json:"recent"`
+	Hourly      []IPSeriesPoint `json:"hourly"`
+	Daily       []IPSeriesPoint `json:"daily"`
 }
 
 // PingLatestPoint is one target's most recent probe.

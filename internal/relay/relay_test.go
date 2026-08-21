@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -464,18 +465,24 @@ func TestLoadOnANodeThatNeverRelayedIsEmpty(t *testing.T) {
 	}
 }
 
-// ForwardListenPorts reads the stored job on every call, so the monitor's
-// forward counters follow a pushed or withdrawn link without a restart.
-func TestForwardListenPortsFollowTheStoredJob(t *testing.T) {
+// MonitorForwards reads the stored job on every call, so the monitor's forward
+// counters follow a pushed or withdrawn link without a restart. Every mapping
+// carries the landing node it fronts, which is what lets a forwarded byte be
+// attributed to a destination rather than only to the relay.
+func TestMonitorForwardsFollowTheStoredJob(t *testing.T) {
 	layout := paths.LayoutForRoot(t.TempDir())
-	ports := relay.ForwardListenPorts(layout)
-	if got := ports(); got != nil {
-		t.Fatalf("ports = %v on a node that never relayed, want none", got)
+	forwards := relay.MonitorForwards(layout)
+	if got := forwards(); got != nil {
+		t.Fatalf("forwards = %v on a node that never relayed, want none", got)
 	}
 	cfg := relay.Config{Landings: []relay.Landing{
+		{NodeID: "bb22", Name: "SG", Host: "b.example.com", Forwards: []relay.Forward{
+			{Protocol: "anytls", Network: "tcp", ListenPort: 34570, TargetPort: 41240},
+		}},
 		{NodeID: "aa11", Name: "HK", Host: "a.example.com", Forwards: []relay.Forward{
 			{Protocol: "anytls", Network: "tcp", ListenPort: 34568, TargetPort: 41234},
-			// One port carrying both transports is still one number to meter.
+			// One port carrying both transports is one port on two mappings; the
+			// ruleset dedupes them and the landing behind them is the same.
 			{Protocol: "hysteria2", Network: "udp", ListenPort: 34567, TargetPort: 41235},
 			{Protocol: "tuic", Network: "tcp", ListenPort: 34567, TargetPort: 41236},
 		}},
@@ -483,13 +490,24 @@ func TestForwardListenPortsFollowTheStoredJob(t *testing.T) {
 	if err := relay.Save(layout, cfg); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if got := ports(); len(got) != 2 || got[0] != 34567 || got[1] != 34568 {
-		t.Fatalf("ports = %v, want the two distinct ports sorted", got)
+	got := forwards()
+	if len(got) != 4 {
+		t.Fatalf("forwards = %v, want one per mapping", got)
+	}
+	for i, want := range []monitor.RelayForward{
+		{ListenPort: 34567, LandingID: "aa11", LandingName: "HK"},
+		{ListenPort: 34567, LandingID: "aa11", LandingName: "HK"},
+		{ListenPort: 34568, LandingID: "aa11", LandingName: "HK"},
+		{ListenPort: 34570, LandingID: "bb22", LandingName: "SG"},
+	} {
+		if got[i] != want {
+			t.Fatalf("forwards[%d] = %+v, want %+v", i, got[i], want)
+		}
 	}
 	if err := relay.Save(layout, relay.Config{}); err != nil {
 		t.Fatalf("Save empty: %v", err)
 	}
-	if got := ports(); got != nil {
-		t.Fatalf("ports = %v after the job was withdrawn, want none", got)
+	if got := forwards(); got != nil {
+		t.Fatalf("forwards = %v after the job was withdrawn, want none", got)
 	}
 }
