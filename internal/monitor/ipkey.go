@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 )
@@ -60,6 +61,35 @@ func ParseIPKey(raw string) (string, error) {
 		return "", err
 	}
 	return EncodeIPKey(parsed.String(), sanitizeLandingID(landing), relayed), nil
+}
+
+// IPKeyAddressSQL renders the SQLite expression that reduces the accounting key
+// in column back to the bare address it belongs to — the same split DecodeIPKey
+// performs, written a second time for the queries that have to weigh a client
+// by everything recorded under it rather than by each strand on its own.
+//
+// The literals come from the constants above rather than being spelled again,
+// so the key format keeps one definition even though two languages read it.
+func IPKeyAddressSQL(column string) string {
+	// Only a relayed key carries anything in front of the address, and an
+	// address can hold neither the marker nor the separator, so one cut at each
+	// is the whole decoding.
+	rest := fmt.Sprintf("substr(%s, %d)", column, len(relayIPKeyPrefix)+1)
+	cut := fmt.Sprintf("instr(%s, %s)", rest, sqlTextLiteral(relayIPKeySeparator))
+	return fmt.Sprintf(
+		"CASE WHEN substr(%s, 1, %d) = %s"+
+			" THEN CASE WHEN %s > 0 THEN substr(%s, %s + 1) ELSE %s END"+
+			" ELSE %s END",
+		column, len(relayIPKeyPrefix), sqlTextLiteral(relayIPKeyPrefix),
+		cut, rest, cut, rest, column)
+}
+
+// sqlTextLiteral quotes one of this package's own constants for embedding in a
+// statement. Nothing caller-supplied reaches it — every value it is handed is a
+// compile-time constant — and doubling the quote is what keeps that from being
+// the thing the safety rests on.
+func sqlTextLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // sanitizeLandingID keeps only what a registry ID is made of. A caller-supplied

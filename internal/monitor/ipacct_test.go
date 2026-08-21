@@ -587,6 +587,52 @@ func TestPruneIPTrafficKeepsOnlyTheBusiestAddresses(t *testing.T) {
 	}
 }
 
+// The budget is spent on clients, not on strands: an address the relay carried
+// to several landing nodes is weighed by everything it moved and survives with
+// every strand intact, rather than competing with itself for room and leaving a
+// row that reads as less traffic than the client actually moved.
+func TestPruneIPTrafficWeighsAnAddressWholeAcrossItsLandings(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+	day := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC).Unix()
+	// The relayed client moves the most in total and the least on any one
+	// strand, which is exactly the shape a per-key ranking gets wrong.
+	if err := store.AddIPTraffic(day, map[string]IPTrafficDelta{
+		"relay:aaaa|203.0.113.7": {InBytes: 300},
+		"relay:bbbb|203.0.113.7": {InBytes: 300},
+		"203.0.113.7":            {InBytes: 300},
+		"198.51.100.4":           {InBytes: 500},
+		"192.0.2.9":              {InBytes: 400},
+	}); err != nil {
+		t.Fatalf("AddIPTraffic: %v", err)
+	}
+	// Two addresses' worth of room. Ranked by key the relayed client would hold
+	// none of it, because each of its strands is the smallest number in the set.
+	if err := store.PruneIPTraffic(2); err != nil {
+		t.Fatalf("PruneIPTraffic: %v", err)
+	}
+	entries, err := store.TopIPTraffic(topIPTrafficEntries, day, day, day)
+	if err != nil {
+		t.Fatalf("TopIPTraffic: %v", err)
+	}
+	kept := map[string]int64{}
+	for _, entry := range entries {
+		kept[EncodeIPKey(entry.IP, entry.Landing, entry.Relayed)] = entry.Cycle.InBytes
+	}
+	want := map[string]int64{
+		"203.0.113.7":            300,
+		"relay:aaaa|203.0.113.7": 300,
+		"relay:bbbb|203.0.113.7": 300,
+		"198.51.100.4":           500,
+	}
+	if !maps.Equal(kept, want) {
+		t.Fatalf("kept = %#v, want the busiest client whole beside the runner-up", kept)
+	}
+}
+
 // A flow the relay DNATs is routed, not delivered, so the input/output chains
 // never see it. The forward chain is what meters it, pinned to the relay's own
 // flows by the DNAT status and the pre-rewrite listen port that survives in the

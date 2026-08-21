@@ -703,34 +703,51 @@ func (s *Store) ResetRelayPingSamples(target string) error {
 	return err
 }
 
+// ipKeyAddress is the address behind the `ip` column, for the statements that
+// have to weigh a client rather than one strand of it.
+var ipKeyAddress = IPKeyAddressSQL("ip")
+
+// ipTrafficSurvivors ranks addresses by everything stored under them and names
+// the busiest. It is built once because it embeds ipKeyAddress four times and
+// nothing about it varies per call but the bound, which is a parameter.
+var ipTrafficSurvivors = `
+SELECT address FROM (
+    SELECT address, SUM(bytes) AS bytes FROM (
+        SELECT ` + ipKeyAddress + ` AS address, SUM(in_bytes + out_bytes) AS bytes FROM ip_samples GROUP BY address
+        UNION ALL
+        SELECT ` + ipKeyAddress + ` AS address, SUM(in_bytes + out_bytes) AS bytes FROM ip_hourly GROUP BY address
+        UNION ALL
+        SELECT ` + ipKeyAddress + ` AS address, SUM(in_bytes + out_bytes) AS bytes FROM ip_daily GROUP BY address
+    ) GROUP BY address
+    ORDER BY bytes DESC
+    LIMIT ?
+)`
+
 // PruneIPTraffic keeps only the busiest addresses. A node facing mobile clients
 // sees a long tail of one-off addresses that can never reach the top list, and
 // dropping them is what keeps the tables small on a 256 MB VPS. Ranking spans
 // every tier so an address is judged on its whole cycle, not on whichever part
 // of it has been folded.
+//
+// keep counts addresses, not stored keys. A client a relay carries holds a key
+// per landing node beside its direct one, and ranking those against each other
+// would spend the budget on a few relayed clients and evict the rest — while
+// keeping some of a client's strands and dropping others, which reads on the
+// dashboard as a client that moved less traffic than it did. An address is
+// weighed whole and survives whole.
 func (s *Store) PruneIPTraffic(keep int) error {
 	if keep <= 0 {
 		return nil
 	}
-	const survivors = `
-SELECT ip FROM (
-    SELECT ip, SUM(bytes) AS bytes FROM (
-        SELECT ip, SUM(in_bytes + out_bytes) AS bytes FROM ip_samples GROUP BY ip
-        UNION ALL
-        SELECT ip, SUM(in_bytes + out_bytes) AS bytes FROM ip_hourly GROUP BY ip
-        UNION ALL
-        SELECT ip, SUM(in_bytes + out_bytes) AS bytes FROM ip_daily GROUP BY ip
-    ) GROUP BY ip
-    ORDER BY bytes DESC
-    LIMIT ?
-)`
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	for _, table := range ipTrafficTables {
-		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE ip NOT IN (`+survivors+`)`, keep); err != nil {
+		if _, err := tx.Exec(
+			`DELETE FROM `+table+` WHERE `+ipKeyAddress+` NOT IN (`+ipTrafficSurvivors+`)`, keep,
+		); err != nil {
 			return err
 		}
 	}

@@ -424,15 +424,19 @@ func (m *Monitor) latencySnapshot(since int64) (LatencySnapshot, error) {
 	return LatencySnapshot{Targets: m.pingCollector.Targets(), Latest: latest}, nil
 }
 
-// topIPTrafficEntries bounds one response. A node keeps at most
-// ipTrafficKeptAddresses of them, so this ceiling is never the thing that
-// truncates the list — it exists so a table that has not been pruned yet
-// cannot produce an unbounded response. The dashboard pages through whatever
-// comes back rather than reading a top-N, which is also what makes merging
-// several nodes' lists exact instead of approximate.
-const topIPTrafficEntries = 2000
+// topIPTrafficEntries bounds one response, counted in stored keys rather than
+// in addresses because that is what a row is. It exists so a table that has not
+// been pruned yet cannot produce an unbounded response, and it sits well clear
+// of what a pruned one comes to: ipTrafficKeptAddresses addresses, each holding
+// its direct traffic plus a key for every landing node a relay carried it to.
+// The dashboard pages through whatever comes back rather than reading a top-N,
+// which is also what makes merging several nodes' lists exact instead of
+// approximate.
+const topIPTrafficEntries = 4000
 
-// ipTrafficKeptAddresses bounds the per-IP table between prunes.
+// ipTrafficKeptAddresses bounds the per-IP table between prunes, counted in
+// addresses: a client the relay carried holds one stored key per landing node
+// beside its direct one, and the budget is for clients, not for strands.
 const ipTrafficKeptAddresses = 500
 
 func (m *Monitor) handleIPTraffic(w http.ResponseWriter, r *http.Request) {
