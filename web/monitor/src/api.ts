@@ -145,10 +145,13 @@ export async function fetchIPTraffic(source?: string): Promise<IPTrafficSnapshot
 }
 
 // The wire key for one accounted address: a relay-observed history is stored
-// and queried apart from the same address's direct one, and the marker rides
-// inside the ip parameter every hop already validates.
-export function ipDetailKey(entry: { ip: string; relayed?: boolean }): string {
-  return entry.relayed ? `relay:${entry.ip}` : entry.ip;
+// and queried apart from the same address's direct one, once per landing node,
+// and the marker rides inside the ip parameter every hop already validates. A
+// node that predates per-landing accounting reports no landing and is queried
+// under the unnamed relay key it stored its rows under.
+export function ipDetailKey(entry: { ip: string; relayed?: boolean; landing?: string }): string {
+  if (!entry.relayed) return entry.ip;
+  return entry.landing ? `relay:${entry.landing}|${entry.ip}` : `relay:${entry.ip}`;
 }
 
 // One address's own history. The key goes in the query the node validates,

@@ -70,6 +70,11 @@ export interface IPTrafficEntry {
   // Traffic the node forwarded to a landing node as a relay, kept apart from
   // what the same address did against the node directly.
   relayed?: boolean;
+  // Which landing node it was forwarded to, and what that node is called. Both
+  // are absent on a direct entry, and on a relayed one a node recorded before
+  // it told landing nodes apart.
+  landing?: string;
+  landingName?: string;
   cycle: IPTrafficWindow;
   today: IPTrafficWindow;
   last7: IPTrafficWindow;
@@ -88,12 +93,33 @@ export interface IPTrafficDetail {
   daily: IPSeriesPoint[];
 }
 
-// A merged row: one address's traffic summed across the nodes it reached.
-// Relay-observed traffic keeps its own row, so relayed carries through.
+// One strand of an address's traffic: what it did against the fleet directly,
+// or what the fleet relayed for it to one landing node. It is the unit the
+// nodes actually report and the unit a chart can be drawn for, which is why the
+// row above is a sum of these rather than a reading of its own.
+export interface IPTrafficSegment {
+  relayed: boolean;
+  // landing is the destination's registry ID, empty on a direct segment and on
+  // a relayed one whose node predates per-landing accounting.
+  landing: string;
+  // label is what the breakdown shows: "Direct", the landing node's name, or a
+  // stand-in for a destination this fleet can no longer name.
+  label: string;
+  nodes: string[];
+  cycle: IPTrafficWindow;
+  today: IPTrafficWindow;
+  last7: IPTrafficWindow;
+}
+
+// A merged row: one address's whole traffic, summed across the nodes it reached
+// and across everything those nodes carried for it. Relayed strands stay
+// readable one by one in segments, so the row answers "how much" and the
+// breakdown answers "to where".
 export interface IPTrafficRow {
   ip: string;
   relayed: boolean;
   nodes: string[];
+  segments: IPTrafficSegment[];
   cycle: IPTrafficWindow;
   today: IPTrafficWindow;
   last7: IPTrafficWindow;

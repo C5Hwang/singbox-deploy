@@ -7,9 +7,17 @@ import { buildTrendOption, bytesAxis, trafficSeries, TRAFFIC_LEGEND, type Traffi
 import { modeShape, TRAFFIC_MODES, type TrendMode } from "../trendModes";
 import { tzOffsetMinutes } from "../timezone";
 import { useTrendChart } from "../useTrendChart";
-import type { IPSeriesPoint, IPTrafficRow } from "../types";
+import type { IPSeriesPoint, IPTrafficRow, IPTrafficSegment } from "../types";
 
-const props = defineProps<{ row: IPTrafficRow; location: string; sources: string[] }>();
+// segment narrows the chart to one strand of the row — the address's direct
+// traffic, or what the fleet relayed for it to one landing node. Null charts
+// the row whole, which is every strand summed.
+const props = defineProps<{
+  row: IPTrafficRow;
+  segment?: IPTrafficSegment | null;
+  location: string;
+  sources: string[];
+}>();
 const emit = defineEmits<{ close: [] }>();
 
 // The same three granularities the node's own traffic modal offers, reading the
@@ -41,18 +49,25 @@ function mergeSeries(all: IPSeriesPoint[][]): IPSeriesPoint[] {
   return [...byTs.values()].sort((a, b) => a.ts - b.ts);
 }
 
+// Each strand is stored under its own key, so the row as a whole is charted by
+// asking for all of them and summing — the same arithmetic the table does on
+// the numbers, applied to the buckets behind them.
+const keys = computed(() => {
+  const strands = props.segment ? [props.segment] : props.row.segments;
+  return strands.map((s) => ipDetailKey({ ip: props.row.ip, relayed: s.relayed, landing: s.landing }));
+});
+
 async function load() {
-  // The key carries the row's relay marker, so a relay-observed row charts its
-  // own history rather than the address's direct one.
-  const details = await Promise.all(
+  const requests = keys.value.flatMap((key) =>
     props.sources.map(async (source) => {
       try {
-        return await fetchIPDetail(ipDetailKey(props.row), source);
+        return await fetchIPDetail(key, source);
       } catch {
         return null;
       }
     }),
   );
+  const details = await Promise.all(requests);
   const present = details.filter((d) => d !== null);
   recent.value = mergeSeries(present.map((d) => d.recent));
   hourly.value = mergeSeries(present.map((d) => d.hourly));
@@ -67,9 +82,12 @@ const points = computed<TrafficPoint[]>(() => {
 });
 
 const subtitle = computed(() => {
+  const strand = props.segment;
+  const nodes = strand ? strand.nodes : props.row.nodes;
   const parts = [props.location || "Location unresolved"];
-  if (props.row.nodes.length) parts.push(props.row.nodes.join(", "));
-  if (props.row.relayed) parts.push("via relay");
+  if (nodes.length) parts.push(nodes.join(", "));
+  if (strand) parts.push(strand.relayed ? `relayed to ${strand.label}` : "direct");
+  else if (props.row.relayed) parts.push("direct and relayed");
   return parts.join(" · ");
 });
 

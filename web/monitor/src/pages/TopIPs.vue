@@ -6,7 +6,9 @@ import { flagFor, locations, resolveLocations } from "../geo";
 import { formatBytesCompact, formatDateTime } from "../utils";
 import type {
   IPDirectionKey,
+  IPTrafficEntry,
   IPTrafficRow,
+  IPTrafficSegment,
   IPTrafficSnapshot,
   IPTrafficWindow,
   IPWindowKey,
@@ -35,6 +37,13 @@ const selected = ref<string>(ALL_NODES);
 // which is the question the page exists to answer.
 const sort = ref<IPSort>({ window: "cycle", direction: "totalBytes", descending: true });
 const modalRow = ref<IPTrafficRow | null>(null);
+// modalSegment narrows the chart to one strand of the row: a landing node's
+// forwarded traffic, or the address's direct traffic. Null charts the whole row.
+const modalSegment = ref<IPTrafficSegment | null>(null);
+// Which addresses are showing their breakdown. Keyed by address rather than by
+// row index, so re-sorting or a refresh does not move the disclosure onto a
+// different client.
+const expanded = ref(new Set<string>());
 
 // What each node has answered: its snapshot, or null for a node that could not
 // be read. A node missing from the map has not answered yet. Keeping the answers
@@ -82,6 +91,20 @@ function addWindow(into: IPTrafficWindow, from: IPTrafficWindow) {
   into.totalBytes += from.totalBytes;
 }
 
+// segmentKey groups a node's entries into the strands a row is built from: one
+// for direct traffic and one per landing node. A node that predates per-landing
+// accounting reports relayed traffic with no landing, which becomes a strand of
+// its own rather than being folded into a named one it may not belong to.
+function segmentKey(entry: IPTrafficEntry): string {
+  if (!entry.relayed) return "direct";
+  return `relay:${entry.landing ?? ""}`;
+}
+
+function segmentLabel(entry: IPTrafficEntry): string {
+  if (!entry.relayed) return "Direct";
+  return entry.landingName || entry.landing || "Unknown landing";
+}
+
 // Nodes are queried in parallel and each answer is folded in as it lands, so a
 // node that is powered off — which can only fail by timing out — does not hold
 // the table back while the rest of the fleet is already known.
@@ -101,33 +124,102 @@ function load() {
   }
 }
 
-// Addresses are merged across nodes: the same client reaching two nodes is one
-// row whose totals are the sum, which is what a "top 30" over a fleet has to
-// mean. Relay-observed traffic merges under its own key, so a client a relay
-// carries keeps that row apart from what it did against any node directly.
+// Addresses are merged across nodes and across everything those nodes did for
+// them: the same client reaching two nodes directly and being relayed to a third
+// is one row whose totals are the sum, which is what a "top 30" over a fleet has
+// to mean. What the sum is made of survives as segments — direct traffic, and
+// one strand per landing node — so the row can be taken apart again without a
+// second request.
 const rows = computed<IPTrafficRow[]>(() => {
-  const merged = new Map<string, IPTrafficRow>();
+  const merged = new Map<string, { row: IPTrafficRow; segments: Map<string, IPTrafficSegment> }>();
   for (const { name, snapshot } of answered.value) {
     if (!snapshot) continue;
     for (const entry of snapshot.entries) {
-      const key = ipDetailKey(entry);
-      const row = merged.get(key) ?? {
-        ip: entry.ip,
-        relayed: entry.relayed ?? false,
-        nodes: [],
-        cycle: emptyWindow(),
-        today: emptyWindow(),
-        last7: emptyWindow(),
-      };
-      row.nodes.push(name);
+      let group = merged.get(entry.ip);
+      if (!group) {
+        group = {
+          row: {
+            ip: entry.ip,
+            relayed: false,
+            nodes: [],
+            segments: [],
+            cycle: emptyWindow(),
+            today: emptyWindow(),
+            last7: emptyWindow(),
+          },
+          segments: new Map(),
+        };
+        merged.set(entry.ip, group);
+      }
+      const { row, segments } = group;
+      row.relayed ||= entry.relayed ?? false;
+      if (!row.nodes.includes(name)) row.nodes.push(name);
       addWindow(row.cycle, entry.cycle);
       addWindow(row.today, entry.today);
       addWindow(row.last7, entry.last7);
-      merged.set(key, row);
+
+      const key = segmentKey(entry);
+      let segment = segments.get(key);
+      if (!segment) {
+        segment = {
+          relayed: entry.relayed ?? false,
+          landing: entry.landing ?? "",
+          label: segmentLabel(entry),
+          nodes: [],
+          cycle: emptyWindow(),
+          today: emptyWindow(),
+          last7: emptyWindow(),
+        };
+        segments.set(key, segment);
+      }
+      // The name travels with the traffic, not with the key: one node may know
+      // a landing node's alias while another, asked a moment earlier, did not.
+      if (entry.landingName) segment.label = entry.landingName;
+      if (!segment.nodes.includes(name)) segment.nodes.push(name);
+      addWindow(segment.cycle, entry.cycle);
+      addWindow(segment.today, entry.today);
+      addWindow(segment.last7, entry.last7);
     }
   }
-  return [...merged.values()];
+  return [...merged.values()].map(({ row, segments }) => {
+    // Direct traffic leads, then the landing nodes by name, so a row's
+    // breakdown reads the same way on every refresh.
+    row.segments = [...segments.values()].sort((a, b) => {
+      if (a.relayed !== b.relayed) return a.relayed ? 1 : -1;
+      return a.label.localeCompare(b.label);
+    });
+    return row;
+  });
 });
+
+// segmentDetailKey is the wire key one strand's own history is stored under.
+function segmentDetailKey(row: IPTrafficRow, segment: IPTrafficSegment): string {
+  return ipDetailKey({ ip: row.ip, relayed: segment.relayed, landing: segment.landing });
+}
+
+// How much of a row the relay carried, in whichever cell the table is sorted
+// by. It is the number the collapsed row shows beside the address, so "this
+// client was forwarded" is legible without opening the breakdown.
+function relayedValue(row: IPTrafficRow): number {
+  const { window, direction } = sort.value;
+  return row.segments.reduce((sum, s) => (s.relayed ? sum + s[window][direction] : sum), 0);
+}
+
+// A row is only worth taking apart when it is made of more than one strand.
+function expandable(row: IPTrafficRow): boolean {
+  return row.segments.length > 1;
+}
+
+function toggleExpanded(row: IPTrafficRow) {
+  const next = new Set(expanded.value);
+  if (!next.delete(row.ip)) next.add(row.ip);
+  expanded.value = next;
+}
+
+function openRow(row: IPTrafficRow, segment: IPTrafficSegment | null) {
+  modalRow.value = row;
+  modalSegment.value = segment;
+}
 
 const cycleStart = computed(() => Math.max(0, ...answered.value.map((a) => a.snapshot?.cycleStart ?? 0)));
 const unavailableNodes = computed(() => answered.value.filter((a) => !a.snapshot).map((a) => a.name));
@@ -394,31 +486,85 @@ const modalSources = computed(() =>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, i) in visible" :key="ipDetailKey(row)" class="ip-row" @click="modalRow = row">
-              <td class="rank">{{ firstRank + i }}</td>
-              <td class="address" :style="shareStyle(row)">
-                <span>{{ row.ip }}</span>
-                <span v-if="row.relayed" class="relay-chip" title="Forwarded by a relay to a landing node">relay</span>
-              </td>
-              <td class="country" :title="placeOf(row.ip).country">
-                <span v-if="placeOf(row.ip).code" class="flag">{{ flagFor(placeOf(row.ip).code) }}</span>
-                <span class="country-name">{{ placeOf(row.ip).country || "—" }}</span>
-              </td>
-              <td class="place">{{ placeOf(row.ip).city || "—" }}</td>
-              <td v-if="selected === ALL_NODES" class="nodes">
-                <span v-for="node in row.nodes" :key="node" class="node-chip">{{ node }}</span>
-              </td>
-              <template v-for="w in windows" :key="w.key">
-                <td
-                  v-for="d in directions"
-                  :key="`${w.key}-${d.key}`"
-                  class="num"
-                  :class="{ sorted: isSorted(w.key, d.key), strong: d.key === 'totalBytes', lead: d.key === 'inBytes' }"
-                >
-                  {{ formatBytesCompact(row[w.key][d.key]) }}
+            <template v-for="(row, i) in visible" :key="row.ip">
+              <tr class="ip-row" @click="openRow(row, null)">
+                <td class="rank">{{ firstRank + i }}</td>
+                <td class="address" :style="shareStyle(row)">
+                  <!-- The disclosure is a button of its own so opening the
+                       breakdown and opening the chart stay two separate acts on
+                       the same row. -->
+                  <button
+                    v-if="expandable(row)"
+                    class="twisty"
+                    :class="{ open: expanded.has(row.ip) }"
+                    :aria-expanded="expanded.has(row.ip)"
+                    :aria-label="`Traffic breakdown for ${row.ip}`"
+                    @click.stop="toggleExpanded(row)"
+                  >
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M6 4l4 4-4 4" />
+                    </svg>
+                  </button>
+                  <span class="ip">{{ row.ip }}</span>
+                  <!-- The number, not just the fact: how much of this row the
+                       fleet forwarded, in whichever cell the table is sorted by. -->
+                  <span
+                    v-if="row.relayed"
+                    class="relay-chip"
+                    :title="`Forwarded to a landing node: ${formatBytesCompact(relayedValue(row))}`"
+                  >
+                    relay {{ formatBytesCompact(relayedValue(row)) }}
+                  </span>
                 </td>
-              </template>
-            </tr>
+                <td class="country" :title="placeOf(row.ip).country">
+                  <span v-if="placeOf(row.ip).code" class="flag">{{ flagFor(placeOf(row.ip).code) }}</span>
+                  <span class="country-name">{{ placeOf(row.ip).country || "—" }}</span>
+                </td>
+                <td class="place">{{ placeOf(row.ip).city || "—" }}</td>
+                <td v-if="selected === ALL_NODES" class="nodes">
+                  <span v-for="node in row.nodes" :key="node" class="node-chip">{{ node }}</span>
+                </td>
+                <template v-for="w in windows" :key="w.key">
+                  <td
+                    v-for="d in directions"
+                    :key="`${w.key}-${d.key}`"
+                    class="num"
+                    :class="{ sorted: isSorted(w.key, d.key), strong: d.key === 'totalBytes', lead: d.key === 'inBytes' }"
+                  >
+                    {{ formatBytesCompact(row[w.key][d.key]) }}
+                  </td>
+                </template>
+              </tr>
+              <!-- One line per strand of the row, in the same nine columns, so
+                   the split reads against the totals directly above it. -->
+              <tr
+                v-for="segment in expanded.has(row.ip) ? row.segments : []"
+                :key="segmentDetailKey(row, segment)"
+                class="ip-row sub-row"
+                @click="openRow(row, segment)"
+              >
+                <td class="rank"></td>
+                <td class="address sub-address">
+                  <span class="strand" :class="{ relayed: segment.relayed }">{{ segment.relayed ? "→" : "●" }}</span>
+                  <span class="strand-label">{{ segment.label }}</span>
+                </td>
+                <td class="country"></td>
+                <td class="place"></td>
+                <td v-if="selected === ALL_NODES" class="nodes">
+                  <span v-for="node in segment.nodes" :key="node" class="node-chip">{{ node }}</span>
+                </td>
+                <template v-for="w in windows" :key="w.key">
+                  <td
+                    v-for="d in directions"
+                    :key="`${w.key}-${d.key}`"
+                    class="num"
+                    :class="{ sorted: isSorted(w.key, d.key), strong: d.key === 'totalBytes', lead: d.key === 'inBytes' }"
+                  >
+                    {{ formatBytesCompact(segment[w.key][d.key]) }}
+                  </td>
+                </template>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -442,9 +588,13 @@ const modalSources = computed(() =>
     </article>
   </section>
 
+  <!-- Keyed by the strand it describes, so opening a different one builds a new
+       chart rather than leaving the first one's series in place. -->
   <IPTrendModal
     v-if="modalRow"
+    :key="modalSegment ? segmentDetailKey(modalRow, modalSegment) : modalRow.ip"
     :row="modalRow"
+    :segment="modalSegment"
     :location="placeLabel(modalRow.ip)"
     :sources="modalSources"
     @close="modalRow = null"
@@ -501,10 +651,11 @@ const modalSources = computed(() =>
    middle of its own three rather than drifting toward whichever column happens
    to hold the widest number. */
 .c-num { width: 62px; }
-/* Wide enough for a full dotted quad with the relay chip beside it. The extra
-   room comes out of the two place columns, whose names ellipsize gracefully,
-   rather than out of the numeric columns, which clip. */
-.c-address { width: 176px; }
+/* Wide enough for a disclosure, a full dotted quad, and the relay chip that
+   carries a figure beside it. The extra room comes out of the two place
+   columns, whose names ellipsize gracefully, rather than out of the numeric
+   columns, which clip. */
+.c-address { width: 232px; }
 .c-rank { width: 34px; }
 .c-country { width: 112px; }
 .c-place { width: 92px; }
@@ -565,7 +716,33 @@ const modalSources = computed(() =>
   width: var(--share); border-radius: 5px;
   background: linear-gradient(90deg, rgba(37, 99, 235, 0.13), rgba(37, 99, 235, 0.03));
 }
-.address span { position: relative; }
+.address .ip, .address .relay-chip, .address .twisty { position: relative; }
+
+/* The disclosure sits in the address cell rather than in a column of its own:
+   a column would be blank on every row that has nothing to open, and most rows
+   have nothing to open. Rows without one keep their indent so the addresses
+   still line up. */
+.twisty {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-right: 3px; padding: 0;
+  vertical-align: -4px;
+  border: 0; border-radius: 6px; background: transparent; color: #93a1b8;
+  cursor: pointer; transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+.twisty svg { width: 13px; height: 13px; }
+.twisty:hover { background: #e6eefb; color: var(--blue); }
+.twisty.open { transform: rotate(90deg); color: var(--blue); }
+.address { padding-left: 4px; }
+.sub-address { padding-left: 29px; font-weight: 650; }
+
+/* The breakdown is the same table, half a step back: no share bar, a quieter
+   surface, and a hairline that ties each line to the row it came out of rather
+   than separating it from one. */
+.sub-row > td { background: #fafcff; border-top: 1px solid #eef3fa; }
+.sub-row:hover > td { background: #f2f7fe; }
+.strand { display: inline-block; width: 14px; color: #b3c0d4; font-weight: 800; }
+.strand.relayed { color: #d3922b; }
+.strand-label { color: #55637a; }
 .country, .place, .nodes { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
 .address, .num { overflow: hidden; text-overflow: ellipsis; }
 .country { display: flex; align-items: center; gap: 7px; }
@@ -576,13 +753,14 @@ const modalSources = computed(() =>
   border-radius: 999px; background: #f0f4f9; color: #5f6b7e;
   font-size: 11px; font-weight: 700;
 }
-/* Same chip vocabulary as the window bands, in a warm tint of its own: the row
-   describes traffic this fleet forwarded, not a client of the node it sits
-   under. */
+/* Same chip vocabulary as the window bands, in a warm tint of its own: part of
+   this row is traffic the fleet forwarded rather than terminated, and the chip
+   says how much of it in the same cell the table is ranked by. */
 .relay-chip {
   margin-left: 5px; padding: 2px 6px;
   border-radius: 999px; background: #fdf0dc; color: #955d10;
   font-size: 9px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
 }
 .num { text-align: right; font-variant-numeric: tabular-nums; color: #5f6b7e; }
 .num.strong { font-weight: 800; color: var(--text); }
