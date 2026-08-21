@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
@@ -17,10 +18,11 @@ import (
 // actions share it because they ask the same question.
 const resetTargetKey = "reset_target"
 
-// resetAllNodesOption clears every node the hub can reach in one pass. It reads
-// as one entry rather than as a repeated operation because that is how an
-// operator thinks about it: the dashboard aggregates the fleet, so a figure it
-// shows is only really gone once every node has dropped it.
+// resetAllNodesOption ticks every node the hub can reach in one keystroke. It
+// stays alongside the individual entries now that the picker takes several,
+// because clearing the whole fleet is the common case: the dashboard
+// aggregates it, so a figure it shows is only really gone once every node has
+// dropped it.
 const resetAllNodesOption = "All nodes"
 
 // resetHubOption names the hub's own recorded history.
@@ -45,6 +47,10 @@ type resetTarget struct {
 	label string
 	node  nodes.Node
 	hub   bool
+	// probe narrows the clear to one probe series on that node, for a scope
+	// that records several. It is empty for a scope that records one, which
+	// clears the whole scope.
+	probe string
 }
 
 // resetScope maps the current action onto the history it clears, and reports
@@ -69,8 +75,19 @@ func (tm *monitorManager) resetTargetField() []field {
 		key:     resetTargetKey,
 		label:   "Nodes to clear",
 		options: resetTargetOptions(tm.trafficSpokes()),
+		multi:   true,
 		note:    note,
 	}}
+}
+
+// validateResetTarget refuses an empty tick list. A multi picker starts with
+// nothing chosen, so Enter on an untouched screen would otherwise report a
+// clear that ran against no node at all.
+func validateResetTarget(val string) error {
+	if strings.TrimSpace(val) == "" {
+		return errors.New("select at least one node to clear")
+	}
+	return nil
 }
 
 // resetTargetOptions lists the fleet as the picker offers it: everything at
@@ -82,28 +99,46 @@ func resetTargetOptions(spokes []nodes.Node) []string {
 	return append(options, spokeLabels(spokes)...)
 }
 
-// resetTargets expands the picked option into the nodes to clear.
+// resetTargets expands the ticked options into the nodes to clear.
 func (tm *monitorManager) resetTargets() []resetTarget {
 	return expandResetTargets(tm.values[resetTargetKey], tm.trafficSpokes())
 }
 
+// expandResetTargets expands the ticked options into the nodes to clear, in the
+// order the picker lists them. A node named twice — by itself and by the
+// fleet-wide entry — is cleared once, so ticking both does not ask the same
+// Agent for the same deletion twice.
 func expandResetTargets(picked string, spokes []nodes.Node) []resetTarget {
-	switch picked {
-	case resetHubOption:
-		return []resetTarget{{label: resetHubOption, hub: true}}
-	case resetAllNodesOption:
-		targets := make([]resetTarget, 0, len(spokes)+1)
-		targets = append(targets, resetTarget{label: resetHubOption, hub: true})
-		for _, node := range spokes {
-			targets = append(targets, resetTarget{label: spokeOptionLabel(node), node: node})
+	var targets []resetTarget
+	seen := map[string]bool{}
+	add := func(key string, target resetTarget) {
+		if seen[key] {
+			return
 		}
-		return targets
-	default:
-		if node, ok := spokeNodeForLabel(spokes, picked); ok {
-			return []resetTarget{{label: spokeOptionLabel(node), node: node}}
-		}
-		return nil
+		seen[key] = true
+		targets = append(targets, target)
 	}
+	addHub := func() { add("hub", resetTarget{label: resetHubOption, hub: true}) }
+	addSpoke := func(node nodes.Node) {
+		add("spoke:"+node.ID, resetTarget{label: spokeOptionLabel(node), node: node})
+	}
+	for _, option := range strings.Split(picked, ",") {
+		switch option = strings.TrimSpace(option); option {
+		case "":
+		case resetHubOption:
+			addHub()
+		case resetAllNodesOption:
+			addHub()
+			for _, node := range spokes {
+				addSpoke(node)
+			}
+		default:
+			if node, ok := spokeNodeForLabel(spokes, option); ok {
+				addSpoke(node)
+			}
+		}
+	}
+	return targets
 }
 
 // resetMonitorHistoryRun clears one scope on every target, reporting each as a
@@ -115,7 +150,6 @@ func resetMonitorHistoryRun(
 	layout paths.Layout,
 	targets []resetTarget,
 	scope monitor.ResetScope,
-	probeTarget string,
 	logs *logWriter,
 	progress func(deploy.Event),
 ) error {
@@ -130,7 +164,7 @@ func resetMonitorHistoryRun(
 			Label: "Clear " + string(scope), Detail: target.label, Status: "running",
 		}
 		deploy.EmitProgress(progress, event)
-		err := clearOneTarget(ctx, layout, target, scope, probeTarget)
+		err := clearOneTarget(ctx, layout, target, scope)
 		if err != nil {
 			event.Status = "fail"
 			event.Err = err
@@ -145,12 +179,12 @@ func resetMonitorHistoryRun(
 	return errors.Join(failures...)
 }
 
-func clearOneTarget(ctx context.Context, layout paths.Layout, target resetTarget, scope monitor.ResetScope, probeTarget string) error {
+func clearOneTarget(ctx context.Context, layout paths.Layout, target resetTarget, scope monitor.ResetScope) error {
 	if target.hub {
-		return resetHubMonitorHistory(layout.MonitorDB, scope, probeTarget)
+		return resetHubMonitorHistory(layout.MonitorDB, scope, target.probe)
 	}
 	return resetSpokeMonitorHistory(ctx, target.node, nodeapi.MonitorResetRequest{
 		Scope:  nodeapi.MonitorResetScope(scope),
-		Target: probeTarget,
+		Target: target.probe,
 	})
 }

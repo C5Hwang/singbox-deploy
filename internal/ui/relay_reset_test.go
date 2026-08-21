@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
@@ -47,22 +49,34 @@ func recordRelayResets(t *testing.T) (*[]hubReset, *[]spokeReset) {
 	return hub, spoke
 }
 
-func startRelayReset(t *testing.T, rm *relayManager, landingName string) {
+func startRelayReset(t *testing.T, rm *relayManager, landingNames ...string) {
 	t.Helper()
 	rm.startAction(relayActionResetLatency)
 	if rm.phase != relayPhaseLanding {
 		t.Fatalf("phase = %d, want the landing picker; err=%q", rm.phase, rm.fieldErr)
 	}
-	for i, endpoint := range rm.candidates {
-		if endpoint.Name == landingName {
-			rm.cursor = i
-			break
-		}
+	for _, name := range landingNames {
+		tickRelayCandidate(t, rm, name)
 	}
 	rm.confirmPick()
 	if rm.phase != relayPhaseConfirm {
-		t.Fatalf("phase = %d, want the confirmation without a second picker", rm.phase)
+		t.Fatalf("phase = %d, want the confirmation without a second picker; err=%q", rm.phase, rm.fieldErr)
 	}
+}
+
+func tickRelayCandidate(t *testing.T, rm *relayManager, landingName string) {
+	t.Helper()
+	for i, endpoint := range rm.candidates {
+		if endpoint.Name != landingName {
+			continue
+		}
+		rm.cursor = i
+		if _, done := rm.handleKey(tea.KeyMsg{Type: tea.KeySpace}); done {
+			t.Fatal("ticking a link closed the screen")
+		}
+		return
+	}
+	t.Fatalf("%q is not on the picker", landingName)
 }
 
 // The clearing entry only appears once something is relayed, because there is
@@ -162,6 +176,57 @@ func TestRelayLatencyResetRefusesARelayThatLeftTheFleet(t *testing.T) {
 	}
 	if !strings.Contains(rm.fieldErr, "no longer in the fleet") {
 		t.Fatalf("fieldErr = %q", rm.fieldErr)
+	}
+}
+
+// Ticking both links clears each on the relay that carries it, under that
+// link's own probe ID, so one pass covers a fleet-wide tidy-up.
+func TestRelayLatencyResetClearsEveryTickedLink(t *testing.T) {
+	links, endpoints := relayResetFleet()
+	stubRelayState(t, links, endpoints)
+	hub, spoke := recordRelayResets(t)
+	if err := nodes.Save(relayUILayout(), []nodes.Node{
+		{ID: "cc33", Alias: "seoul", WGIP: "10.90.0.5", Token: "t", Installed: true, Monitor: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rm := newRelayManager()
+	rm.setSize(120, 40)
+	startRelayReset(t, rm, "tokyo", "osaka")
+	for _, want := range []string{"tokyo", "osaka", "via HUB", "via seoul"} {
+		if view := rm.View(); !strings.Contains(view, want) {
+			t.Fatalf("confirmation missing %q:\n%s", want, view)
+		}
+	}
+	drainRelayRun(t, rm)
+
+	if len(*hub) != 1 || (*hub)[0].target != "relay:aa11" {
+		t.Fatalf("hub resets = %#v, want the hub-carried link only", *hub)
+	}
+	if len(*spoke) != 1 || (*spoke)[0].nodeID != "cc33" || (*spoke)[0].request.Target != "relay:bb22" {
+		t.Fatalf("spoke resets = %#v, want the spoke-carried link only", *spoke)
+	}
+}
+
+// Enter on an untouched picker must not report a clear that deleted nothing.
+func TestRelayLatencyResetRefusesAnEmptySelection(t *testing.T) {
+	links, endpoints := relayResetFleet()
+	stubRelayState(t, links, endpoints)
+	hub, spoke := recordRelayResets(t)
+
+	rm := newRelayManager()
+	rm.startAction(relayActionResetLatency)
+	rm.confirmPick()
+
+	if rm.phase != relayPhaseLanding {
+		t.Fatalf("phase = %d, want the picker to hold with an error", rm.phase)
+	}
+	if !strings.Contains(rm.fieldErr, "at least one link") {
+		t.Fatalf("fieldErr = %q", rm.fieldErr)
+	}
+	if len(*hub) != 0 || len(*spoke) != 0 {
+		t.Fatalf("an empty selection cleared something: hub=%#v spoke=%#v", *hub, *spoke)
 	}
 }
 

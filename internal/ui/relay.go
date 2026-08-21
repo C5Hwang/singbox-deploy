@@ -76,6 +76,9 @@ type relayManager struct {
 	cursor int
 	// candidates is the list the current picker shows.
 	candidates []hubctl.RelayEndpoint
+	// selected holds the landing nodes ticked in a multi-select picker, keyed
+	// by node ID so it survives the list being rebuilt underneath it.
+	selected map[string]bool
 
 	landingID string
 	relayID   string
@@ -248,6 +251,7 @@ func (rm *relayManager) startAction(action relayAction) {
 	rm.action = action
 	rm.fieldErr = ""
 	rm.landingID, rm.relayID, rm.previousRelayID, rm.forwards = "", "", "", nil
+	rm.selected = map[string]bool{}
 	if action == relayActionAdd {
 		rm.candidates = rm.landingCandidates()
 		if len(rm.candidates) == 0 {
@@ -268,7 +272,7 @@ func (rm *relayManager) startAction(action relayAction) {
 }
 
 func (rm *relayManager) handlePickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
-	cmd, done, handled := handleSelectionKey(msg, selectionKeyHandlers{
+	handlers := selectionKeyHandlers{
 		Move: func(delta int) {
 			rm.cursor = moveSelection(rm.cursor, len(rm.candidates), delta)
 			rm.fieldErr = ""
@@ -276,14 +280,66 @@ func (rm *relayManager) handlePickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		Confirm: func() (tea.Cmd, bool) { return rm.confirmPick(), false },
 		Back:    func() (tea.Cmd, bool) { rm.back(); return nil, false },
 		Cancel:  func() (tea.Cmd, bool) { rm.back(); return nil, false },
-	})
+	}
+	if rm.pickerIsMulti() {
+		handlers.Toggle = rm.toggleCandidate
+	}
+	cmd, done, handled := handleSelectionKey(msg, handlers)
 	if handled {
 		return cmd, done
 	}
 	return nil, false
 }
 
+// pickerIsMulti reports whether the picker on screen takes more than one node.
+// Clearing recorded history is the only action that does: it edits no topology,
+// so there is nothing to order or to reconcile between the links, and an
+// operator tidying a chart usually means several of them at once.
+func (rm *relayManager) pickerIsMulti() bool {
+	return rm.phase == relayPhaseLanding && rm.action == relayActionResetLatency
+}
+
+func (rm *relayManager) toggleCandidate() {
+	idx, ok := selectedIndex(rm.cursor, len(rm.candidates))
+	if !ok {
+		return
+	}
+	if rm.selected == nil {
+		rm.selected = map[string]bool{}
+	}
+	id := rm.candidates[idx].ID
+	if rm.selected[id] {
+		delete(rm.selected, id)
+	} else {
+		rm.selected[id] = true
+	}
+	rm.fieldErr = ""
+}
+
+// selectedLandingIDs lists the ticked links in registry order, so the
+// confirmation, the progress log, and the summary all name them the same way
+// however the operator ticked them.
+func (rm *relayManager) selectedLandingIDs() []string {
+	ids := make([]string, 0, len(rm.selected))
+	for _, link := range rm.links {
+		if rm.selected[link.LandingID] {
+			ids = append(ids, link.LandingID)
+		}
+	}
+	return ids
+}
+
 func (rm *relayManager) confirmPick() tea.Cmd {
+	// A multi picker reads its tick set, not its cursor: what is highlighted is
+	// not what was chosen.
+	if rm.pickerIsMulti() {
+		if len(rm.selectedLandingIDs()) == 0 {
+			rm.fieldErr = "select at least one link to clear"
+			return nil
+		}
+		rm.phase = relayPhaseConfirm
+		return nil
+	}
 	idx, ok := selectedIndex(rm.cursor, len(rm.candidates))
 	if !ok {
 		return nil
@@ -303,9 +359,8 @@ func (rm *relayManager) confirmPick() tea.Cmd {
 	if link, found := relaylinks.Find(rm.links, picked.ID); found {
 		rm.previousRelayID = link.RelayID
 	}
-	// Neither of these picks a relay: one is withdrawing the link that already
-	// names it, and the other is clearing the history of that same link.
-	if rm.action == relayActionRemove || rm.action == relayActionResetLatency {
+	// Remove picks no relay: it withdraws the link that already names one.
+	if rm.action == relayActionRemove {
 		rm.phase = relayPhaseConfirm
 		return nil
 	}
@@ -436,13 +491,13 @@ func (rm *relayManager) startRun() tea.Cmd {
 	return rm.waitForRun()
 }
 
-// startLatencyResetRun clears one link's probe history. The samples live on the
-// relay, because the relay is what measures the route to its landing nodes, so
-// that is the node the clear is aimed at — named by the link the operator
-// picked, not by a second question.
+// startLatencyResetRun clears the probe history of every link the operator
+// ticked. The samples live on the relay, because the relay is what measures the
+// route to its landing nodes, so that is the node each clear is aimed at —
+// named by the link it belongs to, not by a second question.
 func (rm *relayManager) startLatencyResetRun() tea.Cmd {
 	layout := relayUILayout()
-	target, err := relayResetTarget(layout, rm.previousRelayID, rm.nodeName(rm.previousRelayID))
+	targets, err := rm.relayResetTargets(layout)
 	if err != nil {
 		rm.fieldErr = err.Error()
 		return nil
@@ -451,38 +506,65 @@ func (rm *relayManager) startLatencyResetRun() tea.Cmd {
 	rm.resetRun(make(chan runMsg, 64))
 	ch := rm.ch
 	logs := &logWriter{ch: ch}
-	probe := relay.PingTargetID(rm.landingID)
 	go func() {
 		err := resetMonitorHistoryRun(
-			context.Background(), layout, []resetTarget{target},
-			monitor.ResetScopeRelayLatency, probe, logs, runProgressSender(ch),
+			context.Background(), layout, targets,
+			monitor.ResetScopeRelayLatency, logs, runProgressSender(ch),
 		)
 		ch <- runMsg{done: true, err: err}
 	}()
 	return rm.waitForRun()
 }
 
+// relayResetTargets resolves every ticked link onto the node its clear runs
+// against, refusing the whole run if any one of them cannot be reached rather
+// than deleting part of what was asked for. Two links carried by the same relay
+// stay separate targets: the relay records a probe series per landing node, and
+// only the named one goes.
+func (rm *relayManager) relayResetTargets(layout paths.Layout) ([]resetTarget, error) {
+	ids := rm.selectedLandingIDs()
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("select at least one link to clear")
+	}
+	spokes, err := nodes.Load(layout)
+	if err != nil {
+		return nil, fmt.Errorf("reload spoke registry: %w", err)
+	}
+	targets := make([]resetTarget, 0, len(ids))
+	for _, id := range ids {
+		link, found := relaylinks.Find(rm.links, id)
+		if !found {
+			return nil, fmt.Errorf("%s is no longer relayed", rm.nodeName(id))
+		}
+		relayName := rm.nodeName(link.RelayID)
+		target, err := relayResetTarget(spokes, link.RelayID, relayName)
+		if err != nil {
+			return nil, err
+		}
+		target.label = rm.nodeName(id) + " via " + relayName
+		target.probe = relay.PingTargetID(id)
+		targets = append(targets, target)
+	}
+	return targets, nil
+}
+
 // relayResetTarget resolves the relay half of a link onto the node a clear runs
 // against: the hub itself, or an installed spoke reached over the overlay.
-func relayResetTarget(layout paths.Layout, relayID, name string) (resetTarget, error) {
+func relayResetTarget(spokes []nodes.Node, relayID, name string) (resetTarget, error) {
 	if relayID == "" {
 		return resetTarget{}, fmt.Errorf("this node has no relay to clear")
 	}
 	if relayID == relaylinks.HubNodeID {
-		return resetTarget{label: name, hub: true}, nil
+		return resetTarget{hub: true}, nil
 	}
-	list, err := nodes.Load(layout)
-	if err != nil {
-		return resetTarget{}, fmt.Errorf("reload spoke registry: %w", err)
-	}
-	for _, node := range list {
+	for _, node := range spokes {
 		if node.ID != relayID {
 			continue
 		}
 		if !node.Installed {
 			return resetTarget{}, fmt.Errorf("relay %s is not installed, so it has no recorded history to clear", name)
 		}
-		return resetTarget{label: name, node: node}, nil
+		return resetTarget{node: node}, nil
 	}
 	return resetTarget{}, fmt.Errorf("relay %s is no longer in the fleet", name)
 }
@@ -577,7 +659,7 @@ func (rm *relayManager) landingPrompt() string {
 	case relayActionRemove:
 		return "Choose the node to stop fronting. Its subscription entries go back to its own address."
 	case relayActionResetLatency:
-		return "Choose the fronted node whose latency history you want to clear. Only that one link's probes on its relay are deleted."
+		return "Choose the fronted nodes whose latency history you want to clear. Only the picked links' probes on their relays are deleted."
 	default:
 		return "Choose the node whose relay you want to change."
 	}
@@ -625,8 +707,16 @@ func (rm *relayManager) pickerView(title, prompt string) string {
 		b.WriteString("\n" + flowErr.Render(rm.fieldErr) + "\n")
 	}
 	b.WriteString("\n")
+	multi := rm.pickerIsMulti()
 	for i, endpoint := range rm.candidates {
 		row := relayCandidateRow(rm, endpoint)
+		if multi {
+			mark := "[ ]"
+			if rm.selected[endpoint.ID] {
+				mark = "[x]"
+			}
+			row = mark + " " + row
+		}
 		if i == rm.cursor {
 			row = selStyle.Render("> " + row)
 		} else {
@@ -658,15 +748,10 @@ func (rm *relayManager) confirmView() string {
 }
 
 func (rm *relayManager) summaryRows() []summaryLine {
-	rows := []summaryLine{summaryRow("Landing node", rm.nodeName(rm.landingID))}
 	if rm.action == relayActionResetLatency {
-		return append(rows,
-			summaryRow("Relay", rm.nodeName(rm.previousRelayID)),
-			summaryRow("Clearing", "Relay latency history (Relay)"),
-			summaryBlank(),
-			summaryText("Deletes this link's recorded probes on the relay that carries it. Probing continues, so the chart refills from now on. The forwarding is untouched, and no other link or carrier probe is affected. This cannot be undone."),
-		)
+		return rm.resetSummaryRows()
 	}
+	rows := []summaryLine{summaryRow("Landing node", rm.nodeName(rm.landingID))}
 	if rm.action == relayActionRemove {
 		rows = append(rows,
 			summaryRow("Relay", rm.nodeName(rm.previousRelayID)+" (removed)"),
@@ -692,11 +777,32 @@ func (rm *relayManager) summaryRows() []summaryLine {
 	return rows
 }
 
+// resetSummaryRows lists every link the clear covers, each beside the relay it
+// runs against, because that relay is the node the deletion is aimed at.
+func (rm *relayManager) resetSummaryRows() []summaryLine {
+	ids := rm.selectedLandingIDs()
+	rows := []summaryLine{
+		summaryRow("Clearing", "Relay latency history (Relay)"),
+		summaryRow("Links", strconv.Itoa(len(ids))),
+	}
+	for _, id := range ids {
+		link, _ := relaylinks.Find(rm.links, id)
+		rows = append(rows, summaryIndentedRow(2, rm.nodeName(id), "via "+rm.nodeName(link.RelayID)))
+	}
+	return append(rows,
+		summaryBlank(),
+		summaryText("Deletes each picked link's recorded probes on the relay that carries it. Probing continues, so the chart refills from now on. The forwarding is untouched, and no other link or carrier probe is affected. This cannot be undone."),
+	)
+}
+
 func (rm *relayManager) footerHints() []operationHint {
 	switch rm.phase {
 	case relayPhaseMenu:
 		return actionFooterHints("Select")
 	case relayPhaseLanding:
+		if rm.pickerIsMulti() {
+			return multiSelectBackFooterHints("Continue")
+		}
 		return actionBackFooterHints("Continue")
 	case relayPhaseRelay:
 		return actionBackFooterHints("Continue")

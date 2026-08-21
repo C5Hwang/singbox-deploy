@@ -586,6 +586,9 @@ func validateMonitorField(f field, val string, _ map[string]string) error {
 	if err := uiparams.ValidateMonitorParameterValue(f.key, val); err != nil {
 		return err
 	}
+	if f.key == resetTargetKey {
+		return validateResetTarget(val)
+	}
 	if f.key == "monitor_domain" {
 		// Same gate as setup: the hub can only publish the monitor under a name
 		// it is able to issue a certificate for.
@@ -631,7 +634,7 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	if scope, ok := tm.resetScope(); ok {
 		targets := tm.resetTargets()
 		go func() {
-			err := resetMonitorHistoryRun(context.Background(), monitorUILayout(), targets, scope, "", logs, progress)
+			err := resetMonitorHistoryRun(context.Background(), monitorUILayout(), targets, scope, logs, progress)
 			ch <- runMsg{done: true, err: err}
 		}()
 		return tm.waitForRun()
@@ -1023,16 +1026,12 @@ func (tm *monitorManager) confirmView() string {
 	}
 	if scope, ok := tm.resetScope(); ok {
 		targets := tm.resetTargets()
-		labels := make([]string, 0, len(targets))
-		for _, target := range targets {
-			labels = append(labels, target.label)
-		}
 		rows = append(rows,
 			summaryRow("Clearing", monitorResetLabel(scope)),
 			summaryRow("Nodes", strconv.Itoa(len(targets))),
 		)
-		for _, label := range labels {
-			rows = append(rows, summaryRow("", label))
+		for _, target := range targets {
+			rows = append(rows, summaryIndentedText(2, target.label))
 		}
 	}
 	rows = append(rows, summaryBlank())
@@ -1070,7 +1069,7 @@ func (tm *monitorManager) doneSummary() string {
 			summaryRow("Nodes", strconv.Itoa(len(targets))),
 		}
 		for _, target := range targets {
-			rows = append(rows, summaryRow("", target.label))
+			rows = append(rows, summaryIndentedText(2, target.label))
 		}
 		return renderSummary(rows)
 	}

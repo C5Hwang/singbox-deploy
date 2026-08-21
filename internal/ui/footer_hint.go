@@ -73,6 +73,12 @@ func formMultiChoiceFooterHints() []operationHint {
 	return []operationHint{hint(keySpace, "Toggle"), hint(keyEnter, "Continue"), hint(keyMove, "Move"), hint(keyBack, "Back"), hint("Esc", "Cancel")}
 }
 
+// multiSelectBackFooterHints is actionBackFooterHints for a picker that takes
+// more than one entry, where the cursor moves and Space is what chooses.
+func multiSelectBackFooterHints(action string) []operationHint {
+	return []operationHint{hint(keySpace, "Toggle"), hint(keyEnter, action), hint(keyMove, "Move"), hint(keyBack, "Back"), hint(keyCancel, "Cancel")}
+}
+
 func applyFooterHints(action string) []operationHint {
 	return []operationHint{hint(keyEnterYes, action), hint(keyBack, "Back"), hint(keyConfirmNo, "Cancel")}
 }

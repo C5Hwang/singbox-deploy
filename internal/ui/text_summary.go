@@ -37,6 +37,10 @@ func summaryText(text string) summaryLine {
 	return summaryLine{kind: summaryLineText, text: text}
 }
 
+func summaryIndentedText(indent int, text string) summaryLine {
+	return summaryLine{kind: summaryLineText, indent: indent, text: text}
+}
+
 func summaryBlank() summaryLine {
 	return summaryLine{kind: summaryLineBlank}
 }

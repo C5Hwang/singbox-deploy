@@ -57,9 +57,8 @@ func withMonitorResetUIDeps(t *testing.T) (paths.Layout, *[]hubReset, *[]spokeRe
 	return layout, hub, spoke
 }
 
-// pickResetTarget walks the menu the way an operator does: choose the action,
-// then choose the node from the picker it opens.
-func pickResetTarget(t *testing.T, tm *monitorManager, action monitorAction, option int) {
+// openResetPicker chooses the action and stops on the picker it opens.
+func openResetPicker(t *testing.T, tm *monitorManager, action monitorAction) {
 	t.Helper()
 	setMonitorActionForTest(t, tm, action)
 	if cmd := tm.activateAction(); cmd != nil {
@@ -68,12 +67,22 @@ func pickResetTarget(t *testing.T, tm *monitorManager, action monitorAction, opt
 	if tm.phase != monitorPhaseForm || tm.fields[tm.fieldIx].key != resetTargetKey {
 		t.Fatalf("picker phase=%d field=%q", tm.phase, tm.fields[tm.fieldIx].key)
 	}
-	tm.optionIx = option
+}
+
+// pickResetTarget walks the menu the way an operator does: choose the action,
+// tick the nodes in the picker it opens, then confirm.
+func pickResetTarget(t *testing.T, tm *monitorManager, action monitorAction, options ...int) {
+	t.Helper()
+	openResetPicker(t, tm, action)
+	for _, option := range options {
+		tm.optionIx = option
+		tm.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	}
 	if _, done := tm.handleKey(tea.KeyMsg{Type: tea.KeyEnter}); done {
 		t.Fatal("choosing a reset target closed the screen")
 	}
 	if tm.phase != monitorPhaseConfirm {
-		t.Fatalf("phase after choosing a target = %d, want the confirmation", tm.phase)
+		t.Fatalf("phase after choosing a target = %d, want the confirmation (%s)", tm.phase, tm.parameterForm.fieldErr)
 	}
 }
 
@@ -87,6 +96,9 @@ func TestMonitorResetPickerOffersTheFleetAndEveryInstalledSpoke(t *testing.T) {
 	options := tm.fields[tm.fieldIx].options
 	if len(options) != 4 || options[0] != resetAllNodesOption || options[1] != resetHubOption {
 		t.Fatalf("options = %v", options)
+	}
+	if !tm.fields[tm.fieldIx].multi {
+		t.Fatal("the node picker must take more than one node, like the protocol picker")
 	}
 	for _, option := range options[2:] {
 		if strings.Contains(option, "Pending") {
@@ -150,7 +162,7 @@ func TestMonitorResetReportsAFailedNodeAndClearsTheRest(t *testing.T) {
 	}
 	targets := expandResetTargets(resetAllNodesOption, testSpokeTrafficUsageNodes()[:2])
 	err := resetMonitorHistoryRun(
-		context.Background(), monitorUILayout(), targets, monitor.ResetScopeClients, "",
+		context.Background(), monitorUILayout(), targets, monitor.ResetScopeClients,
 		&logWriter{ch: make(chan runMsg, 16)}, func(deploy.Event) {},
 	)
 	if err == nil || !strings.Contains(err.Error(), "did not answer") {
@@ -158,6 +170,62 @@ func TestMonitorResetReportsAFailedNodeAndClearsTheRest(t *testing.T) {
 	}
 	if len(*spoke) != 1 {
 		t.Fatalf("spoke resets = %#v, want the reachable spoke still cleared", *spoke)
+	}
+}
+
+// Ticking two nodes clears both and nothing else, so a clear no longer has to
+// be repeated once per node.
+func TestMonitorResetClearsEveryTickedNode(t *testing.T) {
+	layout, hub, spoke := withMonitorResetUIDeps(t)
+	tm := newMonitorManager()
+	// The hub and the first installed spoke, leaving the second alone.
+	pickResetTarget(t, tm, monitorActionResetClients, 1, 2)
+
+	if view := tm.View(); !strings.Contains(view, "Nodes") || !strings.Contains(view, resetHubOption) {
+		t.Fatalf("confirmation does not name the nodes it clears:\n%s", view)
+	}
+	runMonitorResetForTest(t, tm)
+
+	if len(*hub) != 1 || (*hub)[0].dbPath != layout.MonitorDB {
+		t.Fatalf("hub resets = %#v", *hub)
+	}
+	if len(*spoke) != 1 || (*spoke)[0].nodeID != testSpokeTrafficUsageNodes()[0].ID {
+		t.Fatalf("spoke resets = %#v, want only the ticked spoke", *spoke)
+	}
+}
+
+// A node named twice — once by itself and once by the fleet-wide entry — is
+// still cleared once.
+func TestMonitorResetClearsANodeTickedTwiceOnlyOnce(t *testing.T) {
+	_, hub, spoke := withMonitorResetUIDeps(t)
+	tm := newMonitorManager()
+	pickResetTarget(t, tm, monitorActionResetClients, 0, 1, 2)
+	runMonitorResetForTest(t, tm)
+
+	if len(*hub) != 1 {
+		t.Fatalf("hub resets = %#v, want one", *hub)
+	}
+	if len(*spoke) != 2 {
+		t.Fatalf("spoke resets = %#v, want one per installed spoke", *spoke)
+	}
+}
+
+// Enter on an untouched picker must not report a clear that ran against no
+// node at all.
+func TestMonitorResetRefusesAnEmptySelection(t *testing.T) {
+	_, hub, spoke := withMonitorResetUIDeps(t)
+	tm := newMonitorManager()
+	openResetPicker(t, tm, monitorActionResetClients)
+	tm.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if tm.phase != monitorPhaseForm {
+		t.Fatalf("phase = %d, want the picker to hold with an error", tm.phase)
+	}
+	if !strings.Contains(tm.parameterForm.fieldErr, "at least one node") {
+		t.Fatalf("fieldErr = %q", tm.parameterForm.fieldErr)
+	}
+	if len(*hub) != 0 || len(*spoke) != 0 {
+		t.Fatalf("an empty selection cleared something: hub=%#v spoke=%#v", *hub, *spoke)
 	}
 }
 
