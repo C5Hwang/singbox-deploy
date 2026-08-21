@@ -88,7 +88,8 @@ type relayManager struct {
 }
 
 func newRelayManager() *relayManager {
-	rm := &relayManager{phase: relayPhaseMenu, commandRun: newCommandRun()}
+	// The menu opens on a group heading, so the cursor starts past it.
+	rm := &relayManager{phase: relayPhaseMenu, cursor: 1, commandRun: newCommandRun()}
 	rm.reload()
 	return rm
 }
@@ -118,7 +119,10 @@ func (rm *relayManager) setSize(width, height int) {
 // relayActions is the menu, with the entries that need an existing link hidden
 // while there is none.
 func (rm *relayManager) relayActions() []actionItem[relayAction] {
-	items := []actionItem[relayAction]{{action: relayActionAdd, label: "Add relay"}}
+	items := []actionItem[relayAction]{
+		{separator: true, label: "Links"},
+		{action: relayActionAdd, label: "Add relay"},
+	}
 	if len(rm.links) > 0 {
 		items = append(items,
 			actionItem[relayAction]{action: relayActionChange, label: "Change relay"},
@@ -361,9 +365,18 @@ func (rm *relayManager) back() {
 		rm.cursor = 0
 		rm.phase = relayPhaseRelay
 	default:
-		rm.cursor = 0
+		rm.cursor = rm.actionCursor(rm.action)
 		rm.phase = relayPhaseMenu
 	}
+}
+
+func (rm *relayManager) actionCursor(action relayAction) int {
+	for i, item := range rm.relayActions() {
+		if !item.separator && item.action == action {
+			return i
+		}
+	}
+	return 1
 }
 
 func relayLandingPickerList(rm *relayManager) []hubctl.RelayEndpoint {

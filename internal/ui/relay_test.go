@@ -250,8 +250,8 @@ func TestRelayMenuHidesChangeAndRemoveWithoutLinks(t *testing.T) {
 		relayEndpoint("aa11", "tokyo", "tokyo.example.com", 41234),
 	})
 	rm := newRelayManager()
-	if len(rm.relayActions()) != 1 {
-		t.Fatalf("actions = %#v", rm.relayActions())
+	if labels := relayActionLabels(rm); len(labels) != 1 || labels[0] != "Add relay" {
+		t.Fatalf("actions = %v", labels)
 	}
 	if !strings.Contains(rm.View(), "No node is relayed") {
 		t.Fatalf("the menu should say the fleet is served directly:\n%s", rm.View())
