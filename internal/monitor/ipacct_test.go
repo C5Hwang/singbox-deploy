@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -675,6 +676,59 @@ func TestIPAccountingKeepsRelayedTrafficWithNoLandingLeft(t *testing.T) {
 	}
 	if got := deltas["relay:203.0.113.7"]; got.InBytes != 400 {
 		t.Fatalf("unnamed relay delta = %#v", got)
+	}
+}
+
+// A listen port that names two landing nodes is a job nothing in the fleet
+// writes, and its bytes cannot honestly be split between them. It names
+// neither, so the traffic reads as relayed to a destination this node cannot
+// name rather than being handed whole to whichever landing was read first.
+func TestIPAccountingRefusesToGuessBetweenTwoLandingsOnOnePort(t *testing.T) {
+	nft := &fakeNFT{rounds: []map[string]map[string]uint64{{
+		"relay_in4": {"203.0.113.7/30001": 400},
+	}}}
+	acct := newFakeIPAccounting(nft)
+	acct.relayForwards = func() []RelayForward {
+		return []RelayForward{
+			{ListenPort: 30001, LandingID: "aaaa", LandingName: "Tokyo"},
+			{ListenPort: 30001, LandingID: "bbbb", LandingName: "Osaka"},
+		}
+	}
+	deltas, err := acct.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := deltas["relay:203.0.113.7"]; got.InBytes != 400 {
+		t.Fatalf("unnamed relay delta = %#v, want the whole 400", got)
+	}
+	for _, guessed := range []string{"relay:aaaa|203.0.113.7", "relay:bbbb|203.0.113.7"} {
+		if _, named := deltas[guessed]; named {
+			t.Fatalf("a contested port was attributed to %s: %#v", guessed, deltas)
+		}
+	}
+}
+
+// The mapping is a function of the job, not of the order it is read in: the
+// same forwards in either order answer the same way.
+func TestRelayLandingsByPortDoNotDependOnReadOrder(t *testing.T) {
+	forwards := []RelayForward{
+		{ListenPort: 30001, LandingID: "aaaa"},
+		{ListenPort: 30001, LandingID: "bbbb"},
+		{ListenPort: 30002, LandingID: "cccc"},
+		{ListenPort: 30002, LandingID: "cccc"},
+	}
+	reversed := make([]RelayForward, 0, len(forwards))
+	for i := len(forwards) - 1; i >= 0; i-- {
+		reversed = append(reversed, forwards[i])
+	}
+	forward, backward := relayLandingsByPort(forwards), relayLandingsByPort(reversed)
+	if !maps.Equal(forward, backward) {
+		t.Fatalf("read order changed the mapping: %#v vs %#v", forward, backward)
+	}
+	// The contested port names nobody; the port both mappings agree on keeps
+	// the landing they agree on.
+	if forward[30001] != "" || forward[30002] != "cccc" {
+		t.Fatalf("landings = %#v", forward)
 	}
 }
 

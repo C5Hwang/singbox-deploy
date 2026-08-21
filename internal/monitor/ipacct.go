@@ -200,12 +200,26 @@ func relayForwardPorts(forwards []RelayForward) []int {
 }
 
 // relayLandingsByPort maps each relay listen port onto the landing node behind
-// it. A port claimed twice cannot happen — relay.Config.Validate refuses it —
-// so the first mapping wins and the ruleset stays the authority on the ports.
+// it. One port belongs to one landing node, and internal/relaylinks is what
+// makes that true: it claims a generated port across the whole relay by number
+// alone, so no two links it writes can share one. Config.Validate is not that
+// guarantee and must not be read as one — it claims transport and port
+// together, because what it guards is a socket conflict, and tcp/N and udp/N
+// are two sockets.
+//
+// A job that names two landing nodes on one port anyway is one nothing in this
+// fleet wrote, and its bytes cannot honestly be split between them. The port is
+// left naming neither, so its traffic records as relayed to a destination this
+// node cannot name — which is the truth — rather than being handed whole to
+// whichever landing happened to be read first. That also makes the mapping a
+// function of the job's content and not of the order it is read in.
 func relayLandingsByPort(forwards []RelayForward) map[int]string {
+	// An empty landing reads to the caller exactly like a port with no mapping
+	// at all, which is what a contested port has to amount to.
 	landings := make(map[int]string, len(forwards))
 	for _, forward := range forwards {
-		if _, taken := landings[forward.ListenPort]; taken {
+		if claimed, seen := landings[forward.ListenPort]; seen && claimed != forward.LandingID {
+			landings[forward.ListenPort] = ""
 			continue
 		}
 		landings[forward.ListenPort] = forward.LandingID

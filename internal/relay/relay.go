@@ -128,8 +128,13 @@ func MonitorForwards(layout paths.Layout) func() []monitor.RelayForward {
 				})
 			}
 		}
+		// Ordered by what the mappings say rather than by where the landings
+		// happen to sit in the file, so one job always reads back as one slice.
 		sort.Slice(forwards, func(i, j int) bool {
-			return forwards[i].ListenPort < forwards[j].ListenPort
+			if forwards[i].ListenPort != forwards[j].ListenPort {
+				return forwards[i].ListenPort < forwards[j].ListenPort
+			}
+			return forwards[i].LandingID < forwards[j].LandingID
 		})
 		return forwards
 	}
