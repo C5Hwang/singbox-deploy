@@ -75,15 +75,13 @@ func (f *reorderForm) View(title string) string {
 	var b strings.Builder
 	b.WriteString(flowTitle.Render(title) + "\n\n")
 	for i, item := range f.items {
-		if i == f.cursor {
-			if f.grabbed {
-				b.WriteString(selStyle.Render("▸ "+item.label+" ◀") + "\n")
-			} else {
-				b.WriteString(selStyle.Render("> "+item.label) + "\n")
-			}
-		} else {
-			b.WriteString("  " + item.label + "\n")
+		// A grabbed row is moving with the cursor, so it says so instead of
+		// pointing at itself.
+		if i == f.cursor && f.grabbed {
+			b.WriteString(selStyle.Render("▸ "+item.label+" ◀") + "\n")
+			continue
 		}
+		b.WriteString(cursorRow(item.label, i == f.cursor) + "\n")
 	}
 	return b.String()
 }

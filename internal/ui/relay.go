@@ -711,18 +711,9 @@ func (rm *relayManager) pickerView(title, prompt string) string {
 	for i, endpoint := range rm.candidates {
 		row := relayCandidateRow(rm, endpoint)
 		if multi {
-			mark := "[ ]"
-			if rm.selected[endpoint.ID] {
-				mark = "[x]"
-			}
-			row = mark + " " + row
+			row = checkbox(rm.selected[endpoint.ID]) + " " + row
 		}
-		if i == rm.cursor {
-			row = selStyle.Render("> " + row)
-		} else {
-			row = "  " + row
-		}
-		b.WriteString(row + "\n")
+		b.WriteString(cursorRow(row, i == rm.cursor) + "\n")
 	}
 	return b.String()
 }

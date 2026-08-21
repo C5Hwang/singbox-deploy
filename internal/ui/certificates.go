@@ -827,11 +827,7 @@ func (m *certManager) zonePickView() string {
 	}
 	b.WriteString("\n")
 	for i, label := range append(zoneLabels(m.zones), addZoneRow) {
-		row := "  " + label
-		if i == m.zoneCursor {
-			row = selStyle.Render("> " + label)
-		}
-		b.WriteString(row + "\n")
+		b.WriteString(cursorRow(label, i == m.zoneCursor) + "\n")
 	}
 	return b.String()
 }
@@ -846,11 +842,7 @@ func (m *certManager) pickView(title string, labels []string) string {
 		b.WriteString(notice + "\n\n")
 	}
 	for i, label := range labels {
-		row := "  " + label
-		if i == m.pickCursor {
-			row = selStyle.Render("> " + label)
-		}
-		b.WriteString(row + "\n")
+		b.WriteString(cursorRow(label, i == m.pickCursor) + "\n")
 	}
 	return b.String()
 }
@@ -923,11 +915,7 @@ func (m *certManager) footerHints() []operationHint {
 func renderActionMenu(actions []string, cursor int) string {
 	var rows []string
 	for i, a := range actions {
-		row := "  " + a
-		if i == cursor {
-			row = selStyle.Render("> " + a)
-		}
-		rows = append(rows, row)
+		rows = append(rows, cursorRow(a, i == cursor))
 	}
 	return strings.Join(rows, "\n")
 }

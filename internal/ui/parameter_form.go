@@ -467,17 +467,9 @@ func (f *parameterForm) optionsView(field field) string {
 	for i, opt := range field.options {
 		label := opt
 		if field.multi {
-			mark := "[ ]"
-			if f.optionSelected[opt] {
-				mark = "[x]"
-			}
-			label = mark + " " + opt
+			label = checkbox(f.optionSelected[opt]) + " " + opt
 		}
-		row := "  " + label
-		if i == f.optionIx {
-			row = selStyle.Render("> " + label)
-		}
-		rows = append(rows, row)
+		rows = append(rows, cursorRow(label, i == f.optionIx))
 	}
 	return strings.Join(rows, "\n")
 }

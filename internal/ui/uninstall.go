@@ -234,25 +234,18 @@ func (um *uninstallManager) confirmView() string {
 	}
 	b.WriteString("\n")
 	for i, opt := range uninstallOptions(layout) {
-		row := um.optionRow(opt)
-		if i == um.cursor {
-			row = selStyle.Render("> " + row)
-		} else {
-			row = "  " + row
-		}
-		b.WriteString(row + "\n")
+		b.WriteString(cursorRow(um.optionRow(opt), i == um.cursor) + "\n")
 	}
 	return b.String()
 }
 
 func (um *uninstallManager) optionRow(opt uninstallDataOption) string {
-	mark := "[ ]"
+	selected := um.selected(opt.key)
 	action := "Keep"
-	if um.selected(opt.key) {
-		mark = "[x]"
+	if selected {
 		action = "Delete"
 	}
-	return fmt.Sprintf("%s %-28s %s  %s", mark, opt.label, action, dimStyle.Render(opt.path))
+	return fmt.Sprintf("%s %-28s %s  %s", checkbox(selected), opt.label, action, dimStyle.Render(opt.path))
 }
 
 func (um *uninstallManager) doneSummary() string {

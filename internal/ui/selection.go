@@ -40,6 +40,24 @@ func handleSelectionKey(msg tea.KeyMsg, h selectionKeyHandlers) (tea.Cmd, bool, 
 	return nil, false, false
 }
 
+// checkbox is the tick a multi-select list marks a chosen row with, and
+// cursorRow is the caret every list marks the row under the cursor with. Both
+// are defined here so the whole TUI keeps one selection vocabulary: a marker
+// changed in one screen and not the others reads as two different widgets.
+func checkbox(selected bool) string {
+	if selected {
+		return "[x]"
+	}
+	return "[ ]"
+}
+
+func cursorRow(body string, focused bool) string {
+	if focused {
+		return selStyle.Render("> " + body)
+	}
+	return "  " + body
+}
+
 func moveSelection(cursor, length, delta int) int {
 	if length <= 0 {
 		return 0

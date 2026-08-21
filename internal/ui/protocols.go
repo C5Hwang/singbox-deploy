@@ -1302,11 +1302,7 @@ func (pm *protocolManager) editPickView() string {
 			port = spokeProtocolPort(node, proto)
 		}
 		label := string(proto) + "  " + dimStyle.Render("port "+uiparams.PortDefault(port))
-		row := "  " + label
-		if i == pm.cursor {
-			row = selStyle.Render("> " + label)
-		}
-		b.WriteString(row + "\n")
+		b.WriteString(cursorRow(label, i == pm.cursor) + "\n")
 	}
 	return b.String()
 }
@@ -1337,20 +1333,11 @@ func (pm *protocolManager) protocolOptionsView() string {
 	rows := make([]string, 0, len(options))
 	current := selectedProtocolNames(pm.installedProtocols())
 	for i, opt := range options {
-		mark := "[ ]"
-		if pm.selected[opt] {
-			mark = "[x]"
-		}
 		status := ""
 		if current[opt] {
 			status = dimStyle.Render(" (installed)")
 		}
-		label := mark + " " + opt + status
-		row := "  " + label
-		if i == pm.cursor {
-			row = selStyle.Render("> " + label)
-		}
-		rows = append(rows, row)
+		rows = append(rows, cursorRow(checkbox(pm.selected[opt])+" "+opt+status, i == pm.cursor))
 	}
 	return strings.Join(rows, "\n")
 }

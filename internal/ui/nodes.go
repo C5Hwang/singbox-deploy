@@ -746,12 +746,7 @@ func (m *nodeManager) pickView() string {
 	}
 	b.WriteString(flowTitle.Render(title) + "\n\n")
 	for i, n := range m.list {
-		label := nodeLabel(n)
-		row := "  " + label
-		if i == m.pickCursor {
-			row = selStyle.Render("> " + label)
-		}
-		b.WriteString(row + "\n")
+		b.WriteString(cursorRow(nodeLabel(n), i == m.pickCursor) + "\n")
 	}
 	return b.String()
 }

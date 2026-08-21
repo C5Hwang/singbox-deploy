@@ -446,11 +446,7 @@ func (cm *coreManager) stableView() string {
 	b.WriteString(flowTitle.Render(titleCore+" · Change version") + "\n\n")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("Choose one of the latest %d stable sing-box releases.", coreStableReleaseLimit)) + "\n\n")
 	for i, tag := range cm.stableTags {
-		row := "  " + tag
-		if i == cm.cursor {
-			row = selStyle.Render("> " + tag)
-		}
-		b.WriteString(row + "\n")
+		b.WriteString(cursorRow(tag, i == cm.cursor) + "\n")
 	}
 	return b.String()
 }

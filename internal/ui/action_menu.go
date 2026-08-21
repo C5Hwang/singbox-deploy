@@ -51,11 +51,7 @@ func renderActionList[T comparable](items []actionItem[T], cursor int) string {
 			b.WriteString("\n" + dimStyle.Render(item.label) + "\n")
 			continue
 		}
-		row := "  " + item.label
-		if i == cursor {
-			row = selStyle.Render("> " + item.label)
-		}
-		b.WriteString(row + "\n")
+		b.WriteString(cursorRow(item.label, i == cursor) + "\n")
 	}
 	return b.String()
 }
