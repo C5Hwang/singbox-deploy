@@ -18,13 +18,6 @@ import (
 // actions share it because they ask the same question.
 const resetTargetKey = "reset_target"
 
-// resetAllNodesOption ticks every node the hub can reach in one keystroke. It
-// stays alongside the individual entries now that the picker takes several,
-// because clearing the whole fleet is the common case: the dashboard
-// aggregates it, so a figure it shows is only really gone once every node has
-// dropped it.
-const resetAllNodesOption = "All nodes"
-
 // resetHubOption names the hub's own recorded history.
 const resetHubOption = "Hub"
 
@@ -90,12 +83,14 @@ func validateResetTarget(val string) error {
 	return nil
 }
 
-// resetTargetOptions lists the fleet as the picker offers it: everything at
-// once, the hub, then each installed spoke. A spoke that is not installed has
-// no Agent to ask and is left out rather than offered and refused.
+// resetTargetOptions lists the fleet as the picker offers it: the hub, then
+// each installed spoke. A spoke that is not installed has no Agent to ask and
+// is left out rather than offered and refused. There is no entry standing for
+// the whole fleet, because every node it would cover is already on the list and
+// the picker takes as many of them as the operator ticks.
 func resetTargetOptions(spokes []nodes.Node) []string {
-	options := make([]string, 0, len(spokes)+2)
-	options = append(options, resetAllNodesOption, resetHubOption)
+	options := make([]string, 0, len(spokes)+1)
+	options = append(options, resetHubOption)
 	return append(options, spokeLabels(spokes)...)
 }
 
@@ -105,36 +100,18 @@ func (tm *monitorManager) resetTargets() []resetTarget {
 }
 
 // expandResetTargets expands the ticked options into the nodes to clear, in the
-// order the picker lists them. A node named twice — by itself and by the
-// fleet-wide entry — is cleared once, so ticking both does not ask the same
-// Agent for the same deletion twice.
+// order the picker lists them. Each option names one node, so the list it
+// returns is as long as the operator's ticks.
 func expandResetTargets(picked string, spokes []nodes.Node) []resetTarget {
 	var targets []resetTarget
-	seen := map[string]bool{}
-	add := func(key string, target resetTarget) {
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		targets = append(targets, target)
-	}
-	addHub := func() { add("hub", resetTarget{label: resetHubOption, hub: true}) }
-	addSpoke := func(node nodes.Node) {
-		add("spoke:"+node.ID, resetTarget{label: spokeOptionLabel(node), node: node})
-	}
 	for _, option := range strings.Split(picked, ",") {
 		switch option = strings.TrimSpace(option); option {
 		case "":
 		case resetHubOption:
-			addHub()
-		case resetAllNodesOption:
-			addHub()
-			for _, node := range spokes {
-				addSpoke(node)
-			}
+			targets = append(targets, resetTarget{label: resetHubOption, hub: true})
 		default:
 			if node, ok := spokeNodeForLabel(spokes, option); ok {
-				addSpoke(node)
+				targets = append(targets, resetTarget{label: spokeOptionLabel(node), node: node})
 			}
 		}
 	}
