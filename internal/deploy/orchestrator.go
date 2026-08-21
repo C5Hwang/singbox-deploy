@@ -271,8 +271,6 @@ func (o *Orchestrator) run(cmds ...system.Command) error {
 	return RunCommands(o.Runner, cmds...)
 }
 
-// --- steps ---
-
 func (o *Orchestrator) stepConflictCheck(ctx context.Context, cfg Config) error {
 	return o.CheckConflicts(ctx, cfg)
 }

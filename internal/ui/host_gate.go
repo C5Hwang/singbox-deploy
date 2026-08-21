@@ -6,9 +6,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
-// Shared host gating for the management screens, which all require a detected,
-// supported host running as root without SELinux enforcing.
-
 // hostCanApply reports whether management actions can run on the detected host.
 func hostCanApply(host system.Host, hostErr error) bool {
 	return hostErr == nil && host.IsRoot && host.Supported() && !host.SELinux

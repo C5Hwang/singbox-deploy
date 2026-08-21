@@ -45,7 +45,8 @@ export function clearTzOverride(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
   } catch {
-    // Ignore; nothing was persisted.
+    // Storage that throws here never accepted the write either, so there is
+    // nothing left behind to clear.
   }
 }
 

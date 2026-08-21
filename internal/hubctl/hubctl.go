@@ -464,7 +464,6 @@ func (c *Controller) AddNode(ctx context.Context, params AddNodeParams, log io.W
 	committed = true
 	completeProgress()
 
-	// Fold the new spoke's nodes into the hub's published subscription.
 	beginProgress(7, "Subscriptions", "publish the new spoke in the selected subscription groups")
 	if err := subgroups.AddMember(c.Layout, node.ID, params.SubscriptionGroups); err != nil {
 		fmt.Fprintf(log, "warning: could not record subscription group membership: %v\n", err)

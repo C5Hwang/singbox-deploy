@@ -90,9 +90,9 @@ type PingCollector struct {
 	probe func(context.Context, string) (PingSample, error)
 }
 
-// NewPingCollector returns a collector for the default targets. Unlike the ICMP
-// implementation it replaces, this one needs no external utility and no raw
-// socket, so it is never nil.
+// NewPingCollector returns a collector for the default targets. Probing is a TCP
+// connect from inside this process, so it needs no external utility and no raw
+// socket and is never nil.
 func NewPingCollector() *PingCollector {
 	return &PingCollector{targets: DefaultPingTargets, probe: tcpPing}
 }

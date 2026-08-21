@@ -40,9 +40,8 @@ export interface ModeShape {
   tooltipUnit: TimeUnit;
 }
 
-// One reading of a mode for every chart. Each modal used to derive this for
-// itself, and they drifted: the same word picked a different axis unit or a
-// different tooltip depending on which chart it was clicked on.
+// One reading of a mode for every chart, so the same word picks the same axis
+// unit and the same tooltip wherever it is clicked.
 export function modeShape(mode: TrendMode): ModeShape {
   const isRecent = mode === "recent";
   const isDaily = mode.startsWith("daily");

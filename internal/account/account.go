@@ -12,8 +12,8 @@ import (
 )
 
 // UpdateOptions describes a single-user account metadata update. Account
-// management currently owns only display_name; protocol credentials and ports
-// remain in Protocol Management per product choice.
+// management owns only display_name; protocol credentials and ports belong to
+// Protocol Management.
 type UpdateOptions struct {
 	Layout      paths.Layout
 	Runner      system.Runner

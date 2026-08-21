@@ -17,9 +17,9 @@ import (
 )
 
 // RefreshMonitor pulls each installed spoke's monitor summary over the overlay
-// and writes the combined snapshot the hub's monitor service reads. Unlike the
-// old public-internet aggregation, every fetch goes to the node's overlay
-// address, so monitor data never leaves the encrypted tunnel. A node that fails
+// and writes the combined snapshot the hub's monitor service reads. Every fetch
+// goes to the node's overlay address, so monitor data never leaves the
+// encrypted tunnel. A node that fails
 // to answer keeps its previous snapshot entry (a stale FetchedAt makes that
 // visible) rather than vanishing from the dashboard.
 //

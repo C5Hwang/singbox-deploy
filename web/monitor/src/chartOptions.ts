@@ -204,8 +204,8 @@ function buildFrame({ width, height, unit, legend, tooltipUnit, tooltipValue, so
         hideOverlap: true,
         // One rule for every chart: a daily axis is dates all the way along, and
         // anything finer is times with the date on the tick that crosses into a
-        // new day. The traffic and resource charts used to drop that date, so the
-        // same week read as a single unlabelled day there and as seven here.
+        // new day. Without that tick the same week reads as a single unlabelled
+        // day.
         formatter: (value: number) => (unit === "day" ? fmtDate(value) : fmtDayOrTime(value)),
       },
     },
@@ -438,9 +438,9 @@ function layOutChips(series: any[], step: number): Placements {
       if (level === 0) break;
     }
     place(taken, step, AVERAGE_SLOT_X[best.slot], y, [best.level]);
-    // Signed. Dropping the sign here once made the model place a chip below a
-    // line while the render moved it above, so the layout that was computed and
-    // the layout that was drawn were different pictures.
+    // Signed, because the render multiplies it by the same positive-is-up
+    // convention: an unsigned level would draw the chip on the opposite side of
+    // the line from where the layout placed it.
     averages[i] = { slot: best.slot, above, level: best.level };
   }
   return { peaks, averages };
@@ -497,10 +497,9 @@ export type PeakAverageFormat = (value: number, series: any) => string;
 // overlay can never disagree with the curve it annotates, and nulls — a fully
 // lost latency round, a gap in a sparse series — are skipped by both.
 //
-// Both labels are drawn as filled chips in the series colour with white text.
-// A bare coloured label sat directly on the curves and the area fills it was
-// annotating and became unreadable wherever they were dense; a chip carries its
-// own background, so it reads against the plot instead of competing with it.
+// Both labels are drawn as filled chips in the series colour with white text. A
+// chip carries its own background, so it reads against a dense plot instead of
+// competing with the curves and area fills it sits on.
 //
 // The marks are always emitted, empty when hidden: the toggle updates the chart
 // by merging rather than rebuilding it, and a merge only removes what it is

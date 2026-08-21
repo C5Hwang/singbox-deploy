@@ -49,8 +49,6 @@ func main() {
 			fmt.Fprintln(os.Stderr, "warning: migrate subscriptions:", err)
 		}
 	}
-	// The monitor subcommand runs the long-lived monitor service and is
-	// dispatched before the interactive UI. It is wired in the monitor task.
 	if len(os.Args) > 1 && os.Args[1] == "monitor" {
 		if err := runMonitor(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "monitor:", err)

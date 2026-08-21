@@ -481,8 +481,9 @@ func (m *Monitor) handleIPDetail(w http.ResponseWriter, r *http.Request) {
 
 func sourceQuery(r *http.Request) string { return r.URL.Query().Get("source") }
 
-// sourceEndpoint parameterizes the trend/recent handlers, which otherwise
-// duplicated the same local-vs-remote dispatch.
+// sourceEndpoint parameterizes the trend/recent handlers, so the
+// local-vs-remote dispatch is written once for every resource that has both
+// readings.
 type sourceEndpoint struct {
 	key       string // JSON response field ("trend" or "points")
 	proxyPath string // remote API path to proxy to

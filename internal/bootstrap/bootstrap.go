@@ -204,7 +204,6 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 		}
 	}()
 
-	// 1. Install the WireGuard userspace tools using the spoke's package manager.
 	b.logf("installing WireGuard tools...\n")
 	if err := b.installWireGuard(ctx, runner); err != nil {
 		return Result{}, fmt.Errorf("install wireguard-tools: %w", err)
@@ -218,7 +217,6 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 		return Result{}, err
 	}
 
-	// 2. Push the agent binary.
 	b.logf("uploading agent binary (%d bytes)...\n", len(plan.AgentBinary))
 	if err := uploadFile(ctx, runner, AgentBinaryPath, plan.AgentBinary, "0755"); err != nil {
 		return Result{}, fmt.Errorf("upload agent binary: %w", err)
@@ -231,7 +229,6 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 		return Result{}, fmt.Errorf("verify uploaded agent SHA-256 %s: %w: %s", expectedDigest, err, out)
 	}
 
-	// 3. Overlay config.
 	b.logf("writing overlay config...\n")
 	wgConfig := wgnet.RenderSpokeConfig(wgnet.SpokeConfig{
 		PrivateKey:   spokePrivateKeyMarker,
@@ -244,7 +241,6 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 		return Result{}, fmt.Errorf("upload wireguard config: %w", err)
 	}
 
-	// 4. Agent config (token, bind address, port).
 	agentDir := spokeAgentConfigDir
 	if err := prepareAgentConfigDir(ctx, runner, spokeLayoutRoot, agentDir); err != nil {
 		return Result{}, fmt.Errorf("prepare agent config directory: %w", err)
@@ -265,16 +261,14 @@ func (b *Bootstrapper) Provision(ctx context.Context, target Target, plan Plan) 
 		}
 	}
 
-	// 5. Agent systemd unit.
 	b.logf("installing agent service...\n")
 	if err := uploadFile(ctx, runner, "/etc/systemd/system/singbox-deploy-agent.service", []byte(plan.AgentUnit), "0644"); err != nil {
 		return Result{}, fmt.Errorf("upload agent unit: %w", err)
 	}
 
-	// 6. Bring up the overlay, admit the Hub to the Agent API through an active
-	// host firewall, then start the agent. The firewall rule is scoped to the
-	// managed interface, Hub source address, spoke destination address, and
-	// Agent TCP port; the API is never opened globally.
+	// The firewall rule admitting the Hub is scoped to the managed interface, Hub
+	// source address, spoke destination address, and Agent TCP port; the API is
+	// never opened globally.
 	b.logf("starting overlay and agent...\n")
 	startOverlay := strings.Join([]string{
 		"systemctl daemon-reload",

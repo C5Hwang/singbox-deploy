@@ -870,9 +870,9 @@ func (s *Store) InsertPingSamples(ts int64, samples map[string]PingSample) error
 //
 // The probe writes one row per target per minute and the table keeps a week of
 // them, so there is exactly one shape to read and no bucketing to choose: what
-// comes back is what was measured. Averaging into hours and days used to be how
-// a week fitted in a response, but it also meant the chart could never show the
-// spike that the average had smoothed away.
+// comes back is what was measured. Averaging a week into hours and days would
+// fit in fewer bytes, but it would smooth away the spikes the chart exists to
+// show.
 //
 // The grid is what makes that affordable. A row's own timestamp is implied by
 // its slot, so the response carries values rather than (time, value) pairs, and

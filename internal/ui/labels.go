@@ -51,8 +51,6 @@ const (
 	labelSpokeMonitorEnabled    = "Enable monitor on spoke"
 	labelSpokeMonitorAlias      = "Spoke monitor alias"
 
-	// noteSpokeTransport replaces the four differently-worded explanations the
-	// spoke pickers used to carry.
 	noteSpokeTransport         = "The other servers this hub manages, reached over WireGuard."
 	noteSpokeSubscriptionAlias = "The name this node shows under in client apps.\n" +
 		"Blank reuses the node name."

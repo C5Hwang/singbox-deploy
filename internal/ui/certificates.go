@@ -920,8 +920,6 @@ func (m *certManager) footerHints() []operationHint {
 	}
 }
 
-// --- rendering helpers ---
-
 func renderActionMenu(actions []string, cursor int) string {
 	var rows []string
 	for i, a := range actions {

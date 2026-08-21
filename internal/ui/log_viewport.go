@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// Shared helpers for the scrollable log viewers in the core and monitor
-// managers, which otherwise carried byte-for-byte identical copies.
-
 // serviceLogViewport is a scrollable viewer over fetched journalctl output,
 // shared by the core and monitor service-log screens.
 type serviceLogViewport struct {

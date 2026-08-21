@@ -259,7 +259,6 @@ func sortedKeys(m map[string]any) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	// small, fixed maps; insertion via simple sort
 	for i := 1; i < len(keys); i++ {
 		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
 			keys[j-1], keys[j] = keys[j], keys[j-1]

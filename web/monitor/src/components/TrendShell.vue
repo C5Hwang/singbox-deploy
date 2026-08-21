@@ -6,10 +6,8 @@ import type { ModeOption, TrendMode } from "../trendModes";
 // outside, the title and its one-line subtitle, the granularity buttons, the
 // peak/average switch, and the three states the body can be in.
 //
-// Each modal used to carry its own copy of this markup, and they had already
-// drifted — a different word for the same wait, a control in a different order,
-// an error line on two of the five. What a chart is of belongs to the chart;
-// how it is framed belongs here.
+// What a chart is of belongs to the chart; how it is framed belongs here, so
+// every modal words the same wait, the same error and the same controls.
 //
 // The chart element itself stays with the caller, in the default slot, because
 // it is the caller's useTrendChart that owns the ECharts instance living in it.

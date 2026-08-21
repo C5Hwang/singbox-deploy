@@ -33,13 +33,13 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/uninstall"
 )
 
-// agentHandler implements nodeapi.Handler by driving the local deploy flow in
-// spoke mode.
 const (
 	installTransactionFile = "install_transaction_id"
 	agentBackupSuffix      = ".singbox-deploy-backup"
 )
 
+// agentHandler implements nodeapi.Handler by driving the local deploy flow in
+// spoke mode.
 type agentHandler struct {
 	layout  paths.Layout
 	monitor *monitorSupervisor
