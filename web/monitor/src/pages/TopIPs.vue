@@ -493,8 +493,9 @@ const modalSources = computed(() =>
                   <!-- The disclosure is a button of its own so opening the
                        breakdown and opening the chart stay two separate acts on
                        the same row. -->
+                  <span v-if="!expandable(row)" class="twisty-space" aria-hidden="true"></span>
                   <button
-                    v-if="expandable(row)"
+                    v-else
                     class="twisty"
                     :class="{ open: expanded.has(row.ip) }"
                     :aria-expanded="expanded.has(row.ip)"
@@ -720,27 +721,36 @@ const modalSources = computed(() =>
 
 /* The disclosure sits in the address cell rather than in a column of its own:
    a column would be blank on every row that has nothing to open, and most rows
-   have nothing to open. Rows without one keep their indent so the addresses
-   still line up. */
-.twisty {
+   have nothing to open. A row without one still reserves its width, so the
+   addresses read as one column rather than as two ragged ones.
+
+   These are qualified by the table because the cell padding they adjust is set
+   by `.ip-table td`, which outranks a bare class. */
+.twisty, .twisty-space {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; margin-right: 3px; padding: 0;
+  width: 18px; height: 18px; margin-right: 3px;
   vertical-align: -4px;
-  border: 0; border-radius: 6px; background: transparent; color: #93a1b8;
+}
+.twisty {
+  padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: #93a1b8;
   cursor: pointer; transition: background 0.15s, color 0.15s, transform 0.15s;
 }
 .twisty svg { width: 13px; height: 13px; }
 .twisty:hover { background: #e6eefb; color: var(--blue); }
 .twisty.open { transform: rotate(90deg); color: var(--blue); }
-.address { padding-left: 4px; }
-.sub-address { padding-left: 29px; font-weight: 650; }
+.ip-table td.address { padding-left: 4px; }
+/* Indented past where the addresses above them start, so a breakdown line can
+   never be mistaken for a client of its own. */
+.ip-table td.sub-address { padding-left: 34px; font-weight: 650; }
 
 /* The breakdown is the same table, half a step back: no share bar, a quieter
    surface, and a hairline that ties each line to the row it came out of rather
    than separating it from one. */
 .sub-row > td { background: #fafcff; border-top: 1px solid #eef3fa; }
 .sub-row:hover > td { background: #f2f7fe; }
-.strand { display: inline-block; width: 14px; color: #b3c0d4; font-weight: 800; }
+.sub-address::before { content: none; }
+.strand { display: inline-block; width: 15px; color: #b3c0d4; font-weight: 800; }
 .strand.relayed { color: #d3922b; }
 .strand-label { color: #55637a; }
 .country, .place, .nodes { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
