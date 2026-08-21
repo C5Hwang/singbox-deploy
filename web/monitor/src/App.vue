@@ -24,10 +24,10 @@ const summary = ref<Summary | null>(null);
 const error = ref<string>("");
 
 // Three states, not a boolean: until the first answer comes back the dashboard
-// does not know which shell it is. Starting on "unlocked" painted the whole
+// does not know which shell it is. Starting on "unlocked" would paint the whole
 // dashboard chrome — sidebar, cards, their entrance animations — and then
-// replaced it with the gate the moment the 401 landed, which is a flash of the
-// wrong interface on every single load.
+// replace it with the gate the moment the 401 landed, a flash of the wrong
+// interface on every single load.
 type Shell = "checking" | "locked" | "ready";
 const shell = ref<Shell>("checking");
 // A token that was already stored and then refused is a stale one, which is

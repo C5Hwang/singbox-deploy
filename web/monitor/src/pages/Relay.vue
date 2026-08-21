@@ -22,11 +22,11 @@ function sourceKey(source: { id?: string; name?: string }): string {
 }
 
 // The hub's registry names which nodes relay, so those are the only ones asked.
-// Asking the whole fleet and discarding the answers with no relay probes let any
-// unrelated node — including one that is powered off, which can only fail by
-// timing out — set the pace of a page it has nothing to do with. A deployment
-// that sends no list has no registry to ask, and then every node is asked as
-// before.
+// Asking the whole fleet and discarding the answers with no relay probes would
+// let any unrelated node — including one that is powered off, which can only
+// fail by timing out — set the pace of a page it has nothing to do with. A
+// deployment that sends no list has no registry to ask, and falls back to
+// asking every node.
 const relaySources = computed<{ id?: string; name?: string }[]>(() => {
   const ids = props.summary?.relayNodes ?? [];
   if (ids.length === 0) return sources.value;
@@ -56,7 +56,7 @@ const pending = computed(() => relaySources.value.some((source) => !answers.valu
 
 // Each relay's card appears the moment that relay answers. A node that cannot be
 // reached is already reported on the latency page, so here it simply never gets
-// a card — but it no longer delays the ones that did answer.
+// a card, and it does not hold up the ones that did answer.
 function load() {
   const targets = relaySources.value;
   if (targets.length === 0) return;

@@ -41,8 +41,7 @@ let round = 0;
 // Every node is fetched in parallel and each card is filled in the moment its
 // own node answers. Nothing waits for the slowest one: a spoke that is powered
 // off drops its packets rather than refusing them, so it can only fail by
-// timing out, and it used to hold the whole page in its loading state while it
-// did.
+// timing out, and one node's timeout would otherwise be the whole page's.
 function load() {
   const targets = sources.value;
   if (targets.length === 0) return;

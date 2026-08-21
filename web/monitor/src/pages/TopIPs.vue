@@ -83,7 +83,7 @@ function addWindow(into: IPTrafficWindow, from: IPTrafficWindow) {
 }
 
 // Nodes are queried in parallel and each answer is folded in as it lands, so a
-// node that is powered off — which can only fail by timing out — no longer holds
+// node that is powered off — which can only fail by timing out — does not hold
 // the table back while the rest of the fleet is already known.
 function load() {
   const list = targets.value;

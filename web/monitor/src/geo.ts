@@ -4,9 +4,9 @@ import { ref } from "vue";
 // runs on a low-memory VPS and has no business shipping a location database or
 // calling a third party on every render.
 //
-// The endpoint is fixed. It used to be editable from the page, which put a
-// URL every viewer's browser would call into a field any viewer could rewrite —
-// a dashboard-wide setting stored per browser, and one more place to get wrong.
+// The endpoint is fixed rather than editable from the page: a field any viewer
+// could rewrite would put a URL every viewer's browser calls under whoever
+// typed last, as a dashboard-wide setting stored per browser.
 const GEO_ENDPOINT = "https://ipwho.is/{ip}";
 
 const CACHE_KEY = "singbox-deploy.monitor.geoPlaces";
