@@ -249,6 +249,27 @@ function isSorted(window: IPWindowKey, direction: IPDirectionKey): boolean {
   return sort.value.window === window && sort.value.direction === direction;
 }
 
+function chooseWindow(window: IPWindowKey) {
+  if (sort.value.window === window) return;
+  sort.value = { ...sort.value, window };
+}
+
+// The figure a card leads with, and the one every line inside it is measured
+// by: whichever cell the list is currently ranked on.
+function sortedValue(windows: { cycle: IPTrafficWindow; today: IPTrafficWindow; last7: IPTrafficWindow }): number {
+  return windows[sort.value.window][sort.value.direction];
+}
+
+// The two directions the card is not ranked by, so a card still carries all
+// three figures without repeating the one in its header.
+const otherDirections = computed(() => directions.filter((d) => d.key !== sort.value.direction));
+
+// One line for the whole place, the way the modal writes it: two columns of a
+// table become one line of a card.
+function cardPlace(ip: string): string {
+  return placeLabel(ip) || "Location unresolved";
+}
+
 const sorted = computed(() => {
   const { window, direction, descending } = sort.value;
   const value = (row: IPTrafficRow) => row[window][direction];
@@ -570,6 +591,81 @@ const modalSources = computed(() =>
         </table>
       </div>
 
+      <!-- Below the table's breakpoint the nine columns cannot be read without
+           scrolling their own labels off the screen, so the same ranking is
+           rendered as cards instead: one client per card, its landings inline
+           and each figure beside the name it belongs to. -->
+      <div v-if="visible.length" class="ip-cards">
+        <div class="card-sort">
+          <div class="toggle-group" role="group" aria-label="Ranking window">
+            <button
+              v-for="w in windows"
+              :key="w.key"
+              :class="{ active: sort.window === w.key }"
+              :aria-pressed="sort.window === w.key"
+              @click="chooseWindow(w.key)"
+            >
+              {{ w.label }}
+            </button>
+          </div>
+          <div class="toggle-group" role="group" aria-label="Ranking direction">
+            <button
+              v-for="d in directions"
+              :key="d.key"
+              :class="{ active: sort.direction === d.key }"
+              :title="`${d.title} — tap again to reverse`"
+              :aria-label="d.title"
+              @click="sortBy(sort.window, d.key)"
+            >
+              {{ d.glyph }}<span v-if="sort.direction === d.key" class="caret" :class="{ up: !sort.descending }">▾</span>
+            </button>
+          </div>
+        </div>
+
+        <article v-for="(row, i) in visible" :key="row.ip" class="ip-card">
+          <button class="card-main" :aria-label="`Traffic for ${row.ip}`" @click="openRow(row, null)">
+            <span class="card-head">
+              <span class="card-rank">{{ firstRank + i }}</span>
+              <span class="card-ip">{{ row.ip }}</span>
+              <span class="card-value">{{ formatBytesCompact(sortedValue(row)) }}</span>
+              <svg class="card-go" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M6 4l4 4-4 4" />
+              </svg>
+            </span>
+            <span class="card-place">
+              <span v-if="placeOf(row.ip).code" class="flag">{{ flagFor(placeOf(row.ip).code) }}</span>
+              <span class="card-place-name">{{ cardPlace(row.ip) }}</span>
+              <!-- Only where there is no breakdown to say it: on a card that
+                   lists its landings, the lines below already do. -->
+              <span v-if="row.relayed && row.segments.length < 2" class="relay-chip">relay</span>
+            </span>
+            <span class="card-share" :style="shareStyle(row)" aria-hidden="true"></span>
+          </button>
+
+          <button
+            v-for="segment in row.segments.length > 1 ? row.segments : []"
+            :key="segmentDetailKey(row, segment)"
+            class="card-strand"
+            :aria-label="`${segment.label} traffic for ${row.ip}`"
+            @click="openRow(row, segment)"
+          >
+            <span class="strand" :class="{ relayed: segment.relayed }">{{ segment.relayed ? "→" : "●" }}</span>
+            <span class="strand-label">{{ segment.label }}</span>
+            <span class="strand-value">{{ formatBytesCompact(sortedValue(segment)) }}</span>
+          </button>
+
+          <div class="card-figures">
+            <span v-for="d in otherDirections" :key="d.key" class="card-figure">
+              <span class="glyph" :title="d.title">{{ d.glyph }}</span>
+              {{ formatBytesCompact(row[sort.window][d.key]) }}
+            </span>
+            <span v-if="selected === ALL_NODES" class="card-nodes">
+              <span v-for="node in row.nodes" :key="node" class="node-chip">{{ node }}</span>
+            </span>
+          </div>
+        </article>
+      </div>
+
       <nav v-if="pageCount > 1" class="pager" aria-label="Pagination">
         <button class="page-step" :disabled="page === 1" aria-label="Previous page" @click="page = page - 1">‹</button>
         <template v-for="(entry, i) in pageButtons" :key="`${entry}-${i}`">
@@ -775,4 +871,96 @@ const modalSources = computed(() =>
 .num { text-align: right; font-variant-numeric: tabular-nums; color: #5f6b7e; }
 .num.strong { font-weight: 800; color: var(--text); }
 td.num.sorted { color: var(--blue); }
+
+/* ── Cards ────────────────────────────────────────────────────
+   The card list is the same ranking at a width where the table cannot be one.
+   Only one of the two is ever in the document flow, so the page never carries
+   a horizontal scroller a phone has to fight. */
+.ip-cards { display: none; flex-direction: column; gap: 10px; padding: 4px; }
+
+/* Column headers are what sorts the table; a card list has none, so the same
+   sort state gets two chip groups. The window group only ever selects — tapping
+   the direction already chosen is what reverses the order, so re-picking the
+   window you are already on cannot silently flip the ranking. */
+.card-sort { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }
+.card-sort .toggle-group button { min-height: 44px; }
+.card-sort .caret { width: auto; margin-left: 3px; font-size: 9px; }
+
+.ip-card {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: 14px; background: white;
+  overflow: hidden;
+}
+/* The head, the place and the share bar are one target: the whole summary
+   opens the whole address's chart. */
+.card-main {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 13px 14px 12px; border: 0; background: transparent;
+  font: inherit; text-align: left; cursor: pointer;
+  transition: background 0.15s;
+}
+.card-main:active { background: #f2f7fe; }
+.card-head { display: flex; align-items: center; gap: 9px; }
+.card-rank {
+  min-width: 20px; color: var(--muted);
+  font-size: 12px; font-weight: 750; font-variant-numeric: tabular-nums;
+}
+.card-ip {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 15px; font-weight: 780; font-variant-numeric: tabular-nums; color: var(--text);
+}
+.card-value {
+  font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--blue);
+}
+.card-go { width: 14px; height: 14px; flex-shrink: 0; color: #b3c0d4; }
+.card-place {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+  color: var(--muted); font-size: 12.5px; font-weight: 600;
+}
+.card-place-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The table draws this behind the address; a card has room to give the share of
+   the ranking a rule of its own. */
+.card-share {
+  height: 4px; border-radius: 999px;
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.55), rgba(37, 99, 235, 0.16));
+  width: var(--share); min-width: 3px;
+}
+
+/* One line per landing, each its own target, so a phone can reach a single
+   landing node's chart without a table cell to hit. */
+.card-strand {
+  display: flex; align-items: center; gap: 9px;
+  min-height: 44px; padding: 0 14px;
+  border: 0; border-top: 1px solid #eef3fa; background: #fafcff;
+  font: inherit; text-align: left; cursor: pointer;
+  transition: background 0.15s;
+}
+.card-strand:active { background: #eef4fd; }
+.card-strand .strand-label {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; font-weight: 650;
+}
+.strand-value {
+  font-size: 13px; font-weight: 750; font-variant-numeric: tabular-nums; color: #47536a;
+}
+
+/* The two directions the card is not ranked by. They are data, not a control,
+   so they carry no press state. */
+.card-figures {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px;
+  padding: 9px 14px 10px; border-top: 1px solid #eef3fa;
+  color: var(--muted); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.card-figure .glyph { margin-right: 3px; font-weight: 800; }
+.card-nodes { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px; }
+.card-nodes .node-chip { margin-right: 0; }
+
+@media (max-width: 720px) {
+  .table-scroll { display: none; }
+  .ip-cards { display: flex; }
+  .table-card { padding: 8px; }
+  /* The head card stacks, so its picker no longer has a row to share. */
+  .topips-head { align-items: stretch; }
+  .menu-picker .menu-pop { right: auto; left: 0; width: min(280px, calc(100vw - 64px)); }
+}
 </style>
