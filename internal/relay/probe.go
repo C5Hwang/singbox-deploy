@@ -14,10 +14,6 @@ const (
 	// carrier list, so the dashboard can give them their own panel.
 	PingTargetKind = "relay"
 
-	// pingTargetIDPrefix namespaces a landing node's probe. Registry IDs are
-	// hex, so a prefixed one can never collide with a carrier target ID.
-	pingTargetIDPrefix = "relay:"
-
 	// pingProbePort is the port the probe connects to on the landing node.
 	// Every managed node serves its masquerade site over HTTPS there, so it is
 	// always answering, and the connection travels exactly the route the
@@ -27,9 +23,12 @@ const (
 	pingProbePort = 443
 )
 
-// PingTargetID returns the probe identity for one landing node.
+// PingTargetID returns the probe identity for one landing node. The namespace
+// is the monitor's, because the monitor is what tells a relay probe apart from
+// a carrier one when it comes to clearing them. Registry IDs are hex, so a
+// prefixed one can never collide with a carrier target ID.
 func PingTargetID(nodeID string) string {
-	return pingTargetIDPrefix + strings.ToLower(strings.TrimSpace(nodeID))
+	return monitor.RelayPingTargetPrefix + strings.ToLower(strings.TrimSpace(nodeID))
 }
 
 // PingTargets returns the latency probe destinations for the relay at layout:

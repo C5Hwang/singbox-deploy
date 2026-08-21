@@ -65,6 +65,13 @@ type TrafficUsageHandler interface {
 	SetTrafficUsage(context.Context, TrafficUsageRequest) (TrafficUsageUpdate, error)
 }
 
+// MonitorResetHandler is implemented by agents that can clear recorded monitor
+// history. Keeping it optional lets a newer Hub tell an operator that a spoke
+// is too old to honor the request, rather than failing it as an unknown route.
+type MonitorResetHandler interface {
+	ResetMonitorHistory(context.Context, MonitorResetRequest) error
+}
+
 // Server exposes Handler over HTTP, guarded by a bearer token.
 type Server struct {
 	Token   string
@@ -84,6 +91,7 @@ func (s *Server) Mux() http.Handler {
 	s.handle(mux, http.MethodPost, "/api/relay", s.handleRelay)
 	s.handle(mux, http.MethodGet, "/api/subscription", s.handleSubscription)
 	mux.HandleFunc("/api/monitor/usage", s.auth(s.handleTrafficUsage))
+	s.handle(mux, http.MethodPost, "/api/monitor/reset", s.handleMonitorReset)
 	for _, endpoint := range monitorEndpoints {
 		apiPath, _, _ := endpoint.paths()
 		s.handle(mux, http.MethodGet, apiPath, s.handleMonitor(endpoint))
@@ -385,6 +393,7 @@ const (
 	maxUninstallRequestBody    int64 = 16 << 10
 	maxCoreRequestBody         int64 = 4 << 10
 	maxTrafficUsageRequestBody int64 = 4 << 10
+	maxMonitorResetRequestBody int64 = 4 << 10
 	// A relay job is a handful of small records per landing node, and a hub
 	// fronting a large fleet through one relay is still far inside this.
 	maxRelayRequestBody int64 = 256 << 10
@@ -462,6 +471,32 @@ func (l *lineFlushWriter) Write(p []byte) (int, error) {
 // sentinel or split into multiple log lines.
 func sanitizeLine(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " ")
+}
+
+// handleMonitorReset clears one scope of this node's recorded monitor history.
+// It is a POST on a route of its own rather than a monitor endpoint, for the
+// same reason the usage write is: the proxied monitor endpoints are read-only
+// and must stay that way.
+func (s *Server) handleMonitorReset(w http.ResponseWriter, r *http.Request) {
+	handler, ok := s.Handler.(MonitorResetHandler)
+	if !ok {
+		http.Error(w, "monitor history reset is not supported by this agent", http.StatusNotImplemented)
+		return
+	}
+	var wire MonitorResetRequest
+	if err := decodeStrictJSON(w, r, &wire, maxMonitorResetRequestBody); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ValidateMonitorResetRequest(wire); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := handler.ResetMonitorHistory(r.Context(), wire); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

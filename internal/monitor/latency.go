@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,6 +71,27 @@ var DefaultPingTargets = []PingTarget{
 	{ID: "mobile-beijing", Carrier: "China Mobile", City: "Beijing", Address: "bj-cm-v4.ip.zstaticcdn.com:80"},
 	{ID: "mobile-shanghai", Carrier: "China Mobile", City: "Shanghai", Address: "sh-cm-v4.ip.zstaticcdn.com:80"},
 	{ID: "mobile-guangzhou", Carrier: "China Mobile", City: "Guangzhou", Address: "gd-guangzhou-cm-v4.ip.zstaticcdn.com:80"},
+}
+
+// RelayPingTargetPrefix namespaces a relay's probe of one landing node, keeping
+// it clear of the carrier target IDs above. It is exported because the relay
+// package mints those IDs and the store tells the two families apart by it.
+const RelayPingTargetPrefix = "relay:"
+
+// relayPingTargetPattern is RelayPingTargetPrefix as a LIKE pattern. The
+// prefix's own characters are escaped rather than assumed inert, so a prefix
+// that ever grows a wildcard cannot silently widen a delete.
+var relayPingTargetPattern = escapeLikePrefix(RelayPingTargetPrefix) + "%"
+
+func escapeLikePrefix(prefix string) string {
+	var b strings.Builder
+	for _, r := range prefix {
+		if r == '%' || r == '_' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // PingSample is one probe outcome. AvgMS is nil when every connect failed,

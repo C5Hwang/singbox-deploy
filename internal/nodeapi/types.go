@@ -701,6 +701,50 @@ const (
 	FormatSurge           = "surge"
 )
 
+// MonitorResetScope names one body of recorded monitor history the hub can ask
+// a spoke to clear. It mirrors monitor.ResetScope, kept as its own enum here
+// because it is a wire contract two releases have to agree on: an agent that
+// does not recognize a scope refuses it rather than guessing.
+type MonitorResetScope string
+
+const (
+	MonitorResetClients      MonitorResetScope = "clients"
+	MonitorResetLatency      MonitorResetScope = "latency"
+	MonitorResetRelayLatency MonitorResetScope = "relay-latency"
+)
+
+// MonitorResetRequest asks a spoke to clear one scope of its monitor history.
+type MonitorResetRequest struct {
+	Scope MonitorResetScope `json:"scope"`
+	// Target narrows a relay-latency reset to one link's probe. It is empty for
+	// every other scope, and for a relay-latency reset that clears them all.
+	Target string `json:"target,omitempty"`
+}
+
+// maxMonitorResetTarget bounds the one free-text field the request carries. A
+// probe ID is a namespace and a 32-character registry ID; this leaves room for
+// both and refuses anything that could only be an attempt at something else.
+const maxMonitorResetTarget = 128
+
+// ValidateMonitorResetRequest rejects a request this release cannot honor,
+// before it reaches a store.
+func ValidateMonitorResetRequest(req MonitorResetRequest) error {
+	switch req.Scope {
+	case MonitorResetClients, MonitorResetLatency:
+		if req.Target != "" {
+			return fmt.Errorf("monitor reset scope %q does not take a target", req.Scope)
+		}
+		return nil
+	case MonitorResetRelayLatency:
+		if len(req.Target) > maxMonitorResetTarget {
+			return fmt.Errorf("monitor reset target must not exceed %d bytes", maxMonitorResetTarget)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown monitor reset scope %q", req.Scope)
+	}
+}
+
 // MonitorEndpoint identifies one read-only monitor resource exposed through
 // the authenticated agent API. It is deliberately an enum rather than a URL:
 // neither callers nor the agent server can turn it into an arbitrary proxy.

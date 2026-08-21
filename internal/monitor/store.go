@@ -664,6 +664,45 @@ func (s *Store) ResetIPTrafficForCycle(cycleStart int64) (bool, error) {
 	return cleared, tx.Commit()
 }
 
+// ResetIPTraffic clears the whole per-address history: every tier, and both
+// what this node terminated and what it relayed. The quota-cycle marker is
+// deliberately left alone — it records which cycle the tables describe, and an
+// operator clearing the table is not declaring a new cycle.
+func (s *Store) ResetIPTraffic() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range ipTrafficTables {
+		if _, err := tx.Exec(`DELETE FROM ` + table); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ResetCarrierPingSamples clears the fixed carrier probes' history and leaves
+// the relay probes standing. The two are told apart by the namespace a relay
+// target's ID carries, which is the same thing the dashboard sorts them onto
+// separate pages by.
+func (s *Store) ResetCarrierPingSamples() error {
+	_, err := s.db.Exec(`DELETE FROM ping_samples WHERE target NOT LIKE ? ESCAPE '\'`, relayPingTargetPattern)
+	return err
+}
+
+// ResetRelayPingSamples clears one relay link's probe history, or every relay
+// probe on this node when target is empty. A caller-supplied target is matched
+// exactly, so nothing but the link named is affected.
+func (s *Store) ResetRelayPingSamples(target string) error {
+	if target == "" {
+		_, err := s.db.Exec(`DELETE FROM ping_samples WHERE target LIKE ? ESCAPE '\'`, relayPingTargetPattern)
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM ping_samples WHERE target = ?`, target)
+	return err
+}
+
 // PruneIPTraffic keeps only the busiest addresses. A node facing mobile clients
 // sees a long tail of one-off addresses that can never reach the top list, and
 // dropping them is what keeps the tables small on a 256 MB VPS. Ranking spans

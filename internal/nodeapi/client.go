@@ -294,6 +294,35 @@ func (c *Client) SetTrafficUsage(ctx context.Context, usage TrafficUsageRequest)
 	return decodeTrafficUsageUpdate(resp.Body, usage)
 }
 
+// ResetMonitorHistory asks the Agent to clear one scope of its recorded monitor
+// history. There is nothing to read back: the scope either went or it did not,
+// and what is left is what the dashboard will show on its next poll.
+func (c *Client) ResetMonitorHistory(ctx context.Context, request MonitorResetRequest) error {
+	if err := ValidateMonitorResetRequest(request); err != nil {
+		return err
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := c.newRequest(ctx, http.MethodPost, "/api/monitor/reset", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.readHTTPClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return statusError(resp)
+	}
+	return nil
+}
+
 func decodeTrafficUsage(body io.Reader) (TrafficUsage, error) {
 	const maxTrafficUsageResponse = 4 << 10
 	raw, err := io.ReadAll(io.LimitReader(body, maxTrafficUsageResponse+1))

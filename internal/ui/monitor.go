@@ -54,6 +54,8 @@ const (
 	monitorActionUsage
 	monitorActionEditSpoke
 	monitorActionSpokeUsage
+	monitorActionResetClients
+	monitorActionResetLatency
 	monitorActionStart
 	monitorActionStop
 	monitorActionRestart
@@ -396,6 +398,12 @@ func (tm *monitorManager) activateAction() tea.Cmd {
 			return nil
 		}
 		tm.startSpokeTrafficSelector()
+	case monitorActionResetClients, monitorActionResetLatency:
+		if !tm.canApply() {
+			tm.fieldErr = tm.applyBlocker()
+			return nil
+		}
+		tm.startForm(tm.resetTargetField())
 	case monitorActionLogs:
 		return tm.loadServiceLogsCmd()
 	case monitorActionStart, monitorActionStop, monitorActionRestart:
@@ -616,6 +624,14 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	if tm.action == monitorActionSpokeUsage {
 		go func() {
 			err := applySpokeTrafficUsageRun(tm, context.Background(), logs, progress)
+			ch <- runMsg{done: true, err: err}
+		}()
+		return tm.waitForRun()
+	}
+	if scope, ok := tm.resetScope(); ok {
+		targets := tm.resetTargets()
+		go func() {
+			err := resetMonitorHistoryRun(context.Background(), targets, scope, "", logs, progress)
 			ch <- runMsg{done: true, err: err}
 		}()
 		return tm.waitForRun()
@@ -1005,16 +1021,59 @@ func (tm *monitorManager) confirmView() string {
 			)
 		}
 	}
+	if scope, ok := tm.resetScope(); ok {
+		targets := tm.resetTargets()
+		labels := make([]string, 0, len(targets))
+		for _, target := range targets {
+			labels = append(labels, target.label)
+		}
+		rows = append(rows,
+			summaryRow("Clearing", monitorResetLabel(scope)),
+			summaryRow("Nodes", strconv.Itoa(len(targets))),
+		)
+		for _, label := range labels {
+			rows = append(rows, summaryRow("", label))
+		}
+	}
 	rows = append(rows, summaryBlank())
-	if tm.action == monitorActionSpokeUsage {
+	switch {
+	case tm.action == monitorActionSpokeUsage:
 		rows = append(rows, summaryText("Replaces the selected spoke's current quota-cycle counters and refreshes /monitor data."))
-	} else {
+	case tm.action == monitorActionResetClients:
+		rows = append(rows, summaryText("Deletes the recorded per-address history. Sampling continues, so the table refills from now on. This cannot be undone."))
+	case tm.action == monitorActionResetLatency:
+		rows = append(rows, summaryText("Deletes the recorded carrier probe history. Probing continues, so the chart refills from now on. This cannot be undone."))
+	default:
 		rows = append(rows, summaryText("Updates the monitor state and refreshes /monitor data."))
 	}
 	return flowTitle.Render(titleMonitoring+" · Confirm") + "\n\n" + renderSummary(rows)
 }
 
+// monitorResetLabel names a scope the way the dashboard does, so the confirm
+// screen and the page the operator is about to see agree on what went.
+func monitorResetLabel(scope monitor.ResetScope) string {
+	switch scope {
+	case monitor.ResetScopeClients:
+		return "Client traffic history (Top IPs)"
+	case monitor.ResetScopeLatency:
+		return "Carrier latency history (Latency)"
+	default:
+		return "Relay latency history (Relay)"
+	}
+}
+
 func (tm *monitorManager) doneSummary() string {
+	if scope, ok := tm.resetScope(); ok {
+		targets := tm.resetTargets()
+		rows := []summaryLine{
+			summaryRow("Cleared", monitorResetLabel(scope)),
+			summaryRow("Nodes", strconv.Itoa(len(targets))),
+		}
+		for _, target := range targets {
+			rows = append(rows, summaryRow("", target.label))
+		}
+		return renderSummary(rows)
+	}
 	if tm.action == monitorActionSpokeUsage {
 		rows := []summaryLine{
 			summaryRow("Spoke traffic counters", "updated"),
@@ -1098,6 +1157,9 @@ func (tm *monitorManager) actions() []monitorActionItem {
 		{separator: true, label: "Spokes"},
 		{action: monitorActionEditSpoke, label: "Edit spoke monitor settings"},
 		{action: monitorActionSpokeUsage, label: "Adjust spoke traffic counters"},
+		{separator: true, label: "Recorded data"},
+		{action: monitorActionResetClients, label: "Clear client traffic history"},
+		{action: monitorActionResetLatency, label: "Clear carrier latency history"},
 		{separator: true, label: "Service"},
 		{action: monitorActionStart, label: "Start monitor service"},
 		{action: monitorActionStop, label: "Stop monitor service"},

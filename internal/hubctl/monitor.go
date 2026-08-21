@@ -196,6 +196,20 @@ func (c *Controller) SetTrafficUsage(
 	return c.NewClient(checked).SetTrafficUsage(ctx, req)
 }
 
+// ResetMonitorHistory clears one scope of an installed Spoke's recorded monitor
+// history through its authenticated WireGuard Agent endpoint.
+func (c *Controller) ResetMonitorHistory(ctx context.Context, node nodes.Node, req nodeapi.MonitorResetRequest) error {
+	c.defaults()
+	if !node.Installed {
+		return fmt.Errorf("node %s is not installed", node.EffectiveAlias())
+	}
+	checked, err := c.CheckHealth(ctx, node, io.Discard)
+	if err != nil {
+		return fmt.Errorf("reconcile Agent before clearing monitor history: %w", err)
+	}
+	return c.NewClient(checked).ResetMonitorHistory(ctx, req)
+}
+
 func monitorSourceKey(source monitor.SourceSummary) string {
 	if source.ID != "" {
 		return source.ID

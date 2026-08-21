@@ -226,6 +226,25 @@ func (h *agentHandler) SetTrafficUsage(ctx context.Context, req nodeapi.TrafficU
 	}, nil
 }
 
+// ResetMonitorHistory clears one scope of this node's recorded monitor history.
+// It goes straight to the store rather than through the in-process monitor:
+// what is being cleared is recorded history, not sampler state, and the sampler
+// needs no telling — its next round records the traffic since its last read.
+func (h *agentHandler) ResetMonitorHistory(ctx context.Context, req nodeapi.MonitorResetRequest) error {
+	ctx = nonNilContext(ctx)
+	if err := h.beginMutation(ctx); err != nil {
+		return err
+	}
+	defer h.endMutation()
+	if err := nodeapi.ValidateMonitorResetRequest(req); err != nil {
+		return err
+	}
+	if err := monitor.ResetHistory(h.layout.MonitorDB, monitor.ResetScope(req.Scope), req.Target); err != nil {
+		return fmt.Errorf("clear recorded monitor history: %w", err)
+	}
+	return nil
+}
+
 func (h *agentHandler) currentTrafficUsage(cfg deploy.Config) (monitor.TrafficUsage, error) {
 	if cfg.DeployMonitor && h.monitor != nil {
 		usage, err := h.monitor.trafficUsage()
