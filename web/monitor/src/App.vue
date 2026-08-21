@@ -527,8 +527,13 @@ body {
 .chart-loading { padding: 60px; text-align: center; color: var(--muted); font-size: 15px; }
 
 /* ── Mobile tabs ──────────────────────────────────────────── */
-.mobile-tabs { display: none; }
+/* Five tabs do not fit a phone's width, and letting them push past it made the
+   whole document scroll sideways — so every vertical swipe on the page drifted.
+   The strip scrolls on its own instead, the way the modal toggles already do. */
+.mobile-tabs { display: none; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.mobile-tabs::-webkit-scrollbar { display: none; }
 .mobile-tabs button {
+  flex-shrink: 0; white-space: nowrap;
   border: 1px solid var(--line); background: transparent; border-radius: 10px;
   padding: 8px 16px; font-size: 13px; font-weight: 700; cursor: pointer; color: var(--muted);
 }
