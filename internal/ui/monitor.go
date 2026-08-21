@@ -631,7 +631,7 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	if scope, ok := tm.resetScope(); ok {
 		targets := tm.resetTargets()
 		go func() {
-			err := resetMonitorHistoryRun(context.Background(), targets, scope, "", logs, progress)
+			err := resetMonitorHistoryRun(context.Background(), monitorUILayout(), targets, scope, "", logs, progress)
 			ch <- runMsg{done: true, err: err}
 		}()
 		return tm.waitForRun()

@@ -10,6 +10,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
+	"github.com/C5Hwang/singbox-deploy/internal/paths"
 )
 
 // resetTargetKey is the form field the node picker writes to. The two clearing
@@ -111,6 +112,7 @@ func expandResetTargets(picked string, spokes []nodes.Node) []resetTarget {
 // saying which one is left is more use than clearing none.
 func resetMonitorHistoryRun(
 	ctx context.Context,
+	layout paths.Layout,
 	targets []resetTarget,
 	scope monitor.ResetScope,
 	probeTarget string,
@@ -128,7 +130,7 @@ func resetMonitorHistoryRun(
 			Label: "Clear " + string(scope), Detail: target.label, Status: "running",
 		}
 		deploy.EmitProgress(progress, event)
-		err := clearOneTarget(ctx, target, scope, probeTarget)
+		err := clearOneTarget(ctx, layout, target, scope, probeTarget)
 		if err != nil {
 			event.Status = "fail"
 			event.Err = err
@@ -143,9 +145,9 @@ func resetMonitorHistoryRun(
 	return errors.Join(failures...)
 }
 
-func clearOneTarget(ctx context.Context, target resetTarget, scope monitor.ResetScope, probeTarget string) error {
+func clearOneTarget(ctx context.Context, layout paths.Layout, target resetTarget, scope monitor.ResetScope, probeTarget string) error {
 	if target.hub {
-		return resetHubMonitorHistory(monitorUILayout().MonitorDB, scope, probeTarget)
+		return resetHubMonitorHistory(layout.MonitorDB, scope, probeTarget)
 	}
 	return resetSpokeMonitorHistory(ctx, target.node, nodeapi.MonitorResetRequest{
 		Scope:  nodeapi.MonitorResetScope(scope),

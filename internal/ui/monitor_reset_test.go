@@ -150,7 +150,7 @@ func TestMonitorResetReportsAFailedNodeAndClearsTheRest(t *testing.T) {
 	}
 	targets := expandResetTargets(resetAllNodesOption, testSpokeTrafficUsageNodes()[:2])
 	err := resetMonitorHistoryRun(
-		context.Background(), targets, monitor.ResetScopeClients, "",
+		context.Background(), monitorUILayout(), targets, monitor.ResetScopeClients, "",
 		&logWriter{ch: make(chan runMsg, 16)}, func(deploy.Event) {},
 	)
 	if err == nil || !strings.Contains(err.Error(), "did not answer") {

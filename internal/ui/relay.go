@@ -11,7 +11,10 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
+	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
@@ -33,6 +36,7 @@ const (
 	relayActionAdd relayAction = iota
 	relayActionChange
 	relayActionRemove
+	relayActionResetLatency
 )
 
 var (
@@ -119,6 +123,8 @@ func (rm *relayManager) relayActions() []actionItem[relayAction] {
 		items = append(items,
 			actionItem[relayAction]{action: relayActionChange, label: "Change relay"},
 			actionItem[relayAction]{action: relayActionRemove, label: "Remove relay"},
+			actionItem[relayAction]{separator: true, label: "Recorded data"},
+			actionItem[relayAction]{action: relayActionResetLatency, label: "Clear relay latency history"},
 		)
 	}
 	return items
@@ -245,6 +251,8 @@ func (rm *relayManager) startAction(action relayAction) {
 			return
 		}
 	} else {
+		// Every other action starts from a link that already exists, and a link
+		// is named by the node it fronts.
 		rm.candidates = rm.frontedNodes()
 		if len(rm.candidates) == 0 {
 			rm.fieldErr = "no node has a relay yet"
@@ -291,7 +299,9 @@ func (rm *relayManager) confirmPick() tea.Cmd {
 	if link, found := relaylinks.Find(rm.links, picked.ID); found {
 		rm.previousRelayID = link.RelayID
 	}
-	if rm.action == relayActionRemove {
+	// Neither of these picks a relay: one is withdrawing the link that already
+	// names it, and the other is clearing the history of that same link.
+	if rm.action == relayActionRemove || rm.action == relayActionResetLatency {
 		rm.phase = relayPhaseConfirm
 		return nil
 	}
@@ -341,7 +351,7 @@ func (rm *relayManager) back() {
 		rm.cursor = 0
 		rm.phase = relayPhaseLanding
 	case relayPhaseConfirm:
-		if rm.action == relayActionRemove {
+		if rm.action == relayActionRemove || rm.action == relayActionResetLatency {
 			rm.candidates = rm.frontedNodes()
 			rm.cursor = 0
 			rm.phase = relayPhaseLanding
@@ -397,6 +407,9 @@ func (rm *relayManager) change() relayChange {
 }
 
 func (rm *relayManager) startRun() tea.Cmd {
+	if rm.action == relayActionResetLatency {
+		return rm.startLatencyResetRun()
+	}
 	rm.phase = relayPhaseRunning
 	rm.resetRun(make(chan runMsg, 64))
 	ch := rm.ch
@@ -408,6 +421,57 @@ func (rm *relayManager) startRun() tea.Cmd {
 		ch <- runMsg{done: true, err: err}
 	}()
 	return rm.waitForRun()
+}
+
+// startLatencyResetRun clears one link's probe history. The samples live on the
+// relay, because the relay is what measures the route to its landing nodes, so
+// that is the node the clear is aimed at — named by the link the operator
+// picked, not by a second question.
+func (rm *relayManager) startLatencyResetRun() tea.Cmd {
+	layout := relayUILayout()
+	target, err := relayResetTarget(layout, rm.previousRelayID, rm.nodeName(rm.previousRelayID))
+	if err != nil {
+		rm.fieldErr = err.Error()
+		return nil
+	}
+	rm.phase = relayPhaseRunning
+	rm.resetRun(make(chan runMsg, 64))
+	ch := rm.ch
+	logs := &logWriter{ch: ch}
+	probe := relay.PingTargetID(rm.landingID)
+	go func() {
+		err := resetMonitorHistoryRun(
+			context.Background(), layout, []resetTarget{target},
+			monitor.ResetScopeRelayLatency, probe, logs, runProgressSender(ch),
+		)
+		ch <- runMsg{done: true, err: err}
+	}()
+	return rm.waitForRun()
+}
+
+// relayResetTarget resolves the relay half of a link onto the node a clear runs
+// against: the hub itself, or an installed spoke reached over the overlay.
+func relayResetTarget(layout paths.Layout, relayID, name string) (resetTarget, error) {
+	if relayID == "" {
+		return resetTarget{}, fmt.Errorf("this node has no relay to clear")
+	}
+	if relayID == relaylinks.HubNodeID {
+		return resetTarget{label: name, hub: true}, nil
+	}
+	list, err := nodes.Load(layout)
+	if err != nil {
+		return resetTarget{}, fmt.Errorf("reload spoke registry: %w", err)
+	}
+	for _, node := range list {
+		if node.ID != relayID {
+			continue
+		}
+		if !node.Installed {
+			return resetTarget{}, fmt.Errorf("relay %s is not installed, so it has no recorded history to clear", name)
+		}
+		return resetTarget{label: name, node: node}, nil
+	}
+	return resetTarget{}, fmt.Errorf("relay %s is no longer in the fleet", name)
 }
 
 // applyRelayChange writes the registry entry, reinstalls the data plane on
@@ -469,12 +533,28 @@ func (rm *relayManager) View() string {
 		return commandRunningView(rm, "Relay · Running")
 	case relayPhaseDone:
 		if rm.runErr != nil {
-			return commandFailedView(rm, "Relay change failed")
+			return commandFailedView(rm, rm.failureTitle())
 		}
-		return flowOK.Render("Relay updated") + "\n\n" + renderSummary(rm.summaryRows())
+		return flowOK.Render(rm.successTitle()) + "\n\n" + renderSummary(rm.summaryRows())
 	default:
 		return ""
 	}
+}
+
+// The clearing action changes nothing about the topology, so it must not report
+// that it did.
+func (rm *relayManager) successTitle() string {
+	if rm.action == relayActionResetLatency {
+		return "Relay latency history cleared"
+	}
+	return "Relay updated"
+}
+
+func (rm *relayManager) failureTitle() string {
+	if rm.action == relayActionResetLatency {
+		return "Clearing the relay latency history failed"
+	}
+	return "Relay change failed"
 }
 
 func (rm *relayManager) landingPrompt() string {
@@ -483,6 +563,8 @@ func (rm *relayManager) landingPrompt() string {
 		return "Choose the node to be fronted. Its subscription entries will point at the relay you pick next."
 	case relayActionRemove:
 		return "Choose the node to stop fronting. Its subscription entries go back to its own address."
+	case relayActionResetLatency:
+		return "Choose the fronted node whose latency history you want to clear. Only that one link's probes on its relay are deleted."
 	default:
 		return "Choose the node whose relay you want to change."
 	}
@@ -564,6 +646,14 @@ func (rm *relayManager) confirmView() string {
 
 func (rm *relayManager) summaryRows() []summaryLine {
 	rows := []summaryLine{summaryRow("Landing node", rm.nodeName(rm.landingID))}
+	if rm.action == relayActionResetLatency {
+		return append(rows,
+			summaryRow("Relay", rm.nodeName(rm.previousRelayID)),
+			summaryRow("Clearing", "Relay latency history (Relay)"),
+			summaryBlank(),
+			summaryText("Deletes this link's recorded probes on the relay that carries it. Probing continues, so the chart refills from now on. The forwarding is untouched, and no other link or carrier probe is affected. This cannot be undone."),
+		)
+	}
 	if rm.action == relayActionRemove {
 		rows = append(rows,
 			summaryRow("Relay", rm.nodeName(rm.previousRelayID)+" (removed)"),
