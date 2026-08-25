@@ -109,7 +109,7 @@ function close() {
   emit("close");
 }
 
-const { chartRef, loading } = useTrendChart(load, buildOption, [mode, tzOffsetMinutes], close, [showPeakAverage]);
+const { chartRef, loading } = useTrendChart(load, buildOption, [tzOffsetMinutes], close, [showPeakAverage], [mode]);
 </script>
 
 <template>
