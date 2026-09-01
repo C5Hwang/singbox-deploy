@@ -19,6 +19,10 @@ import type {
 // Every address a node still has is listed; thirty of them fit on a page.
 const PAGE_SIZE = 30;
 const ALL_NODES = "__all__";
+// The ID a relay link names the hub by. A monitor lists the node it runs on as
+// "local", so the two have to be read as one node when a landing is named.
+const HUB_NODE_ID = "hub";
+const LOCAL_NODE = "local";
 
 const props = defineProps<{ summary: Summary | null }>();
 
@@ -100,9 +104,31 @@ function segmentKey(entry: IPTrafficEntry): string {
   return `relay:${entry.landing ?? ""}`;
 }
 
+// Every node the fleet lists, keyed by the ID a relay link names it with. A
+// landing node is named from here rather than from what the relay reported,
+// because the relay only knows the landings it is currently fronting: the hub
+// stands a link down the moment that landing's quota runs out, and the name
+// goes with it while the traffic it already carried stays on the table. Reading
+// the name off the fleet also makes a landing read exactly like the node chips
+// beside it.
+const fleetNames = computed(() => {
+  const names = new Map<string, string>();
+  for (const source of sources.value) {
+    const id = (source.id ?? "").trim().toLowerCase();
+    const name = (source.name ?? "").trim();
+    if (!id || !name) continue;
+    names.set(id, name);
+    if (id === LOCAL_NODE) names.set(HUB_NODE_ID, name);
+  }
+  return names;
+});
+
 function segmentLabel(entry: IPTrafficEntry): string {
   if (!entry.relayed) return "Direct";
-  return entry.landingName || entry.landing || "Unknown landing";
+  const landing = (entry.landing ?? "").trim();
+  // What the relay reported stands in for a landing this fleet does not list,
+  // and the bare ID for one nothing left can name.
+  return fleetNames.value.get(landing.toLowerCase()) || entry.landingName || landing || "Unknown landing";
 }
 
 // Nodes are queried in parallel and each answer is folded in as it lands, so a
@@ -172,9 +198,10 @@ const rows = computed<IPTrafficRow[]>(() => {
         };
         segments.set(key, segment);
       }
-      // The name travels with the traffic, not with the key: one node may know
-      // a landing node's alias while another, asked a moment earlier, did not.
-      if (entry.landingName) segment.label = entry.landingName;
+      // For a landing the fleet cannot name, the name travels with the traffic
+      // rather than with the key: one node may know its alias while another,
+      // asked a moment earlier, did not.
+      if (entry.landingName) segment.label = segmentLabel(entry);
       if (!segment.nodes.includes(name)) segment.nodes.push(name);
       addWindow(segment.cycle, entry.cycle);
       addWindow(segment.today, entry.today);
