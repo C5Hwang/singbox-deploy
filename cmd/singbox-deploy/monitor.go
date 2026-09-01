@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +20,6 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/relay"
-	"github.com/C5Hwang/singbox-deploy/internal/relaylinks"
 )
 
 // runMonitor dispatches the "monitor serve" subcommand that runs the long-lived
@@ -112,26 +110,16 @@ func runMonitor(args []string) error {
 		// The registry is the fleet's answer to "is anything relayed", and the
 		// dashboard hides its relay page entirely when nothing is. It also names
 		// the relays, so the page asks them for their probes instead of asking
-		// the whole fleet and discarding most of the answers.
-		RelayRegistry: func() ([]string, int) {
-			links, err := relaylinks.Load(layout)
+		// the whole fleet and discarding most of the answers, and names the
+		// landing nodes behind them — including the ones whose link is currently
+		// stood down, which a relay no longer probes and could not report.
+		RelayTopology: func() []monitor.RelayLink {
+			links, err := ctrl.RelayTopology()
 			if err != nil {
-				log.Printf("monitor: read relay links: %v", err)
-				return nil, 0
+				log.Printf("monitor: read relay topology: %v", err)
+				return nil
 			}
-			relays := make([]string, 0, len(links))
-			seen := map[string]bool{}
-			for _, link := range links {
-				// One relay commonly fronts several landing nodes, and the
-				// dashboard wants each relay once.
-				id := monitorSourceID(link.RelayID)
-				if id == "" || seen[id] {
-					continue
-				}
-				seen[id] = true
-				relays = append(relays, id)
-			}
-			return relays, len(links)
+			return links
 		},
 		Now: now,
 	}
@@ -140,17 +128,6 @@ func runMonitor(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return m.Run(ctx)
-}
-
-// monitorSourceID maps a relay registry node ID onto the ID the dashboard knows
-// that node by: the hub is its own "local" source there, and a spoke keeps its
-// stable registry ID.
-func monitorSourceID(nodeID string) string {
-	id := strings.TrimSpace(nodeID)
-	if id == relaylinks.HubNodeID {
-		return "local"
-	}
-	return id
 }
 
 func monitorEndpointForPath(path string) (nodeapi.MonitorEndpoint, error) {

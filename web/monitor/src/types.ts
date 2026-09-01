@@ -163,6 +163,29 @@ export function relayTargets(targets: PingTarget[]): PingTarget[] {
   return targets.filter(isRelayTarget);
 }
 
+// The probe ID a relay measures one landing node under. It mirrors the ID the
+// relay mints for that probe, which is what pairs a link the hub reports with
+// the reading that belongs to it.
+export function relayTargetID(landing: string): string {
+  return `${RELAY_TARGET_KIND}:${landing.trim().toLowerCase()}`;
+}
+
+// One fronting relationship, as the hub's registry has it: which relay carries
+// which landing node, and whether it is forwarding right now. A relay only
+// probes what it forwards, so this is the only thing that keeps a stood-down
+// landing node on the relay page instead of dropping it without a word.
+export interface RelayLink {
+  // relay is the dashboard source ID of the node that forwards.
+  relay: string;
+  // landing is the fronted node's registry ID.
+  landing: string;
+  name?: string;
+  forwarding: boolean;
+  // reason says why a link is not forwarding — most often that one end has run
+  // out of traffic for the cycle.
+  reason?: string;
+}
+
 // avgMs is null when every probe was lost, which draws as a gap rather than as
 // zero latency.
 export interface PingLatestPoint {
@@ -234,6 +257,11 @@ export interface Summary {
   // their probes, so a node that relays for nobody — including one that is down
   // — cannot slow down a page it has nothing to do with.
   relayNodes?: string[];
+  // Every link the hub's registry holds, standing or stood down. The relay page
+  // draws a row per link rather than per probe, which is what keeps a landing
+  // node on screen while the hub is not forwarding to it. A spoke's own
+  // dashboard has no registry to send and leaves this out.
+  relayTopology?: RelayLink[];
 }
 
 // Overview-card metric opened in the all-sources trend modal.

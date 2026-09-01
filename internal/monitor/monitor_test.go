@@ -72,10 +72,10 @@ func TestSummaryServesSnapshotWithoutRefreshing(t *testing.T) {
 	}
 }
 
-// The dashboard hides its relay page unless something is relayed, and asks only
-// the relays for their probes once it shows one. Both facts come from here:
-// whether a node relays is a fact about the hub's registry, not about any node's
-// traffic.
+// The dashboard hides its relay page unless something is relayed, asks only the
+// relays for their probes once it shows one, and draws a row per link rather
+// than per probe. All three come from here: what is relayed is a fact about the
+// hub's registry, not about any node's traffic.
 func TestSummaryReportsTheRelayRegistry(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "monitor.db"))
 	if err != nil {
@@ -97,18 +97,37 @@ func TestSummaryReportsTheRelayRegistry(t *testing.T) {
 		return got
 	}
 
-	registry := func() ([]string, int) { return []string{"local", "spoke-a"}, 3 }
-	got := read(Config{Alias: "local", RelayRegistry: registry})
+	// One relay fronting two landing nodes and another fronting one, with one of
+	// the three links stood down: the relays are still two, the links still
+	// three, and the stood-down link is still reported.
+	topology := func() []RelayLink {
+		return []RelayLink{
+			{Relay: "local", Landing: "aaaa", Name: "TW-YINNET", Forwarding: true},
+			{Relay: "local", Landing: "bbbb", Name: "HK-ALPHA", Reason: "landing node is out of quota"},
+			{Relay: "spoke-a", Landing: "cccc", Name: "JP-KAGOYA", Forwarding: true},
+		}
+	}
+	got := read(Config{Alias: "local", RelayTopology: topology})
 	if got.RelayLinks != 3 {
 		t.Fatalf("relayLinks = %d, want 3", got.RelayLinks)
 	}
 	if len(got.RelayNodes) != 2 || got.RelayNodes[0] != "local" || got.RelayNodes[1] != "spoke-a" {
 		t.Fatalf("relayNodes = %#v, want the two relays", got.RelayNodes)
 	}
+	if len(got.RelayTopology) != 3 {
+		t.Fatalf("relayTopology = %#v, want all three links", got.RelayTopology)
+	}
+	// The stood-down link is what the page cannot learn from the probes: the
+	// relay has stopped measuring that landing node entirely.
+	stood := got.RelayTopology[1]
+	if stood.Forwarding || stood.Name != "HK-ALPHA" || stood.Reason != "landing node is out of quota" {
+		t.Fatalf("stood-down link = %#v, want it named and explained", stood)
+	}
 	// A spoke's own monitor has no registry to ask, and neither does a hub
 	// running a unit written before relaying existed.
-	if got := read(Config{Alias: "local"}); got.RelayLinks != 0 || len(got.RelayNodes) != 0 {
-		t.Fatalf("relay registry without one = %d links, %#v nodes, want none", got.RelayLinks, got.RelayNodes)
+	if got := read(Config{Alias: "local"}); got.RelayLinks != 0 || len(got.RelayNodes) != 0 || len(got.RelayTopology) != 0 {
+		t.Fatalf("relay registry without one = %d links, %#v nodes, %#v topology, want none",
+			got.RelayLinks, got.RelayNodes, got.RelayTopology)
 	}
 }
 

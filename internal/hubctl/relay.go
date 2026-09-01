@@ -9,6 +9,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -223,6 +224,102 @@ func (c *Controller) RelayConfigFor(relayNodeID string, links []relaylinks.Link,
 		})
 	}
 	return cfg, nil
+}
+
+// MonitorSourceID maps a relay registry node ID onto the ID the dashboard knows
+// that node by: the hub is its own monitor's "local" source there, and a spoke
+// keeps its stable registry ID.
+func MonitorSourceID(nodeID string) string {
+	id := strings.TrimSpace(nodeID)
+	if strings.EqualFold(id, relaylinks.HubNodeID) {
+		return "local"
+	}
+	return id
+}
+
+// RelayTopology reports every link the registry holds and whether it is
+// forwarding at this moment, for the dashboard's relay page.
+//
+// It is deliberately the whole registry rather than the links that survive into
+// a ruleset. A relay only probes the landing nodes it currently forwards to, so
+// a link that has been stood down — most often because one end ran out of
+// traffic — takes its latency row off the page with it, and the operator is left
+// with a landing node that simply vanished. Reporting the link with the reason
+// it is not forwarding keeps the row, and the row keeps the explanation.
+//
+// The reasons mirror what RelayConfigFor does with the same link, so the page
+// cannot claim a link is standing that the next apply would leave out.
+func (c *Controller) RelayTopology() ([]monitor.RelayLink, error) {
+	c.defaults()
+	links, err := relaylinks.Load(c.Layout)
+	if err != nil {
+		return nil, fmt.Errorf("load relay links: %w", err)
+	}
+	if len(links) == 0 {
+		return nil, nil
+	}
+	endpoints, err := c.RelayEndpoints()
+	if err != nil {
+		return nil, err
+	}
+	// RelayEndpoints answers empty for a hub whose own install state did not
+	// load. An empty list is not evidence that the fleet lost anything, so the
+	// registry is reported as it stands rather than every landing node being
+	// called gone.
+	if len(endpoints) == 0 {
+		out := make([]monitor.RelayLink, 0, len(links))
+		for _, link := range links {
+			out = append(out, monitor.RelayLink{
+				Relay:      MonitorSourceID(link.RelayID),
+				Landing:    link.LandingID,
+				Forwarding: true,
+			})
+		}
+		return out, nil
+	}
+	// An unreadable snapshot means "no evidence anything is spent", the same
+	// benefit of the doubt the ruleset and the publication give.
+	available, err := c.RelayAvailable()
+	if err != nil {
+		available = func(string) bool { return true }
+	}
+	out := make([]monitor.RelayLink, 0, len(links))
+	for _, link := range links {
+		landing, known := RelayEndpointByID(endpoints, link.LandingID)
+		entry := monitor.RelayLink{
+			Relay:      MonitorSourceID(link.RelayID),
+			Landing:    link.LandingID,
+			Name:       landing.Name,
+			Forwarding: true,
+		}
+		switch {
+		case !known:
+			entry.Reason = "landing node is no longer in the fleet"
+		case !available(link.LandingID):
+			entry.Reason = "landing node is out of quota"
+		case !available(link.RelayID):
+			entry.Reason = "relay is out of quota"
+		case strings.TrimSpace(landing.Domain) == "":
+			entry.Reason = "landing node has no address to forward to"
+		case !servesAny(landing, link.Forwards):
+			entry.Reason = "landing node serves none of the forwarded protocols"
+		}
+		entry.Forwarding = entry.Reason == ""
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// servesAny reports whether the landing node still listens on any protocol the
+// link forwards. A protocol it has dropped is left out of the ruleset, and a
+// link that loses every one of them is not forwarded at all.
+func servesAny(landing RelayEndpoint, forwards []relaylinks.Forward) bool {
+	for _, f := range forwards {
+		if _, served := landing.ProtocolPort(f.Protocol); served {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveHostIPv4 records the landing node's address at the moment the link is

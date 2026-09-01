@@ -9,6 +9,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/config"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -226,5 +227,94 @@ func TestApplyRelayRefusesANodeThatIsNotInstalled(t *testing.T) {
 	err := (&Controller{Layout: layout, ResolveHostIPv4: fakeResolve}).ApplyRelayFor(context.Background(), "aa11", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("ApplyRelayFor = %v", err)
+	}
+}
+
+// A landing node that runs out of traffic loses its forwarding rules, and with
+// them the relay's probe of it. The topology is what keeps the dashboard able to
+// show that landing node at all while it waits for the cycle to reset.
+func TestRelayTopologyKeepsAStoodDownLink(t *testing.T) {
+	layout, _ := relayTestHub(t)
+	for _, n := range []nodes.Node{
+		{
+			ID: "aa11", Alias: "tokyo", Domain: "relay.example.com", WGIP: "10.90.0.2",
+			Token: "tok", AgentPort: 19091, Installed: true, MonitorPort: 18081,
+			EnabledProtocols: []string{string(config.ProtocolAnyTLS)}, AnyTLSPort: 31000,
+		},
+		{
+			ID: "bb22", Alias: "osaka", Domain: "landing.example.com", WGIP: "10.90.0.3",
+			Token: "tok", AgentPort: 19092, Installed: true, MonitorPort: 18082,
+			EnabledProtocols: []string{string(config.ProtocolAnyTLS)}, AnyTLSPort: 31001,
+		},
+	} {
+		if err := nodes.Add(layout, n); err != nil {
+			t.Fatalf("register node %s: %v", n.ID, err)
+		}
+	}
+	for _, link := range []relaylinks.Link{
+		{LandingID: "bb22", RelayID: "aa11", Forwards: []relaylinks.Forward{
+			{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34567},
+		}},
+		{LandingID: relaylinks.HubNodeID, RelayID: "aa11", Forwards: []relaylinks.Forward{
+			{Protocol: config.ProtocolHysteria2, Network: "udp", RelayPort: 34568},
+		}},
+	} {
+		if err := relaylinks.Set(layout, link); err != nil {
+			t.Fatalf("set link for %s: %v", link.LandingID, err)
+		}
+	}
+	writeSpokeUsage(t, layout, monitor.SourceSummary{ID: "bb22", TotalLimitBytes: 100, TotalRemainingBytes: 0})
+
+	topology, err := (&Controller{Layout: layout}).RelayTopology()
+	if err != nil {
+		t.Fatalf("RelayTopology: %v", err)
+	}
+	if len(topology) != 2 {
+		t.Fatalf("topology = %#v, want both links", topology)
+	}
+	byLanding := map[string]monitor.RelayLink{}
+	for _, link := range topology {
+		byLanding[link.Landing] = link
+	}
+	stood := byLanding["bb22"]
+	if stood.Forwarding || stood.Reason != "landing node is out of quota" {
+		t.Fatalf("the exhausted landing node = %#v, want it reported as stood down", stood)
+	}
+	// Named even though nothing forwards to it: the name is what the row on the
+	// relay page is headed with, and it is exactly the one it had while it stood.
+	if stood.Name != "osaka" || stood.Relay != "aa11" {
+		t.Fatalf("the exhausted landing node = %#v, want it named and attributed", stood)
+	}
+	// The relay's other link is untouched by its neighbour running out.
+	if hub := byLanding[relaylinks.HubNodeID]; !hub.Forwarding || hub.Name != "HUB" || hub.Reason != "" {
+		t.Fatalf("the hub's link = %#v, want it still forwarding", hub)
+	}
+}
+
+// The hub is its own monitor's "local" source, so a link it relays for has to be
+// attributed to that ID rather than to the registry's name for it, or the page
+// would ask a source that does not exist.
+func TestRelayTopologyNamesTheHubAsTheLocalSource(t *testing.T) {
+	layout, _ := relayTestHub(t)
+	if err := nodes.Add(layout, nodes.Node{
+		ID: "bb22", Alias: "osaka", Domain: "landing.example.com", WGIP: "10.90.0.3",
+		Token: "tok", AgentPort: 19092, Installed: true, MonitorPort: 18082,
+		EnabledProtocols: []string{string(config.ProtocolAnyTLS)}, AnyTLSPort: 31001,
+	}); err != nil {
+		t.Fatalf("register node: %v", err)
+	}
+	if err := relaylinks.Set(layout, relaylinks.Link{
+		LandingID: "bb22", RelayID: relaylinks.HubNodeID,
+		Forwards: []relaylinks.Forward{{Protocol: config.ProtocolAnyTLS, Network: "tcp", RelayPort: 34567}},
+	}); err != nil {
+		t.Fatalf("set link: %v", err)
+	}
+
+	topology, err := (&Controller{Layout: layout}).RelayTopology()
+	if err != nil {
+		t.Fatalf("RelayTopology: %v", err)
+	}
+	if len(topology) != 1 || topology[0].Relay != "local" {
+		t.Fatalf("topology = %#v, want the hub reported as the local source", topology)
 	}
 }

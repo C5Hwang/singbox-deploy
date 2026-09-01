@@ -80,11 +80,11 @@ type Config struct {
 	// destination. It is read once per sample round like ExtraPingTargets; nil
 	// stands for a node that never relays.
 	RelayForwards func() []RelayForward
-	// RelayRegistry reports the fleet's relay topology: the dashboard source IDs
-	// of the nodes that front another node, and how many nodes are fronted in
-	// total. Only the hub has a relay registry to answer from; a spoke leaves it
+	// RelayTopology reports the fleet's relay links: which node fronts which,
+	// what the fronted node is called, and whether the link is forwarding right
+	// now. Only the hub has a relay registry to answer from; a spoke leaves it
 	// nil, and its dashboard simply never offers the relay page.
-	RelayRegistry func() (relays []string, links int)
+	RelayTopology func() []RelayLink
 	Now           func() time.Time
 }
 
@@ -240,6 +240,36 @@ type summary struct {
 	// makes an unrelated node that is down slow down a page it has nothing to
 	// do with.
 	RelayNodes []string `json:"relayNodes,omitempty"`
+	// RelayTopology is every link the registry holds, standing or stood down.
+	// The relay page draws its rows from this rather than from the probes alone:
+	// a relay only probes what it currently forwards, so a link the hub has
+	// stood down would otherwise take the landing node off the page entirely,
+	// exactly when an operator most wants to see it.
+	RelayTopology []RelayLink `json:"relayTopology,omitempty"`
+}
+
+// RelayLink is one fronting relationship as the dashboard reads it: which relay
+// carries which landing node, what that landing node is called, and whether the
+// link is forwarding at this moment.
+//
+// A link is reported whether or not it is standing. The hub stands one down as
+// soon as either end runs out of traffic, and withdrawing the forwarding rules
+// takes the relay's probe of that landing node with them; reporting the link
+// anyway is what lets the page keep the row and say why it stopped reading,
+// rather than losing a landing node with no explanation at all.
+type RelayLink struct {
+	// Relay is the dashboard source ID of the node that forwards.
+	Relay string `json:"relay"`
+	// Landing is the fronted node's registry ID, which is also what the relay's
+	// probe of that node is identified by.
+	Landing string `json:"landing"`
+	// Name is the landing node's display alias, empty for a node the fleet can
+	// no longer name.
+	Name string `json:"name,omitempty"`
+	// Forwarding reports whether the relay is carrying this link right now.
+	Forwarding bool `json:"forwarding"`
+	// Reason says why a link is not forwarding, in the words the page shows.
+	Reason string `json:"reason,omitempty"`
 }
 
 // SourceSummary is one traffic source shown by the monitor UI.
@@ -300,7 +330,8 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 	for i := range sources {
 		sources[i].MonitorURL = ""
 	}
-	relayNodes, relayLinks := m.relayRegistry()
+	relayTopology := m.relayTopology()
+	relayNodes, relayLinks := relayRegistry(relayTopology)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(summary{
 		InUsedBytes:         local.InUsedBytes,
@@ -317,17 +348,40 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 		Sources:             sources,
 		RelayLinks:          relayLinks,
 		RelayNodes:          relayNodes,
+		RelayTopology:       relayTopology,
 	})
 }
 
-// relayRegistry reports which sources relay and how many nodes are relayed, or
-// nothing on a deployment that has no registry to ask — a spoke's own monitor,
-// or one built before relaying existed.
-func (m *Monitor) relayRegistry() ([]string, int) {
-	if m.cfg.RelayRegistry == nil {
-		return nil, 0
+// relayTopology reads the fleet's relay links, or nothing on a deployment that
+// has no registry to ask — a spoke's own monitor, or one built before relaying
+// existed.
+func (m *Monitor) relayTopology() []RelayLink {
+	if m.cfg.RelayTopology == nil {
+		return nil
 	}
-	return m.cfg.RelayRegistry()
+	return m.cfg.RelayTopology()
+}
+
+// relayRegistry reduces the topology to what the dashboard's shell needs: the
+// sources to ask for probes, and how many nodes are fronted at all. A stood-down
+// link counts on both: its relay is still the node that answers for it, and the
+// relay page is still worth offering while it is down.
+func relayRegistry(links []RelayLink) ([]string, int) {
+	relays := make([]string, 0, len(links))
+	seen := make(map[string]struct{}, len(links))
+	for _, link := range links {
+		// One relay commonly fronts several landing nodes, and the dashboard
+		// wants each relay once.
+		if link.Relay == "" {
+			continue
+		}
+		if _, duplicate := seen[link.Relay]; duplicate {
+			continue
+		}
+		seen[link.Relay] = struct{}{}
+		relays = append(relays, link.Relay)
+	}
+	return relays, len(links)
 }
 
 func (m *Monitor) refreshRemoteSources(ctx context.Context) {
