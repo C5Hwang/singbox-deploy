@@ -295,10 +295,9 @@ function statusLabel(node: RelayNode): string {
           <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
           <div>
             <h2 class="node-name">{{ node.name }}</h2>
-            <p class="node-meta">
-              <span>{{ pairCount(node) }}</span>
-              <span>{{ statusLabel(node) }}</span>
-            </p>
+            <!-- The rows below already say which landing answered and which is
+                 stood down; the tally stays on the dot as its tooltip. -->
+            <p class="node-meta"><span>{{ pairCount(node) }}</span></p>
           </div>
         </div>
         <p class="node-latency" :style="{ color: msColor(medianLatency(node)) }">{{ msText(medianLatency(node)) }}</p>
