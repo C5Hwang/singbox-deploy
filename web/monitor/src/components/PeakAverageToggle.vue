@@ -30,24 +30,21 @@ const emit = defineEmits<{ "update:modelValue": [value: boolean] }>();
 <style scoped>
 .pa-toggle {
   display: inline-flex; align-items: center; gap: 7px;
-  border: 1px solid var(--line); border-radius: 10px; padding: 8px 13px;
-  background: white; color: var(--muted);
-  font: inherit; font-size: 13px; font-weight: 700; line-height: 1;
+  border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px;
+  background: var(--surface-2); color: var(--muted);
+  font: inherit; font-size: 12.5px; font-weight: 700; line-height: 1;
   cursor: pointer; white-space: nowrap;
-  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+  transition: background-color var(--dur) ease, color var(--dur) ease, border-color var(--dur) ease;
 }
 .pa-toggle svg { width: 15px; height: 15px; flex-shrink: 0; }
-.pa-toggle:hover:not(.active) { background: #f0f4f8; color: var(--text); }
+.pa-toggle:hover:not(.active) { color: var(--text); border-color: var(--line-strong); }
 /* On is the accent, the same way every other toggle on the dashboard says on. */
 .pa-toggle.active {
-  background: #edf4ff; color: var(--blue);
-  border-color: color-mix(in srgb, var(--blue), transparent 55%);
+  background: var(--accent-soft); color: var(--accent);
+  border-color: var(--accent-border);
 }
-@media (prefers-reduced-motion: reduce) {
-  .pa-toggle { transition: none; }
-}
-@media (max-width: 720px) {
-  .pa-toggle { padding: 7px 11px; font-size: 12px; }
+@container app (max-width: 759px) {
+  .pa-toggle { padding: 7px 10px; font-size: 12px; }
   .pa-toggle span { display: none; }
 }
 </style>

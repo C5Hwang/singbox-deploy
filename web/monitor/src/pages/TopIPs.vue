@@ -474,16 +474,18 @@ const modalSources = computed(() =>
     </article>
   </section>
 
-  <p v-if="disabledNodes.length" class="no-data">
+  <p v-if="disabledNodes.length" class="notice">
     Per-IP accounting is unavailable on {{ disabledNodes.join(", ") }}: the host has no nftables utility.
   </p>
-  <p v-if="unavailableNodes.length" class="no-data">
+  <p v-if="unavailableNodes.length" class="notice">
     No per-IP data from {{ unavailableNodes.join(", ") }}.
   </p>
 
   <section class="grid sources">
     <article class="card span-12 table-card">
-      <p v-if="pending && rows.length === 0" class="no-data">Loading per-IP traffic...</p>
+      <div v-if="pending && rows.length === 0" class="skeleton-card table-wait" aria-hidden="true">
+        <div v-for="n in 6" :key="n" class="skeleton" :style="{ width: `${92 - n * 6}%` }"></div>
+      </div>
       <p v-else-if="loadError" class="no-data">Per-IP traffic is unavailable: {{ loadError }}.</p>
       <p v-else-if="visible.length === 0" class="no-data">
         No client traffic recorded in this quota cycle yet.
@@ -570,7 +572,7 @@ const modalSources = computed(() =>
                   <span class="country-name">{{ placeOf(row.ip).country || "—" }}</span>
                 </td>
                 <td class="place">{{ placeOf(row.ip).city || "—" }}</td>
-                <td v-if="selected === ALL_NODES" class="nodes">
+                <td v-if="selected === ALL_NODES" class="nodes-cell">
                   <span v-for="node in row.nodes" :key="node" class="node-chip">{{ node }}</span>
                 </td>
                 <template v-for="w in windows" :key="w.key">
@@ -599,7 +601,7 @@ const modalSources = computed(() =>
                 </td>
                 <td class="country"></td>
                 <td class="place"></td>
-                <td v-if="selected === ALL_NODES" class="nodes">
+                <td v-if="selected === ALL_NODES" class="nodes-cell">
                   <span v-for="node in segment.nodes" :key="node" class="node-chip">{{ node }}</span>
                 </td>
                 <template v-for="w in windows" :key="w.key">
@@ -736,11 +738,17 @@ const modalSources = computed(() =>
    paints straight over it, however high the popover's own z-index is. */
 .topips-head {
   position: relative; z-index: 5;
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px;
+  padding: 14px 18px;
 }
-.head-figures { min-width: 0; }
-.head-figures .metric-detail { margin-top: 5px; }
-.table-card { padding: 8px 8px 12px; overflow: hidden; }
+.head-figures { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; }
+.head-figures .metric-value { font-size: 18px; }
+.head-figures .metric-detail { margin: 0; font-family: var(--font-mono); font-size: 11.5px; font-weight: 500; }
+.notice { margin: 12px 2px 0; color: var(--muted); font-size: 13px; }
+.notice + .sources, .notice + .notice + .sources { margin-top: 12px; }
+.table-card { padding: 6px 6px 12px; overflow: hidden; }
+.table-wait { padding: 10px 12px; gap: 14px; }
+.table-wait .skeleton { height: 14px; }
 .table-scroll { overflow-x: auto; }
 /* Fixed layout so the colgroup widths below are the layout, not a hint the
    browser may overrule: with auto layout a long country name simply widened its
@@ -754,19 +762,19 @@ const modalSources = computed(() =>
    window names sit in their own chips over the columns they cover. */
 .ip-table thead th {
   position: sticky; top: 0; z-index: 2;
-  background: var(--card);
+  background: var(--surface-solid);
 }
-.band th { padding: 12px 0 2px; border: 0; }
+.band th { padding: 10px 0 2px; border: 0; }
 .band-label { text-align: center; }
 .band-label span {
   display: inline-block; padding: 3px 12px;
-  border-radius: 999px; background: #e3ecfb; color: #35507d;
-  font-size: 10px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase;
+  border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
 }
 .heads th {
-  padding: 8px 7px 11px; color: #63708a; font-size: 11px; font-weight: 800;
-  letter-spacing: 0.05em; text-transform: uppercase; text-align: left; white-space: nowrap;
-  box-shadow: inset 0 -1px 0 #dde5f2;
+  padding: 8px 7px 10px; color: var(--muted); font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.08em; text-transform: uppercase; text-align: left; white-space: nowrap;
+  box-shadow: inset 0 -1px 0 var(--line-strong);
 }
 .heads th.num { text-align: right; }
 /* Groups are separated by air, not by lines. */
@@ -779,7 +787,7 @@ const modalSources = computed(() =>
    carries a figure beside it. The extra room comes out of the two place
    columns, whose names ellipsize gracefully, rather than out of the numeric
    columns, which clip. */
-.c-address { width: 232px; }
+.c-address { width: 236px; }
 .c-rank { width: 34px; }
 .c-country { width: 112px; }
 .c-place { width: 92px; }
@@ -793,62 +801,57 @@ const modalSources = computed(() =>
 .sort-chip {
   display: inline-flex; align-items: center; gap: 2px;
   padding: 4px 7px; border-radius: 8px;
-  transition: background 0.15s, color 0.15s;
+  transition: background-color var(--dur) ease, color var(--dur) ease;
 }
 .sortable .glyph { font-size: 13px; font-weight: 700; line-height: 1; }
-.sortable:hover .sort-chip { background: #e6eefb; color: var(--blue); }
-.sortable.sorted .sort-chip { background: var(--blue); color: white; }
-.caret { display: inline-block; width: 8px; font-size: 9px; }
+.sortable:hover .sort-chip { background: var(--accent-soft); color: var(--accent); }
+.sortable.sorted .sort-chip { background: var(--accent); color: white; }
+.caret { display: inline-block; width: 8px; font-size: 9px; transition: transform var(--dur) var(--ease); }
 .caret.up { display: inline-block; transform: rotate(180deg); }
 
-/* Same vocabulary as the sidebar's active item and the filter chips: white
-   surface, hairline border, a soft blue wash for the current page rather than a
-   solid block that shouts louder than the table it belongs to. */
+/* Same vocabulary as the sidebar's active item and the filter chips: a soft
+   accent wash for the current page rather than a solid block that shouts louder
+   than the table it belongs to. */
 .pager {
-  display: flex; align-items: center; justify-content: center; gap: 6px;
-  margin: 16px 0 4px; padding-top: 16px; border-top: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px;
+  margin: 14px 0 2px; padding-top: 14px; border-top: 1px solid var(--line);
 }
 .page-num, .page-step {
   min-width: 34px; height: 34px; padding: 0 10px;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--line); border-radius: 11px;
-  background: white; color: #5f6b7e;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface-2); color: var(--muted);
   font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
-  cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  cursor: pointer; transition: background-color var(--dur) ease, color var(--dur) ease, border-color var(--dur) ease;
 }
 .page-step { font-size: 17px; line-height: 1; }
-.page-num:hover:not(.on), .page-step:hover:not(:disabled) { background: #f6f9fd; color: var(--text); }
-.page-num.on {
-  background: #edf4ff; color: var(--blue);
-  border-color: color-mix(in srgb, var(--blue), transparent 55%);
-}
-.page-step:disabled { color: #ccd4e2; border-color: #eef2f7; cursor: default; }
+.page-num:hover:not(.on), .page-step:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+.page-num.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-border); }
+.page-step:disabled { color: var(--faint); opacity: 0.6; cursor: default; }
 .page-gap { color: var(--muted); font-size: 13px; font-weight: 700; padding: 0 2px; }
 
-.ip-table td { padding: 10px 7px; border-top: 1px solid var(--line); white-space: nowrap; }
-.ip-row { cursor: pointer; transition: background 0.15s; }
-.ip-row:hover { background: #f6f9fd; }
-.rank { width: 30px; color: var(--muted); font-weight: 750; font-variant-numeric: tabular-nums; text-align: right; padding-right: 4px; }
+.ip-table td { padding: 9px 7px; border-top: 1px solid var(--line); white-space: nowrap; }
+.ip-row { cursor: pointer; transition: background-color var(--dur) ease; }
+.ip-row:hover { background: var(--hover); }
+.rank { width: 30px; color: var(--faint); font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; padding-right: 4px; }
 
 /* The address cell doubles as the rank bar: a tint sized to the row's share of
    the leading value, so the shape of the distribution is visible without a
    column of its own. It stays a table cell — a flex cell would drop out of the
    column grid — so the column is simply sized for its longest content. */
-.address { position: relative; font-weight: 750; font-variant-numeric: tabular-nums; }
+.address { position: relative; font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-strong); }
 .address::before {
-  content: ""; position: absolute; left: 4px; top: 4px; bottom: 4px;
+  content: ""; position: absolute; left: 4px; top: 5px; bottom: 5px;
   width: var(--share); border-radius: 5px;
-  background: linear-gradient(90deg, rgba(37, 99, 235, 0.13), rgba(37, 99, 235, 0.03));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 22%, transparent), color-mix(in srgb, var(--accent) 4%, transparent));
+  transition: width 0.5s var(--ease);
 }
 .address .ip, .address .relay-chip, .address .twisty { position: relative; }
 
 /* The disclosure sits in the address cell rather than in a column of its own:
    a column would be blank on every row that has nothing to open, and most rows
    have nothing to open. A row without one still reserves its width, so the
-   addresses read as one column rather than as two ragged ones.
-
-   These are qualified by the table because the cell padding they adjust is set
-   by `.ip-table td`, which outranks a bare class. */
+   addresses read as one column rather than as two ragged ones. */
 .twisty, .twisty-space {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; margin-right: 3px;
@@ -856,100 +859,100 @@ const modalSources = computed(() =>
 }
 .twisty {
   padding: 0; border: 0; border-radius: 6px;
-  background: transparent; color: #93a1b8;
-  cursor: pointer; transition: background 0.15s, color 0.15s, transform 0.15s;
+  background: transparent; color: var(--faint);
+  cursor: pointer; transition: background-color var(--dur) ease, color var(--dur) ease, transform var(--dur) var(--ease);
 }
 .twisty svg { width: 13px; height: 13px; }
-.twisty:hover { background: #e6eefb; color: var(--blue); }
-.twisty.open { transform: rotate(90deg); color: var(--blue); }
+.twisty:hover { background: var(--accent-soft); color: var(--accent); }
+.twisty.open { transform: rotate(90deg); color: var(--accent); }
 .ip-table td.address { padding-left: 4px; }
 /* Indented past where the addresses above them start, so a breakdown line can
    never be mistaken for a client of its own. */
-.ip-table td.sub-address { padding-left: 34px; font-weight: 650; }
+.ip-table td.sub-address { padding-left: 34px; font-weight: 500; font-family: var(--font-sans); font-size: 13px; }
 
 /* The breakdown is the same table, half a step back: no share bar, a quieter
    surface, and a hairline that ties each line to the row it came out of rather
    than separating it from one. */
-.sub-row > td { background: #fafcff; border-top: 1px solid #eef3fa; }
-.sub-row:hover > td { background: #f2f7fe; }
+.sub-row > td { background: var(--surface-2); border-top: 1px solid var(--line); animation: fadeIn 0.2s ease; }
+.sub-row:hover > td { background: var(--hover); }
 .sub-address::before { content: none; }
-.strand { display: inline-block; width: 15px; color: #b3c0d4; font-weight: 800; }
-.strand.relayed { color: #d3922b; }
-.strand-label { color: #55637a; }
-.country, .place, .nodes { color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.strand { display: inline-block; width: 15px; color: var(--faint); font-weight: 800; }
+.strand.relayed { color: var(--orange); }
+.strand-label { color: var(--muted); }
+.country, .place, .nodes-cell { color: var(--muted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
 .address, .num { overflow: hidden; text-overflow: ellipsis; }
 .country { display: flex; align-items: center; gap: 7px; }
 .flag { font-size: 15px; line-height: 1; flex-shrink: 0; }
 .country-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-chip {
   display: inline-block; margin-right: 4px; padding: 2px 7px;
-  border-radius: 999px; background: #f0f4f9; color: #5f6b7e;
-  font-size: 11px; font-weight: 700;
+  border-radius: 999px; background: var(--gray-soft); color: var(--muted);
+  font-size: 11px; font-weight: 650;
 }
 /* Same chip vocabulary as the window bands, in a warm tint of its own: part of
    this row is traffic the fleet forwarded rather than terminated, and the chip
    says how much of it in the same cell the table is ranked by. */
 .relay-chip {
   margin-left: 5px; padding: 2px 6px;
-  border-radius: 999px; background: #fdf0dc; color: #955d10;
-  font-size: 9px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  border-radius: 999px; background: var(--amber-soft); color: var(--orange);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase;
   font-variant-numeric: tabular-nums;
 }
-.num { text-align: right; font-variant-numeric: tabular-nums; color: #5f6b7e; }
-.num.strong { font-weight: 800; color: var(--text); }
-td.num.sorted { color: var(--blue); }
+.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-family: var(--font-mono); font-size: 12.5px; }
+.num.strong { font-weight: 700; color: var(--text); }
+td.num.sorted { color: var(--accent); }
 
 /* ── Cards ────────────────────────────────────────────────────
    The card list is the same ranking at a width where the table cannot be one.
    Only one of the two is ever in the document flow, so the page never carries
    a horizontal scroller a phone has to fight. */
-.ip-cards { display: none; flex-direction: column; gap: 10px; padding: 4px; }
+.ip-cards { display: none; flex-direction: column; gap: 8px; padding: 4px; }
 
 /* Column headers are what sorts the table; a card list has none, so the same
    sort state gets two chip groups. The window group only ever selects — tapping
    the direction already chosen is what reverses the order, so re-picking the
    window you are already on cannot silently flip the ranking. */
-.card-sort { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }
-.card-sort .toggle-group button { min-height: 44px; }
+.card-sort { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.card-sort .toggle-group button { min-height: 38px; }
 .card-sort .caret { width: auto; margin-left: 3px; font-size: 9px; }
 
 .ip-card {
   display: flex; flex-direction: column;
-  border: 1px solid var(--line); border-radius: 14px; background: white;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2);
   overflow: hidden;
 }
 /* The head, the place and the share bar are one target: the whole summary
    opens the whole address's chart. */
 .card-main {
   display: flex; flex-direction: column; gap: 7px;
-  padding: 13px 14px 12px; border: 0; background: transparent;
-  font: inherit; text-align: left; cursor: pointer;
-  transition: background 0.15s;
+  padding: 12px 13px 11px; border: 0; background: transparent;
+  font: inherit; text-align: left; cursor: pointer; color: inherit;
+  transition: background-color var(--dur) ease;
 }
-.card-main:active { background: #f2f7fe; }
+.card-main:active { background: var(--hover); }
 .card-head { display: flex; align-items: center; gap: 9px; }
 .card-rank {
-  min-width: 20px; color: var(--muted);
-  font-size: 12px; font-weight: 750; font-variant-numeric: tabular-nums;
+  min-width: 20px; color: var(--faint);
+  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
 }
 .card-ip {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 15px; font-weight: 780; font-variant-numeric: tabular-nums; color: var(--text);
+  font-family: var(--font-mono); font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text-strong);
 }
 .card-value {
-  font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--blue);
+  font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--accent);
 }
-.card-go { width: 14px; height: 14px; flex-shrink: 0; color: #b3c0d4; }
+.card-go { width: 14px; height: 14px; flex-shrink: 0; color: var(--faint); }
 .card-place {
   display: flex; align-items: center; gap: 7px; min-width: 0;
-  color: var(--muted); font-size: 12.5px; font-weight: 600;
+  color: var(--muted); font-size: 12.5px; font-weight: 500;
 }
 .card-place-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The table draws this behind the address; a card has room to give the share of
    the ranking a rule of its own. */
 .card-share {
   height: 4px; border-radius: 999px;
-  background: linear-gradient(90deg, rgba(37, 99, 235, 0.55), rgba(37, 99, 235, 0.16));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 65%, transparent), color-mix(in srgb, var(--accent) 18%, transparent));
   width: var(--share); min-width: 3px;
 }
 
@@ -957,37 +960,40 @@ td.num.sorted { color: var(--blue); }
    landing node's chart without a table cell to hit. */
 .card-strand {
   display: flex; align-items: center; gap: 9px;
-  min-height: 44px; padding: 0 14px;
-  border: 0; border-top: 1px solid #eef3fa; background: #fafcff;
-  font: inherit; text-align: left; cursor: pointer;
-  transition: background 0.15s;
+  min-height: 42px; padding: 0 13px;
+  border: 0; border-top: 1px solid var(--line); background: transparent;
+  font: inherit; text-align: left; cursor: pointer; color: inherit;
+  transition: background-color var(--dur) ease;
 }
-.card-strand:active { background: #eef4fd; }
+.card-strand:active { background: var(--hover); }
 .card-strand .strand-label {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 13px; font-weight: 650;
+  font-size: 13px; font-weight: 600;
 }
 .strand-value {
-  font-size: 13px; font-weight: 750; font-variant-numeric: tabular-nums; color: #47536a;
+  font-family: var(--font-mono); font-size: 12.5px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text);
 }
 
 /* The two directions the card is not ranked by. They are data, not a control,
    so they carry no press state. */
 .card-figures {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px;
-  padding: 9px 14px 10px; border-top: 1px solid #eef3fa;
-  color: var(--muted); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+  padding: 8px 13px 9px; border-top: 1px solid var(--line);
+  color: var(--muted); font-family: var(--font-mono); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums;
 }
 .card-figure .glyph { margin-right: 3px; font-weight: 800; }
 .card-nodes { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px; }
 .card-nodes .node-chip { margin-right: 0; }
 
-@media (max-width: 720px) {
+/* The table needs its nine columns; below that width the same ranking is a
+   list of cards. The card's own width decides, so the switch happens where the
+   table actually stops fitting rather than at a guess about the device. */
+@container app (max-width: 759px) {
   .table-scroll { display: none; }
   .ip-cards { display: flex; }
-  .table-card { padding: 8px; }
+  .table-card { padding: 6px; }
   /* The head card stacks, so its picker no longer has a row to share. */
   .topips-head { align-items: stretch; }
-  .menu-picker .menu-pop { right: auto; left: 0; width: min(280px, calc(100vw - 64px)); }
+  .menu-picker .menu-pop { right: auto; left: 0; width: min(280px, calc(100cqw - 64px)); }
 }
 </style>

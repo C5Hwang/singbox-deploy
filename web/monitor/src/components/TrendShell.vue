@@ -34,7 +34,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="modal-backdrop" @click.self="emit('close')">
-    <div class="modal-content">
+    <div class="modal-content" role="dialog" aria-modal="true" :aria-label="title">
       <button class="close-btn" @click="emit('close')" aria-label="Close">&times;</button>
       <div class="modal-header">
         <div>
@@ -63,12 +63,30 @@ const emit = defineEmits<{
            carrier and city filters are the only ones so far. -->
       <slot name="filters" />
 
-      <div v-if="loading" class="chart-loading">Loading trend data...</div>
-      <div v-else-if="error" class="chart-loading">{{ error }}</div>
-      <!-- Hidden rather than dropped: the chart is initialised into this
-           element once, and unmounting it would take the ECharts instance with
-           it. -->
-      <div v-show="!loading && !error"><slot /></div>
+      <div class="modal-body">
+        <div v-if="loading" class="chart-loading">
+          <div class="chart-wait" aria-hidden="true"><span></span><span></span><span></span></div>
+          Loading trend data...
+        </div>
+        <div v-else-if="error" class="chart-loading">{{ error }}</div>
+        <!-- Hidden rather than dropped: the chart is initialised into this
+             element once, and unmounting it would take the ECharts instance
+             with it. -->
+        <div v-show="!loading && !error" class="chart-frame"><slot /></div>
+      </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Three bars that rise in turn: a chart's own shape, waiting. */
+.chart-wait { display: flex; justify-content: center; align-items: flex-end; gap: 5px; height: 26px; margin-bottom: 14px; }
+.chart-wait span {
+  width: 6px; height: 10px; border-radius: 3px; background: var(--accent);
+  animation: waitBar 1s var(--ease) infinite;
+}
+.chart-wait span:nth-child(2) { animation-delay: 0.15s; }
+.chart-wait span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes waitBar { 0%, 100% { height: 8px; opacity: 0.45 } 50% { height: 24px; opacity: 1 } }
+.chart-frame { animation: fadeIn 0.25s ease; }
+</style>

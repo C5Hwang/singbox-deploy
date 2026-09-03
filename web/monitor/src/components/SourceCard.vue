@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SourceSummary, UsageRow } from "../types";
-import { formatBytes, percentFor, percentText, barStyle, formatDateTime } from "../utils";
+import { formatBytes, percentFor, percentText, barStyle, formatDateTime, peakPercent } from "../utils";
+import { formatAgo, formatUntil } from "../clock";
 
 defineProps<{ source: SourceSummary }>();
 defineEmits<{ click: [] }>();
@@ -12,7 +13,7 @@ function rowsForSource(source: SourceSummary): UsageRow[] {
   return [
     { label: "IN", key: "in", used: source.inUsedBytes, limit: source.inLimitBytes, color: "var(--blue)" },
     { label: "OUT", key: "out", used: source.outUsedBytes, limit: source.outLimitBytes, color: "var(--cyan)" },
-    { label: "Total", key: "total", used: source.totalUsedBytes, limit: source.totalLimitBytes, color: "var(--green)" },
+    { label: "TOTAL", key: "total", used: source.totalUsedBytes, limit: source.totalLimitBytes, color: "var(--green)" },
   ];
 }
 
@@ -20,30 +21,33 @@ function percentsForSource(source: SourceSummary) {
   return rowsForSource(source).map((row) => ({ row, percent: percentFor(row.used, row.limit) }));
 }
 
-function peakForSource(source: SourceSummary): number | null {
-  const configured = percentsForSource(source)
-    .map((item) => item.percent)
-    .filter((p): p is number => p !== null);
-  if (configured.length === 0) return null;
-  return Math.max(...configured);
-}
-
 function rowText(row: UsageRow): string {
   return row.limit > 0 ? `${formatBytes(row.used)} / ${formatBytes(row.limit)}` : formatBytes(row.used);
 }
 
 function percentClass(percent: number | null): string {
-  if (percent !== null && percent >= 100) return "danger";
-  if (percent !== null && percent >= 75) return "warn";
+  if (percent === null) return "unlimited";
+  if (percent >= 100) return "danger";
+  if (percent >= 75) return "warn";
   return "";
 }
 
+// A row's bar takes the alarm colour once it is worth alarm, so a card with
+// one quota nearly spent says so at a glance rather than only in its ring.
+function rowColor(row: UsageRow, percent: number | null): string {
+  const level = percentClass(percent);
+  if (level === "danger") return "var(--red)";
+  if (level === "warn") return "var(--yellow)";
+  return row.color;
+}
+
 function sourceStatusClass(source: SourceSummary): string {
-  return percentClass(peakForSource(source));
+  const level = percentClass(peakPercent(source));
+  return level === "unlimited" ? "" : level;
 }
 
 function sourceStatusLabel(source: SourceSummary): string {
-  const percent = peakForSource(source);
+  const percent = peakPercent(source);
   if (percent !== null && percent >= 100) return "Limited";
   return "Running";
 }
@@ -62,42 +66,42 @@ function ringOffset(percent: number | null): number {
 </script>
 
 <template>
-  <article class="card source-card traffic-card clickable" @click="$emit('click')">
-    <div class="rc-head">
-      <div class="rc-title">
-        <p class="eyebrow">Monitor Source</p>
-        <h2 class="source-name">{{ source.name }}</h2>
+  <article class="card node-card traffic-card clickable" @click="$emit('click')">
+    <div class="node-head">
+      <div class="node-title">
+        <span class="dot-only" :class="sourceStatusClass(source) === 'danger' ? 'danger' : sourceStatusClass(source) === 'warn' ? 'warn' : 'ok'"></span>
+        <div>
+          <h2 class="node-name">{{ source.name }}</h2>
+          <p class="node-meta">
+            <span>{{ source.id }}</span>
+            <span v-if="source.resetTime" :title="`Cycle resets ${formatDateTime(source.resetTime)}`">reset in {{ formatUntil(source.resetTime) }}</span>
+          </p>
+        </div>
       </div>
-      <div class="rc-side">
+      <div class="node-side">
         <span :class="`status ${sourceStatusClass(source)}`">
           <span class="dot"></span>{{ sourceStatusLabel(source) }}
-        </span>
-        <span class="view-trend">
-          View Trend
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 3l5 5-5 5" />
-          </svg>
         </span>
       </div>
     </div>
 
     <div class="tc-body">
-      <div class="gauge">
+      <div class="gauge" title="The fullest of this node's quotas">
         <div class="ring-wrap">
           <svg class="ring" viewBox="0 0 80 80">
             <circle class="ring-bg" cx="40" cy="40" r="34" />
             <circle
               class="ring-fg"
               cx="40" cy="40" r="34"
-              :style="{ stroke: ringColor(peakForSource(source)), strokeDashoffset: ringOffset(peakForSource(source)) }"
+              :style="{ stroke: ringColor(peakPercent(source)), color: ringColor(peakPercent(source)), strokeDashoffset: ringOffset(peakPercent(source)) }"
             />
           </svg>
           <span
             class="ring-value"
-            :class="[percentClass(peakForSource(source)), { infinite: peakForSource(source) === null }]"
-          >{{ peakForSource(source) === null ? "∞" : `${Math.round(peakForSource(source)!)}%` }}</span>
+            :class="[percentClass(peakPercent(source)), { infinite: peakPercent(source) === null }]"
+          >{{ peakPercent(source) === null ? "∞" : `${Math.round(peakPercent(source)!)}%` }}</span>
         </div>
-        <div class="gauge-label">Max Usage</div>
+        <div class="gauge-label">Max</div>
       </div>
       <div class="usage-rows">
         <div v-for="item in percentsForSource(source)" :key="item.row.key" class="usage-row">
@@ -105,15 +109,22 @@ function ringOffset(percent: number | null): number {
             <strong>{{ item.row.label }}</strong>
             <span>{{ rowText(item.row) }}</span>
           </div>
-          <div class="progress" :class="{ empty: item.percent === null }" :style="barStyle(item.percent, item.row.color)"></div>
           <div class="percent" :class="percentClass(item.percent)">{{ percentText(item.percent) }}</div>
+          <div class="progress" :class="{ empty: item.percent === null }" :style="barStyle(item.percent, rowColor(item.row, item.percent))"></div>
         </div>
       </div>
     </div>
 
-    <div class="rc-meta">
-      <span>Reset: {{ source.resetTime ? formatDateTime(source.resetTime) : "NA" }}</span>
-      <span>Sampled: {{ source.sampledAt ? formatDateTime(source.sampledAt) : "NA" }}</span>
+    <div class="node-foot">
+      <span :title="source.sampledAt ? `Sampled ${formatDateTime(source.sampledAt)}` : ''">
+        sampled {{ source.sampledAt ? formatAgo(source.sampledAt) : "NA" }}
+      </span>
+      <span class="view-trend">
+        View trend
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 3l5 5-5 5" />
+        </svg>
+      </span>
     </div>
   </article>
 </template>

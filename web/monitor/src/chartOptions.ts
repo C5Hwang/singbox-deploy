@@ -1,8 +1,55 @@
 import { formatBytes } from "./utils";
 import { gmtLabel, shiftToTz, tzOffsetMinutes } from "./timezone";
+import { cssVar } from "./theme";
 import type { HourlyPoint, ResourceHourlyPoint } from "./types";
 
 export type TimeUnit = "second" | "minute" | "hour" | "day";
+
+// The chart's ink, read off the stylesheet at the moment the option is built,
+// so a chart drawn on the dark theme takes the dark theme's rules and labels.
+// A canvas cannot resolve a CSS variable itself, which is why these are read
+// here rather than written as var() the way the DOM's colours are.
+function palette() {
+  return {
+    text: cssVar("--chart-text", "#66738a"),
+    axis: cssVar("--chart-axis", "#e4e9f2"),
+    grid: cssVar("--chart-grid", "#edf1f7"),
+    tooltipBg: cssVar("--chart-tooltip-bg", "rgba(255,255,255,0.97)"),
+    tooltipBorder: cssVar("--chart-tooltip-border", "#e4e9f2"),
+    tooltipText: cssVar("--chart-tooltip-text", "#1a2233"),
+    zoomBg: cssVar("--chart-zoom-bg", "#eef2f8"),
+    accent: cssVar("--blue", "#2563eb"),
+    surface: cssVar("--surface-solid", "#ffffff"),
+  };
+}
+
+// The series colours every traffic and resource chart draws in: the same
+// tokens the cards' bars and rings use, so a line on the chart is the colour
+// of the bar it explains.
+export function seriesColors() {
+  return {
+    blue: cssVar("--blue", "#2563eb"),
+    cyan: cssVar("--cyan", "#0891b2"),
+    green: cssVar("--green", "#16a34a"),
+    yellow: cssVar("--yellow", "#d97706"),
+  };
+}
+
+// A colour with its alpha replaced: the zoom slider and the area fills are the
+// accent seen through, and the accent arrives as whatever the stylesheet wrote.
+function withAlpha(color: string, alpha: number): string {
+  const hex = color.match(/^#([0-9a-f]{6})$/i);
+  if (hex) {
+    const n = parseInt(hex[1], 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  }
+  const rgb = color.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgb) {
+    const [r, g, b] = rgb[1].split(",").map((s) => s.trim());
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return color;
+}
 
 // Machine-identity colors for multi-source charts, assigned by source order.
 // Ordered so adjacent hues stay distinguishable under color-vision deficiency.
@@ -159,16 +206,22 @@ function buildFrame({ width, height, unit, legend, tooltipUnit, tooltipValue, so
   // wrapping, so they can never spill into the plot area.
   const scrollLegend = legend.length > 4;
   const legendRows = narrow && !scrollLegend && legend.length > 3 ? 2 : 1;
+  const ink = palette();
   const option = {
     animation: true,
     animationDuration: 800,
     animationEasing: "cubicInOut",
+    textStyle: { fontFamily: "inherit" },
     tooltip: {
       trigger: "axis",
       confine: true,
-      backgroundColor: "rgba(255,255,255,0.96)",
-      borderColor: "#e7ecf4",
-      textStyle: { color: "#172033", fontSize: narrow ? 12 : 13 },
+      backgroundColor: ink.tooltipBg,
+      borderColor: ink.tooltipBorder,
+      borderRadius: 10,
+      padding: [8, 12],
+      extraCssText: "box-shadow: 0 12px 32px rgba(0,0,0,0.18); backdrop-filter: blur(8px);",
+      textStyle: { color: ink.tooltipText, fontSize: narrow ? 12 : 13 },
+      axisPointer: { lineStyle: { color: withAlpha(ink.accent, 0.5), type: "dashed" } },
       formatter: tooltipFormatter(tooltipUnit, tooltipValue, sortTooltip ?? false),
     },
     legend: {
@@ -177,14 +230,15 @@ function buildFrame({ width, height, unit, legend, tooltipUnit, tooltipValue, so
       left: "center",
       itemGap: narrow ? 10 : 20,
       itemWidth: narrow ? 16 : 25,
-      textStyle: { fontSize: narrow ? 11 : 13, fontWeight: 600 },
+      textStyle: { fontSize: narrow ? 11 : 13, fontWeight: 600, color: ink.text },
+      inactiveColor: withAlpha(ink.text, 0.35),
       ...(scrollLegend
         ? {
             type: "scroll",
-            pageIconColor: "#526075",
-            pageIconInactiveColor: "#c9d4e5",
+            pageIconColor: ink.text,
+            pageIconInactiveColor: withAlpha(ink.text, 0.3),
             pageIconSize: 11,
-            pageTextStyle: { color: "#7a869a", fontSize: narrow ? 10 : 11 },
+            pageTextStyle: { color: ink.text, fontSize: narrow ? 10 : 11 },
           }
         : {}),
     },
@@ -197,9 +251,9 @@ function buildFrame({ width, height, unit, legend, tooltipUnit, tooltipValue, so
     },
     xAxis: {
       type: "time",
-      axisLine: { lineStyle: { color: "#e7ecf4" } },
+      axisLine: { lineStyle: { color: ink.axis } },
       axisLabel: {
-        color: "#7a869a",
+        color: ink.text,
         fontSize: narrow ? 10 : 12,
         hideOverlap: true,
         // One rule for every chart: a daily axis is dates all the way along, and
@@ -218,18 +272,20 @@ function buildFrame({ width, height, unit, legend, tooltipUnit, tooltipValue, so
         bottom: narrow ? 6 : 10,
         height: narrow ? 22 : 28,
         borderColor: "transparent",
-        backgroundColor: "#f0f4f8",
-        fillerColor: "rgba(37, 99, 235, 0.12)",
-        handleStyle: { color: "#2563eb", borderColor: "#2563eb" },
+        backgroundColor: ink.zoomBg,
+        fillerColor: withAlpha(ink.accent, 0.14),
+        handleStyle: { color: ink.accent, borderColor: ink.accent },
+        moveHandleStyle: { color: withAlpha(ink.accent, 0.35) },
+        emphasis: { handleStyle: { color: ink.accent, borderColor: ink.surface, borderWidth: 2 } },
         dataBackground: {
-          areaStyle: { color: "rgba(37, 99, 235, 0.06)" },
-          lineStyle: { color: "rgba(37, 99, 235, 0.2)" },
+          areaStyle: { color: withAlpha(ink.accent, 0.07) },
+          lineStyle: { color: withAlpha(ink.accent, 0.25) },
         },
         selectedDataBackground: {
-          areaStyle: { color: "rgba(37, 99, 235, 0.12)" },
-          lineStyle: { color: "rgba(37, 99, 235, 0.4)" },
+          areaStyle: { color: withAlpha(ink.accent, 0.14) },
+          lineStyle: { color: withAlpha(ink.accent, 0.45) },
         },
-        textStyle: { fontSize: narrow ? 10 : 11, color: "#7a869a", lineHeight: 14 },
+        textStyle: { fontSize: narrow ? 10 : 11, color: ink.text, lineHeight: 14 },
         labelFormatter: (value: number) =>
           unit === "day" ? fmtDate(value) : `${fmtDate(value)}\n${fmtTime(value)}`,
       },
@@ -590,48 +646,55 @@ function withPeakAverage(
 }
 
 export function bytesAxis(narrow: boolean) {
+  const ink = palette();
   return {
     type: "value",
     axisLine: { show: false },
-    splitLine: { lineStyle: { color: "#f0f4f8" } },
-    axisLabel: { color: "#7a869a", fontSize: narrow ? 10 : 12, formatter: (v: number) => formatBytes(v) },
+    splitLine: { lineStyle: { color: ink.grid } },
+    axisLabel: { color: ink.text, fontSize: narrow ? 10 : 12, formatter: (v: number) => formatBytes(v) },
   };
 }
 
 export function percentAxis(narrow: boolean) {
+  const ink = palette();
   return {
     type: "value",
     name: narrow ? "" : "%",
+    nameTextStyle: { color: ink.text },
     min: 0,
     max: 100,
     position: "left",
     axisLine: { show: false },
-    splitLine: { lineStyle: { color: "#f0f4f8" } },
-    axisLabel: { color: "#7a869a", fontSize: narrow ? 10 : 12, formatter: (v: number) => `${v}%` },
+    splitLine: { lineStyle: { color: ink.grid } },
+    axisLabel: { color: ink.text, fontSize: narrow ? 10 : 12, formatter: (v: number) => `${v}%` },
   };
 }
 
 export function rateAxis(narrow: boolean) {
+  const ink = palette();
   return {
     type: "value",
     name: narrow ? "" : "IO",
+    nameTextStyle: { color: ink.text },
     position: "right",
     axisLine: { show: false },
     splitLine: { show: false },
-    axisLabel: { color: "#7a869a", fontSize: narrow ? 10 : 12, formatter: (v: number) => `${formatBytes(v)}/s` },
+    axisLabel: { color: ink.text, fontSize: narrow ? 10 : 12, formatter: (v: number) => `${formatBytes(v)}/s` },
   };
 }
 
 export function msAxis(narrow: boolean) {
+  const ink = palette();
   return {
     type: "value",
     name: narrow ? "" : "ms",
+    nameTextStyle: { color: ink.text },
     // A latency axis that started at the lowest reading would turn the noise
     // between 30 and 32 ms into a mountain range.
     min: 0,
     axisLine: { show: false },
-    splitLine: { lineStyle: { color: "#f0f4f8" } },
-    axisLabel: { color: "#7a869a", fontSize: narrow ? 10 : 12, formatter: (v: number) => `${v}` },
+    splitLine: { lineStyle: { color: ink.grid } },
+    axisLabel: { color: ink.text, fontSize: narrow ? 10 : 12, formatter: (v: number) => `${v}` },
   };
 }
 
@@ -645,10 +708,10 @@ export interface TrafficPoint {
   totalBytes: number;
 }
 
-const TRAFFIC_LINES: { name: string; color: string; key: "inBytes" | "outBytes" | "totalBytes" }[] = [
-  { name: "Inbound", color: "#2563eb", key: "inBytes" },
-  { name: "Outbound", color: "#06b6d4", key: "outBytes" },
-  { name: "Total", color: "#22c55e", key: "totalBytes" },
+const TRAFFIC_LINES: { name: string; color: "blue" | "cyan" | "green"; key: "inBytes" | "outBytes" | "totalBytes" }[] = [
+  { name: "Inbound", color: "blue", key: "inBytes" },
+  { name: "Outbound", color: "cyan", key: "outBytes" },
+  { name: "Total", color: "green", key: "totalBytes" },
 ];
 
 export const TRAFFIC_LEGEND = TRAFFIC_LINES.map((line) => line.name);
@@ -657,8 +720,9 @@ export const TRAFFIC_LEGEND = TRAFFIC_LINES.map((line) => line.name);
 // a node's own modal and one address's — so a reader who has learnt the colours
 // on one page has learnt them on the other.
 export function trafficSeries(points: TrafficPoint[], showSymbol: boolean): any[] {
+  const colors = seriesColors();
   return TRAFFIC_LINES.map((line) =>
-    lineSeries(line.name, line.color, points.map((p) => [p.ts * 1000, p[line.key]]), { showSymbol }),
+    lineSeries(line.name, colors[line.color], points.map((p) => [p.ts * 1000, p[line.key]]), { showSymbol }),
   );
 }
 

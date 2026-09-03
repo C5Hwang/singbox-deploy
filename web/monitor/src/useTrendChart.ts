@@ -10,6 +10,7 @@ import {
   MarkPointComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
+import { theme } from "./theme";
 
 echarts.use([
   LineChart,
@@ -156,6 +157,10 @@ export function useTrendChart(
   }
 
   watch(rebuildOn, () => rebuild(true));
+
+  // A theme switch re-inks the chart: the option reads its colours off the
+  // stylesheet when it is built, so building it again is the whole change.
+  watch(theme, () => rebuild(true));
 
   if (resetOn.length > 0) {
     watch(resetOn, () => rebuild(false));

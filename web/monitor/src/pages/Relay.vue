@@ -261,62 +261,73 @@ function statusLabel(node: RelayNode): string {
 </script>
 
 <template>
-  <p v-if="relays.length === 0 && pending" class="no-data">Loading relay latency data...</p>
   <!-- The navigation only offers this page once something is relayed, so an
        empty one means the relays exist but none of them has reported a round —
        most often because the relay's own monitor is switched off. -->
-  <p v-else-if="relays.length === 0" class="no-data">
+  <p v-if="relays.length === 0 && !pending" class="no-data">
     No relay is reporting yet. A relay measures the route to each landing node it forwards to, and its readings appear
     here once its monitor has run a round.
   </p>
 
-  <template v-if="relays.length">
-    <div class="scale">
-      <span>faster</span>
-      <i v-for="step in LATENCY_STEPS" :key="step.fill" :style="{ background: step.fill }"></i>
-      <span>slower</span>
-      <em class="scale-loss"><i :style="{ background: LOSS_WARNING }"></i>packet loss</em>
-    </div>
+  <div v-if="relays.length || pending" class="scale">
+    <span>faster</span>
+    <i v-for="step in LATENCY_STEPS" :key="step.fill" :style="{ background: step.fill }"></i>
+    <span>slower</span>
+    <em class="scale-loss"><i :style="{ background: LOSS_WARNING }"></i>packet loss</em>
+  </div>
 
-    <section class="grid" aria-label="relay to landing latency">
-      <article
-        v-for="node in relays"
-        :key="node.key"
-        class="card span-6 node-card clickable"
-        title="Open the relay latency trend"
-        @click="openRelay = node"
-      >
-        <div class="head">
-          <div class="node-title">
-            <p class="node-name">{{ node.name }}</p>
-            <p class="node-latency" :style="{ color: msColor(medianLatency(node)) }">{{ msText(medianLatency(node)) }}</p>
-          </div>
-          <div class="head-side">
-            <span class="pair-count">{{ pairCount(node) }}</span>
-            <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
+  <section v-if="relays.length || pending" class="nodes" aria-label="relay to landing latency">
+    <article v-if="relays.length === 0" class="card node-card skeleton-card" aria-hidden="true">
+      <div class="skeleton w40"></div>
+      <div class="skeleton w70"></div>
+      <div class="skeleton block"></div>
+    </article>
+
+    <article
+      v-for="node in relays"
+      :key="node.key"
+      class="card node-card relay-card clickable"
+      title="Open the relay latency trend"
+      @click="openRelay = node"
+    >
+      <div class="node-head">
+        <div class="node-title">
+          <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
+          <div>
+            <h2 class="node-name">{{ node.name }}</h2>
+            <p class="node-meta">
+              <span>{{ pairCount(node) }}</span>
+              <span>{{ statusLabel(node) }}</span>
+            </p>
           </div>
         </div>
+        <p class="node-latency" :style="{ color: msColor(medianLatency(node)) }">{{ msText(medianLatency(node)) }}</p>
+      </div>
 
-        <div class="pairs" role="table" aria-label="Latency to each landing node, milliseconds">
-          <div v-for="pair in pairs(node)" :key="pair.id" class="pair" role="row">
-            <span class="pair-name" role="rowheader">
-              <span class="name-text" :title="pair.name">{{ pair.name }}</span>
-              <!-- The row stays when the hub stops forwarding the link, and says
-                   so where the reading would have gone. -->
-              <span v-if="pair.stoodDown" class="stood" :title="pair.reason">stood down</span>
+      <div class="pairs" role="table" aria-label="Latency to each landing node, milliseconds">
+        <div v-for="pair in pairs(node)" :key="pair.id" class="pair" role="row">
+          <span class="pair-name" role="rowheader">
+            <!-- The route, drawn: this relay, an arrow, the landing node. -->
+            <svg class="hop" viewBox="0 0 24 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="3" cy="6" r="2" />
+              <path d="M6 6h11M14 3l3 3-3 3" />
+            </svg>
+            <span class="name-text" :title="pair.name">{{ pair.name }}</span>
+            <!-- The row stays when the hub stops forwarding the link, and says
+                 so where the reading would have gone. -->
+            <span v-if="pair.stoodDown" class="stood" :title="pair.reason">stood down</span>
+          </span>
+          <span class="cell" :style="pair.style" :title="pair.title" role="cell">
+            <span class="value">{{ pair.text }}</span>
+            <span class="loss">
+              <i class="track" aria-hidden="true"><i class="fill"></i></i>
+              <span class="pct">{{ pair.lossText }}</span>
             </span>
-            <span class="cell" :style="pair.style" :title="pair.title" role="cell">
-              <span class="value">{{ pair.text }}</span>
-              <span class="loss">
-                <i class="track" aria-hidden="true"><i class="fill"></i></i>
-                <span class="pct">{{ pair.lossText }}</span>
-              </span>
-            </span>
-          </div>
+          </span>
         </div>
-      </article>
-    </section>
-  </template>
+      </div>
+    </article>
+  </section>
 
   <RelayTrendModal
     v-if="openRelay"
@@ -329,70 +340,58 @@ function statusLabel(node: RelayNode): string {
 
 <style scoped>
 .scale {
-  display: flex; align-items: center; gap: 6px;
-  margin: 0 2px 12px; color: var(--muted); font-size: 11px; font-weight: 700;
-  letter-spacing: 0.03em; text-transform: uppercase;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin: 0 2px 12px; color: var(--muted); font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.06em; text-transform: uppercase;
 }
-.scale i { width: 26px; height: 7px; border-radius: 2px; }
-.scale-loss { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; font-style: normal; }
+.scale i { width: 24px; height: 6px; border-radius: 2px; }
+.scale-loss { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-style: normal; }
 .scale-loss i { width: 18px; height: 4px; border-radius: 999px; }
-.node-card { display: flex; flex-direction: column; }
-.head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.head-side { display: flex; align-items: flex-start; gap: 10px; }
-.node-name {
-  margin: 0 0 6px; color: var(--text); font-size: 13px; font-weight: 800;
-  letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;
-}
 .node-latency {
-  margin: 0; font-size: 28px; font-weight: 850; line-height: 1.15;
-  font-variant-numeric: tabular-nums;
+  margin: 0; flex-shrink: 0; font-size: 24px; font-weight: 800; line-height: 1.1;
+  letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+  transition: color 0.4s ease;
 }
-.pair-count {
-  color: var(--muted); font-size: 11px; font-weight: 750;
-  letter-spacing: 0.03em; text-transform: uppercase; margin-top: 4px; white-space: nowrap;
-}
-/* One row per pair rather than a matrix: the landing nodes are a list, not two
-   axes, and their names are long enough that a column head would truncate.
-   The rows flow into as many columns as the card is wide enough for, so a relay
-   with one landing node and a relay with eight both fill their card. */
 /* One row per pair, one column of readings: the landing nodes are a list, not
    two axes, and stacking the cells in a single column lets the eye run down
    them without hopping between rows of different widths. */
-.pairs { display: flex; flex-direction: column; gap: 5px; margin-top: 16px; }
+.pairs { display: flex; flex-direction: column; gap: 6px; }
 .pair { display: grid; grid-template-columns: minmax(0, 1fr) 118px; gap: 10px; align-items: center; }
 .pair-name {
-  display: flex; align-items: center; gap: 7px; min-width: 0;
+  display: flex; align-items: center; gap: 8px; min-width: 0;
   color: var(--text); font-size: 13px; font-weight: 650;
 }
+.hop { width: 24px; height: 12px; flex-shrink: 0; color: var(--faint); }
 .name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stood {
   flex: none; padding: 2px 6px; border-radius: 999px;
-  background: rgba(15, 23, 42, 0.06); color: var(--muted);
-  font-size: 10px; font-weight: 800; letter-spacing: 0.03em; text-transform: uppercase;
+  background: var(--gray-soft); color: var(--muted);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
 }
 .cell {
   display: flex; flex-direction: column; overflow: hidden;
-  height: 46px; border-radius: 10px;
+  height: 46px; border-radius: 9px;
   background: var(--fill); color: var(--ink);
   font-variant-numeric: tabular-nums; cursor: default;
+  transition: background-color 0.4s ease;
 }
 .value { flex: 1; display: grid; place-items: center; font-size: 15px; font-weight: 800; line-height: 1; }
 .loss {
   display: flex; align-items: center; gap: 6px;
-  height: 19px; padding: 0 7px;
-  background: rgba(255, 255, 255, 0.88);
+  height: 18px; padding: 0 7px;
+  background: var(--lat-strip);
 }
 .track {
   flex: 1; height: 4px; border-radius: 999px; overflow: hidden;
-  background: rgba(15, 23, 42, 0.13);
+  background: var(--lat-strip-track);
 }
-.fill { display: block; height: 100%; width: var(--loss); border-radius: inherit; background: var(--loss-color); }
+.fill { display: block; height: 100%; width: var(--loss); border-radius: inherit; background: var(--loss-color); transition: width 0.5s var(--ease); }
 .pct {
   min-width: 26px; text-align: right;
   font-size: 10px; font-weight: 800; letter-spacing: -0.01em;
   color: var(--loss-ink);
 }
-@media (max-width: 720px) {
+@container node (max-width: 360px) {
   .pair { grid-template-columns: minmax(0, 1fr) 104px; }
   .cell { height: 44px; }
   .value { font-size: 14px; }

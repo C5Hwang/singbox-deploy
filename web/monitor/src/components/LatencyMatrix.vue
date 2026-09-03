@@ -109,41 +109,46 @@ function shortCarrier(name: string): string {
 </template>
 
 <style scoped>
-.matrix { display: flex; flex-direction: column; gap: 5px; margin-top: 16px; }
+.matrix { display: flex; flex-direction: column; gap: 5px; container: matrix / inline-size; }
 .row { display: grid; grid-template-columns: 62px repeat(3, minmax(0, 1fr)); gap: 5px; align-items: center; }
 .col-head, .row-head {
-  color: var(--muted); font-size: 11px; font-weight: 750;
-  letter-spacing: 0.03em; text-transform: uppercase;
+  color: var(--muted); font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.06em; text-transform: uppercase;
 }
 .col-head { text-align: center; padding-bottom: 2px; }
 .row-head { text-align: right; padding-right: 2px; }
 .cell {
   display: flex; flex-direction: column; overflow: hidden;
-  height: 56px; border-radius: 10px;
+  height: 54px; border-radius: 9px;
   background: var(--fill); color: var(--ink);
   font-variant-numeric: tabular-nums; cursor: default;
+  transition: background-color 0.4s ease, transform var(--dur) var(--ease);
+}
+@media (hover: hover) {
+  .cell:hover { transform: translateY(-1px); }
 }
 .value { flex: 1; display: grid; place-items: center; font-size: 15px; font-weight: 800; line-height: 1; }
 .loss {
   display: flex; align-items: center; gap: 6px;
-  height: 19px; padding: 0 7px;
-  background: rgba(255, 255, 255, 0.88);
+  height: 18px; padding: 0 7px;
+  background: var(--lat-strip);
 }
 .track {
   flex: 1; height: 4px; border-radius: 999px; overflow: hidden;
-  background: rgba(15, 23, 42, 0.13);
+  background: var(--lat-strip-track);
 }
 /* Width is the loss, so a clean probe is an empty track rather than a missing
    one: the element keeps its shape and only its fill reports anything. */
-.fill { display: block; height: 100%; width: var(--loss); border-radius: inherit; background: var(--loss-color); }
+.fill { display: block; height: 100%; width: var(--loss); border-radius: inherit; background: var(--loss-color); transition: width 0.5s var(--ease); }
 .pct {
   min-width: 26px; text-align: right;
   font-size: 10px; font-weight: 800; letter-spacing: -0.01em;
   color: var(--loss-ink);
 }
-@media (max-width: 720px) {
+@container matrix (max-width: 340px) {
   .row { grid-template-columns: 52px repeat(3, minmax(0, 1fr)); }
-  .cell { height: 52px; }
+  .cell { height: 50px; }
   .value { font-size: 14px; }
+  .pct { min-width: 22px; }
 }
 </style>

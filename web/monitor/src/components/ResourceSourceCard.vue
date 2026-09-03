@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { SourceSummary } from "../types";
 import { formatBytes, formatRate, formatDateTime } from "../utils";
+import { formatAgo } from "../clock";
 
 const props = defineProps<{ source: SourceSummary }>();
 defineEmits<{ click: [] }>();
@@ -32,6 +33,17 @@ const gauges = computed<Gauge[]>(() => {
   ];
 });
 
+// The machine in one line: what it has, so the percentages above it have a
+// scale. It is the line a probe list prints under every node's name.
+const spec = computed(() => {
+  const r = props.source.resources;
+  if (!r) return "";
+  const parts: string[] = [];
+  if (r.memTotalBytes) parts.push(`${formatBytes(r.memTotalBytes)} RAM`);
+  if (r.diskTotalBytes) parts.push(`${formatBytes(r.diskTotalBytes)} disk`);
+  return parts.join(" · ");
+});
+
 function levelClass(pct: number | null): string {
   if (pct !== null && pct >= 90) return "danger";
   if (pct !== null && pct >= 75) return "warn";
@@ -53,24 +65,33 @@ function ringOffset(pct: number | null): number {
 function pctText(pct: number | null): string {
   return pct === null ? "NA" : `${pct.toFixed(1)}%`;
 }
+
+// The dot is the worst of the three readings.
+const tone = computed(() => {
+  if (!props.source.resources) return "gray";
+  const levels = gauges.value.map((g) => levelClass(g.pct));
+  if (levels.includes("danger")) return "danger";
+  if (levels.includes("warn")) return "warn";
+  return "ok";
+});
 </script>
 
 <template>
-  <article class="card source-card resource-card clickable" @click="$emit('click')">
-    <div class="rc-head">
-      <div class="rc-title">
-        <p class="eyebrow">Resource Source</p>
-        <h2 class="source-name">{{ source.name }}</h2>
+  <article class="card node-card resource-card clickable" @click="$emit('click')">
+    <div class="node-head">
+      <div class="node-title">
+        <span class="dot-only" :class="tone"></span>
+        <div>
+          <h2 class="node-name">{{ source.name }}</h2>
+          <p class="node-meta">
+            <span>{{ source.id }}</span>
+            <span v-if="spec">{{ spec }}</span>
+          </p>
+        </div>
       </div>
-      <div class="rc-side">
+      <div class="node-side">
         <span class="status" :class="{ gray: !source.resources }">
           <span class="dot"></span>{{ source.resources ? "Online" : "No Data" }}
-        </span>
-        <span class="view-trend">
-          View Trend
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 3l5 5-5 5" />
-          </svg>
         </span>
       </div>
     </div>
@@ -84,7 +105,7 @@ function pctText(pct: number | null): string {
               <circle
                 class="ring-fg"
                 cx="40" cy="40" r="34"
-                :style="{ stroke: ringColor(g), strokeDashoffset: ringOffset(g.pct) }"
+                :style="{ stroke: ringColor(g), color: ringColor(g), strokeDashoffset: ringOffset(g.pct) }"
               />
             </svg>
             <span class="ring-value" :class="levelClass(g.pct)">{{ pctText(g.pct) }}</span>
@@ -110,11 +131,18 @@ function pctText(pct: number | null): string {
         </div>
       </div>
     </div>
-    <div v-else class="no-data">Resource data unavailable</div>
+    <p v-else class="no-data">This node has not reported resource readings.</p>
 
-    <div class="rc-meta">
-      <span v-if="source.resetTime">Reset: {{ formatDateTime(source.resetTime) }}</span>
-      <span>Sampled: {{ source.sampledAt ? formatDateTime(source.sampledAt) : "NA" }}</span>
+    <div class="node-foot">
+      <span :title="source.sampledAt ? `Sampled ${formatDateTime(source.sampledAt)}` : ''">
+        sampled {{ source.sampledAt ? formatAgo(source.sampledAt) : "NA" }}
+      </span>
+      <span class="view-trend">
+        View trend
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 3l5 5-5 5" />
+        </svg>
+      </span>
     </div>
   </article>
 </template>

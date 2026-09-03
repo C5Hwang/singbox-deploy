@@ -3,7 +3,7 @@ import { ref, computed } from "vue";
 import SourceCard from "../components/SourceCard.vue";
 import TrendModal from "../components/TrendModal.vue";
 import MetricTrendModal from "../components/MetricTrendModal.vue";
-import { formatBytes, percentFor, percentText, tone, barStyle } from "../utils";
+import { formatBytes, percentFor, percentText, tone, barStyle, isLimited } from "../utils";
 import type { Summary, SourceSummary, MetricDef } from "../types";
 
 const props = defineProps<{ summary: Summary | null; error: string }>();
@@ -71,17 +71,7 @@ const availableCount = computed(() => {
   const srcs = sources.value;
   const total = srcs.length;
   if (total === 0) return { running: 0, total: 0, percent: null as number | null, unavailablePercent: null as number | null };
-  let running = 0;
-  for (const src of srcs) {
-    const rows = [
-      percentFor(src.inUsedBytes, src.inLimitBytes),
-      percentFor(src.outUsedBytes, src.outLimitBytes),
-      percentFor(src.totalUsedBytes, src.totalLimitBytes),
-    ];
-    const configured = rows.filter((p) => p !== null) as number[];
-    const peak = configured.length > 0 ? Math.max(...configured) : 0;
-    if (peak < 100) running++;
-  }
+  const running = srcs.filter((src) => !isLimited(src)).length;
   const percent = (running / total) * 100;
   const unavailablePercent = 100 - percent;
   return { running, total, percent, unavailablePercent };
@@ -91,16 +81,16 @@ const availableDetail = computed(() => {
   const { running, total } = availableCount.value;
   if (total === 0) return "";
   const limited = total - running;
-  return limited > 0 ? `${limited} source${limited > 1 ? "s" : ""} limited` : "All sources running";
+  return limited > 0 ? `${limited} node${limited > 1 ? "s" : ""} out of quota` : "Every node serving";
 });
 </script>
 
 <template>
-  <section class="grid">
-    <article class="card metric-card span-3">
+  <section class="tiles" aria-label="fleet totals">
+    <article class="card tile">
       <div class="metric-head">
         <div>
-          <p class="eyebrow">Available</p>
+          <p class="eyebrow">Nodes serving</p>
           <p class="metric-value">{{ availableCount.running }} / {{ availableCount.total }}</p>
           <p class="metric-detail">{{ availableDetail }}</p>
         </div>
@@ -112,7 +102,8 @@ const availableDetail = computed(() => {
     <article
       v-for="card in cards"
       :key="card.label"
-      class="card metric-card span-3 clickable"
+      class="card tile clickable"
+      :title="`Open the ${card.label.toLowerCase()} trend across every node`"
       @click="modalMetric = { kind: 'traffic', title: card.label, key: card.trendKey }"
     >
       <div class="metric-head">
@@ -123,9 +114,8 @@ const availableDetail = computed(() => {
         </div>
         <div class="metric-side">
           <span :class="`delta${tone(card.percent)}`">{{ percentText(card.percent) }}</span>
-          <span class="view-trend">
-            View Trend
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <span class="tile-go" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 3l5 5-5 5" />
             </svg>
           </span>
@@ -135,7 +125,7 @@ const availableDetail = computed(() => {
     </article>
   </section>
 
-  <section class="grid sources" aria-label="monitor sources">
+  <section class="nodes sources" aria-label="monitor sources">
     <SourceCard
       v-for="source in sources"
       :key="source.id || source.name"

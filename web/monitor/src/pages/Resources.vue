@@ -17,26 +17,38 @@ const sources = computed<SourceSummary[]>(() => {
   return [{ ...s, id: "local", name: "Local Server" }];
 });
 
-const peakRes = computed<ResourceSnapshot | undefined>(() => {
-  const all = sources.value.map((s) => s.resources).filter(Boolean) as ResourceSnapshot[];
+// Which node is highest on each reading, so the tile can name it.
+interface Peak {
+  res: ResourceSnapshot;
+  cpuName: string;
+  memName: string;
+  diskName: string;
+}
+
+const peakRes = computed<Peak | undefined>(() => {
+  const all = sources.value.filter((s) => s.resources) as (SourceSummary & { resources: ResourceSnapshot })[];
   if (all.length === 0) return undefined;
-  if (all.length === 1) return all[0];
   let bestCpu = all[0], bestMem = all[0], bestDisk = all[0];
-  for (const r of all) {
-    if (r.cpuPct > bestCpu.cpuPct) bestCpu = r;
-    if (r.memPct > bestMem.memPct) bestMem = r;
-    if (r.diskUsagePct > bestDisk.diskUsagePct) bestDisk = r;
+  for (const s of all) {
+    if (s.resources.cpuPct > bestCpu.resources.cpuPct) bestCpu = s;
+    if (s.resources.memPct > bestMem.resources.memPct) bestMem = s;
+    if (s.resources.diskUsagePct > bestDisk.resources.diskUsagePct) bestDisk = s;
   }
   return {
-    cpuPct: bestCpu.cpuPct,
-    memPct: bestMem.memPct,
-    memUsedBytes: bestMem.memUsedBytes,
-    memTotalBytes: bestMem.memTotalBytes,
-    diskUsagePct: bestDisk.diskUsagePct,
-    diskUsedBytes: bestDisk.diskUsedBytes,
-    diskTotalBytes: bestDisk.diskTotalBytes,
-    diskIOReadRate: 0,
-    diskIOWriteRate: 0,
+    res: {
+      cpuPct: bestCpu.resources.cpuPct,
+      memPct: bestMem.resources.memPct,
+      memUsedBytes: bestMem.resources.memUsedBytes,
+      memTotalBytes: bestMem.resources.memTotalBytes,
+      diskUsagePct: bestDisk.resources.diskUsagePct,
+      diskUsedBytes: bestDisk.resources.diskUsedBytes,
+      diskTotalBytes: bestDisk.resources.diskTotalBytes,
+      diskIOReadRate: 0,
+      diskIOWriteRate: 0,
+    },
+    cpuName: all.length > 1 ? bestCpu.name : "",
+    memName: all.length > 1 ? bestMem.name : "",
+    diskName: all.length > 1 ? bestDisk.name : "",
   };
 });
 
@@ -58,23 +70,28 @@ interface ResourceCardDef {
   color: string;
 }
 
+// The tiles report the fleet's highest reading of each kind, and say which
+// node it is on: a fleet-wide "91% CPU" is only useful with a name attached.
 const metricCards = computed<ResourceCardDef[]>(() => {
-  const r = peakRes.value;
+  const p = peakRes.value;
+  const r = p?.res;
+  const on = (name: string, fallback: string) => (name ? `Highest · ${name}` : fallback);
   return [
-    { key: "cpu", label: "CPU", pct: r?.cpuPct ?? null, detail: "", color: "var(--blue)" },
-    { key: "mem", label: "Memory", pct: r?.memPct ?? null, detail: r ? fmtUsage(r.memUsedBytes, r.memTotalBytes) : "", color: "var(--cyan)" },
-    { key: "disk", label: "Disk Usage", pct: r?.diskUsagePct ?? null, detail: r ? fmtUsage(r.diskUsedBytes, r.diskTotalBytes) : "", color: "var(--green)" },
+    { key: "cpu", label: "Peak CPU", pct: r?.cpuPct ?? null, detail: p ? on(p.cpuName, "") : "", color: "var(--blue)" },
+    { key: "mem", label: "Peak Memory", pct: r?.memPct ?? null, detail: p ? on(p.memName, fmtUsage(r!.memUsedBytes, r!.memTotalBytes)) : "", color: "var(--cyan)" },
+    { key: "disk", label: "Peak Disk", pct: r?.diskUsagePct ?? null, detail: p ? on(p.diskName, fmtUsage(r!.diskUsedBytes, r!.diskTotalBytes)) : "", color: "var(--green)" },
   ];
 });
 </script>
 
 <template>
-  <section class="grid">
+  <section class="tiles tiles-3" aria-label="fleet peaks">
     <article
       v-for="card in metricCards"
       :key="card.key"
-      class="card metric-card span-4 clickable"
-      @click="modalMetric = { kind: 'resource', title: card.label, key: card.key }"
+      class="card tile clickable"
+      :title="`Open the ${card.label.toLowerCase()} trend across every node`"
+      @click="modalMetric = { kind: 'resource', title: card.label.replace('Peak ', ''), key: card.key }"
     >
       <div class="metric-head">
         <div>
@@ -84,9 +101,8 @@ const metricCards = computed<ResourceCardDef[]>(() => {
         </div>
         <div class="metric-side">
           <span :class="`delta${tone(card.pct)}`">Live</span>
-          <span class="view-trend">
-            View Trend
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <span class="tile-go" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 3l5 5-5 5" />
             </svg>
           </span>
@@ -96,7 +112,7 @@ const metricCards = computed<ResourceCardDef[]>(() => {
     </article>
   </section>
 
-  <section class="grid sources" aria-label="resource sources">
+  <section class="nodes sources" aria-label="resource sources">
     <ResourceSourceCard
       v-for="source in sources"
       :key="source.id || source.name"

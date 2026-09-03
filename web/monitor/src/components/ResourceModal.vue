@@ -9,6 +9,7 @@ import {
   lineSeries,
   percentAxis,
   rateAxis,
+  seriesColors,
 } from "../chartOptions";
 import { modeShape, RESOURCE_MODES, type TrendMode } from "../trendModes";
 import { tzOffsetMinutes } from "../timezone";
@@ -62,13 +63,14 @@ function buildOption(): any {
     tooltipValue: (p) => formatValue(Number(Array.isArray(p.value) ? p.value[1] : p.value), p.seriesName),
     yAxis: (narrow) => [percentAxis(narrow), rateAxis(narrow)],
     series: (narrow) => {
+      const colors = seriesColors();
       if (isRecent) {
         const data = recentPoints.value;
         return [
-          lineSeries("CPU %", "#2563eb", data.map((p) => [p.ts * 1000, p.cpuPct])),
-          lineSeries("Memory %", "#06b6d4", data.map((p) => [p.ts * 1000, p.memPct])),
-          lineSeries("Disk IO Read", "#22c55e", data.map((p) => [p.ts * 1000, p.dioRead]), { yAxisIndex: 1 }),
-          lineSeries("Disk IO Write", "#f59e0b", data.map((p) => [p.ts * 1000, p.dioWrite]), { yAxisIndex: 1 }),
+          lineSeries("CPU %", colors.blue, data.map((p) => [p.ts * 1000, p.cpuPct])),
+          lineSeries("Memory %", colors.cyan, data.map((p) => [p.ts * 1000, p.memPct])),
+          lineSeries("Disk IO Read", colors.green, data.map((p) => [p.ts * 1000, p.dioRead]), { yAxisIndex: 1 }),
+          lineSeries("Disk IO Write", colors.yellow, data.map((p) => [p.ts * 1000, p.dioWrite]), { yAxisIndex: 1 }),
         ];
       }
       const data = isDaily ? aggregateResourceDaily(trend.value, isMax) : trend.value;
@@ -78,10 +80,10 @@ function buildOption(): any {
       const writeKey = isMax ? "dioWriteMax" : "dioWriteAvg";
       const showSymbol = !narrow;
       return [
-        lineSeries("CPU %", "#2563eb", data.map((p) => [p.hourTs * 1000, p[cpuKey]]), { showSymbol }),
-        lineSeries("Memory %", "#06b6d4", data.map((p) => [p.hourTs * 1000, p[memKey]]), { showSymbol }),
-        lineSeries("Disk IO Read", "#22c55e", data.map((p) => [p.hourTs * 1000, p[readKey]]), { yAxisIndex: 1, showSymbol }),
-        lineSeries("Disk IO Write", "#f59e0b", data.map((p) => [p.hourTs * 1000, p[writeKey]]), { yAxisIndex: 1, showSymbol }),
+        lineSeries("CPU %", colors.blue, data.map((p) => [p.hourTs * 1000, p[cpuKey]]), { showSymbol }),
+        lineSeries("Memory %", colors.cyan, data.map((p) => [p.hourTs * 1000, p[memKey]]), { showSymbol }),
+        lineSeries("Disk IO Read", colors.green, data.map((p) => [p.hourTs * 1000, p[readKey]]), { yAxisIndex: 1, showSymbol }),
+        lineSeries("Disk IO Write", colors.yellow, data.map((p) => [p.hourTs * 1000, p[writeKey]]), { yAxisIndex: 1, showSymbol }),
       ];
     },
     peakAverage: { show: showPeakAverage.value, format: (value, series) => formatValue(value, series.name) },

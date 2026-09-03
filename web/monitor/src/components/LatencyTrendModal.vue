@@ -126,9 +126,9 @@ const { chartRef, loading } = useTrendChart(
 <style scoped>
 .filters {
   display: flex; flex-wrap: wrap; gap: 10px 28px;
-  padding: 4px 28px 12px; border-bottom: 1px solid var(--line);
+  padding: 4px 24px 12px; border-bottom: 1px solid var(--line);
 }
-.filter-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.filter-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .filter-group .eyebrow { margin: 0 2px 0 0; }
 /* A button with aria-pressed rather than a checkbox: the last chip in a group
    refuses to switch itself off, and a native checkbox that has already toggled
@@ -137,25 +137,26 @@ const { chartRef, loading } = useTrendChart(
   display: inline-flex; align-items: center; gap: 7px;
   font: inherit; font-size: 13px; font-weight: 650; color: var(--muted); cursor: pointer;
   padding: 5px 11px 5px 8px; border: 1px solid var(--line); border-radius: 999px;
-  background: white; transition: background 0.15s, border-color 0.15s, color 0.15s;
+  background: var(--surface-2);
+  transition: background-color var(--dur) ease, border-color var(--dur) ease, color var(--dur) ease;
 }
-.check:hover { background: #f6f9fd; color: var(--text); }
+.check:hover { color: var(--text); border-color: var(--line-strong); }
 .check .tick {
   width: 14px; height: 14px; border-radius: 5px; flex-shrink: 0;
-  border: 1.5px solid var(--line); background: white;
-  transition: background 0.15s, border-color 0.15s;
+  border: 1.5px solid var(--line-strong); background: transparent;
+  transition: background-color var(--dur) ease, border-color var(--dur) ease;
 }
 .check.on {
-  background: #edf4ff; color: var(--blue);
-  border-color: color-mix(in srgb, var(--blue), transparent 60%);
+  background: var(--accent-soft); color: var(--accent);
+  border-color: var(--accent-border);
 }
 .check.on .tick {
-  background: var(--blue); border-color: var(--blue);
+  background: var(--accent); border-color: var(--accent);
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M2.5 6.2l2.3 2.3 4.7-4.9' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>");
   background-size: 12px 12px; background-position: center; background-repeat: no-repeat;
 }
-@media (max-width: 720px) {
-  .filters { padding: 4px 16px 10px; gap: 8px 16px; }
+@container app (max-width: 759px) {
+  .filters { padding: 4px 16px 10px; gap: 8px 14px; }
   .check { font-size: 12px; padding: 4px 8px; }
 }
 </style>

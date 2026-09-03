@@ -112,9 +112,9 @@ function headline(node: NodeLatency): string {
 }
 
 // The headline is a latency, so it is coloured like one — the same four steps
-// the matrix underneath fills its cells with, in the darker grade that reads as
-// text on the card. The node's own name stays in the title ink: it is the
-// card's subject, not one of its readings.
+// the matrix underneath fills its cells with, in the grade that reads as text
+// on the card. The node's own name stays in the title ink: it is the card's
+// subject, not one of its readings.
 function headlineColor(node: NodeLatency): string {
   const ms = medianLatency(node);
   if (ms === null) return LATENCY_MISSING.text;
@@ -142,35 +142,46 @@ function statusLabel(node: NodeLatency): string {
 </script>
 
 <template>
-  <p v-if="nodes.length === 0" class="no-data">Loading latency data...</p>
-
   <!-- The colour is a second reading of a number that is already printed on
        every cell, so the key is a strip and two words rather than a legend. -->
-  <div v-if="nodes.length" class="scale">
+  <div class="scale">
     <span>faster</span>
     <i v-for="step in LATENCY_STEPS" :key="step.fill" :style="{ background: step.fill }"></i>
     <span>slower</span>
     <em class="scale-loss"><i :style="{ background: LOSS_WARNING }"></i>packet loss</em>
   </div>
 
-  <section class="grid" aria-label="latency by node">
+  <section class="nodes" aria-label="latency by node">
+    <template v-if="nodes.length === 0">
+      <article v-for="n in 2" :key="n" class="card node-card skeleton-card" aria-hidden="true">
+        <div class="skeleton w40"></div>
+        <div class="skeleton w70"></div>
+        <div class="skeleton block"></div>
+      </article>
+    </template>
+
     <article
       v-for="node in nodes"
       :key="node.key"
-      class="card span-6 node-card"
+      class="card node-card latency-card"
       :class="{ clickable: !!node.snapshot }"
       :title="node.snapshot ? 'Open the latency trend' : ''"
       @click="node.snapshot && (openNode = node)"
     >
-      <div class="head">
+      <div class="node-head">
         <div class="node-title">
-          <p class="node-name">{{ node.name }}</p>
-          <p class="node-latency" :style="{ color: headlineColor(node) }">{{ headline(node) }}</p>
+          <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
+          <div>
+            <h2 class="node-name">{{ node.name }}</h2>
+            <p class="node-meta"><span>{{ statusLabel(node) }}</span></p>
+          </div>
         </div>
-        <span class="dot-only" :class="statusTone(node)" :title="statusLabel(node)" :aria-label="statusLabel(node)"></span>
+        <p class="node-latency" :style="{ color: headlineColor(node) }">{{ headline(node) }}</p>
       </div>
 
-      <p v-if="node.pending" class="no-data">Reading this node's latest round...</p>
+      <div v-if="node.pending" class="skeleton-card" aria-hidden="true">
+        <div class="skeleton block"></div>
+      </div>
       <p v-else-if="node.error" class="no-data">Latency is unavailable for this node.</p>
       <LatencyMatrix v-else-if="node.snapshot" :snapshot="node.snapshot" />
     </article>
@@ -187,26 +198,17 @@ function statusLabel(node: NodeLatency): string {
 
 <style scoped>
 .scale {
-  display: flex; align-items: center; gap: 6px;
-  margin: 0 2px 12px; color: var(--muted); font-size: 11px; font-weight: 700;
-  letter-spacing: 0.03em; text-transform: uppercase;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin: 0 2px 12px; color: var(--muted); font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.06em; text-transform: uppercase;
 }
-.scale i { width: 26px; height: 7px; border-radius: 2px; }
-.scale-loss { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; font-style: normal; }
+.scale i { width: 24px; height: 6px; border-radius: 2px; }
+.scale-loss { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-style: normal; }
 .scale-loss i { width: 18px; height: 4px; border-radius: 999px; }
-.node-card { display: flex; flex-direction: column; }
-.head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-/* The node's name is the card's title and wears the title ink, the same weight
-   the metric cards give theirs. It used to be an eyebrow, which put the whole
-   head in the muted grey and left the card with nothing at full strength. */
-.node-name {
-  margin: 0 0 6px; color: var(--text); font-size: 13px; font-weight: 800;
-  letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;
-}
+/* The headline is the node's median, printed large and in the ramp's ink. */
 .node-latency {
-  margin: 0; font-size: 28px; font-weight: 850; line-height: 1.15;
-  font-variant-numeric: tabular-nums;
+  margin: 0; flex-shrink: 0; font-size: 24px; font-weight: 800; line-height: 1.1;
+  letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+  transition: color 0.4s ease;
 }
-/* The corner carries a state, and a state is a dot. .dot-only itself is global:
-   the relay cards wear the same one. */
 </style>

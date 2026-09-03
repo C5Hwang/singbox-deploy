@@ -64,3 +64,26 @@ export function formatDateTime(value: string | number | Date): string {
   const text = shiftToTz(date).toLocaleString("en-US", { hour12: false, timeZone: "UTC" });
   return `${text} ${gmtLabel(tzOffsetMinutes.value)}`;
 }
+
+// A node's headline usage: the fullest of whichever quotas it has, or null when
+// it has none. It decides the ring on the traffic card, the running/limited
+// pill, and the fleet's online count in the sidebar, so it is computed once
+// rather than three ways that agree today.
+export function peakPercent(source: {
+  inUsedBytes: number; inLimitBytes: number;
+  outUsedBytes: number; outLimitBytes: number;
+  totalUsedBytes: number; totalLimitBytes: number;
+}): number | null {
+  const configured = [
+    percentFor(source.inUsedBytes, source.inLimitBytes),
+    percentFor(source.outUsedBytes, source.outLimitBytes),
+    percentFor(source.totalUsedBytes, source.totalLimitBytes),
+  ].filter((p): p is number => p !== null);
+  if (configured.length === 0) return null;
+  return Math.max(...configured);
+}
+
+export function isLimited(source: Parameters<typeof peakPercent>[0]): boolean {
+  const peak = peakPercent(source);
+  return peak !== null && peak >= 100;
+}
