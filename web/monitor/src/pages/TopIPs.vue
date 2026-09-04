@@ -568,8 +568,10 @@ const modalSources = computed(() =>
                   </span>
                 </td>
                 <td class="country" :title="placeOf(row.ip).country">
-                  <span v-if="placeOf(row.ip).code" class="flag">{{ flagFor(placeOf(row.ip).code) }}</span>
-                  <span class="country-name">{{ placeOf(row.ip).country || "—" }}</span>
+                  <span class="country-cell">
+                    <span v-if="placeOf(row.ip).code" class="flag">{{ flagFor(placeOf(row.ip).code) }}</span>
+                    <span class="country-name">{{ placeOf(row.ip).country || "—" }}</span>
+                  </span>
                 </td>
                 <td class="place">{{ placeOf(row.ip).city || "—" }}</td>
                 <td v-if="selected === ALL_NODES" class="nodes-cell">
@@ -881,7 +883,11 @@ const modalSources = computed(() =>
 .strand-label { color: var(--muted); }
 .country, .place, .nodes-cell { color: var(--muted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
 .address, .num { overflow: hidden; text-overflow: ellipsis; }
-.country { display: flex; align-items: center; gap: 7px; }
+/* The flag and the name are laid out by a box of their own inside the cell.
+   Putting the flex on the cell took it out of the table: an empty one in a
+   breakdown line then painted only as tall as its padding, and the card showed
+   through the rest as a pale block under the line's tint. */
+.country-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .flag { font-size: 15px; line-height: 1; flex-shrink: 0; }
 .country-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-chip {
