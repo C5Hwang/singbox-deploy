@@ -729,6 +729,27 @@ button, input { font-family: inherit; }
 .status.gray { color: var(--muted); background: var(--gray-soft); }
 .status.gray .dot::before { animation: none; transform: scale(2); opacity: 0.16; }
 
+/* A time stamp on a card: when the cycle resets, how old the reading is. It is
+   a chip rather than a run of the same muted mono as the node ID so it reads
+   as a fact of its own, and the sample stamp is inked by its age — green while
+   the reading is current, amber once a round has been missed, red once the
+   figures above it are history. */
+.stamp-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px 3px 6px; border-radius: 999px;
+  background: var(--gray-soft); color: var(--muted);
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; line-height: 1;
+  letter-spacing: 0.02em; white-space: nowrap; font-variant-numeric: tabular-nums;
+  transition: background-color var(--dur) ease, color var(--dur) ease;
+}
+.stamp-chip svg { width: 11px; height: 11px; flex-shrink: 0; }
+.stamp-chip .stamp-label { opacity: 0.8; }
+.stamp-chip .stamp-value { font-weight: 800; }
+.stamp-chip.accent { background: var(--accent-soft); color: var(--accent); }
+.stamp-chip.fresh { background: var(--ok-soft); color: var(--green); }
+.stamp-chip.aging { background: var(--warn-soft); color: var(--yellow); }
+.stamp-chip.stale { background: var(--danger-soft); color: var(--red); }
+
 .view-trend {
   display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
   color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1; white-space: nowrap;
@@ -768,7 +789,7 @@ button, input { font-family: inherit; }
 .node-meta {
   margin: 4px 0 0; color: var(--muted); font-family: var(--font-mono);
   font-size: 11px; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
-  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
 }
 .node-meta span { white-space: nowrap; }
 .node-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }

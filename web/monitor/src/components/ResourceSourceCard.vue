@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { SourceSummary } from "../types";
-import { formatBytes, formatRate, formatDateTime } from "../utils";
-import { formatAgo } from "../clock";
+import StampChip from "./StampChip.vue";
+import { formatBytes, formatRate } from "../utils";
 
 const props = defineProps<{ source: SourceSummary }>();
 defineEmits<{ click: [] }>();
@@ -134,9 +134,7 @@ const tone = computed(() => {
     <p v-else class="no-data">This node has not reported resource readings.</p>
 
     <div class="node-foot">
-      <span :title="source.sampledAt ? `Sampled ${formatDateTime(source.sampledAt)}` : ''">
-        sampled {{ source.sampledAt ? formatAgo(source.sampledAt) : "NA" }}
-      </span>
+      <StampChip kind="sampled" :at="source.sampledAt" />
       <span class="view-trend">
         View trend
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SourceSummary, UsageRow } from "../types";
-import { formatBytes, percentFor, percentText, barStyle, formatDateTime, peakPercent } from "../utils";
-import { formatAgo, formatUntil } from "../clock";
+import StampChip from "./StampChip.vue";
+import { formatBytes, percentFor, percentText, barStyle, peakPercent } from "../utils";
 
 defineProps<{ source: SourceSummary }>();
 defineEmits<{ click: [] }>();
@@ -74,7 +74,7 @@ function ringOffset(percent: number | null): number {
           <h2 class="node-name">{{ source.name }}</h2>
           <p class="node-meta">
             <span>{{ source.id }}</span>
-            <span v-if="source.resetTime" :title="`Cycle resets ${formatDateTime(source.resetTime)}`">reset in {{ formatUntil(source.resetTime) }}</span>
+            <StampChip v-if="source.resetTime" kind="reset" :at="source.resetTime" />
           </p>
         </div>
       </div>
@@ -116,9 +116,7 @@ function ringOffset(percent: number | null): number {
     </div>
 
     <div class="node-foot">
-      <span :title="source.sampledAt ? `Sampled ${formatDateTime(source.sampledAt)}` : ''">
-        sampled {{ source.sampledAt ? formatAgo(source.sampledAt) : "NA" }}
-      </span>
+      <StampChip kind="sampled" :at="source.sampledAt" />
       <span class="view-trend">
         View trend
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
