@@ -330,43 +330,40 @@ func (s *monitorSupervisor) trafficUsage() (monitor.TrafficUsage, error) {
 	if s.active != nil {
 		return s.active.CurrentTrafficUsage()
 	}
-	now := time.Now().UTC()
-	if s.cfg.Now != nil {
-		now = s.cfg.Now().UTC()
-	}
-	cycleStart := monitor.CycleStart(now, s.cfg.ResetDay, s.cfg.ResetHour)
-	totals, err := s.store.TotalsSince(cycleStart.Unix())
-	if err != nil {
-		return monitor.TrafficUsage{}, err
-	}
-	return monitor.TrafficUsage{Totals: totals, CycleStart: cycleStart}, nil
+	return monitor.ReadCurrentTrafficUsage(s.store, s.clockNow(), s.cfg.ResetDay, s.cfg.ResetHour)
 }
 
-func (s *monitorSupervisor) setTrafficUsage(expectedCycleStart int64, target monitor.TrafficTotals) (monitor.TrafficUsageUpdate, error) {
+func (s *monitorSupervisor) setTrafficUsage(expectedCycleStart int64, target monitor.TrafficTotals, pkg *monitor.TrafficPackage) (monitor.TrafficUsageUpdate, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.store == nil {
 		return monitor.TrafficUsageUpdate{}, fmt.Errorf("agent monitor is not running")
 	}
 	if s.active != nil {
-		return s.active.SetCurrentTrafficUsage(expectedCycleStart, target)
+		return s.active.SetCurrentTrafficUsage(expectedCycleStart, target, pkg)
 	}
-	now := time.Now().UTC()
+	return monitor.ReplaceCurrentTrafficUsage(s.store, s.clockNow(), s.cfg.ResetDay, s.cfg.ResetHour, expectedCycleStart, target, pkg)
+}
+
+func (s *monitorSupervisor) grantTrafficPackage(expectedCycleStart int64, delta monitor.TrafficPackage) (monitor.TrafficUsageUpdate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.store == nil {
+		return monitor.TrafficUsageUpdate{}, fmt.Errorf("agent monitor is not running")
+	}
+	if s.active != nil {
+		return s.active.GrantTrafficPackage(expectedCycleStart, delta)
+	}
+	return monitor.GrantCurrentTrafficPackage(s.store, s.clockNow(), s.cfg.ResetDay, s.cfg.ResetHour, expectedCycleStart, delta)
+}
+
+// clockNow reads the clock the mounted monitor was configured with, falling
+// back to the host's UTC clock. Callers hold mu.
+func (s *monitorSupervisor) clockNow() time.Time {
 	if s.cfg.Now != nil {
-		now = s.cfg.Now().UTC()
+		return s.cfg.Now().UTC()
 	}
-	cycleStart := monitor.CycleStart(now, s.cfg.ResetDay, s.cfg.ResetHour)
-	if cycleStart.Unix() != expectedCycleStart {
-		return monitor.TrafficUsageUpdate{}, monitor.ErrTrafficCycleChanged
-	}
-	previous, err := s.store.ReplaceTotalsSince(cycleStart.Unix(), now.Unix(), target)
-	if err != nil {
-		return monitor.TrafficUsageUpdate{}, err
-	}
-	return monitor.TrafficUsageUpdate{
-		Previous: monitor.TrafficUsage{Totals: previous, CycleStart: cycleStart},
-		Applied:  monitor.TrafficUsage{Totals: target, CycleStart: cycleStart},
-	}, nil
+	return time.Now().UTC()
 }
 
 func readString(store state.Store, name, fallback string) string {

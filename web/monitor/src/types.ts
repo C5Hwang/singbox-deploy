@@ -229,9 +229,16 @@ export interface SourceSummary {
   inRemainingBytes: number;
   outRemainingBytes: number;
   totalRemainingBytes: number;
+  // The limits are what applies right now: the configured limit plus this
+  // cycle's traffic package. The package fields say how much of each limit is
+  // the package, so the card can draw the two apart; a node built before
+  // packages existed leaves them out.
   inLimitBytes: number;
   outLimitBytes: number;
   totalLimitBytes: number;
+  inPackageBytes?: number;
+  outPackageBytes?: number;
+  totalPackageBytes?: number;
   resetTime: string;
   resources?: ResourceSnapshot;
 }
@@ -246,6 +253,9 @@ export interface Summary {
   inLimitBytes: number;
   outLimitBytes: number;
   totalLimitBytes: number;
+  inPackageBytes?: number;
+  outPackageBytes?: number;
+  totalPackageBytes?: number;
   resetTime: string;
   resources?: ResourceSnapshot;
   sources?: SourceSummary[];
@@ -273,6 +283,9 @@ export interface UsageRow {
   label: string;
   key: "in" | "out" | "total";
   used: number;
+  // limit is the allowance in force; pkg is the part of it that is a traffic
+  // package granted for this cycle rather than the configured limit.
   limit: number;
+  pkg: number;
   color: string;
 }

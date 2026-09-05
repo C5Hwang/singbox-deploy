@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SourceSummary, UsageRow } from "../types";
 import StampChip from "./StampChip.vue";
-import { formatBytes, percentFor, percentText, barStyle, peakPercent } from "../utils";
+import { formatBytes, percentFor, percentText, barStyle, peakPercent, packagePercent } from "../utils";
 
 defineProps<{ source: SourceSummary }>();
 defineEmits<{ click: [] }>();
@@ -11,10 +11,21 @@ const RING_C = 2 * Math.PI * 34;
 
 function rowsForSource(source: SourceSummary): UsageRow[] {
   return [
-    { label: "IN", key: "in", used: source.inUsedBytes, limit: source.inLimitBytes, color: "var(--blue)" },
-    { label: "OUT", key: "out", used: source.outUsedBytes, limit: source.outLimitBytes, color: "var(--cyan)" },
-    { label: "TOTAL", key: "total", used: source.totalUsedBytes, limit: source.totalLimitBytes, color: "var(--green)" },
+    { label: "IN", key: "in", used: source.inUsedBytes, limit: source.inLimitBytes, pkg: source.inPackageBytes ?? 0, color: "var(--blue)" },
+    { label: "OUT", key: "out", used: source.outUsedBytes, limit: source.outLimitBytes, pkg: source.outPackageBytes ?? 0, color: "var(--cyan)" },
+    { label: "TOTAL", key: "total", used: source.totalUsedBytes, limit: source.totalLimitBytes, pkg: source.totalPackageBytes ?? 0, color: "var(--green)" },
   ];
+}
+
+// A package only means something against a limit: on an unlimited direction
+// there is nothing for it to extend, and the row says "unlimited" as before.
+function rowPackage(row: UsageRow): number {
+  return row.limit > 0 ? row.pkg : 0;
+}
+
+function packageTitle(row: UsageRow): string {
+  const base = row.limit - rowPackage(row);
+  return `Traffic package for this cycle: +${formatBytes(rowPackage(row))} on top of the ${formatBytes(base)} limit. It lapses at the next reset.`;
 }
 
 function percentsForSource(source: SourceSummary) {
@@ -108,9 +119,21 @@ function ringOffset(percent: number | null): number {
           <div class="row-label">
             <strong>{{ item.row.label }}</strong>
             <span>{{ rowText(item.row) }}</span>
+            <span v-if="rowPackage(item.row) > 0" class="pkg-chip" :title="packageTitle(item.row)">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2" y="5" width="12" height="9" rx="2" />
+                <path d="M5 5V3.5A1.5 1.5 0 0 1 6.5 2h3A1.5 1.5 0 0 1 11 3.5V5" />
+                <path d="M8 7.5v4M6 9.5h4" />
+              </svg>
+              +{{ formatBytes(rowPackage(item.row)) }}
+            </span>
           </div>
           <div class="percent" :class="percentClass(item.percent)">{{ percentText(item.percent) }}</div>
-          <div class="progress" :class="{ empty: item.percent === null }" :style="barStyle(item.percent, rowColor(item.row, item.percent))"></div>
+          <div
+            class="progress"
+            :class="{ empty: item.percent === null, packaged: rowPackage(item.row) > 0 }"
+            :style="barStyle(item.percent, rowColor(item.row, item.percent), packagePercent(item.row.limit, rowPackage(item.row)))"
+          ></div>
         </div>
       </div>
     </div>

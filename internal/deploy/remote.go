@@ -543,6 +543,9 @@ func fetchRemoteMonitorSource(ctx context.Context, src MonitorSource, fetch Subs
 		InLimitBytes        uint64                    `json:"inLimitBytes"`
 		OutLimitBytes       uint64                    `json:"outLimitBytes"`
 		TotalLimitBytes     uint64                    `json:"totalLimitBytes"`
+		InPackageBytes      uint64                    `json:"inPackageBytes"`
+		OutPackageBytes     uint64                    `json:"outPackageBytes"`
+		TotalPackageBytes   uint64                    `json:"totalPackageBytes"`
 		ResetTime           string                    `json:"resetTime"`
 		Trend               []monitor.HourlyPoint     `json:"trend"`
 		Resources           *monitor.ResourceSnapshot `json:"resources,omitempty"`
@@ -572,6 +575,9 @@ func fetchRemoteMonitorSource(ctx context.Context, src MonitorSource, fetch Subs
 		InLimitBytes:        payload.InLimitBytes,
 		OutLimitBytes:       payload.OutLimitBytes,
 		TotalLimitBytes:     payload.TotalLimitBytes,
+		InPackageBytes:      payload.InPackageBytes,
+		OutPackageBytes:     payload.OutPackageBytes,
+		TotalPackageBytes:   payload.TotalPackageBytes,
 		ResetTime:           payload.ResetTime,
 		Trend:               payload.Trend,
 		Resources:           payload.Resources,

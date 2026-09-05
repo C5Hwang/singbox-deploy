@@ -65,6 +65,13 @@ type TrafficUsageHandler interface {
 	SetTrafficUsage(context.Context, TrafficUsageRequest) (TrafficUsageUpdate, error)
 }
 
+// TrafficPackageHandler is implemented by agents that can grant a traffic
+// package for the active cycle. It is optional for the same reason
+// MonitorResetHandler is: a Hub can then say a spoke is too old to take one.
+type TrafficPackageHandler interface {
+	GrantTrafficPackage(context.Context, TrafficPackageGrant) (TrafficUsageUpdate, error)
+}
+
 // MonitorResetHandler is implemented by agents that can clear recorded monitor
 // history. Keeping it optional lets a newer Hub tell an operator that a spoke
 // is too old to honor the request, rather than failing it as an unknown route.
@@ -91,6 +98,7 @@ func (s *Server) Mux() http.Handler {
 	s.handle(mux, http.MethodPost, "/api/relay", s.handleRelay)
 	s.handle(mux, http.MethodGet, "/api/subscription", s.handleSubscription)
 	mux.HandleFunc("/api/monitor/usage", s.auth(s.handleTrafficUsage))
+	s.handle(mux, http.MethodPost, "/api/monitor/package", s.handleTrafficPackage)
 	s.handle(mux, http.MethodPost, "/api/monitor/reset", s.handleMonitorReset)
 	for _, endpoint := range monitorEndpoints {
 		apiPath, _, _ := endpoint.paths()
@@ -294,9 +302,10 @@ func (s *Server) handleTrafficUsage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, usage)
 	case http.MethodPut:
 		var wire struct {
-			InBytes            *uint64 `json:"inBytes"`
-			OutBytes           *uint64 `json:"outBytes"`
-			ExpectedCycleStart *int64  `json:"expectedCycleStart"`
+			InBytes            *uint64      `json:"inBytes"`
+			OutBytes           *uint64      `json:"outBytes"`
+			ExpectedCycleStart *int64       `json:"expectedCycleStart"`
+			Package            *wirePackage `json:"package"`
 		}
 		if err := decodeStrictJSON(w, r, &wire, maxTrafficUsageRequestBody); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -309,6 +318,14 @@ func (s *Server) handleTrafficUsage(w http.ResponseWriter, r *http.Request) {
 		req := TrafficUsageRequest{
 			InBytes: *wire.InBytes, OutBytes: *wire.OutBytes,
 			ExpectedCycleStart: *wire.ExpectedCycleStart,
+		}
+		if wire.Package != nil {
+			pkg, err := wire.Package.complete()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			req.Package = &pkg
 		}
 		if err := ValidateTrafficUsageRequest(req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -327,8 +344,7 @@ func (s *Server) handleTrafficUsage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if update.Applied.InBytes != req.InBytes || update.Applied.OutBytes != req.OutBytes ||
-			update.Applied.CycleStart != req.ExpectedCycleStart {
+		if !trafficUsageUpdateMatches(update, req) {
 			http.Error(w, "traffic usage handler returned a result that does not match the request", http.StatusInternalServerError)
 			return
 		}
@@ -337,6 +353,94 @@ func (s *Server) handleTrafficUsage(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// wirePackage is a traffic package as it arrives on the wire, every field
+// optional so the handler can say which one is missing.
+type wirePackage struct {
+	InBytes    *uint64 `json:"inBytes"`
+	OutBytes   *uint64 `json:"outBytes"`
+	TotalBytes *uint64 `json:"totalBytes"`
+}
+
+func (p wirePackage) complete() (TrafficPackage, error) {
+	if p.InBytes == nil || p.OutBytes == nil || p.TotalBytes == nil {
+		return TrafficPackage{}, fmt.Errorf("package.inBytes, package.outBytes, and package.totalBytes are required")
+	}
+	return TrafficPackage{InBytes: *p.InBytes, OutBytes: *p.OutBytes, TotalBytes: *p.TotalBytes}, nil
+}
+
+// trafficUsageUpdateMatches reports whether an update applied what a
+// replacement asked for: the usage, the cycle, and the package if one was
+// sent. Both the Agent and the Hub check it, each against its own copy of the
+// request.
+func trafficUsageUpdateMatches(update TrafficUsageUpdate, req TrafficUsageRequest) bool {
+	if update.Applied.InBytes != req.InBytes || update.Applied.OutBytes != req.OutBytes ||
+		update.Applied.CycleStart != req.ExpectedCycleStart {
+		return false
+	}
+	return req.Package == nil || update.Applied.Package == *req.Package
+}
+
+// trafficPackageGrantMatches reports whether an update applied a grant: the
+// cycle held, the usage was left alone, and the package grew by exactly the
+// grant.
+func trafficPackageGrantMatches(update TrafficUsageUpdate, grant TrafficPackageGrant) bool {
+	return update.Applied.CycleStart == grant.ExpectedCycleStart &&
+		update.Applied.InBytes == update.Previous.InBytes &&
+		update.Applied.OutBytes == update.Previous.OutBytes &&
+		update.Applied.Package == update.Previous.Package.Add(grant.Package())
+}
+
+// handleTrafficPackage grants a traffic package for the active cycle. It is a
+// POST on a route of its own, like the usage write, because the proxied
+// monitor endpoints are read-only and must stay that way.
+func (s *Server) handleTrafficPackage(w http.ResponseWriter, r *http.Request) {
+	handler, ok := s.Handler.(TrafficPackageHandler)
+	if !ok {
+		http.Error(w, "traffic packages are not supported by this agent", http.StatusNotImplemented)
+		return
+	}
+	var wire struct {
+		InBytes            *uint64 `json:"inBytes"`
+		OutBytes           *uint64 `json:"outBytes"`
+		TotalBytes         *uint64 `json:"totalBytes"`
+		ExpectedCycleStart *int64  `json:"expectedCycleStart"`
+	}
+	if err := decodeStrictJSON(w, r, &wire, maxTrafficUsageRequestBody); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if wire.InBytes == nil || wire.OutBytes == nil || wire.TotalBytes == nil || wire.ExpectedCycleStart == nil {
+		http.Error(w, "inBytes, outBytes, totalBytes, and expectedCycleStart are required", http.StatusBadRequest)
+		return
+	}
+	grant := TrafficPackageGrant{
+		InBytes: *wire.InBytes, OutBytes: *wire.OutBytes, TotalBytes: *wire.TotalBytes,
+		ExpectedCycleStart: *wire.ExpectedCycleStart,
+	}
+	if err := ValidateTrafficPackageGrant(grant); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	update, err := handler.GrantTrafficPackage(r.Context(), grant)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if IsTrafficCycleConflict(err) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	if err := ValidateTrafficUsageUpdate(update); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !trafficPackageGrantMatches(update, grant) {
+		http.Error(w, "traffic package handler returned a result that does not match the grant", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, update)
 }
 
 func (s *Server) handleMonitor(endpoint MonitorEndpoint) http.HandlerFunc {

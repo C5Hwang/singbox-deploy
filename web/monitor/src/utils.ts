@@ -51,10 +51,19 @@ export function tone(percent: number | null): string {
   return "";
 }
 
-export function barStyle(percent: number | null, color: string): Record<string, string> {
+// packagePercent is how much of a bar the traffic package covers: the tail of
+// the track from the configured limit to the allowance in force. It is the
+// share of the limit, not of the usage, so it stays put while the fill grows.
+export function packagePercent(limit: number, pkg: number | undefined): number {
+  if (limit <= 0 || !pkg || pkg <= 0) return 0;
+  return Math.min(100, (pkg / limit) * 100);
+}
+
+export function barStyle(percent: number | null, color: string, pkgPercent = 0): Record<string, string> {
   return {
     "--value": String(percent === null ? 0 : percent),
     "--bar": color,
+    "--pkg": String(pkgPercent),
   };
 }
 

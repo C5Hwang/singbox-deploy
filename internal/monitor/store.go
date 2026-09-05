@@ -128,6 +128,17 @@ CREATE TABLE IF NOT EXISTS adjustments (
     out_bytes INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_adjustments_ts ON adjustments(ts);
+-- Traffic packages are the allowance granted on top of the configured limits,
+-- recorded the way usage adjustments are: signed rows summed from the cycle
+-- start, so a grant lapses by itself once the cycle turns over and a correction
+-- never rewrites what was granted before it.
+CREATE TABLE IF NOT EXISTS packages (
+    ts INTEGER NOT NULL,
+    in_bytes INTEGER NOT NULL,
+    out_bytes INTEGER NOT NULL,
+    total_bytes INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_packages_ts ON packages(ts);
 CREATE TABLE IF NOT EXISTS resource_samples (
     ts        INTEGER NOT NULL,
     cpu_pct   REAL    NOT NULL,
@@ -336,6 +347,85 @@ func (s *Store) ReplaceTotalsSince(since, ts int64, target TrafficTotals) (Traff
 	return current, nil
 }
 
+// PackageSince returns the traffic package in force for the cycle that started
+// at since: every grant and correction recorded from then on, summed.
+func (s *Store) PackageSince(since int64) (TrafficPackage, error) {
+	return packageSince(s.db, since)
+}
+
+func packageSince(queryer rowQueryer, since int64) (TrafficPackage, error) {
+	var in, out, total sql.NullInt64
+	if err := queryer.QueryRow(
+		`SELECT COALESCE(SUM(in_bytes), 0), COALESCE(SUM(out_bytes), 0), COALESCE(SUM(total_bytes), 0) FROM packages WHERE ts >= ?`,
+		since,
+	).Scan(&in, &out, &total); err != nil {
+		return TrafficPackage{}, err
+	}
+	return TrafficPackage{
+		InBytes:    nonNegativeUint64(in.Int64),
+		OutBytes:   nonNegativeUint64(out.Int64),
+		TotalBytes: nonNegativeUint64(total.Int64),
+	}, nil
+}
+
+// AddPackageSince grants delta on top of the package already in force for the
+// cycle that started at since, and returns the package now in force. The read
+// and the grant share one transaction, so two grants can never lose each other.
+func (s *Store) AddPackageSince(since, ts int64, delta TrafficPackage) (TrafficPackage, error) {
+	var next TrafficPackage
+	err := s.adjustPackage(since, ts, func(current TrafficPackage) TrafficPackage {
+		next = current.Add(delta)
+		return next
+	})
+	return next, err
+}
+
+// ReplacePackageSince sets the cycle's package to target, recording the signed
+// correction rather than rewriting the grants before it — exactly what
+// ReplaceTotalsSince does for usage. It returns the package in force before.
+func (s *Store) ReplacePackageSince(since, ts int64, target TrafficPackage) (TrafficPackage, error) {
+	var previous TrafficPackage
+	err := s.adjustPackage(since, ts, func(current TrafficPackage) TrafficPackage {
+		previous = current
+		return target
+	})
+	return previous, err
+}
+
+// adjustPackage moves the cycle's package from what it is to what next says it
+// should be, in one transaction, by recording the difference.
+func (s *Store) adjustPackage(since, ts int64, next func(current TrafficPackage) TrafficPackage) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	current, err := packageSince(tx, since)
+	if err != nil {
+		return err
+	}
+	target := next(current)
+	deltaIn, err := signedDifference(target.InBytes, current.InBytes)
+	if err != nil {
+		return err
+	}
+	deltaOut, err := signedDifference(target.OutBytes, current.OutBytes)
+	if err != nil {
+		return err
+	}
+	deltaTotal, err := signedDifference(target.TotalBytes, current.TotalBytes)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO packages(ts, in_bytes, out_bytes, total_bytes) VALUES(?, ?, ?, ?)`,
+		ts, deltaIn, deltaOut, deltaTotal,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // TrendHourly returns hourly buckets at or after since, oldest first. It unions
 // already-aggregated hourly rows with on-the-fly buckets from raw samples.
 func (s *Store) TrendHourly(since int64) ([]HourlyPoint, error) {
@@ -397,6 +487,9 @@ func (s *Store) Cleanup(retentionCutoff int64) error {
 		return err
 	}
 	if _, err := s.db.Exec(`DELETE FROM adjustments WHERE ts < ?`, retentionCutoff); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM packages WHERE ts < ?`, retentionCutoff); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`DELETE FROM resource_hourly WHERE ts_hour < ?`, retentionCutoff); err != nil {

@@ -3,7 +3,7 @@ import { ref, computed } from "vue";
 import SourceCard from "../components/SourceCard.vue";
 import TrendModal from "../components/TrendModal.vue";
 import MetricTrendModal from "../components/MetricTrendModal.vue";
-import { formatBytes, percentFor, percentText, tone, barStyle, isLimited } from "../utils";
+import { formatBytes, percentFor, percentText, tone, barStyle, isLimited, packagePercent } from "../utils";
 import type { Summary, SourceSummary, MetricDef } from "../types";
 
 const props = defineProps<{ summary: Summary | null; error: string }>();
@@ -19,11 +19,15 @@ const sources = computed<SourceSummary[]>(() => {
 
 type UsedKey = "inUsedBytes" | "outUsedBytes" | "totalUsedBytes";
 type LimitKey = "inLimitBytes" | "outLimitBytes" | "totalLimitBytes";
+type PackageKey = "inPackageBytes" | "outPackageBytes" | "totalPackageBytes";
 
 interface TrafficCard {
   label: string;
   used: number;
   percent: number | null;
+  // pkgPercent is the share of the fleet's allowance that is traffic packages,
+  // drawn as the tail of the bar the way each node's card draws its own.
+  pkgPercent: number;
   detail: string;
   color: string;
   trendKey: "inBytes" | "outBytes" | "totalBytes";
@@ -31,8 +35,9 @@ interface TrafficCard {
 
 // Unlimited sources (limit = 0) still count toward the displayed usage, but
 // the quota percentage only compares limited sources against their limits.
-function sumOf(usedKey: UsedKey, limitKey: LimitKey) {
-  let used = 0, limitedUsed = 0, limit = 0, unlimited = 0;
+// A package counts only where there is a limit for it to extend.
+function sumOf(usedKey: UsedKey, limitKey: LimitKey, pkgKey: PackageKey) {
+  let used = 0, limitedUsed = 0, limit = 0, pkg = 0, unlimited = 0;
   for (const src of sources.value) {
     const u = src[usedKey] ?? 0;
     const l = src[limitKey] ?? 0;
@@ -40,30 +45,32 @@ function sumOf(usedKey: UsedKey, limitKey: LimitKey) {
     if (l > 0) {
       limit += l;
       limitedUsed += u;
+      pkg += src[pkgKey] ?? 0;
     } else {
       unlimited++;
     }
   }
-  return { used, limitedUsed, limit, unlimited };
+  return { used, limitedUsed, limit, pkg, unlimited };
 }
 
 const cards = computed<TrafficCard[]>(() => {
-  const defs: { label: string; usedKey: UsedKey; limitKey: LimitKey; color: string; trendKey: TrafficCard["trendKey"] }[] = [
-    { label: "Inbound", usedKey: "inUsedBytes", limitKey: "inLimitBytes", color: "var(--blue)", trendKey: "inBytes" },
-    { label: "Outbound", usedKey: "outUsedBytes", limitKey: "outLimitBytes", color: "var(--cyan)", trendKey: "outBytes" },
-    { label: "Total", usedKey: "totalUsedBytes", limitKey: "totalLimitBytes", color: "var(--green)", trendKey: "totalBytes" },
+  const defs: { label: string; usedKey: UsedKey; limitKey: LimitKey; pkgKey: PackageKey; color: string; trendKey: TrafficCard["trendKey"] }[] = [
+    { label: "Inbound", usedKey: "inUsedBytes", limitKey: "inLimitBytes", pkgKey: "inPackageBytes", color: "var(--blue)", trendKey: "inBytes" },
+    { label: "Outbound", usedKey: "outUsedBytes", limitKey: "outLimitBytes", pkgKey: "outPackageBytes", color: "var(--cyan)", trendKey: "outBytes" },
+    { label: "Total", usedKey: "totalUsedBytes", limitKey: "totalLimitBytes", pkgKey: "totalPackageBytes", color: "var(--green)", trendKey: "totalBytes" },
   ];
   return defs.map((d) => {
-    const { used, limitedUsed, limit, unlimited } = sumOf(d.usedKey, d.limitKey);
+    const { used, limitedUsed, limit, pkg, unlimited } = sumOf(d.usedKey, d.limitKey, d.pkgKey);
     const percent = limit > 0 ? percentFor(limitedUsed, limit) : null;
     let detail: string;
     if (limit <= 0) {
       detail = sources.value.length > 0 ? "No quota configured" : "";
     } else {
       detail = `Quota ${formatBytes(limitedUsed)} / ${formatBytes(limit)}`;
+      if (pkg > 0) detail += ` · +${formatBytes(pkg)} package`;
       if (unlimited > 0) detail += ` · ${unlimited} unlimited`;
     }
-    return { label: d.label, used, percent, detail, color: d.color, trendKey: d.trendKey };
+    return { label: d.label, used, percent, pkgPercent: packagePercent(limit, pkg), detail, color: d.color, trendKey: d.trendKey };
   });
 });
 
@@ -121,7 +128,7 @@ const availableDetail = computed(() => {
           </span>
         </div>
       </div>
-      <div class="progress" :class="{ empty: card.percent === null }" :style="barStyle(card.percent, card.color)"></div>
+      <div class="progress" :class="{ empty: card.percent === null, packaged: card.pkgPercent > 0 }" :style="barStyle(card.percent, card.color, card.pkgPercent)"></div>
     </article>
   </section>
 

@@ -115,9 +115,11 @@ type Monitor struct {
 	remoteRefreshMu sync.Mutex
 }
 
-// TrafficUsage is one authoritative current-cycle usage snapshot.
+// TrafficUsage is one authoritative current-cycle snapshot: what the node has
+// used, what it has been granted on top of its limits, and when the cycle began.
 type TrafficUsage struct {
 	Totals     TrafficTotals
+	Package    TrafficPackage
 	CycleStart time.Time
 }
 
@@ -226,6 +228,9 @@ type summary struct {
 	InLimitBytes        uint64            `json:"inLimitBytes"`
 	OutLimitBytes       uint64            `json:"outLimitBytes"`
 	TotalLimitBytes     uint64            `json:"totalLimitBytes"`
+	InPackageBytes      uint64            `json:"inPackageBytes,omitempty"`
+	OutPackageBytes     uint64            `json:"outPackageBytes,omitempty"`
+	TotalPackageBytes   uint64            `json:"totalPackageBytes,omitempty"`
 	ResetTime           string            `json:"resetTime"`
 	Resources           *ResourceSnapshot `json:"resources,omitempty"`
 	Sources             []SourceSummary   `json:"sources"`
@@ -274,24 +279,33 @@ type RelayLink struct {
 
 // SourceSummary is one traffic source shown by the monitor UI.
 type SourceSummary struct {
-	ID                  string                `json:"id"`
-	Name                string                `json:"name"`
-	FetchedAt           string                `json:"fetchedAt,omitempty"`
-	SampledAt           string                `json:"sampledAt,omitempty"`
-	MonitorURL          string                `json:"monitorURL,omitempty"`
-	InUsedBytes         uint64                `json:"inUsedBytes"`
-	OutUsedBytes        uint64                `json:"outUsedBytes"`
-	TotalUsedBytes      uint64                `json:"totalUsedBytes"`
-	InRemainingBytes    uint64                `json:"inRemainingBytes"`
-	OutRemainingBytes   uint64                `json:"outRemainingBytes"`
-	TotalRemainingBytes uint64                `json:"totalRemainingBytes"`
-	InLimitBytes        uint64                `json:"inLimitBytes"`
-	OutLimitBytes       uint64                `json:"outLimitBytes"`
-	TotalLimitBytes     uint64                `json:"totalLimitBytes"`
-	ResetTime           string                `json:"resetTime"`
-	Trend               []HourlyPoint         `json:"trend,omitempty"`
-	Resources           *ResourceSnapshot     `json:"resources,omitempty"`
-	ResourceTrend       []ResourceHourlyPoint `json:"resourceTrend,omitempty"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	FetchedAt           string `json:"fetchedAt,omitempty"`
+	SampledAt           string `json:"sampledAt,omitempty"`
+	MonitorURL          string `json:"monitorURL,omitempty"`
+	InUsedBytes         uint64 `json:"inUsedBytes"`
+	OutUsedBytes        uint64 `json:"outUsedBytes"`
+	TotalUsedBytes      uint64 `json:"totalUsedBytes"`
+	InRemainingBytes    uint64 `json:"inRemainingBytes"`
+	OutRemainingBytes   uint64 `json:"outRemainingBytes"`
+	TotalRemainingBytes uint64 `json:"totalRemainingBytes"`
+	// The limit fields are what applies right now: the configured limit plus
+	// whatever traffic package has been granted for this cycle. Every reader
+	// that compares usage against a limit — the dashboard's rings, the relay
+	// fallback, a hub built before packages existed — is right without knowing
+	// packages exist. The package fields say how much of each limit is the
+	// package, so a dashboard that does know can draw the two apart.
+	InLimitBytes      uint64                `json:"inLimitBytes"`
+	OutLimitBytes     uint64                `json:"outLimitBytes"`
+	TotalLimitBytes   uint64                `json:"totalLimitBytes"`
+	InPackageBytes    uint64                `json:"inPackageBytes,omitempty"`
+	OutPackageBytes   uint64                `json:"outPackageBytes,omitempty"`
+	TotalPackageBytes uint64                `json:"totalPackageBytes,omitempty"`
+	ResetTime         string                `json:"resetTime"`
+	Trend             []HourlyPoint         `json:"trend,omitempty"`
+	Resources         *ResourceSnapshot     `json:"resources,omitempty"`
+	ResourceTrend     []ResourceHourlyPoint `json:"resourceTrend,omitempty"`
 }
 
 func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +316,8 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	used := usage.Totals
+	limits := m.configuredLimits().WithPackage(usage.Package)
+	pkg := effectivePackage(m.configuredLimits(), usage.Package)
 	var sampledAt string
 	if ts, ok := m.store.LatestSampleTime(); ok {
 		sampledAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
@@ -313,12 +329,15 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 		InUsedBytes:         used.InBytes,
 		OutUsedBytes:        used.OutBytes,
 		TotalUsedBytes:      used.Total(),
-		InRemainingBytes:    Remaining(m.cfg.InLimitBytes, used.InBytes),
-		OutRemainingBytes:   Remaining(m.cfg.OutLimitBytes, used.OutBytes),
-		TotalRemainingBytes: Remaining(m.cfg.TotalLimitBytes, used.Total()),
-		InLimitBytes:        m.cfg.InLimitBytes,
-		OutLimitBytes:       m.cfg.OutLimitBytes,
-		TotalLimitBytes:     m.cfg.TotalLimitBytes,
+		InRemainingBytes:    Remaining(limits.InBytes, used.InBytes),
+		OutRemainingBytes:   Remaining(limits.OutBytes, used.OutBytes),
+		TotalRemainingBytes: Remaining(limits.TotalBytes, used.Total()),
+		InLimitBytes:        limits.InBytes,
+		OutLimitBytes:       limits.OutBytes,
+		TotalLimitBytes:     limits.TotalBytes,
+		InPackageBytes:      pkg.InBytes,
+		OutPackageBytes:     pkg.OutBytes,
+		TotalPackageBytes:   pkg.TotalBytes,
 		ResetTime:           NextCycleReset(now, m.cfg.ResetDay, m.cfg.ResetHour).Format(time.RFC3339),
 		Resources:           m.latestResource.Load(),
 	}
@@ -343,6 +362,9 @@ func (m *Monitor) handleSummary(w http.ResponseWriter, r *http.Request) {
 		InLimitBytes:        local.InLimitBytes,
 		OutLimitBytes:       local.OutLimitBytes,
 		TotalLimitBytes:     local.TotalLimitBytes,
+		InPackageBytes:      local.InPackageBytes,
+		OutPackageBytes:     local.OutPackageBytes,
+		TotalPackageBytes:   local.TotalPackageBytes,
 		ResetTime:           local.ResetTime,
 		Resources:           local.Resources,
 		Sources:             sources,
@@ -743,37 +765,70 @@ func (m *Monitor) usedThisCycle(now time.Time) (TrafficTotals, error) {
 	return m.store.TotalsSince(CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix())
 }
 
+// packageThisCycle reads the traffic package granted for the cycle containing
+// now. It is read from the store on every use rather than held in memory: the
+// TUI grants a package to the hub by writing beside a running monitor, and the
+// grant has to count from the next sample without a restart.
+func (m *Monitor) packageThisCycle(now time.Time) (TrafficPackage, error) {
+	return m.store.PackageSince(CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour).Unix())
+}
+
+// configuredLimits are the limits as configured, before any package.
+func (m *Monitor) configuredLimits() TrafficLimits {
+	return TrafficLimits{InBytes: m.cfg.InLimitBytes, OutBytes: m.cfg.OutLimitBytes, TotalBytes: m.cfg.TotalLimitBytes}
+}
+
+// effectivePackage is the part of a grant that can actually be spent: a
+// package on an unlimited direction extends nothing, so it is not reported as
+// extending anything.
+func effectivePackage(limits TrafficLimits, pkg TrafficPackage) TrafficPackage {
+	if limits.InBytes == 0 {
+		pkg.InBytes = 0
+	}
+	if limits.OutBytes == 0 {
+		pkg.OutBytes = 0
+	}
+	if limits.TotalBytes == 0 {
+		pkg.TotalBytes = 0
+	}
+	return pkg
+}
+
 // CurrentTrafficUsage returns a linearized snapshot for the active quota
 // cycle.
 func (m *Monitor) CurrentTrafficUsage() (TrafficUsage, error) {
 	m.trafficMu.Lock()
 	defer m.trafficMu.Unlock()
-	now := m.now()
-	cycleStart := CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour)
-	totals, err := m.store.TotalsSince(cycleStart.Unix())
-	if err != nil {
-		return TrafficUsage{}, err
-	}
-	return TrafficUsage{Totals: totals, CycleStart: cycleStart}, nil
+	return ReadCurrentTrafficUsage(m.store, m.now(), m.cfg.ResetDay, m.cfg.ResetHour)
 }
 
 // SetCurrentTrafficUsage replaces the absolute totals for the expected active
-// quota cycle and immediately reconciles quota service state.
-func (m *Monitor) SetCurrentTrafficUsage(expectedCycleStart int64, target TrafficTotals) (TrafficUsageUpdate, error) {
+// quota cycle — and the cycle's traffic package, when pkg is given — then
+// immediately reconciles quota service state.
+func (m *Monitor) SetCurrentTrafficUsage(expectedCycleStart int64, target TrafficTotals, pkg *TrafficPackage) (TrafficUsageUpdate, error) {
 	m.trafficMu.Lock()
 	defer m.trafficMu.Unlock()
 	now := m.now()
-	cycleStart := CycleStart(now, m.cfg.ResetDay, m.cfg.ResetHour)
-	if cycleStart.Unix() != expectedCycleStart {
-		return TrafficUsageUpdate{}, ErrTrafficCycleChanged
-	}
-	previous, err := m.store.ReplaceTotalsSince(cycleStart.Unix(), now.Unix(), target)
+	update, err := ReplaceCurrentTrafficUsage(m.store, now, m.cfg.ResetDay, m.cfg.ResetHour, expectedCycleStart, target, pkg)
 	if err != nil {
 		return TrafficUsageUpdate{}, err
 	}
-	update := TrafficUsageUpdate{
-		Previous: TrafficUsage{Totals: previous, CycleStart: cycleStart},
-		Applied:  TrafficUsage{Totals: target, CycleStart: cycleStart},
+	if err := m.reconcileQuota(now); err != nil {
+		update.Warning = trafficUsageReconciliationWarning(err)
+	}
+	return update, nil
+}
+
+// GrantTrafficPackage adds delta to the expected active cycle's traffic package
+// and immediately reconciles quota service state, so a node that was stopped
+// for running out of traffic is serving again as soon as the package lands.
+func (m *Monitor) GrantTrafficPackage(expectedCycleStart int64, delta TrafficPackage) (TrafficUsageUpdate, error) {
+	m.trafficMu.Lock()
+	defer m.trafficMu.Unlock()
+	now := m.now()
+	update, err := GrantCurrentTrafficPackage(m.store, now, m.cfg.ResetDay, m.cfg.ResetHour, expectedCycleStart, delta)
+	if err != nil {
+		return TrafficUsageUpdate{}, err
 	}
 	if err := m.reconcileQuota(now); err != nil {
 		update.Warning = trafficUsageReconciliationWarning(err)
@@ -1007,7 +1062,10 @@ func (m *Monitor) reconcileQuota(now time.Time) error {
 	if m.control == nil {
 		return nil
 	}
-	limits := TrafficLimits{InBytes: m.cfg.InLimitBytes, OutBytes: m.cfg.OutLimitBytes, TotalBytes: m.cfg.TotalLimitBytes}
+	// Whether there is a quota at all is decided by the configured limits
+	// alone; a package cannot create one. What the quota is, is decided by the
+	// limits plus this cycle's package.
+	limits := m.configuredLimits()
 	if limits == (TrafficLimits{}) {
 		if m.stoppedByQuota {
 			if err := m.control.Start(); err != nil {
@@ -1024,6 +1082,11 @@ func (m *Monitor) reconcileQuota(now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("read usage for quota enforcement: %w", err)
 	}
+	pkg, err := m.packageThisCycle(now)
+	if err != nil {
+		return fmt.Errorf("read traffic package for quota enforcement: %w", err)
+	}
+	limits = limits.WithPackage(pkg)
 	switch {
 	case limits.Exceeded(used):
 		active, err := m.control.IsActive()
@@ -1039,7 +1102,7 @@ func (m *Monitor) reconcileQuota(now time.Time) error {
 			if err := m.control.Stop(); err != nil {
 				return fmt.Errorf("stop sing-box after quota exceeded: %w", err)
 			}
-			log.Printf("monitor: quota exceeded (in=%d/%d out=%d/%d total=%d/%d bytes), stopped sing-box", used.InBytes, m.cfg.InLimitBytes, used.OutBytes, m.cfg.OutLimitBytes, used.Total(), m.cfg.TotalLimitBytes)
+			log.Printf("monitor: quota exceeded (in=%d/%d out=%d/%d total=%d/%d bytes, package in=%d out=%d total=%d), stopped sing-box", used.InBytes, limits.InBytes, used.OutBytes, limits.OutBytes, used.Total(), limits.TotalBytes, pkg.InBytes, pkg.OutBytes, pkg.TotalBytes)
 		}
 	case m.stoppedByQuota:
 		if err := m.control.Start(); err != nil {

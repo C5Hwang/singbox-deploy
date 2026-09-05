@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -77,6 +78,31 @@ type ProtocolStateResponse struct {
 	Credentials          ProtocolCredentials `json:"credentials"`
 }
 
+// TrafficPackage is the extra allowance granted for the Agent's active quota
+// cycle on top of its configured limits. It lapses at the cycle reset.
+type TrafficPackage struct {
+	InBytes    uint64 `json:"inBytes"`
+	OutBytes   uint64 `json:"outBytes"`
+	TotalBytes uint64 `json:"totalBytes"`
+}
+
+// Add returns the package with another grant folded in, saturating rather
+// than wrapping, which is also how the Agent's store folds it.
+func (p TrafficPackage) Add(other TrafficPackage) TrafficPackage {
+	return TrafficPackage{
+		InBytes:    saturatingAddUint64(p.InBytes, other.InBytes),
+		OutBytes:   saturatingAddUint64(p.OutBytes, other.OutBytes),
+		TotalBytes: saturatingAddUint64(p.TotalBytes, other.TotalBytes),
+	}
+}
+
+func saturatingAddUint64(a, b uint64) uint64 {
+	if b > math.MaxUint64-a {
+		return math.MaxUint64
+	}
+	return a + b
+}
+
 // TrafficUsage is the current absolute inbound/outbound usage in the Agent's
 // active quota cycle. CycleStart is a Unix timestamp and lets the Hub detect a
 // form that crossed a monthly reset boundary before it writes anything.
@@ -84,6 +110,10 @@ type TrafficUsage struct {
 	InBytes    uint64 `json:"inBytes"`
 	OutBytes   uint64 `json:"outBytes"`
 	CycleStart int64  `json:"cycleStart"`
+	// Package is what the cycle has been granted on top of the configured
+	// limits. An Agent built before packages existed leaves it out, which
+	// reads as nothing granted — which is also true.
+	Package TrafficPackage `json:"package"`
 }
 
 // TrafficUsageRequest replaces the absolute usage totals for one quota cycle.
@@ -95,6 +125,50 @@ type TrafficUsageRequest struct {
 	InBytes            uint64 `json:"inBytes"`
 	OutBytes           uint64 `json:"outBytes"`
 	ExpectedCycleStart int64  `json:"expectedCycleStart"`
+	// Package, when given, replaces the cycle's traffic package as well. A
+	// Hub built before packages existed never sends it, and the package it
+	// does not know about is left as it is rather than taken away.
+	Package *TrafficPackage `json:"package,omitempty"`
+}
+
+// TrafficPackageGrant adds to the Agent's active cycle's traffic package. It
+// is an increment rather than a replacement, so granting never has to read
+// first and what the sampler counted in between is never disturbed. The cycle
+// precondition is the same as for a usage replacement: a package bought for
+// this month must not land in the next.
+type TrafficPackageGrant struct {
+	InBytes            uint64 `json:"inBytes"`
+	OutBytes           uint64 `json:"outBytes"`
+	TotalBytes         uint64 `json:"totalBytes"`
+	ExpectedCycleStart int64  `json:"expectedCycleStart"`
+}
+
+// Package returns the grant as the package it adds.
+func (g TrafficPackageGrant) Package() TrafficPackage {
+	return TrafficPackage{InBytes: g.InBytes, OutBytes: g.OutBytes, TotalBytes: g.TotalBytes}
+}
+
+// ValidateTrafficPackage validates one package's figures.
+func ValidateTrafficPackage(p TrafficPackage) error {
+	if p.InBytes > maxTrafficUsageBytes || p.OutBytes > maxTrafficUsageBytes || p.TotalBytes > maxTrafficUsageBytes {
+		return fmt.Errorf("traffic package must not exceed %d bytes per direction", maxTrafficUsageBytes)
+	}
+	return nil
+}
+
+// ValidateTrafficPackageGrant validates a grant. An empty grant is refused:
+// it would change nothing, so a caller sending one has lost its figures.
+func ValidateTrafficPackageGrant(g TrafficPackageGrant) error {
+	if err := ValidateTrafficPackage(g.Package()); err != nil {
+		return err
+	}
+	if g.Package() == (TrafficPackage{}) {
+		return fmt.Errorf("traffic package grant must add at least one byte")
+	}
+	if g.ExpectedCycleStart <= 0 {
+		return fmt.Errorf("expected traffic usage cycle start must be a positive Unix timestamp")
+	}
+	return nil
 }
 
 // TrafficUsageUpdate records both sides of one linearized absolute
@@ -113,6 +187,9 @@ func ValidateTrafficUsage(usage TrafficUsage) error {
 	if usage.InBytes > maxTrafficUsageBytes || usage.OutBytes > maxTrafficUsageBytes {
 		return fmt.Errorf("traffic usage must not exceed %d bytes per direction", maxTrafficUsageBytes)
 	}
+	if err := ValidateTrafficPackage(usage.Package); err != nil {
+		return err
+	}
 	if usage.CycleStart <= 0 {
 		return fmt.Errorf("traffic usage cycle start must be a positive Unix timestamp")
 	}
@@ -123,6 +200,11 @@ func ValidateTrafficUsage(usage TrafficUsage) error {
 func ValidateTrafficUsageRequest(req TrafficUsageRequest) error {
 	if req.InBytes > maxTrafficUsageBytes || req.OutBytes > maxTrafficUsageBytes {
 		return fmt.Errorf("traffic usage must not exceed %d bytes per direction", maxTrafficUsageBytes)
+	}
+	if req.Package != nil {
+		if err := ValidateTrafficPackage(*req.Package); err != nil {
+			return err
+		}
 	}
 	if req.ExpectedCycleStart <= 0 {
 		return fmt.Errorf("expected traffic usage cycle start must be a positive Unix timestamp")

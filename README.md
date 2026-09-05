@@ -22,6 +22,8 @@ are managed from the hub's terminal UI.
   another over a lower-latency ingress path.
 - A web dashboard watches the whole fleet: resource usage and per-node quotas,
   per-client-IP traffic rankings, and latency to Chinese carriers.
+- Monthly traffic quotas per node, with temporary traffic packages that top
+  a node up until the next reset.
 - Nginx serves a masquerade site, chosen from bundled
   [HTML5 UP](https://html5up.net) templates.
 

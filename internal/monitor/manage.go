@@ -88,6 +88,11 @@ type UpdateOptions struct {
 	SetCurrentTotals bool
 	CurrentInBytes   uint64
 	CurrentOutBytes  uint64
+	// SetCurrentPackage replaces the current cycle's traffic package with
+	// CurrentPackage alongside the usage. It rides on SetCurrentTotals: the
+	// form that sets one shows both.
+	SetCurrentPackage bool
+	CurrentPackage    TrafficPackage
 
 	SetMonitorSources bool
 	MonitorSources    []ManageMonitorSource
@@ -455,10 +460,18 @@ func setManageCurrentTrafficTotals(ctx context.Context, opts UpdateOptions, cfg 
 		return err
 	}
 	defer store.Close()
-	return store.SetTotalsSince(CycleStart(now, cfg.ResetDay, cfg.ResetHour).Unix(), now.UTC().Unix(), TrafficTotals{
+	cycleStart := CycleStart(now, cfg.ResetDay, cfg.ResetHour).Unix()
+	if err := store.SetTotalsSince(cycleStart, now.UTC().Unix(), TrafficTotals{
 		InBytes:  opts.CurrentInBytes,
 		OutBytes: opts.CurrentOutBytes,
-	})
+	}); err != nil {
+		return err
+	}
+	if !opts.SetCurrentPackage {
+		return nil
+	}
+	_, err = store.ReplacePackageSince(cycleStart, now.UTC().Unix(), opts.CurrentPackage)
+	return err
 }
 
 // CurrentTrafficTotals reads the current GMT quota-cycle usage for display in
@@ -473,4 +486,39 @@ func CurrentTrafficTotals(layout paths.Layout, resetDay, resetHour int, now time
 	}
 	defer store.Close()
 	return store.TotalsSince(CycleStart(now, resetDay, resetHour).Unix())
+}
+
+// CurrentTrafficPackage reads the traffic package granted for the current GMT
+// quota cycle, for the same screens.
+func CurrentTrafficPackage(layout paths.Layout, resetDay, resetHour int, now time.Time) (TrafficPackage, error) {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	store, err := OpenStore(layout.MonitorDB)
+	if err != nil {
+		return TrafficPackage{}, err
+	}
+	defer store.Close()
+	return store.PackageSince(CycleStart(now, resetDay, resetHour).Unix())
+}
+
+// AddTrafficPackage grants delta on top of the current cycle's package in the
+// hub's own store and returns the package now in force. It writes beside the
+// monitor service rather than through it, like the usage adjustment does; the
+// service reads the package afresh on its next sample, which is also when it
+// restarts sing-box if the grant put the node back under its quota.
+func AddTrafficPackage(layout paths.Layout, resetDay, resetHour int, now time.Time, delta TrafficPackage) (TrafficPackage, error) {
+	if layout.Root == "" {
+		layout = paths.DefaultLayout()
+	}
+	if err := os.MkdirAll(filepath.Dir(layout.MonitorDB), 0o755); err != nil {
+		return TrafficPackage{}, err
+	}
+	store, err := OpenStore(layout.MonitorDB)
+	if err != nil {
+		return TrafficPackage{}, err
+	}
+	defer store.Close()
+	now = now.UTC()
+	return store.AddPackageSince(CycleStart(now, resetDay, resetHour).Unix(), now.Unix(), delta)
 }

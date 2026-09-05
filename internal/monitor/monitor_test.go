@@ -672,7 +672,7 @@ func TestSetCurrentTrafficUsageReconcilesQuotaImmediately(t *testing.T) {
 		TotalLimitBytes: 100, ResetDay: 1, Now: func() time.Time { return now },
 	}, ctrl)
 
-	update, err := m.SetCurrentTrafficUsage(cycleStart.Unix(), TrafficTotals{InBytes: 60, OutBytes: 50})
+	update, err := m.SetCurrentTrafficUsage(cycleStart.Unix(), TrafficTotals{InBytes: 60, OutBytes: 50}, nil)
 	if err != nil {
 		t.Fatalf("set usage above quota: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestSetCurrentTrafficUsageReconcilesQuotaImmediately(t *testing.T) {
 		t.Fatalf("quota marker after stop = %v, err=%v", stopped, err)
 	}
 
-	update, err = m.SetCurrentTrafficUsage(cycleStart.Unix(), TrafficTotals{InBytes: 10, OutBytes: 20})
+	update, err = m.SetCurrentTrafficUsage(cycleStart.Unix(), TrafficTotals{InBytes: 10, OutBytes: 20}, nil)
 	if err != nil {
 		t.Fatalf("set usage below quota: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestSetCurrentTrafficUsageReconcilesQuotaImmediately(t *testing.T) {
 		t.Fatalf("quota marker after release = %v, err=%v", stopped, err)
 	}
 
-	if _, err := m.SetCurrentTrafficUsage(cycleStart.AddDate(0, -1, 0).Unix(), TrafficTotals{InBytes: 1}); !errors.Is(err, ErrTrafficCycleChanged) {
+	if _, err := m.SetCurrentTrafficUsage(cycleStart.AddDate(0, -1, 0).Unix(), TrafficTotals{InBytes: 1}, nil); !errors.Is(err, ErrTrafficCycleChanged) {
 		t.Fatalf("stale cycle error = %v", err)
 	}
 	current, err := m.CurrentTrafficUsage()
@@ -725,6 +725,7 @@ func TestSetCurrentTrafficUsageReturnsBoundedSingleLineReconciliationWarning(t *
 	update, err := m.SetCurrentTrafficUsage(
 		CycleStart(now, 1).Unix(),
 		TrafficTotals{InBytes: 2},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("SetCurrentTrafficUsage error = %v", err)
@@ -755,7 +756,7 @@ func TestSetCurrentTrafficUsageKeepsQuotaOwnershipAfterStopFailure(t *testing.T)
 	}, ctrl)
 	cycleStart := CycleStart(now, 1).Unix()
 
-	high, err := m.SetCurrentTrafficUsage(cycleStart, TrafficTotals{InBytes: 11})
+	high, err := m.SetCurrentTrafficUsage(cycleStart, TrafficTotals{InBytes: 11}, nil)
 	if err != nil {
 		t.Fatalf("SetCurrentTrafficUsage above quota error = %v", err)
 	}
@@ -768,7 +769,7 @@ func TestSetCurrentTrafficUsageKeepsQuotaOwnershipAfterStopFailure(t *testing.T)
 	}
 
 	ctrl.stopFn = nil
-	low, err := m.SetCurrentTrafficUsage(cycleStart, TrafficTotals{InBytes: 1})
+	low, err := m.SetCurrentTrafficUsage(cycleStart, TrafficTotals{InBytes: 1}, nil)
 	if err != nil {
 		t.Fatalf("SetCurrentTrafficUsage below quota error = %v", err)
 	}

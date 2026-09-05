@@ -291,7 +291,41 @@ func (c *Client) SetTrafficUsage(ctx context.Context, usage TrafficUsageRequest)
 	if resp.StatusCode != http.StatusOK {
 		return TrafficUsageUpdate{}, statusError(resp)
 	}
-	return decodeTrafficUsageUpdate(resp.Body, usage)
+	return decodeTrafficUsageUpdate(resp.Body, func(update TrafficUsageUpdate) bool {
+		return trafficUsageUpdateMatches(update, usage)
+	})
+}
+
+// GrantTrafficPackage adds to the Agent's active-cycle traffic package. The
+// Agent folds the grant in itself, so nothing the sampler counted in the
+// meantime is disturbed, and the cycle precondition keeps a package bought for
+// one month out of the next.
+func (c *Client) GrantTrafficPackage(ctx context.Context, grant TrafficPackageGrant) (TrafficUsageUpdate, error) {
+	if err := ValidateTrafficPackageGrant(grant); err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	body, err := json.Marshal(grant)
+	if err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := c.newRequest(ctx, http.MethodPost, "/api/monitor/package", bytes.NewReader(body))
+	if err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.readHTTPClient().Do(req)
+	if err != nil {
+		return TrafficUsageUpdate{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return TrafficUsageUpdate{}, statusError(resp)
+	}
+	return decodeTrafficUsageUpdate(resp.Body, func(update TrafficUsageUpdate) bool {
+		return trafficPackageGrantMatches(update, grant)
+	})
 }
 
 // ResetMonitorHistory asks the Agent to clear one scope of its recorded monitor
@@ -342,7 +376,7 @@ func decodeTrafficUsage(body io.Reader) (TrafficUsage, error) {
 	return usage, nil
 }
 
-func decodeTrafficUsageUpdate(body io.Reader, request TrafficUsageRequest) (TrafficUsageUpdate, error) {
+func decodeTrafficUsageUpdate(body io.Reader, matches func(TrafficUsageUpdate) bool) (TrafficUsageUpdate, error) {
 	// A valid 2 KiB warning can expand to roughly 12 KiB when encoding/json
 	// escapes control characters or HTML-sensitive bytes. Keep the committed
 	// Previous/Applied response bounded without rejecting that valid envelope.
@@ -361,8 +395,7 @@ func decodeTrafficUsageUpdate(body io.Reader, request TrafficUsageRequest) (Traf
 	if err := ValidateTrafficUsageUpdate(update); err != nil {
 		return TrafficUsageUpdate{}, fmt.Errorf("agent returned invalid traffic usage update: %w", err)
 	}
-	if update.Applied.InBytes != request.InBytes || update.Applied.OutBytes != request.OutBytes ||
-		update.Applied.CycleStart != request.ExpectedCycleStart {
+	if !matches(update) {
 		return TrafficUsageUpdate{}, fmt.Errorf("agent traffic usage update does not match the request")
 	}
 	return update, nil

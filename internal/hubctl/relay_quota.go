@@ -70,11 +70,16 @@ func (c *Controller) hubQuotaExhausted(cfg deploy.Config) bool {
 	if limits == (monitor.TrafficLimits{}) {
 		return false
 	}
-	used, err := monitor.CurrentTrafficTotals(c.Layout, cfg.ResetDay, cfg.ResetHour, time.Now().UTC())
+	now := time.Now().UTC()
+	used, err := monitor.CurrentTrafficTotals(c.Layout, cfg.ResetDay, cfg.ResetHour, now)
 	if err != nil {
 		return false
 	}
-	return limits.Exceeded(used)
+	pkg, err := monitor.CurrentTrafficPackage(c.Layout, cfg.ResetDay, cfg.ResetHour, now)
+	if err != nil {
+		return false
+	}
+	return limits.WithPackage(pkg).Exceeded(used)
 }
 
 // ReconcileRelayPublication converges the fleet on the relay topology the

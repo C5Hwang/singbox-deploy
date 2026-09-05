@@ -27,6 +27,7 @@ type fakeHandler struct {
 	trafficReq     TrafficUsageRequest
 	trafficErr     error
 	trafficWarning string
+	packageGrant   TrafficPackageGrant
 }
 
 func (h *fakeHandler) Health() HealthResponse {
@@ -105,6 +106,11 @@ func (h *fakeHandler) SetTrafficUsage(_ context.Context, req TrafficUsageRequest
 	previous := h.trafficUsage
 	h.trafficUsage = TrafficUsage{
 		InBytes: req.InBytes, OutBytes: req.OutBytes, CycleStart: req.ExpectedCycleStart,
+		// A replacement that names no package leaves the one in force alone.
+		Package: previous.Package,
+	}
+	if req.Package != nil {
+		h.trafficUsage.Package = *req.Package
 	}
 	return TrafficUsageUpdate{
 		Previous: previous, Applied: h.trafficUsage, Warning: h.trafficWarning,

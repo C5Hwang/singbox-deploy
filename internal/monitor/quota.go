@@ -3,7 +3,10 @@
 // API/UI server. Traffic is whole-VPS, derived from interface counters.
 package monitor
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // TrafficLimits holds configured byte limits for a quota cycle.
 type TrafficLimits struct {
@@ -18,6 +21,58 @@ func (l TrafficLimits) Exceeded(used TrafficTotals) bool {
 	return limitExceeded(l.InBytes, used.InBytes) ||
 		limitExceeded(l.OutBytes, used.OutBytes) ||
 		limitExceeded(l.TotalBytes, used.Total())
+}
+
+// WithPackage returns the limits that apply once a traffic package has been
+// granted on top of them. A direction with no limit stays unlimited: a package
+// can only extend an allowance, never create one, so what is granted for an
+// unlimited direction is simply never spent.
+func (l TrafficLimits) WithPackage(p TrafficPackage) TrafficLimits {
+	return TrafficLimits{
+		InBytes:    extendLimit(l.InBytes, p.InBytes),
+		OutBytes:   extendLimit(l.OutBytes, p.OutBytes),
+		TotalBytes: extendLimit(l.TotalBytes, p.TotalBytes),
+	}
+}
+
+func extendLimit(limit, extra uint64) uint64 {
+	if limit == 0 {
+		return 0
+	}
+	if extra > math.MaxUint64-limit {
+		return math.MaxUint64
+	}
+	return limit + extra
+}
+
+// TrafficPackage is the extra allowance granted for one quota cycle on top of
+// the configured limits: a temporary top-up bought for a month that is nearly
+// spent. It is recorded against the cycle it was granted in, so it lapses on
+// its own at the next reset and the configured limits apply again unchanged.
+type TrafficPackage struct {
+	InBytes    uint64
+	OutBytes   uint64
+	TotalBytes uint64
+}
+
+// IsZero reports whether nothing has been granted.
+func (p TrafficPackage) IsZero() bool { return p == TrafficPackage{} }
+
+// Add returns the package with another grant folded in, saturating rather
+// than wrapping.
+func (p TrafficPackage) Add(other TrafficPackage) TrafficPackage {
+	return TrafficPackage{
+		InBytes:    saturatingAdd(p.InBytes, other.InBytes),
+		OutBytes:   saturatingAdd(p.OutBytes, other.OutBytes),
+		TotalBytes: saturatingAdd(p.TotalBytes, other.TotalBytes),
+	}
+}
+
+func saturatingAdd(a, b uint64) uint64 {
+	if b > math.MaxUint64-a {
+		return math.MaxUint64
+	}
+	return a + b
 }
 
 func limitExceeded(limit, used uint64) bool {

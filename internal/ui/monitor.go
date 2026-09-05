@@ -54,6 +54,7 @@ const (
 	monitorActionUsage
 	monitorActionEditSpoke
 	monitorActionSpokeUsage
+	monitorActionAddPackage
 	monitorActionResetClients
 	monitorActionResetLatency
 	monitorActionStart
@@ -106,6 +107,8 @@ type monitorManager struct {
 	cfg     deploy.Config
 	nodes   []nodes.Node
 	totals  monitor.TrafficTotals
+	// pkg is the traffic package granted to the hub for the current cycle.
+	pkg     monitor.TrafficPackage
 	loadErr error
 
 	serviceState string
@@ -126,6 +129,10 @@ type monitorManager struct {
 	haveSpokeUsage   bool
 	spokeUsageStop   context.CancelFunc
 	spokeUsageLoad   uint64
+
+	// packageGrants is what each node answered the last grant with, for the
+	// done screen.
+	packageGrants []packageGrantResult
 
 	parameterForm
 	commandRun
@@ -155,9 +162,12 @@ func newMonitorManager() *monitorManager {
 		return tm
 	}
 	tm.nodes = list
-	totals, err := monitor.CurrentTrafficTotals(layout, cfg.ResetDay, cfg.ResetHour, time.Now().UTC())
-	if err == nil {
+	now := time.Now().UTC()
+	if totals, err := monitor.CurrentTrafficTotals(layout, cfg.ResetDay, cfg.ResetHour, now); err == nil {
 		tm.totals = totals
+	}
+	if pkg, err := monitor.CurrentTrafficPackage(layout, cfg.ResetDay, cfg.ResetHour, now); err == nil {
+		tm.pkg = pkg
 	}
 	return tm
 }
@@ -352,8 +362,12 @@ func (tm *monitorManager) reloadState() {
 	if list, err := nodes.Load(layout); err == nil {
 		tm.nodes = list
 	}
-	if totals, err := monitor.CurrentTrafficTotals(layout, tm.cfg.ResetDay, tm.cfg.ResetHour, time.Now().UTC()); err == nil {
+	now := time.Now().UTC()
+	if totals, err := monitor.CurrentTrafficTotals(layout, tm.cfg.ResetDay, tm.cfg.ResetHour, now); err == nil {
 		tm.totals = totals
+	}
+	if pkg, err := monitor.CurrentTrafficPackage(layout, tm.cfg.ResetDay, tm.cfg.ResetHour, now); err == nil {
+		tm.pkg = pkg
 	}
 	tm.refreshServiceState()
 }
@@ -398,6 +412,13 @@ func (tm *monitorManager) activateAction() tea.Cmd {
 			return nil
 		}
 		tm.startSpokeTrafficSelector()
+	case monitorActionAddPackage:
+		if !tm.canApply() {
+			tm.fieldErr = tm.applyBlocker()
+			return nil
+		}
+		tm.packageGrants = nil
+		tm.startForm(tm.packageGrantFields())
 	case monitorActionResetClients, monitorActionResetLatency:
 		if !tm.canApply() {
 			tm.fieldErr = tm.applyBlocker()
@@ -418,7 +439,7 @@ func (tm *monitorManager) activateAction() tea.Cmd {
 
 func (tm *monitorManager) startForm(fields []field) {
 	tm.phase = monitorPhaseForm
-	if tm.parameterForm.begin(fields, nil, validateMonitorField) {
+	if tm.parameterForm.begin(fields, nil, tm.validateField) {
 		tm.phase = monitorPhaseConfirm
 	}
 }
@@ -429,7 +450,7 @@ func (tm *monitorManager) localFields() []field {
 }
 
 func (tm *monitorManager) usageFields() []field {
-	return fieldsFromParameters(uiparams.MonitorUsageFields(tm.totals.InBytes, tm.totals.OutBytes))
+	return fieldsFromParameters(uiparams.MonitorUsageFields(tm.totals, tm.pkg))
 }
 
 func (tm *monitorManager) trafficSpokes() []nodes.Node {
@@ -516,7 +537,10 @@ func (tm *monitorManager) handleSpokeTrafficUsage(msg spokeTrafficUsageMsg) {
 	}
 	tm.spokeUsage = msg.usage
 	tm.haveSpokeUsage = true
-	tm.startForm(fieldsFromParameters(uiparams.MonitorUsageFields(msg.usage.InBytes, msg.usage.OutBytes)))
+	tm.startForm(fieldsFromParameters(uiparams.MonitorUsageFields(
+		monitor.TrafficTotals{InBytes: msg.usage.InBytes, OutBytes: msg.usage.OutBytes},
+		packageFromUsage(msg.usage),
+	)))
 }
 
 func (tm *monitorManager) cancelSpokeUsageLoad() {
@@ -577,7 +601,7 @@ func (tm *monitorManager) startEditSpokeMonitorForm() {
 		"reset_hour":               strconv.Itoa(node.ResetHour),
 	}
 	tm.phase = monitorPhaseForm
-	if tm.parameterForm.begin(fields, seed, validateMonitorField) {
+	if tm.parameterForm.begin(fields, seed, tm.validateField) {
 		tm.phase = monitorPhaseConfirm
 	}
 }
@@ -627,6 +651,15 @@ func (tm *monitorManager) startRun() tea.Cmd {
 	if tm.action == monitorActionSpokeUsage {
 		go func() {
 			err := applySpokeTrafficUsageRun(tm, context.Background(), logs, progress)
+			ch <- runMsg{done: true, err: err}
+		}()
+		return tm.waitForRun()
+	}
+	if tm.action == monitorActionAddPackage {
+		targets, delta, cfg := tm.packageGrantTargets(), tm.packageGrantDelta(), tm.cfg
+		go func() {
+			results, err := grantTrafficPackageRun(context.Background(), monitorUILayout(), cfg, targets, delta, logs, progress)
+			tm.packageGrants = results
 			ch <- runMsg{done: true, err: err}
 		}()
 		return tm.waitForRun()
@@ -681,10 +714,14 @@ func (tm *monitorManager) applySpokeTrafficUsage(ctx context.Context, logs *logW
 	if err != nil {
 		return err
 	}
+	pkg := uiparams.PackageFromValues(tm.values, uiparams.KeyPackageIn, uiparams.KeyPackageOut, uiparams.KeyPackageTotal)
 	req := nodeapi.TrafficUsageRequest{
 		InBytes:            inBytes,
 		OutBytes:           outBytes,
 		ExpectedCycleStart: tm.spokeUsage.CycleStart,
+		Package: &nodeapi.TrafficPackage{
+			InBytes: pkg.InBytes, OutBytes: pkg.OutBytes, TotalBytes: pkg.TotalBytes,
+		},
 	}
 	usageEvent := deploy.Event{
 		Index: 1, Total: 2, Label: "Spoke traffic counters",
@@ -701,10 +738,11 @@ func (tm *monitorManager) applySpokeTrafficUsage(ctx context.Context, logs *logW
 	tm.spokeUsageUpdate = update
 	applied := update.Applied
 	if applied.CycleStart != req.ExpectedCycleStart ||
-		applied.InBytes != req.InBytes || applied.OutBytes != req.OutBytes {
+		applied.InBytes != req.InBytes || applied.OutBytes != req.OutBytes ||
+		applied.Package != *req.Package {
 		err := fmt.Errorf(
-			"Agent confirmed unexpected traffic counters (cycle=%d in=%d out=%d)",
-			applied.CycleStart, applied.InBytes, applied.OutBytes,
+			"Agent confirmed unexpected traffic counters (cycle=%d in=%d out=%d package=%+v)",
+			applied.CycleStart, applied.InBytes, applied.OutBytes, applied.Package,
 		)
 		usageEvent.Status = "fail"
 		usageEvent.Err = err
@@ -847,6 +885,8 @@ func (tm *monitorManager) updateOptions() monitor.UpdateOptions {
 		opts.SetCurrentTotals = true
 		opts.CurrentInBytes = inBytes
 		opts.CurrentOutBytes = outBytes
+		opts.SetCurrentPackage = true
+		opts.CurrentPackage = uiparams.PackageFromValues(tm.values, uiparams.KeyPackageIn, uiparams.KeyPackageOut, uiparams.KeyPackageTotal)
 		return opts
 	default:
 		return base
@@ -906,8 +946,11 @@ func (tm *monitorManager) View() string {
 			return commandFailedView(tm, "Monitor update failed")
 		}
 		title := "Monitor settings updated"
-		if tm.action == monitorActionSpokeUsage {
+		switch tm.action {
+		case monitorActionSpokeUsage:
 			title = "Spoke traffic counters updated"
+		case monitorActionAddPackage:
+			title = "Traffic package granted"
 		}
 		return flowOK.Render(title) + "\n\n" + tm.doneSummary()
 	case monitorPhaseServiceConfirm:
@@ -946,11 +989,18 @@ func (tm *monitorManager) actionView() string {
 		summaryRow("Next reset", nextResetLabel(uiparams.DefaultResetDay(tm.cfg), uiparams.DefaultResetHour(tm.cfg))),
 		summaryRow("Current inbound", byteSize(tm.totals.InBytes)),
 		summaryRow("Current outbound", byteSize(tm.totals.OutBytes)),
+	}
+	// The package row appears only while there is one: most months there is
+	// not, and the screen is already as tall as a small terminal.
+	if !tm.pkg.IsZero() {
+		rows = append(rows, summaryRow("Traffic package", packageSummary(tm.pkg)))
+	}
+	rows = append(rows,
 		summaryRow("Registered spokes", strconv.Itoa(len(tm.nodes))),
 		summaryRow("Monitored spokes", strconv.Itoa(tm.monitoredSpokeCount())),
 		summaryRow("Spoke transport", "WireGuard only"),
 		summaryRow("Hub monitor service", or(tm.serviceState, "unknown")),
-	}
+	)
 	var b strings.Builder
 	b.WriteString(flowTitle.Render(titleMonitoring) + "\n\n")
 	b.WriteString(renderSummary(rows) + "\n")
@@ -999,6 +1049,7 @@ func (tm *monitorManager) confirmView() string {
 			summaryRow("Current inbound", byteSize(tm.totals.InBytes)+" -> "+tm.values["current_in_traffic"]),
 			summaryRow("Current outbound", byteSize(tm.totals.OutBytes)+" -> "+tm.values["current_out_traffic"]),
 		)
+		rows = append(rows, tm.packageChangeRows(tm.pkg)...)
 	case monitorActionSpokeUsage:
 		if node, ok := tm.spokeTrafficNode(); ok {
 			rows = append(rows,
@@ -1007,6 +1058,16 @@ func (tm *monitorManager) confirmView() string {
 				summaryRow("Current inbound", byteSize(tm.spokeUsage.InBytes)+" -> "+tm.values["current_in_traffic"]),
 				summaryRow("Current outbound", byteSize(tm.spokeUsage.OutBytes)+" -> "+tm.values["current_out_traffic"]),
 			)
+			rows = append(rows, tm.packageChangeRows(packageFromUsage(tm.spokeUsage))...)
+		}
+	case monitorActionAddPackage:
+		targets := tm.packageGrantTargets()
+		rows = append(rows,
+			summaryRow("Adding", packageSummary(tm.packageGrantDelta())),
+			summaryRow("Nodes", strconv.Itoa(len(targets))),
+		)
+		for _, target := range targets {
+			rows = append(rows, summaryIndentedText(2, target.label))
 		}
 	case monitorActionEditSpoke:
 		if tm.editNodeIndex >= 0 && tm.editNodeIndex < len(tm.nodes) {
@@ -1037,7 +1098,9 @@ func (tm *monitorManager) confirmView() string {
 	rows = append(rows, summaryBlank())
 	switch {
 	case tm.action == monitorActionSpokeUsage:
-		rows = append(rows, summaryText("Replaces the selected spoke's current quota-cycle counters and refreshes /monitor data."))
+		rows = append(rows, summaryText("Replaces the selected spoke's current quota-cycle counters and package, and refreshes /monitor data."))
+	case tm.action == monitorActionAddPackage:
+		rows = append(rows, summaryText("Adds to each node's allowance for the current cycle only. The configured limits stay as they are, and the package lapses at the next reset."))
 	case tm.action == monitorActionResetClients:
 		rows = append(rows, summaryText("Deletes the recorded per-address history. Sampling continues, so the table refills from now on. This cannot be undone."))
 	case tm.action == monitorActionResetLatency:
@@ -1061,7 +1124,34 @@ func monitorResetLabel(scope monitor.ResetScope) string {
 	}
 }
 
+// packageChangeRows shows a package edit the way the usage rows above it do:
+// what it was, and what the form makes it.
+func (tm *monitorManager) packageChangeRows(current monitor.TrafficPackage) []summaryLine {
+	return []summaryLine{
+		summaryRow(uiparams.LabelPackageIn, byteSize(current.InBytes)+" -> "+tm.values[uiparams.KeyPackageIn]),
+		summaryRow(uiparams.LabelPackageOut, byteSize(current.OutBytes)+" -> "+tm.values[uiparams.KeyPackageOut]),
+		summaryRow(uiparams.LabelPackageTotal, byteSize(current.TotalBytes)+" -> "+tm.values[uiparams.KeyPackageTotal]),
+	}
+}
+
 func (tm *monitorManager) doneSummary() string {
+	if tm.action == monitorActionAddPackage {
+		rows := []summaryLine{
+			summaryRow("Added", packageSummary(tm.packageGrantDelta())),
+			summaryRow("Nodes", strconv.Itoa(len(tm.packageGrants))),
+		}
+		for _, result := range tm.packageGrants {
+			state := "package now " + packageSummary(result.pkg)
+			switch {
+			case result.err != nil:
+				state = "failed: " + result.err.Error()
+			case result.warning != "":
+				state += "; quota warning, inspect the Agent service state"
+			}
+			rows = append(rows, summaryIndentedText(2, result.label+": "+state))
+		}
+		return renderSummary(rows)
+	}
 	if scope, ok := tm.resetScope(); ok {
 		targets := tm.resetTargets()
 		rows := []summaryLine{
@@ -1078,6 +1168,7 @@ func (tm *monitorManager) doneSummary() string {
 			summaryRow("Spoke traffic counters", "updated"),
 			summaryRow("Current inbound", tm.values["current_in_traffic"]),
 			summaryRow("Current outbound", tm.values["current_out_traffic"]),
+			summaryRow("Traffic package", packageSummary(uiparams.PackageFromValues(tm.values, uiparams.KeyPackageIn, uiparams.KeyPackageOut, uiparams.KeyPackageTotal))),
 			summaryRow("Quota cycle start", formatTrafficCycleStart(tm.spokeUsage.CycleStart)),
 			summaryRow("Spoke transport", "WireGuard"),
 		}
@@ -1156,6 +1247,8 @@ func (tm *monitorManager) actions() []monitorActionItem {
 		{separator: true, label: "Spokes"},
 		{action: monitorActionEditSpoke, label: "Edit spoke monitor settings"},
 		{action: monitorActionSpokeUsage, label: "Adjust spoke traffic counters"},
+		{separator: true, label: "Traffic packages"},
+		{action: monitorActionAddPackage, label: "Add traffic package"},
 		{separator: true, label: "Recorded data"},
 		{action: monitorActionResetClients, label: "Clear client traffic history"},
 		{action: monitorActionResetLatency, label: "Clear carrier latency history"},

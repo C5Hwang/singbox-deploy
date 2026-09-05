@@ -181,10 +181,7 @@ func (h *agentHandler) TrafficUsage(ctx context.Context) (nodeapi.TrafficUsage, 
 	if err != nil {
 		return nodeapi.TrafficUsage{}, err
 	}
-	return nodeapi.TrafficUsage{
-		InBytes: usage.Totals.InBytes, OutBytes: usage.Totals.OutBytes,
-		CycleStart: usage.CycleStart.Unix(),
-	}, nil
+	return trafficUsageResponse(usage), nil
 }
 
 func (h *agentHandler) SetTrafficUsage(ctx context.Context, req nodeapi.TrafficUsageRequest) (nodeapi.TrafficUsageUpdate, error) {
@@ -201,11 +198,19 @@ func (h *agentHandler) SetTrafficUsage(ctx context.Context, req nodeapi.TrafficU
 		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("load traffic monitor state: %w", err)
 	}
 	target := monitor.TrafficTotals{InBytes: req.InBytes, OutBytes: req.OutBytes}
+	var pkg *monitor.TrafficPackage
+	if req.Package != nil {
+		pkg = &monitor.TrafficPackage{
+			InBytes: req.Package.InBytes, OutBytes: req.Package.OutBytes, TotalBytes: req.Package.TotalBytes,
+		}
+	}
 	var update monitor.TrafficUsageUpdate
 	if cfg.DeployMonitor && h.monitor != nil {
-		update, err = h.monitor.setTrafficUsage(req.ExpectedCycleStart, target)
+		update, err = h.monitor.setTrafficUsage(req.ExpectedCycleStart, target, pkg)
 	} else {
-		update, err = h.setStoredTrafficUsage(cfg, req.ExpectedCycleStart, target)
+		update, err = h.withStoredTrafficUsage(func(store *monitor.Store, now time.Time) (monitor.TrafficUsageUpdate, error) {
+			return monitor.ReplaceCurrentTrafficUsage(store, now, cfg.ResetDay, cfg.ResetHour, req.ExpectedCycleStart, target, pkg)
+		})
 	}
 	if errors.Is(err, monitor.ErrTrafficCycleChanged) {
 		return nodeapi.TrafficUsageUpdate{}, nodeapi.TrafficCycleConflict()
@@ -213,17 +218,60 @@ func (h *agentHandler) SetTrafficUsage(ctx context.Context, req nodeapi.TrafficU
 	if err != nil {
 		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("set current traffic usage: %w", err)
 	}
+	return trafficUsageUpdateResponse(update), nil
+}
+
+// GrantTrafficPackage adds to the active cycle's traffic package. Like a usage
+// replacement it goes through the running monitor when there is one, so the
+// grant reconciles the quota at once: a node stopped for running out of
+// traffic is serving again before the Hub's call returns.
+func (h *agentHandler) GrantTrafficPackage(ctx context.Context, grant nodeapi.TrafficPackageGrant) (nodeapi.TrafficUsageUpdate, error) {
+	ctx = nonNilContext(ctx)
+	if err := h.beginMutation(ctx); err != nil {
+		return nodeapi.TrafficUsageUpdate{}, err
+	}
+	defer h.endMutation()
+	if err := nodeapi.ValidateTrafficPackageGrant(grant); err != nil {
+		return nodeapi.TrafficUsageUpdate{}, err
+	}
+	cfg, err := deploy.LoadProtocolConfig(h.layout)
+	if err != nil {
+		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("load traffic monitor state: %w", err)
+	}
+	delta := monitor.TrafficPackage{InBytes: grant.InBytes, OutBytes: grant.OutBytes, TotalBytes: grant.TotalBytes}
+	var update monitor.TrafficUsageUpdate
+	if cfg.DeployMonitor && h.monitor != nil {
+		update, err = h.monitor.grantTrafficPackage(grant.ExpectedCycleStart, delta)
+	} else {
+		update, err = h.withStoredTrafficUsage(func(store *monitor.Store, now time.Time) (monitor.TrafficUsageUpdate, error) {
+			return monitor.GrantCurrentTrafficPackage(store, now, cfg.ResetDay, cfg.ResetHour, grant.ExpectedCycleStart, delta)
+		})
+	}
+	if errors.Is(err, monitor.ErrTrafficCycleChanged) {
+		return nodeapi.TrafficUsageUpdate{}, nodeapi.TrafficCycleConflict()
+	}
+	if err != nil {
+		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("grant traffic package: %w", err)
+	}
+	return trafficUsageUpdateResponse(update), nil
+}
+
+func trafficUsageResponse(usage monitor.TrafficUsage) nodeapi.TrafficUsage {
+	return nodeapi.TrafficUsage{
+		InBytes: usage.Totals.InBytes, OutBytes: usage.Totals.OutBytes,
+		CycleStart: usage.CycleStart.Unix(),
+		Package: nodeapi.TrafficPackage{
+			InBytes: usage.Package.InBytes, OutBytes: usage.Package.OutBytes, TotalBytes: usage.Package.TotalBytes,
+		},
+	}
+}
+
+func trafficUsageUpdateResponse(update monitor.TrafficUsageUpdate) nodeapi.TrafficUsageUpdate {
 	return nodeapi.TrafficUsageUpdate{
-		Previous: nodeapi.TrafficUsage{
-			InBytes: update.Previous.Totals.InBytes, OutBytes: update.Previous.Totals.OutBytes,
-			CycleStart: update.Previous.CycleStart.Unix(),
-		},
-		Applied: nodeapi.TrafficUsage{
-			InBytes: update.Applied.Totals.InBytes, OutBytes: update.Applied.Totals.OutBytes,
-			CycleStart: update.Applied.CycleStart.Unix(),
-		},
-		Warning: update.Warning,
-	}, nil
+		Previous: trafficUsageResponse(update.Previous),
+		Applied:  trafficUsageResponse(update.Applied),
+		Warning:  update.Warning,
+	}
 }
 
 // ResetMonitorHistory clears one scope of this node's recorded monitor history.
@@ -253,45 +301,37 @@ func (h *agentHandler) currentTrafficUsage(cfg deploy.Config) (monitor.TrafficUs
 		}
 		return usage, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(h.layout.MonitorDB), 0o755); err != nil {
-		return monitor.TrafficUsage{}, fmt.Errorf("create traffic monitor store directory: %w", err)
+	store, err := h.openStoredTrafficStore()
+	if err != nil {
+		return monitor.TrafficUsage{}, err
 	}
-	now := time.Now().UTC()
-	totals, err := monitor.CurrentTrafficTotals(h.layout, cfg.ResetDay, cfg.ResetHour, now)
+	defer store.Close()
+	usage, err := monitor.ReadCurrentTrafficUsage(store, time.Now().UTC(), cfg.ResetDay, cfg.ResetHour)
 	if err != nil {
 		return monitor.TrafficUsage{}, fmt.Errorf("read stored traffic usage: %w", err)
 	}
-	return monitor.TrafficUsage{
-		Totals: totals, CycleStart: monitor.CycleStart(now, cfg.ResetDay, cfg.ResetHour),
-	}, nil
+	return usage, nil
 }
 
-func (h *agentHandler) setStoredTrafficUsage(
-	cfg deploy.Config,
-	expectedCycleStart int64,
-	target monitor.TrafficTotals,
+// withStoredTrafficUsage runs one cycle-figure change against the store
+// directly, for a spoke whose monitor is switched off and so holds no store
+// open. The clock is the host's: with no monitor there is no network clock.
+func (h *agentHandler) withStoredTrafficUsage(
+	change func(store *monitor.Store, now time.Time) (monitor.TrafficUsageUpdate, error),
 ) (monitor.TrafficUsageUpdate, error) {
-	now := time.Now().UTC()
-	cycleStart := monitor.CycleStart(now, cfg.ResetDay, cfg.ResetHour)
-	if cycleStart.Unix() != expectedCycleStart {
-		return monitor.TrafficUsageUpdate{}, monitor.ErrTrafficCycleChanged
-	}
-	if err := os.MkdirAll(filepath.Dir(h.layout.MonitorDB), 0o755); err != nil {
-		return monitor.TrafficUsageUpdate{}, err
-	}
-	store, err := monitor.OpenStore(h.layout.MonitorDB)
+	store, err := h.openStoredTrafficStore()
 	if err != nil {
 		return monitor.TrafficUsageUpdate{}, err
 	}
 	defer store.Close()
-	previous, err := store.ReplaceTotalsSince(cycleStart.Unix(), now.Unix(), target)
-	if err != nil {
-		return monitor.TrafficUsageUpdate{}, err
+	return change(store, time.Now().UTC())
+}
+
+func (h *agentHandler) openStoredTrafficStore() (*monitor.Store, error) {
+	if err := os.MkdirAll(filepath.Dir(h.layout.MonitorDB), 0o755); err != nil {
+		return nil, fmt.Errorf("create traffic monitor store directory: %w", err)
 	}
-	return monitor.TrafficUsageUpdate{
-		Previous: monitor.TrafficUsage{Totals: previous, CycleStart: cycleStart},
-		Applied:  monitor.TrafficUsage{Totals: target, CycleStart: cycleStart},
-	}, nil
+	return monitor.OpenStore(h.layout.MonitorDB)
 }
 
 func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, log io.Writer) error {

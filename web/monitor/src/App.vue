@@ -776,6 +776,29 @@ button, input { font-family: inherit; }
 @keyframes grow { from { width: 0 } to { width: calc(var(--value) * 1%) } }
 .progress.empty::after { width: 0; }
 .progress.thin { height: 4px; }
+/* A traffic package is the tail of the track: the allowance past the
+   configured limit. It is hatched so the boundary reads whether the fill has
+   reached it or not — filled, the hatch sits over the bar colour; empty, over
+   the track — and it is drawn above the fill for the same reason. */
+.progress.packaged::before {
+  content: ""; position: absolute; inset: 0 0 0 auto; z-index: 1;
+  width: calc(var(--pkg) * 1%); border-radius: inherit;
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--text) 32%, transparent) 0 2px,
+    transparent 2px 5px
+  );
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--text) 45%, var(--surface-solid));
+  pointer-events: none;
+}
+.pkg-chip {
+  display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0;
+  padding: 1px 6px 1px 4px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+  font-family: var(--font-mono); font-size: 10px; font-weight: 800; line-height: 1.4;
+  letter-spacing: 0.02em; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.pkg-chip svg { width: 10px; height: 10px; flex-shrink: 0; }
 
 /* ── Node cards ────────────────────────────────────────────────── */
 .node-card { display: flex; flex-direction: column; gap: 14px; container: node / inline-size; }

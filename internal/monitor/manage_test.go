@@ -137,6 +137,8 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 		SetCurrentTotals:  true,
 		CurrentInBytes:    2 << 30,
 		CurrentOutBytes:   3 << 30,
+		SetCurrentPackage: true,
+		CurrentPackage:    monitor.TrafficPackage{InBytes: 10 << 30, TotalBytes: 20 << 30},
 		SetMonitorSources: true,
 		MonitorSources:    toManageMonitorSources([]deploy.MonitorSource{monitorSrc}),
 		Firewall:          system.FirewallUFW,
@@ -258,6 +260,13 @@ func TestUpdateSettingsUsageAndRemoteSources(t *testing.T) {
 	}
 	if totals.InBytes != 2<<30 || totals.OutBytes != 3<<30 {
 		t.Fatalf("totals = %#v", totals)
+	}
+	pkg, err := monitor.CurrentTrafficPackage(layout, updated.ResetDay, updated.ResetHour, now)
+	if err != nil {
+		t.Fatalf("CurrentTrafficPackage: %v", err)
+	}
+	if pkg != (monitor.TrafficPackage{InBytes: 10 << 30, TotalBytes: 20 << 30}) {
+		t.Fatalf("package = %#v", pkg)
 	}
 	remoteBody, err := os.ReadFile(deploy.RemoteMonitorPath(layout))
 	if err != nil {

@@ -98,6 +98,9 @@ func fetchNodeSummary(ctx context.Context, client *nodeapi.Client, n nodes.Node,
 		InLimitBytes        uint64                    `json:"inLimitBytes"`
 		OutLimitBytes       uint64                    `json:"outLimitBytes"`
 		TotalLimitBytes     uint64                    `json:"totalLimitBytes"`
+		InPackageBytes      uint64                    `json:"inPackageBytes"`
+		OutPackageBytes     uint64                    `json:"outPackageBytes"`
+		TotalPackageBytes   uint64                    `json:"totalPackageBytes"`
 		ResetTime           string                    `json:"resetTime"`
 		Resources           *monitor.ResourceSnapshot `json:"resources,omitempty"`
 		Sources             []struct {
@@ -125,6 +128,9 @@ func fetchNodeSummary(ctx context.Context, client *nodeapi.Client, n nodes.Node,
 		InLimitBytes:        payload.InLimitBytes,
 		OutLimitBytes:       payload.OutLimitBytes,
 		TotalLimitBytes:     payload.TotalLimitBytes,
+		InPackageBytes:      payload.InPackageBytes,
+		OutPackageBytes:     payload.OutPackageBytes,
+		TotalPackageBytes:   payload.TotalPackageBytes,
 		ResetTime:           payload.ResetTime,
 		Resources:           payload.Resources,
 	}, nil
@@ -194,6 +200,26 @@ func (c *Controller) SetTrafficUsage(
 		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("reconcile Agent before setting traffic usage: %w", err)
 	}
 	return c.NewClient(checked).SetTrafficUsage(ctx, req)
+}
+
+// GrantTrafficPackage adds to one installed Spoke's active-cycle traffic
+// package through its authenticated WireGuard Agent endpoint. The Agent folds
+// the grant in and reconciles its quota itself; like usage, the package is
+// Agent-owned and never persisted in the Hub node registry.
+func (c *Controller) GrantTrafficPackage(
+	ctx context.Context,
+	node nodes.Node,
+	grant nodeapi.TrafficPackageGrant,
+) (nodeapi.TrafficUsageUpdate, error) {
+	c.defaults()
+	if !node.Installed {
+		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("node %s is not installed", node.EffectiveAlias())
+	}
+	checked, err := c.CheckHealth(ctx, node, io.Discard)
+	if err != nil {
+		return nodeapi.TrafficUsageUpdate{}, fmt.Errorf("reconcile Agent before granting a traffic package: %w", err)
+	}
+	return c.NewClient(checked).GrantTrafficPackage(ctx, grant)
 }
 
 // ResetMonitorHistory clears one scope of an installed Spoke's recorded monitor

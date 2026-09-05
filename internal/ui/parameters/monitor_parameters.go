@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 )
 
 // Labels and notes shared by every form that collects the same monitor
@@ -26,6 +27,9 @@ const (
 	LabelTrafficTotal     = "Total traffic limit"
 	LabelResetDay         = "Monthly reset day (1-28)"
 	LabelResetHour        = "Monthly reset hour GMT (0-23)"
+	LabelPackageIn        = "Inbound traffic package"
+	LabelPackageOut       = "Outbound traffic package"
+	LabelPackageTotal     = "Total traffic package"
 
 	// NoteDNSZone states the one precondition every certificate-bearing
 	// domain shares, so setup, spoke creation, and the monitor domain all word
@@ -72,6 +76,30 @@ var (
 		"0 means no limit. Going over any limit stops the proxy.")
 	NoteTrafficOut   = TrafficSizeNote("How much this server may upload per cycle.\n0 means no limit.")
 	NoteTrafficTotal = TrafficSizeNote("Download and upload together.\n0 means no limit.")
+
+	// A package is explained once too: what it is on the first field, and
+	// that it is temporary, which is the whole point of it.
+	NotePackageIn = TrafficSizeNote("Extra download allowance granted for this cycle, on top of the limit.\n" +
+		"It lapses at the next reset. Only a limited direction can take one.")
+	NotePackageOut   = TrafficSizeNote("Extra upload allowance granted for this cycle.")
+	NotePackageTotal = TrafficSizeNote("Extra download-and-upload allowance granted for this cycle.")
+
+	NotePackageGrantIn = TrafficSizeNote("Extra download allowance to add for this cycle, on top of the limit.\n" +
+		"0 adds nothing. It lapses at the next reset. Only a limited direction can take one.")
+	NotePackageGrantOut   = TrafficSizeNote("Extra upload allowance to add for this cycle.\n0 adds nothing.")
+	NotePackageGrantTotal = TrafficSizeNote("Extra download-and-upload allowance to add for this cycle.\n0 adds nothing.")
+)
+
+// Keys of the fields that carry a traffic package, so the screens that read
+// them and the validation that guards them name them once.
+const (
+	KeyPackageIn    = "package_in_traffic"
+	KeyPackageOut   = "package_out_traffic"
+	KeyPackageTotal = "package_total_traffic"
+
+	KeyPackageGrantIn    = "package_in_grant"
+	KeyPackageGrantOut   = "package_out_grant"
+	KeyPackageGrantTotal = "package_total_grant"
 )
 
 // installDomainDefault prefills a setup field with the install domain already
@@ -117,11 +145,38 @@ func MonitorLocalFields(cfg deploy.Config, monitorDisabled func(map[string]strin
 	}
 }
 
-func MonitorUsageFields(inBytes, outBytes uint64) []Field {
+// MonitorUsageFields is the form that rewrites one node's current cycle: what
+// it has used, and what it has been granted on top of its limits. The package
+// sits in the same form because it is a figure of the same cycle, corrected
+// the same way.
+func MonitorUsageFields(totals monitor.TrafficTotals, pkg monitor.TrafficPackage) []Field {
 	return []Field{
-		{Key: "current_in_traffic", Label: "Current inbound used", Def: FormatTrafficSizeInput(inBytes), Note: TrafficSizeNote("Download already counted this cycle.")},
-		{Key: "current_out_traffic", Label: "Current outbound used", Def: FormatTrafficSizeInput(outBytes), Note: TrafficSizeNote("Upload already counted this cycle.")},
+		{Key: "current_in_traffic", Label: "Current inbound used", Def: FormatTrafficSizeInput(totals.InBytes), Note: TrafficSizeNote("Download already counted this cycle.")},
+		{Key: "current_out_traffic", Label: "Current outbound used", Def: FormatTrafficSizeInput(totals.OutBytes), Note: TrafficSizeNote("Upload already counted this cycle.")},
+		{Key: KeyPackageIn, Label: LabelPackageIn, Def: FormatTrafficSizeInput(pkg.InBytes), Note: NotePackageIn},
+		{Key: KeyPackageOut, Label: LabelPackageOut, Def: FormatTrafficSizeInput(pkg.OutBytes), Note: NotePackageOut},
+		{Key: KeyPackageTotal, Label: LabelPackageTotal, Def: FormatTrafficSizeInput(pkg.TotalBytes), Note: NotePackageTotal},
 	}
+}
+
+// MonitorPackageGrantFields is the form that adds a package to the current
+// cycle. Every field starts at 0, so a direction left alone gets nothing.
+func MonitorPackageGrantFields() []Field {
+	return []Field{
+		{Key: KeyPackageGrantIn, Label: LabelPackageIn, Def: "0", Note: NotePackageGrantIn},
+		{Key: KeyPackageGrantOut, Label: LabelPackageOut, Def: "0", Note: NotePackageGrantOut},
+		{Key: KeyPackageGrantTotal, Label: LabelPackageTotal, Def: "0", Note: NotePackageGrantTotal},
+	}
+}
+
+// PackageFromValues reads the three package fields written under the given
+// keys back into a package. A value that fails to parse reads as 0; the form
+// validated it before it was stored.
+func PackageFromValues(vals map[string]string, inKey, outKey, totalKey string) monitor.TrafficPackage {
+	in, _ := ParseTrafficSize(vals[inKey])
+	out, _ := ParseTrafficSize(vals[outKey])
+	total, _ := ParseTrafficSize(vals[totalKey])
+	return monitor.TrafficPackage{InBytes: in, OutBytes: out, TotalBytes: total}
 }
 
 func ValidateMonitorParameterValue(key, val string) error {
@@ -147,7 +202,10 @@ func ValidateMonitorParameterValue(key, val string) error {
 		if err != nil || seconds < 10 {
 			return fmt.Errorf("sampling interval must be at least 10 seconds")
 		}
-	case key == "traffic_in_limit" || key == "traffic_out_limit" || key == "traffic_total_limit" || key == "current_in_traffic" || key == "current_out_traffic":
+	case key == "traffic_in_limit" || key == "traffic_out_limit" || key == "traffic_total_limit" ||
+		key == "current_in_traffic" || key == "current_out_traffic" ||
+		key == KeyPackageIn || key == KeyPackageOut || key == KeyPackageTotal ||
+		key == KeyPackageGrantIn || key == KeyPackageGrantOut || key == KeyPackageGrantTotal:
 		_, err := ParseTrafficSize(val)
 		return err
 	case key == "reset_day":
