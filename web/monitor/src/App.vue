@@ -779,9 +779,9 @@ button, input { font-family: inherit; }
 /* A traffic package is the tail of the track: the allowance past the
    configured limit. It is hatched so the boundary reads whether the fill has
    reached it or not — filled, the hatch sits over the bar colour; empty, over
-   the track — and it is drawn above the fill for the same reason. Its left end
-   is square: rounding it would bend the boundary line into a crescent over the
-   fill. The track's own rounding clips the right end. */
+   the track — and it is drawn above the fill for the same reason. The stripes
+   alone mark where the package starts, so the bar stays one continuous piece;
+   the track's own rounding clips the right end. */
 .progress.packaged::before {
   content: ""; position: absolute; inset: 0 0 0 auto; z-index: 1;
   width: calc(var(--pkg) * 1%); border-radius: 0;
@@ -790,7 +790,6 @@ button, input { font-family: inherit; }
     color-mix(in srgb, var(--text) 32%, transparent) 0 2px,
     transparent 2px 5px
   );
-  box-shadow: inset 1.5px 0 0 color-mix(in srgb, var(--text) 45%, var(--surface-solid));
   pointer-events: none;
 }
 .pkg-chip {
