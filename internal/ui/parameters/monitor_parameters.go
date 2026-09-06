@@ -78,16 +78,18 @@ var (
 	NoteTrafficTotal = TrafficSizeNote("Download and upload together.\n0 means no limit.")
 
 	// A package is explained once too: what it is on the first field, and
-	// that it is temporary, which is the whole point of it.
-	NotePackageIn = TrafficSizeNote("Extra download allowance granted for this cycle, on top of the limit.\n" +
-		"It lapses at the next reset. Only a limited direction can take one.")
-	NotePackageOut   = TrafficSizeNote("Extra upload allowance granted for this cycle.")
-	NotePackageTotal = TrafficSizeNote("Extra download-and-upload allowance granted for this cycle.")
+	// that it is temporary, which is the whole point of it. A direction with
+	// no limit refuses a package at validation, with a message that says why,
+	// so the notes do not spend a line on that.
+	NotePackageIn = TrafficSizeNote("Extra download traffic for this cycle, on top of the limit.\n" +
+		"Expires at the next reset.")
+	NotePackageOut   = TrafficSizeNote("Extra upload traffic for this cycle.")
+	NotePackageTotal = TrafficSizeNote("Extra download-and-upload traffic for this cycle.")
 
-	NotePackageGrantIn = TrafficSizeNote("Extra download allowance to add for this cycle, on top of the limit.\n" +
-		"0 adds nothing. It lapses at the next reset. Only a limited direction can take one.")
-	NotePackageGrantOut   = TrafficSizeNote("Extra upload allowance to add for this cycle.\n0 adds nothing.")
-	NotePackageGrantTotal = TrafficSizeNote("Extra download-and-upload allowance to add for this cycle.\n0 adds nothing.")
+	NotePackageGrantIn = TrafficSizeNote("Extra download traffic to add for this cycle, on top of the limit.\n" +
+		"Expires at the next reset. 0 adds nothing.")
+	NotePackageGrantOut   = TrafficSizeNote("Extra upload traffic to add for this cycle.\n0 adds nothing.")
+	NotePackageGrantTotal = TrafficSizeNote("Extra download-and-upload traffic to add for this cycle.\n0 adds nothing.")
 )
 
 // Keys of the fields that carry a traffic package, so the screens that read

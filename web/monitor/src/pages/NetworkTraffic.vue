@@ -67,7 +67,7 @@ const cards = computed<TrafficCard[]>(() => {
       detail = sources.value.length > 0 ? "No quota configured" : "";
     } else {
       detail = `Quota ${formatBytes(limitedUsed)} / ${formatBytes(limit)}`;
-      if (pkg > 0) detail += ` · +${formatBytes(pkg)} package`;
+      if (pkg > 0) detail += ` · incl. ${formatBytes(pkg)} package`;
       if (unlimited > 0) detail += ` · ${unlimited} unlimited`;
     }
     return { label: d.label, used, percent, pkgPercent: packagePercent(limit, pkg), detail, color: d.color, trendKey: d.trendKey };

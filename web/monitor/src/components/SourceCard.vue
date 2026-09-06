@@ -23,9 +23,11 @@ function rowPackage(row: UsageRow): number {
   return row.limit > 0 ? row.pkg : 0;
 }
 
+// packageTitle explains the figure the row shows: the limit in force is the
+// configured one plus this cycle's package.
 function packageTitle(row: UsageRow): string {
-  const base = row.limit - rowPackage(row);
-  return `Traffic package for this cycle: +${formatBytes(rowPackage(row))} on top of the ${formatBytes(base)} limit. It lapses at the next reset.`;
+  const pkg = rowPackage(row);
+  return `Limit ${formatBytes(row.limit - pkg)} + ${formatBytes(pkg)} traffic package = ${formatBytes(row.limit)} this cycle. The package expires at the next reset.`;
 }
 
 function percentsForSource(source: SourceSummary) {

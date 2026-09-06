@@ -1100,7 +1100,7 @@ func (tm *monitorManager) confirmView() string {
 	case tm.action == monitorActionSpokeUsage:
 		rows = append(rows, summaryText("Replaces the selected spoke's current quota-cycle counters and package, and refreshes /monitor data."))
 	case tm.action == monitorActionAddPackage:
-		rows = append(rows, summaryText("Adds to each node's allowance for the current cycle only. The configured limits stay as they are, and the package lapses at the next reset."))
+		rows = append(rows, summaryText("Gives each node extra traffic for the current cycle, on top of its limit. The package expires at the next reset."))
 	case tm.action == monitorActionResetClients:
 		rows = append(rows, summaryText("Deletes the recorded per-address history. Sampling continues, so the table refills from now on. This cannot be undone."))
 	case tm.action == monitorActionResetLatency:

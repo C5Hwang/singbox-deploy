@@ -68,8 +68,8 @@ func (tm *monitorManager) packageGrantFields() []field {
 		label:   "Nodes to grant a traffic package",
 		options: resetTargetOptions(tm.trafficSpokes()),
 		multi:   true,
-		note: "Adds to each node's allowance for the current cycle only; the configured limits are untouched.\n" +
-			"The package lapses at the next reset.",
+		note: "Gives each ticked node extra traffic for the current cycle, on top of its limit.\n" +
+			"The package expires at the next reset.",
 	}}
 	return append(fields, fieldsFromParameters(uiparams.MonitorPackageGrantFields())...)
 }

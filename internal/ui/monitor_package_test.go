@@ -155,7 +155,7 @@ func TestMonitorPackagePickerOffersTheHubAndEveryInstalledSpoke(t *testing.T) {
 			t.Fatalf("an uninstalled spoke was offered: %v", picker.options)
 		}
 	}
-	if view := tm.View(); !strings.Contains(view, "lapses at the next reset") {
+	if view := tm.View(); !strings.Contains(view, "expires at the next reset") {
 		t.Fatalf("picker does not say the package is temporary:\n%s", view)
 	}
 }
@@ -181,7 +181,7 @@ func TestMonitorPackageGrantReachesTheHubStoreAndTheSpokeAgent(t *testing.T) {
 		t.Fatalf("phase after the form = %d (%s)", tm.phase, tm.parameterForm.fieldErr)
 	}
 	confirm := tm.View()
-	for _, want := range []string{"total 100 GB", "Nodes:", "Hub", "Tokyo", "current cycle only", "lapses at the next reset"} {
+	for _, want := range []string{"total 100 GB", "Nodes:", "Hub", "Tokyo", "current cycle", "expires at the next reset"} {
 		if !strings.Contains(confirm, want) {
 			t.Fatalf("confirmation missing %q:\n%s", want, confirm)
 		}
