@@ -155,8 +155,8 @@
     {
       "type": "selector",
       "tag": "游戏平台",
-      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
-      "default": "🚀 手动切换"
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
     },
     {
       "type": "selector",
