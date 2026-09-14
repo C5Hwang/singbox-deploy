@@ -81,13 +81,22 @@ const points = computed<TrafficPoint[]>(() => {
   return isRecent ? recent.value : isDaily ? daily.value : hourly.value;
 });
 
+// What a whole row's chart is made of. A row with no direct strand is not
+// "direct and relayed", and when one landing carried all of it, that landing
+// is named here the way the breakdown names it.
+function rowRoute(row: IPTrafficRow): string {
+  const relayed = row.segments.filter((s) => s.relayed);
+  if (relayed.length < row.segments.length) return "direct and relayed";
+  return relayed.length === 1 ? `relayed to ${relayed[0].label}` : "relayed";
+}
+
 const subtitle = computed(() => {
   const strand = props.segment;
   const nodes = strand ? strand.nodes : props.row.nodes;
   const parts = [props.location || "Location unresolved"];
   if (nodes.length) parts.push(nodes.join(", "));
   if (strand) parts.push(strand.relayed ? `relayed to ${strand.label}` : "direct");
-  else if (props.row.relayed) parts.push("direct and relayed");
+  else if (props.row.relayed) parts.push(rowRoute(props.row));
   return parts.join(" · ");
 });
 

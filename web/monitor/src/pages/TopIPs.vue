@@ -232,9 +232,20 @@ function relayedValue(row: IPTrafficRow): number {
   return row.segments.reduce((sum, s) => (s.relayed ? sum + s[window][direction] : sum), 0);
 }
 
-// A row is only worth taking apart when it is made of more than one strand.
+// The chip's tooltip names where the traffic went when one landing carried it
+// all, so the answer is a hover away before the row is even opened.
+function relayedTitle(row: IPTrafficRow): string {
+  const landings = row.segments.filter((s) => s.relayed);
+  const to = landings.length === 1 ? landings[0].label : `${landings.length} landing nodes`;
+  return `Forwarded to ${to}: ${formatBytesCompact(relayedValue(row))}`;
+}
+
+// A row is worth taking apart when it is made of more than one strand, and
+// when its one strand was relayed: the breakdown is the only place that names
+// the landing node, and a client whose every byte went through the relay is
+// exactly the one an operator wants to know the landing of.
 function expandable(row: IPTrafficRow): boolean {
-  return row.segments.length > 1;
+  return row.segments.length > 1 || row.relayed;
 }
 
 function toggleExpanded(row: IPTrafficRow) {
@@ -562,7 +573,7 @@ const modalSources = computed(() =>
                   <span
                     v-if="row.relayed"
                     class="relay-chip"
-                    :title="`Forwarded to a landing node: ${formatBytesCompact(relayedValue(row))}`"
+                    :title="relayedTitle(row)"
                   >
                     relay {{ formatBytesCompact(relayedValue(row)) }}
                   </span>
@@ -666,15 +677,12 @@ const modalSources = computed(() =>
             <span class="card-place">
               <span v-if="placeOf(row.ip).code" class="flag">{{ flagFor(placeOf(row.ip).code) }}</span>
               <span class="card-place-name">{{ cardPlace(row.ip) }}</span>
-              <!-- Only where there is no breakdown to say it: on a card that
-                   lists its landings, the lines below already do. -->
-              <span v-if="row.relayed && row.segments.length < 2" class="relay-chip">relay</span>
             </span>
             <span class="card-share" :style="shareStyle(row)" aria-hidden="true"></span>
           </button>
 
           <button
-            v-for="segment in row.segments.length > 1 ? row.segments : []"
+            v-for="segment in expandable(row) ? row.segments : []"
             :key="segmentDetailKey(row, segment)"
             class="card-strand"
             :aria-label="`${segment.label} traffic for ${row.ip}`"
