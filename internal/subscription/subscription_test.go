@@ -65,6 +65,12 @@ func TestAddNodePrefixFlagLeavesExistingFlag(t *testing.T) {
 	}
 }
 
+func TestAddNodePrefixFlagCN(t *testing.T) {
+	if got := AddNodePrefixFlag("CN-01"); got != "🇨🇳 CN-01" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestGenerateDefaultFiltersUnsupportedProtocols(t *testing.T) {
 	nodes := []Node{
 		{Name: "US-vps1-Reality", Protocol: "vless", Link: "vless://abc#US-vps1-Reality"},

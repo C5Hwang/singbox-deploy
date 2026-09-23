@@ -3,13 +3,13 @@ package subscription
 import "strings"
 
 // prefixFlags maps a recognized two-letter node-name prefix to its flag emoji.
-// This mirrors the reference install.sh mapping verbatim, including its
-// TW->Samoa-flag quirk, so aggregated node names match across versions. It is
-// the single source of country flags; deploy's country grouping reads it via
-// FlagForCode.
+// It is the single source of country flags; deploy's country grouping reads it
+// via FlagForCode. TW uses the Samoa flag because the Taiwan flag does not
+// render on devices sold in mainland China.
 var prefixFlags = map[string]string{
 	"US": "🇺🇸", "CA": "🇨🇦", "SG": "🇸🇬", "JP": "🇯🇵", "HK": "🇭🇰", "TW": "🇼🇸",
 	"KR": "🇰🇷", "UK": "🇬🇧", "DE": "🇩🇪", "FR": "🇫🇷", "NL": "🇳🇱", "AU": "🇦🇺",
+	"CN": "🇨🇳",
 }
 
 // FlagForCode returns the flag emoji for a two-letter country code, or "" if the
