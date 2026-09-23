@@ -45,6 +45,57 @@ func TestDynamicCountryDetection(t *testing.T) {
 	}
 }
 
+func TestDetectCountriesPutsCNBeforeHK(t *testing.T) {
+	tags := []string{"🇭🇰 HK-vps2-VLESS", "🇨🇳 CN-vps1-VLESS", "🇨🇳 CN-vps1-Hysteria2"}
+	countries := detectCountries(tags)
+	if len(countries) != 2 {
+		t.Fatalf("expected 2 countries, got %d: %+v", len(countries), countries)
+	}
+	if countries[0].Tag != "🇨🇳 中国节点" {
+		t.Fatalf("expected CN first, got %q", countries[0].Tag)
+	}
+	if countries[0].TagsJSON != marshalTags([]string{"🇨🇳 CN-vps1-VLESS", "🇨🇳 CN-vps1-Hysteria2"}) {
+		t.Fatalf("CN group members = %s, want only the CN nodes", countries[0].TagsJSON)
+	}
+	if countries[1].Tag != "🇭🇰 香港节点" {
+		t.Fatalf("expected HK second, got %q", countries[1].Tag)
+	}
+}
+
+func TestDetectCountriesIgnoresCN2LineName(t *testing.T) {
+	countries := detectCountries([]string{"🇭🇰 HK-CN2-VLESS", "🇺🇸 US-cn2gia-VLESS"})
+	for _, c := range countries {
+		if c.Tag == "🇨🇳 中国节点" {
+			t.Fatalf("CN2 line name should not create a CN group: %+v", countries)
+		}
+	}
+}
+
+func TestFillProfilesIncludesCNGroup(t *testing.T) {
+	outbounds := []map[string]any{
+		{"type": "vless", "tag": "🇨🇳 CN-vps1-VLESS"},
+		{"type": "vless", "tag": "🇭🇰 HK-vps2-VLESS"},
+	}
+	var out subscriptionOutputs
+	if err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"}, outbounds); err != nil {
+		t.Fatalf("fillProfiles error: %v", err)
+	}
+	for name, body := range map[string]string{
+		"sing-box": out.SingBoxProfile,
+		"clash":    out.ClashProfile,
+		"surge":    out.SurgeProfile,
+	} {
+		cn := strings.Index(body, "🇨🇳 中国节点")
+		hk := strings.Index(body, "🇭🇰 香港节点")
+		if cn < 0 || hk < 0 {
+			t.Fatalf("%s profile missing CN or HK group:\n%s", name, body)
+		}
+		if cn > hk {
+			t.Errorf("%s profile lists HK group before CN group", name)
+		}
+	}
+}
+
 func TestFillProfilesProducesValidOutput(t *testing.T) {
 	outbounds := []map[string]any{
 		{"type": "vless", "tag": "🇺🇸 US-vps1-VLESS"},

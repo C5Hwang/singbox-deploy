@@ -278,7 +278,9 @@ type countryDef struct {
 func (c countryDef) flag() string { return subscription.FlagForCode(c.Code) }
 
 // knownCountries lists recognized countries in display order (Asia first, then West).
+// CN matches only a standalone code so a line name like "HK-CN2" stays out of it.
 var knownCountries = []countryDef{
+	{Code: "CN", Name: "中国节点", Filter: `(🇨🇳)|(中国)|(China)|(\bCN\b)`},
 	{Code: "HK", Name: "香港节点", Filter: `(🇭🇰)|(港)|(Hong)|(HK)`},
 	{Code: "TW", Name: "台湾节点", Filter: `(🇹🇼)|(🇼🇸)|(台)|(Tai)|(TW)`},
 	{Code: "JP", Name: "日本节点", Filter: `(🇯🇵)|(日)|(Japan)|(JP)`},
