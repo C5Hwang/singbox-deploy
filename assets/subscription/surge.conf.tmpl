@@ -40,7 +40,11 @@ Kobo = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{
 Apple = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
 Google = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 Microsoft = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+Ponte = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 漏网之鱼 = select, 🚀 手动切换, DIRECT, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+
+[Ponte]
+client-proxy-name = Ponte
 
 [Rule]
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/private.list,本地直连
