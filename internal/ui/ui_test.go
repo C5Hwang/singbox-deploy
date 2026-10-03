@@ -627,7 +627,7 @@ func TestMenuUsesFunctionalGroups(t *testing.T) {
 		{title: "Proxy", items: []string{"Protocol settings", "Relay"}},
 		{title: "Services", items: []string{"Subscription settings", "Monitoring"}},
 		{title: "Spoke", items: []string{"Spoke nodes"}},
-		{title: "System", items: []string{"sing-box core", "Self-update", "Uninstall"}},
+		{title: "System", items: []string{"sing-box core", "Regenerate node configs", "Self-update", "Uninstall"}},
 	}
 
 	if len(m.groups) != len(want) {

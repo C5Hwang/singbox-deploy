@@ -457,14 +457,21 @@ func (o *Orchestrator) stepSubscriptions(_ context.Context, cfg Config) error {
 }
 
 func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {
-	_ = os.Remove(filepath.Join(filepath.Dir(o.NginxConfPath), "default.conf"))
-	if err := WriteManagedNginxConfig(o.Layout, cfg, o.NginxConfPath); err != nil {
+	return ApplyManagedNginx(o.Runner, o.Layout, cfg, o.NginxConfPath)
+}
+
+// ApplyManagedNginx writes the managed Nginx config and camouflage site for
+// cfg, validates the result and restarts Nginx. Install, spoke reconfigure and
+// the Hub's config regeneration all go through it so the three cannot drift.
+func ApplyManagedNginx(runner system.Runner, layout paths.Layout, cfg Config, nginxConfPath string) error {
+	_ = os.Remove(filepath.Join(filepath.Dir(nginxConfPath), "default.conf"))
+	if err := WriteManagedNginxConfig(layout, cfg, nginxConfPath); err != nil {
 		return err
 	}
-	if err := deploySiteTemplate(o.Layout, cfg.SiteTemplate); err != nil {
+	if err := deploySiteTemplate(layout, cfg.SiteTemplate); err != nil {
 		return err
 	}
-	return o.run(
+	return RunCommands(runner,
 		system.Command{Name: "nginx", Args: []string{"-t"}},
 		system.Command{Name: "systemctl", Args: []string{"enable", "--now", "nginx"}},
 		system.Systemctl("restart", "nginx"),

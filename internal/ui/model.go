@@ -110,6 +110,7 @@ type Model struct {
 	suspendedNodes   *nodeManager
 	suspendedMonitor *monitorManager
 	selfupdate       *selfUpdateManager
+	regenerate       *regenerateManager
 	uninstall        *uninstallManager
 }
 
@@ -137,6 +138,7 @@ func defaultGroups() []MenuGroup {
 		}},
 		{Title: "System", Items: []MenuItem{
 			{Label: "sing-box core", Activate: activateCore},
+			{Label: "Regenerate node configs", Activate: activateRegenerate},
 			{Label: "Self-update", Activate: activateSelfUpdate},
 			{Label: "Uninstall", Activate: activateUninstall},
 		}},
@@ -204,6 +206,13 @@ func activateSelfUpdate(m *Model) tea.Cmd {
 	s.setSize(m.width, m.height)
 	m.selfupdate = s
 	return s.checkCmd()
+}
+
+func activateRegenerate(m *Model) tea.Cmd {
+	r := newRegenerateManager()
+	r.setSize(m.width, m.height)
+	m.regenerate = r
+	return nil
 }
 
 func activateUninstall(m *Model) tea.Cmd {
@@ -387,6 +396,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if m.regenerate != nil {
+		cmd, done := m.regenerate.Update(msg)
+		if done {
+			m.regenerate = nil
+		}
+		return m, cmd
+	}
 	if m.uninstall != nil {
 		u := m.uninstall
 		cmd, done := m.uninstall.Update(msg)
@@ -528,7 +544,7 @@ func (m *Model) contentColumn(width, height int) string {
 func (m *Model) showsStatus() bool {
 	return m.install == nil && m.protocols == nil && m.relay == nil && m.subscribe == nil &&
 		m.monitor == nil && m.core == nil && m.certificates == nil && m.nodes == nil &&
-		m.selfupdate == nil && m.uninstall == nil
+		m.selfupdate == nil && m.regenerate == nil && m.uninstall == nil
 }
 
 func (m *Model) contentView(width, height int) string {
@@ -568,6 +584,10 @@ func (m *Model) contentView(width, height int) string {
 		m.selfupdate.setSize(width, height)
 		return m.selfupdate.View()
 	}
+	if m.regenerate != nil {
+		m.regenerate.setSize(width, height)
+		return m.regenerate.View()
+	}
 	if m.uninstall != nil {
 		m.uninstall.setSize(width, height)
 		return m.uninstall.View()
@@ -599,6 +619,8 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.nodes.footerHints()...)
 		} else if m.selfupdate != nil {
 			parts = append(parts, m.selfupdate.footerHints()...)
+		} else if m.regenerate != nil {
+			parts = append(parts, m.regenerate.footerHints()...)
 		} else if m.uninstall != nil {
 			parts = append(parts, m.uninstall.footerHints()...)
 		}

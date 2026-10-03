@@ -67,6 +67,9 @@ type Controller struct {
 	// WGConfDir overrides the WireGuard config directory (defaults to
 	// wgnet.DefaultConfDir); tests point it at a temp directory.
 	WGConfDir string
+	// NginxConfPath is the Hub's managed Nginx config (defaults to
+	// defaultNginxConfPath); tests point it at a temp directory.
+	NginxConfPath string
 
 	// Injectable seams for testing; nil falls back to real implementations.
 	Bootstrapper *bootstrap.Bootstrapper
@@ -121,6 +124,9 @@ func (c *Controller) defaults() {
 	}
 	if c.Runner == nil {
 		c.Runner = system.NewExecRunner(nil)
+	}
+	if c.NginxConfPath == "" {
+		c.NginxConfPath = defaultNginxConfPath
 	}
 	if c.Bootstrapper == nil {
 		c.Bootstrapper = &bootstrap.Bootstrapper{}
