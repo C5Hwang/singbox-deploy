@@ -219,7 +219,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		t.Fatalf("config not valid json: %v", err)
 	}
 	assertNewDNSServerFormat(t, "config.json", cfgBytes)
-	assertDefaultDomainResolver(t, "config.json", cfgBytes, "google")
+	assertDefaultDomainResolver(t, "config.json", cfgBytes, "local")
 	if len(decoded.Inbounds) != 5 {
 		t.Fatalf("expected 5 inbounds, got %d", len(decoded.Inbounds))
 	}

@@ -116,7 +116,9 @@ func TestBuildConfigSetsDefaultDomainResolver(t *testing.T) {
 	if err := json.Unmarshal(cfg, &decoded); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if decoded.Route.DefaultDomainResolver.Server != "google" {
+	// The VPS's own resolver: a hard-coded public one such as 8.8.8.8 DoT is
+	// unreachable from mainland China and left CN nodes unable to resolve anything.
+	if decoded.Route.DefaultDomainResolver.Server != "local" {
 		t.Fatalf("missing route.default_domain_resolver server in %s", cfg)
 	}
 	if decoded.Route.DefaultDomainResolver.Strategy != "prefer_ipv4" {
