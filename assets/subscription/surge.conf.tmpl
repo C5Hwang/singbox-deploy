@@ -22,9 +22,9 @@ DIRECT = direct
 
 [Proxy Group]
 🚀 手动切换 = select, policy-path={{ .SurgeProviderURL }}, update-interval=3600
-♻️ 自动选择 = url-test, policy-path={{ .SurgeProviderURL }}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50, update-interval=3600
+♻️ 自动选择 = url-test, policy-path={{ .SurgeProviderURL }}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50, policy-regex-filter={{ .AutoSelectFilter }}, update-interval=3600
 {{- range .Countries }}
-{{ .Tag }} = url-test, policy-path={{ $.SurgeProviderURL }}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50, policy-regex-filter={{ .Filter }}, update-interval=3600
+{{ .Tag }} = url-test, policy-path={{ $.SurgeProviderURL }}, url={{ .TestURL }}, interval=300, tolerance=50, policy-regex-filter={{ .Filter }}, update-interval=3600
 {{- end }}
 本地直连 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
 全球代理 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT

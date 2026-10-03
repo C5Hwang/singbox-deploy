@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -269,10 +270,28 @@ func sortedKeys(m map[string]any) []string {
 
 // countryDef maps a country code to its display info and filter regex. Its flag
 // is read from subscription.FlagForCode so flags live in exactly one place.
+// TestURL overrides the latency-probe URL for nodes that cannot reach the
+// default one; empty means defaultTestURL.
 type countryDef struct {
-	Code   string
-	Name   string
-	Filter string
+	Code    string
+	Name    string
+	Filter  string
+	TestURL string
+}
+
+// defaultTestURL is the latency probe for proxy groups. Nodes inside mainland
+// China cannot reach it, so the CN group probes cnTestURL instead; the global
+// auto-select group keeps the default so CN nodes never win it.
+const (
+	defaultTestURL = "http://www.gstatic.com/generate_204"
+	cnTestURL      = "http://connectivitycheck.platform.hicloud.com/generate_204"
+)
+
+func (c countryDef) testURL() string {
+	if c.TestURL != "" {
+		return c.TestURL
+	}
+	return defaultTestURL
 }
 
 func (c countryDef) flag() string { return subscription.FlagForCode(c.Code) }
@@ -280,7 +299,7 @@ func (c countryDef) flag() string { return subscription.FlagForCode(c.Code) }
 // knownCountries lists recognized countries in display order (Asia first, then West).
 // CN matches only a standalone code so a line name like "HK-CN2" stays out of it.
 var knownCountries = []countryDef{
-	{Code: "CN", Name: "中国节点", Filter: `(🇨🇳)|(中国)|(China)|(\bCN\b)`},
+	{Code: "CN", Name: "中国节点", Filter: `(🇨🇳)|(中国)|(China)|(\bCN\b)`, TestURL: cnTestURL},
 	{Code: "HK", Name: "香港节点", Filter: `(🇭🇰)|(港)|(Hong)|(HK)`},
 	{Code: "TW", Name: "台湾节点", Filter: `(🇹🇼)|(🇼🇸)|(台)|(Tai)|(TW)`},
 	{Code: "JP", Name: "日本节点", Filter: `(🇯🇵)|(日)|(Japan)|(JP)`},
@@ -300,6 +319,7 @@ type detectedCountry struct {
 	Tag      string
 	Filter   string
 	TagsJSON string
+	TestURL  string
 }
 
 func detectCountries(tags []string) []detectedCountry {
@@ -317,10 +337,71 @@ func detectCountries(tags []string) []detectedCountry {
 				Tag:      def.flag() + " " + def.Name,
 				Filter:   def.Filter,
 				TagsJSON: marshalTags(matched),
+				TestURL:  def.testURL(),
 			})
 		}
 	}
 	return result
+}
+
+// withSurgeTestURLs gives every Surge proxy line whose country overrides the
+// probe URL its own test-url, so a manual latency test of a CN node in a select
+// group stops timing out against the global proxy-test-url. Lines that already
+// carry a test-url (a spoke's fragment re-aggregated by the hub) are left as is.
+func withSurgeTestURLs(fragment string) string {
+	lines := strings.Split(fragment, "\n")
+	for i, line := range lines {
+		idx := strings.Index(line, " = ")
+		if idx < 0 || strings.Contains(line, "test-url=") {
+			continue
+		}
+		name := strings.TrimSpace(line[:idx])
+		for _, def := range knownCountries {
+			if def.TestURL != "" && regexp.MustCompile(def.Filter).MatchString(name) {
+				lines[i] = strings.TrimRight(line, " ") + ", test-url=" + def.TestURL
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// surgeAutoSelectFilter keeps nodes with an overridden probe URL out of Surge's
+// global auto-select group. Surge ignores a group's url= and probes each member
+// with its own test-url, so a CN node would pass there and, being closest to a
+// mainland client, win — sending all proxied traffic back into China.
+func surgeAutoSelectFilter() string {
+	var excluded []string
+	for _, def := range knownCountries {
+		if def.TestURL != "" {
+			excluded = append(excluded, def.Filter)
+		}
+	}
+	return "^(?!.*(?:" + strings.Join(excluded, "|") + "))"
+}
+
+// autoSelectTags drops nodes with an overridden probe URL from sing-box's
+// global auto-select group. sing-box keeps one latency history per outbound tag
+// shared by every group, so the CN group's successful domestic probe would let
+// auto-select pick a CN node without ever testing it against defaultTestURL.
+// When every node is excluded, all are kept so the group is never empty.
+func autoSelectTags(tags []string) []string {
+	var excluded []*regexp.Regexp
+	for _, def := range knownCountries {
+		if def.TestURL != "" {
+			excluded = append(excluded, regexp.MustCompile(def.Filter))
+		}
+	}
+	var kept []string
+	for _, tag := range tags {
+		if !slices.ContainsFunc(excluded, func(re *regexp.Regexp) bool { return re.MatchString(tag) }) {
+			kept = append(kept, tag)
+		}
+	}
+	if len(kept) == 0 {
+		return tags
+	}
+	return kept
 }
 
 // subscriptionOutputs holds the rendered bodies for each subscription endpoint.
@@ -388,12 +469,14 @@ func fillProfiles(out *subscriptionOutputs, c Config, outbounds []map[string]any
 	}
 
 	countries := detectCountries(tagsList)
+	out.SurgeFragment = withSurgeTestURLs(out.SurgeFragment)
 
 	singboxProfile, err := templatefs.Render("subscription/sing-box.json.tmpl", map[string]any{
-		"ProxyTagsJSON":   string(tagsJSON),
-		"DefaultProxyTag": defaultTag,
-		"OutboundsJSON":   strings.TrimSpace(inner),
-		"Countries":       countries,
+		"ProxyTagsJSON":      string(tagsJSON),
+		"AutoSelectTagsJSON": marshalTags(autoSelectTags(tagsList)),
+		"DefaultProxyTag":    defaultTag,
+		"OutboundsJSON":      strings.TrimSpace(inner),
+		"Countries":          countries,
 	})
 	if err != nil {
 		return err
@@ -411,6 +494,7 @@ func fillProfiles(out *subscriptionOutputs, c Config, outbounds []map[string]any
 
 	surgeProfile, err := templatefs.Render("subscription/surge.conf.tmpl", map[string]any{
 		"SurgeProviderURL": surgeProviderURL,
+		"AutoSelectFilter": surgeAutoSelectFilter(),
 		"Countries":        countries,
 	})
 	if err != nil {

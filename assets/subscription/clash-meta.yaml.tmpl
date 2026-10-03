@@ -91,7 +91,7 @@ proxy-groups:
 {{- range .Countries }}
   - name: {{ .Tag }}
     type: url-test
-    url: http://www.gstatic.com/generate_204
+    url: {{ .TestURL }}
     interval: 300
     tolerance: 50
     filter: {{ .Filter | json }}

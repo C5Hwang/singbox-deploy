@@ -112,7 +112,7 @@
     {
       "type": "urltest",
       "tag": "♻️ 自动选择",
-      "outbounds": {{ .ProxyTagsJSON }},
+      "outbounds": {{ .AutoSelectTagsJSON }},
       "url": "http://www.gstatic.com/generate_204",
       "interval": "10h",
       "idle_timeout": "10h",
@@ -123,7 +123,7 @@
       "type": "urltest",
       "tag": {{ .Tag | json }},
       "outbounds": {{ .TagsJSON }},
-      "url": "http://www.gstatic.com/generate_204",
+      "url": "{{ .TestURL }}",
       "interval": "5m",
       "tolerance": 50
     },

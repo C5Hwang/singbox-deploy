@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,60 @@ func TestFillProfilesIncludesCNGroup(t *testing.T) {
 			t.Errorf("%s profile lists HK group before CN group", name)
 		}
 	}
+}
+
+func TestFillProfilesProbesCNGroupWithADomesticURL(t *testing.T) {
+	outbounds := []map[string]any{
+		{"type": "vless", "tag": "🇨🇳 CN-vps1-VLESS"},
+		{"type": "vless", "tag": "🇭🇰 HK-vps2-VLESS"},
+	}
+	var out subscriptionOutputs
+	if err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"}, outbounds); err != nil {
+		t.Fatalf("fillProfiles error: %v", err)
+	}
+	for name, body := range map[string]string{
+		"sing-box": out.SingBoxProfile,
+		"clash":    out.ClashProfile,
+		"surge":    out.SurgeProfile,
+	} {
+		cn := body[strings.Index(body, "🇨🇳 中国节点"):]
+		hk := strings.Index(cn, "🇭🇰 香港节点")
+		if hk < 0 || !strings.Contains(cn[:hk], cnTestURL) {
+			t.Errorf("%s CN group does not probe %s:\n%s", name, cnTestURL, body)
+		}
+		if !strings.Contains(cn[hk:], defaultTestURL) {
+			t.Errorf("%s HK group lost the default probe URL:\n%s", name, body)
+		}
+	}
+}
+
+func TestWithSurgeTestURLsTagsOnlyCNNodesOnce(t *testing.T) {
+	fragment := "🇨🇳 CN-vps1-AnyTLS = anytls, cn.example.com, 443, password=p\n" +
+		"🇭🇰 HK-CN2-AnyTLS = anytls, hk.example.com, 443, password=p\n"
+	got := withSurgeTestURLs(withSurgeTestURLs(fragment))
+	want := "🇨🇳 CN-vps1-AnyTLS = anytls, cn.example.com, 443, password=p, test-url=" + cnTestURL + "\n" +
+		"🇭🇰 HK-CN2-AnyTLS = anytls, hk.example.com, 443, password=p\n"
+	if got != want {
+		t.Fatalf("withSurgeTestURLs =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestSurgeAutoSelectExcludesCNNodes(t *testing.T) {
+	var out subscriptionOutputs
+	if err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"},
+		[]map[string]any{{"type": "vless", "tag": "🇨🇳 CN-vps1-VLESS"}}); err != nil {
+		t.Fatalf("fillProfiles error: %v", err)
+	}
+	want := "policy-regex-filter=^(?!.*(?:" + knownCountries[0].Filter + "))"
+	for _, line := range strings.Split(out.SurgeProfile, "\n") {
+		if strings.HasPrefix(line, "♻️ 自动选择 = ") {
+			if !strings.Contains(line, want) {
+				t.Fatalf("auto-select line = %q, want it to contain %q", line, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("surge profile has no auto-select group:\n%s", out.SurgeProfile)
 }
 
 func TestFillProfilesProducesValidOutput(t *testing.T) {
@@ -330,4 +385,39 @@ func TestFillProfilesUsesNativeDirectDialerForDomesticDNS(t *testing.T) {
 		}
 	}
 	t.Fatal("sing-box profile is missing the DIRECT outbound")
+}
+
+func TestSingBoxAutoSelectExcludesCNNodes(t *testing.T) {
+	var out subscriptionOutputs
+	if err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"}, []map[string]any{
+		{"type": "vless", "tag": "🇨🇳 CN-vps1-VLESS"},
+		{"type": "vless", "tag": "🇭🇰 HK-CN2-VLESS"},
+	}); err != nil {
+		t.Fatalf("fillProfiles error: %v", err)
+	}
+	var profile struct {
+		Outbounds []struct {
+			Tag       string   `json:"tag"`
+			Outbounds []string `json:"outbounds"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal([]byte(out.SingBoxProfile), &profile); err != nil {
+		t.Fatalf("sing-box profile is not JSON: %v", err)
+	}
+	for _, ob := range profile.Outbounds {
+		if ob.Tag == "♻️ 自动选择" {
+			if strings.Join(ob.Outbounds, ",") != "🇭🇰 HK-CN2-VLESS" {
+				t.Fatalf("auto-select members = %v, want only the HK node", ob.Outbounds)
+			}
+			return
+		}
+	}
+	t.Fatal("sing-box profile has no auto-select group")
+}
+
+func TestAutoSelectTagsKeepsEveryNodeWhenAllAreCN(t *testing.T) {
+	tags := []string{"🇨🇳 CN-vps1-VLESS"}
+	if got := autoSelectTags(tags); !slices.Equal(got, tags) {
+		t.Fatalf("autoSelectTags = %v, want %v", got, tags)
+	}
 }
