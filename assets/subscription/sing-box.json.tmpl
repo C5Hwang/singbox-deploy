@@ -136,15 +136,15 @@
     },
     {
       "type": "selector",
-      "tag": "国外媒体",
-      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
-      "default": "🚀 手动切换"
-    },
-    {
-      "type": "selector",
       "tag": "国内媒体",
       "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
       "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "国外媒体",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
     },
     {
       "type": "selector",
