@@ -394,6 +394,14 @@ rule-providers:
     url: https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/meta/socialmedia-cn.list
     path: ./ruleset/socialmedia-cn.list
     interval: 86400
+  Bilibili:
+    type: http
+    behavior: classical
+    format: text
+    proxy: DIRECT
+    url: https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/meta/bilibili.list
+    path: ./ruleset/bilibili.list
+    interval: 86400
   CN:
     type: http
     behavior: classical
@@ -435,6 +443,7 @@ rules:
   - RULE-SET,Apple,Apple
   - RULE-SET,Proxy,全球代理
   - RULE-SET,SocialMediaCN,国内媒体
+  - RULE-SET,Bilibili,国内媒体
   - RULE-SET,Direct,本地直连
   - RULE-SET,CN,本地直连
   - RULE-SET,CNCIDR,本地直连,no-resolve

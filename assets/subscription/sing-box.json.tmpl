@@ -248,6 +248,7 @@
       {"type": "remote", "tag": "OneDrive", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/onedrive.srs", "update_interval": "24h", "download_detour": "DIRECT"},
       {"type": "remote", "tag": "Apple", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/apple.srs", "update_interval": "24h", "download_detour": "DIRECT"},
       {"type": "remote", "tag": "SocialMediaCN", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/socialmedia-cn.srs", "update_interval": "24h", "download_detour": "DIRECT"},
+      {"type": "remote", "tag": "Bilibili", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/bilibili.srs", "update_interval": "24h", "download_detour": "DIRECT"},
       {"type": "remote", "tag": "Direct", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/senshinya/singbox_ruleset@main/rule/Direct/Direct.srs", "update_interval": "24h", "download_detour": "DIRECT"},
       {"type": "remote", "tag": "CN", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/cn.srs", "update_interval": "24h", "download_detour": "DIRECT"},
       {"type": "remote", "tag": "CNCIDR", "format": "binary", "url": "https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/cncidr.srs", "update_interval": "24h", "download_detour": "DIRECT"}
@@ -269,7 +270,7 @@
       {"rule_set": ["Microsoft", "OneDrive"], "outbound": "Microsoft"},
       {"rule_set": "Apple", "outbound": "Apple"},
       {"rule_set": "Proxy", "outbound": "全球代理"},
-      {"rule_set": "SocialMediaCN", "outbound": "国内媒体"},
+      {"rule_set": ["SocialMediaCN", "Bilibili"], "outbound": "国内媒体"},
       {"rule_set": "Direct", "outbound": "本地直连"},
       {"rule_set": ["CN", "CNCIDR"], "outbound": "本地直连"}
     ],
