@@ -99,6 +99,24 @@ proxy-groups:
       - provider
     proxies: null
 {{- end }}
+  - name: 本地直连
+    type: select
+    proxies:
+      - DIRECT
+      - 🚀 手动切换
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
+  - name: 国内流量
+    type: select
+    proxies:
+      - DIRECT
+      - 🚀 手动切换
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
   - name: 全球流量
     type: select
     proxies:
@@ -135,15 +153,6 @@ proxy-groups:
       - {{ .Tag }}
 {{- end }}
       - DIRECT
-  - name: 游戏平台
-    type: select
-    proxies:
-      - DIRECT
-      - 🚀 手动切换
-      - ♻️ 自动选择
-{{- range .Countries }}
-      - {{ .Tag }}
-{{- end }}
   - name: 学术网页
     type: select
     proxies:
@@ -153,52 +162,7 @@ proxy-groups:
       - {{ .Tag }}
 {{- end }}
       - DIRECT
-  - name: 本地直连
-    type: select
-    proxies:
-      - DIRECT
-      - 🚀 手动切换
-      - ♻️ 自动选择
-{{- range .Countries }}
-      - {{ .Tag }}
-{{- end }}
-  - name: 国内流量
-    type: select
-    proxies:
-      - DIRECT
-      - 🚀 手动切换
-      - ♻️ 自动选择
-{{- range .Countries }}
-      - {{ .Tag }}
-{{- end }}
-  - name: 漏网之鱼
-    type: select
-    proxies:
-      - 🚀 手动切换
-      - DIRECT
-      - ♻️ 自动选择
-{{- range .Countries }}
-      - {{ .Tag }}
-{{- end }}
-  - name: Google
-    type: select
-    proxies:
-      - 🚀 手动切换
-      - ♻️ 自动选择
-{{- range .Countries }}
-      - {{ .Tag }}
-{{- end }}
-      - DIRECT
-  - name: Microsoft
-    type: select
-    proxies:
-      - DIRECT
-      - 🚀 手动切换
-      - ♻️ 自动选择
-{{- range .Countries }}
-      - {{ .Tag }}
-{{- end }}
-  - name: Apple
+  - name: 游戏平台
     type: select
     proxies:
       - DIRECT
@@ -243,6 +207,42 @@ proxy-groups:
       - {{ .Tag }}
 {{- end }}
       - DIRECT
+  - name: Apple
+    type: select
+    proxies:
+      - DIRECT
+      - 🚀 手动切换
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
+  - name: Google
+    type: select
+    proxies:
+      - 🚀 手动切换
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
+      - DIRECT
+  - name: Microsoft
+    type: select
+    proxies:
+      - DIRECT
+      - 🚀 手动切换
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
+  - name: 漏网之鱼
+    type: select
+    proxies:
+      - 🚀 手动切换
+      - DIRECT
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
 
 rule-providers:
   Private:

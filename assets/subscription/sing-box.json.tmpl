@@ -130,6 +130,18 @@
 {{- end }}
     {
       "type": "selector",
+      "tag": "本地直连",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "国内流量",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
       "tag": "全球流量",
       "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
       "default": "🚀 手动切换"
@@ -154,49 +166,13 @@
     },
     {
       "type": "selector",
-      "tag": "游戏平台",
-      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
-      "default": "DIRECT"
-    },
-    {
-      "type": "selector",
       "tag": "学术网页",
       "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
       "default": "🚀 手动切换"
     },
     {
       "type": "selector",
-      "tag": "本地直连",
-      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
-      "default": "DIRECT"
-    },
-    {
-      "type": "selector",
-      "tag": "国内流量",
-      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
-      "default": "DIRECT"
-    },
-    {
-      "type": "selector",
-      "tag": "漏网之鱼",
-      "outbounds": ["🚀 手动切换", "DIRECT", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
-      "default": "🚀 手动切换"
-    },
-    {
-      "type": "selector",
-      "tag": "Google",
-      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
-      "default": "🚀 手动切换"
-    },
-    {
-      "type": "selector",
-      "tag": "Microsoft",
-      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
-      "default": "DIRECT"
-    },
-    {
-      "type": "selector",
-      "tag": "Apple",
+      "tag": "游戏平台",
       "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
       "default": "DIRECT"
     },
@@ -222,6 +198,30 @@
       "type": "selector",
       "tag": "Kobo",
       "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "Apple",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "Google",
+      "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
+      "default": "🚀 手动切换"
+    },
+    {
+      "type": "selector",
+      "tag": "Microsoft",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "漏网之鱼",
+      "outbounds": ["🚀 手动切换", "DIRECT", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
       "default": "🚀 手动切换"
     },
 {{- if .OutboundsJSON }}
