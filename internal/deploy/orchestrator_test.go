@@ -253,7 +253,7 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 	assertDefaultDomainResolver(t, "sing-box profile", profile, "local")
 	profileText := string(profile)
 	for _, want := range []string{
-		`"tag": "全球代理"`,
+		`"tag": "全球流量"`,
 		`"tag": "CNCIDR"`,
 		`"final": "漏网之鱼"`,
 		`https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/singbox/version2/ai.srs`,
@@ -306,7 +306,10 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 		"  AI:\n",
 		"  CN:\n",
 		"  - RULE-SET,AI,AI服务\n",
-		"  - RULE-SET,CNCIDR,本地直连,no-resolve\n",
+		"  - name: 国内流量\n",
+		"  - RULE-SET,Private,DIRECT\n",
+		"  - RULE-SET,Direct,本地直连\n",
+		"  - RULE-SET,CNCIDR,国内流量,no-resolve\n",
 		"  - MATCH,漏网之鱼\n",
 	} {
 		if !strings.Contains(clashProfileText, want) {

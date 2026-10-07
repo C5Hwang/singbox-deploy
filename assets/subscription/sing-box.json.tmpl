@@ -9,13 +9,13 @@
         "type": "https",
         "tag": "cloudflare",
         "server": "1.1.1.1",
-        "detour": "全球代理"
+        "detour": "全球流量"
       },
       {
         "type": "https",
         "tag": "google",
         "server": "8.8.8.8",
-        "detour": "全球代理"
+        "detour": "全球流量"
       },
       {
         "type": "https",
@@ -130,7 +130,7 @@
 {{- end }}
     {
       "type": "selector",
-      "tag": "全球代理",
+      "tag": "全球流量",
       "outbounds": ["🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}, "DIRECT"],
       "default": "🚀 手动切换"
     },
@@ -167,6 +167,12 @@
     {
       "type": "selector",
       "tag": "本地直连",
+      "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
+      "default": "DIRECT"
+    },
+    {
+      "type": "selector",
+      "tag": "国内流量",
       "outbounds": ["DIRECT", "🚀 手动切换", "♻️ 自动选择"{{- range .Countries }}, {{ .Tag | json }}{{- end }}],
       "default": "DIRECT"
     },
@@ -256,7 +262,7 @@
     "rules": [
       {"action": "sniff"},
       {"protocol": "dns", "action": "hijack-dns"},
-      {"rule_set": "Private", "outbound": "本地直连"},
+      {"rule_set": "Private", "outbound": "DIRECT"},
       {"rule_set": ["AI"], "outbound": "AI服务"},
       {"domain_suffix": "openrouter.ai", "outbound": "AI服务"},
       {"rule_set": "PayPal", "outbound": "PayPal"},
@@ -269,10 +275,10 @@
       {"rule_set": "Google", "outbound": "Google"},
       {"rule_set": ["Microsoft", "OneDrive"], "outbound": "Microsoft"},
       {"rule_set": "Apple", "outbound": "Apple"},
-      {"rule_set": "Proxy", "outbound": "全球代理"},
+      {"rule_set": "Proxy", "outbound": "全球流量"},
       {"rule_set": ["SocialMediaCN", "Bilibili"], "outbound": "国内媒体"},
       {"rule_set": "Direct", "outbound": "本地直连"},
-      {"rule_set": ["CN", "CNCIDR"], "outbound": "本地直连"}
+      {"rule_set": ["CN", "CNCIDR"], "outbound": "国内流量"}
     ],
     "default_domain_resolver": {
       "server": "local",

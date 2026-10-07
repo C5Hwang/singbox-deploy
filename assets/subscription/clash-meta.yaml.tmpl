@@ -54,8 +54,8 @@ dns:
   nameserver:
     - "https://doh.pub/dns-query"
     - "https://dns.alidns.com/dns-query"
-    - "https://1.1.1.1/dns-query#全球代理"
-    - "https://8.8.8.8/dns-query#全球代理"
+    - "https://1.1.1.1/dns-query#全球流量"
+    - "https://8.8.8.8/dns-query#全球流量"
   proxy-server-nameserver:
     - https://doh.pub/dns-query
     - https://dns.alidns.com/dns-query
@@ -99,7 +99,7 @@ proxy-groups:
       - provider
     proxies: null
 {{- end }}
-  - name: 全球代理
+  - name: 全球流量
     type: select
     proxies:
       - 🚀 手动切换
@@ -154,6 +154,15 @@ proxy-groups:
 {{- end }}
       - DIRECT
   - name: 本地直连
+    type: select
+    proxies:
+      - DIRECT
+      - 🚀 手动切换
+      - ♻️ 自动选择
+{{- range .Countries }}
+      - {{ .Tag }}
+{{- end }}
+  - name: 国内流量
     type: select
     proxies:
       - DIRECT
@@ -420,7 +429,7 @@ rule-providers:
     path: ./ruleset/cncidr.list
 
 rules:
-  - RULE-SET,Private,本地直连
+  - RULE-SET,Private,DIRECT
   - RULE-SET,AI,AI服务
   - RULE-SET,PayPal,PayPal
   - RULE-SET,Spotify,Spotify
@@ -441,11 +450,11 @@ rules:
   - RULE-SET,Google,Google
   - RULE-SET,Microsoft,Microsoft
   - RULE-SET,Apple,Apple
-  - RULE-SET,Proxy,全球代理
+  - RULE-SET,Proxy,全球流量
   - RULE-SET,SocialMediaCN,国内媒体
   - RULE-SET,Bilibili,国内媒体
   - RULE-SET,Direct,本地直连
-  - RULE-SET,CN,本地直连
-  - RULE-SET,CNCIDR,本地直连,no-resolve
-  - GEOIP,CN,本地直连
+  - RULE-SET,CN,国内流量
+  - RULE-SET,CNCIDR,国内流量,no-resolve
+  - GEOIP,CN,国内流量
   - MATCH,漏网之鱼

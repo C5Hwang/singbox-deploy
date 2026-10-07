@@ -27,7 +27,8 @@ DIRECT = direct
 {{ .Tag }} = url-test, policy-path={{ $.SurgeProviderURL }}, url={{ .TestURL }}, interval=300, tolerance=50, policy-regex-filter={{ .Filter }}, update-interval=3600
 {{- end }}
 本地直连 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
-全球代理 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
+国内流量 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
+全球流量 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 国外媒体 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 国内媒体 = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
 AI服务 = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
@@ -47,7 +48,7 @@ Ponte = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {
 client-proxy-name = Ponte
 
 [Rule]
-RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/private.list,本地直连
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/private.list,DIRECT
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/ai.list,AI服务
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/paypal.list,PayPal
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/spotify.list,Spotify
@@ -68,11 +69,11 @@ RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/git
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/google.list,Google
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/microsoft.list,Microsoft
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/apple.list,Apple
-RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/proxy.list,全球代理
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/proxy.list,全球流量
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/socialmedia-cn.list,国内媒体
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/bilibili.list,国内媒体
 RULE-SET,https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Direct/Direct.list,本地直连
-RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/cn.list,本地直连
-RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/cncidr.list,本地直连
-GEOIP,CN,本地直连
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/cn.list,国内流量
+RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/cncidr.list,国内流量
+GEOIP,CN,国内流量
 FINAL,漏网之鱼

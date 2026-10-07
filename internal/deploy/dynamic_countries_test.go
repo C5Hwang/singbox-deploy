@@ -371,9 +371,9 @@ func TestFillProfilesUsesNativeDirectDialerForDomesticDNS(t *testing.T) {
 		if !ok {
 			t.Errorf("sing-box profile is missing DNS server %q", tag)
 		} else if server.Detour == nil {
-			t.Errorf("dns server %q is missing detour, want 全球代理", tag)
-		} else if *server.Detour != "全球代理" {
-			t.Errorf("dns server %q detour = %q, want 全球代理", tag, *server.Detour)
+			t.Errorf("dns server %q is missing detour, want 全球流量", tag)
+		} else if *server.Detour != "全球流量" {
+			t.Errorf("dns server %q detour = %q, want 全球流量", tag, *server.Detour)
 		}
 	}
 	for _, outbound := range profile.Outbounds {
