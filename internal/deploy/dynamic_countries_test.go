@@ -3,6 +3,7 @@ package deploy
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -385,6 +386,20 @@ func TestFillProfilesUsesNativeDirectDialerForDomesticDNS(t *testing.T) {
 		}
 	}
 	t.Fatal("sing-box profile is missing the DIRECT outbound")
+}
+
+func TestClashAutoSelectExcludesCNNodes(t *testing.T) {
+	var out subscriptionOutputs
+	if err := fillProfiles(&out, Config{Domain: "example.com", SubscribePort: 2096, Salt: "salt"},
+		[]map[string]any{{"type": "vless", "tag": "🇨🇳 CN-vps1-VLESS"}}); err != nil {
+		t.Fatalf("fillProfiles error: %v", err)
+	}
+	group := out.ClashProfile[strings.Index(out.ClashProfile, "  - name: ♻️ 自动选择"):]
+	group = group[:strings.Index(group[1:], "  - name: ")+1]
+	want := "exclude-filter: " + strconv.Quote(knownCountries[0].Filter)
+	if !strings.Contains(group, want) {
+		t.Fatalf("auto-select group = %q, want it to contain %q", group, want)
+	}
 }
 
 func TestSingBoxAutoSelectExcludesCNNodes(t *testing.T) {

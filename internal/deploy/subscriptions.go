@@ -366,18 +366,25 @@ func withSurgeTestURLs(fragment string) string {
 	return strings.Join(lines, "\n")
 }
 
-// surgeAutoSelectFilter keeps nodes with an overridden probe URL out of Surge's
-// global auto-select group. Surge ignores a group's url= and probes each member
-// with its own test-url, so a CN node would pass there and, being closest to a
-// mainland client, win — sending all proxied traffic back into China.
-func surgeAutoSelectFilter() string {
+// autoSelectExclude matches nodes with an overridden probe URL, which every
+// client's global auto-select group leaves out: being closest to a mainland
+// client, a CN node would otherwise win and send all proxied traffic back into
+// China.
+func autoSelectExclude() string {
 	var excluded []string
 	for _, def := range knownCountries {
 		if def.TestURL != "" {
 			excluded = append(excluded, def.Filter)
 		}
 	}
-	return "^(?!.*(?:" + strings.Join(excluded, "|") + "))"
+	return strings.Join(excluded, "|")
+}
+
+// surgeAutoSelectFilter keeps nodes with an overridden probe URL out of Surge's
+// global auto-select group. Surge ignores a group's url= and probes each member
+// with its own test-url, so a CN node would pass there and win.
+func surgeAutoSelectFilter() string {
+	return "^(?!.*(?:" + autoSelectExclude() + "))"
 }
 
 // autoSelectTags drops nodes with an overridden probe URL from sing-box's
@@ -484,8 +491,9 @@ func fillProfiles(out *subscriptionOutputs, c Config, outbounds []map[string]any
 	out.SingBoxProfile = singboxProfile
 
 	clashProfile, err := templatefs.Render("subscription/clash-meta.yaml.tmpl", map[string]any{
-		"ClashProviderURL": clashProviderURL,
-		"Countries":        countries,
+		"ClashProviderURL":  clashProviderURL,
+		"AutoSelectExclude": autoSelectExclude(),
+		"Countries":         countries,
 	})
 	if err != nil {
 		return err

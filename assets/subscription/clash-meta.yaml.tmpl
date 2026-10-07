@@ -85,6 +85,7 @@ proxy-groups:
     url: http://www.gstatic.com/generate_204
     interval: 36000
     tolerance: 50
+    exclude-filter: {{ .AutoSelectExclude | json }}
     use:
       - provider
     proxies: null
