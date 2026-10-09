@@ -86,6 +86,9 @@ type Controller struct {
 	CurrentCoreVersion func(ctx context.Context) (string, error)
 	ChangeLocalCore    func(ctx context.Context, tag string, log io.Writer) error
 	LocalCoreActive    func() error
+	// FetchCoreArchive downloads the sing-box archive the Hub pushes to a
+	// spoke that cannot reach GitHub itself.
+	FetchCoreArchive func(ctx context.Context, tag, arch string) (nodeapi.CoreStageRequest, error)
 	// CheckOverlaySubnet rejects conflicts with existing host routes before
 	// overlay identity/config state is written. Tests may inject a deterministic
 	// checker; production inspects /proc/net/route.
@@ -162,6 +165,9 @@ func (c *Controller) defaults() {
 			_, err = manager.Run(ctx, core.ActionChangeStable, tag)
 			return err
 		}
+	}
+	if c.FetchCoreArchive == nil {
+		c.FetchCoreArchive = fetchCoreArchive
 	}
 	if c.LocalCoreActive == nil {
 		c.LocalCoreActive = func() error {
@@ -504,6 +510,9 @@ func (c *Controller) installNode(ctx context.Context, node nodes.Node, log io.Wr
 		}
 		req, err = c.buildInstallRequest(node)
 		if err != nil {
+			return err
+		}
+		if err := c.stageSpokeCore(ctx, node, req.SingBoxVersion, c.newCoreArchives(), log); err != nil {
 			return err
 		}
 	}

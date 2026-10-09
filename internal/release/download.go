@@ -21,6 +21,10 @@ func DownloadTo(ctx context.Context, httpClient *http.Client, url, destPath stri
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	return downloadTo(ctx, httpClient, url, destPath, nil)
+}
+
+func downloadTo(ctx context.Context, httpClient *http.Client, url, destPath string, wrap func(io.Reader) io.Reader) (retErr error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -40,8 +44,16 @@ func DownloadTo(ctx context.Context, httpClient *http.Client, url, destPath stri
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
+	defer func() {
+		if closeErr := f.Close(); retErr == nil && closeErr != nil {
+			retErr = closeErr
+		}
+	}()
+	var body io.Reader = resp.Body
+	if wrap != nil {
+		body = wrap(body)
+	}
+	_, err = io.Copy(f, body)
 	return err
 }
 

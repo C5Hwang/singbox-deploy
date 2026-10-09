@@ -4,8 +4,6 @@ package core
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -181,8 +179,7 @@ func (m *Manager) replaceSteps(tag *string, tx *replaceTransaction) []deploy.Ste
 			tx.archivePath = filepath.Join(updateDir, archive)
 			tx.metadataPath = filepath.Join(updateDir, "release.json")
 			tx.candidatePath = filepath.Join(updateDir, "sing-box-"+release.SafeTag(*tag))
-			url := fmt.Sprintf("https://github.com/SagerNet/sing-box/releases/download/%s/%s", *tag, archive)
-			if err := m.Download(ctx, url, tx.archivePath); err != nil {
+			if err := m.Download(ctx, release.SingBoxArchiveURL(*tag, archive), tx.archivePath); err != nil {
 				return err
 			}
 			info, err := os.Stat(tx.archivePath)
@@ -192,15 +189,14 @@ func (m *Manager) replaceSteps(tag *string, tx *replaceTransaction) []deploy.Ste
 			if info.Size() == 0 {
 				return fmt.Errorf("downloaded archive is empty")
 			}
-			metadataURL := fmt.Sprintf("https://api.github.com/repos/SagerNet/sing-box/releases/tags/%s", *tag)
-			if err := m.Download(ctx, metadataURL, tx.metadataPath); err != nil {
+			if err := m.Download(ctx, release.SingBoxReleaseMetadataURL(*tag), tx.metadataPath); err != nil {
 				return fmt.Errorf("download upstream release metadata: %w", err)
 			}
 			return nil
 		}},
 		{Label: "Verify", Detail: "verify checksum, extract, and inspect sing-box binary", Run: func(context.Context) error {
 			archive := filepath.Base(tx.archivePath)
-			if err := verifyReleaseAssetChecksum(tx.metadataPath, archive, tx.archivePath); err != nil {
+			if err := release.VerifyReleaseAssetChecksum(tx.metadataPath, archive, tx.archivePath); err != nil {
 				return err
 			}
 			f, err := os.Open(tx.archivePath)
@@ -351,50 +347,6 @@ func normalizeVersionTag(tag string) (string, error) {
 		return "", fmt.Errorf("invalid semantic version %q", tag)
 	}
 	return tag, nil
-}
-
-type releaseMetadata struct {
-	Assets []struct {
-		Name   string `json:"name"`
-		Digest string `json:"digest"`
-	} `json:"assets"`
-}
-
-func verifyReleaseAssetChecksum(metadataPath, asset, archivePath string) error {
-	body, err := os.ReadFile(metadataPath)
-	if err != nil {
-		return fmt.Errorf("read upstream release metadata: %w", err)
-	}
-	var metadata releaseMetadata
-	if err := json.Unmarshal(body, &metadata); err != nil {
-		return fmt.Errorf("parse upstream release metadata: %w", err)
-	}
-	var digest string
-	for _, candidate := range metadata.Assets {
-		if candidate.Name == asset {
-			digest = strings.TrimSpace(candidate.Digest)
-			break
-		}
-	}
-	if digest == "" {
-		return fmt.Errorf("upstream release metadata has no digest for %s", asset)
-	}
-	algorithm, encoded, ok := strings.Cut(digest, ":")
-	if !ok || algorithm != "sha256" {
-		return fmt.Errorf("unsupported upstream digest for %s: %q", asset, digest)
-	}
-	want, err := hex.DecodeString(encoded)
-	if err != nil || len(want) != sha256.Size {
-		return fmt.Errorf("invalid upstream SHA-256 digest for %s: %q", asset, digest)
-	}
-	got, err := sha256File(archivePath)
-	if err != nil {
-		return fmt.Errorf("hash downloaded archive: %w", err)
-	}
-	if !equalDigest(got, want) {
-		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", asset, encoded, hex.EncodeToString(got))
-	}
-	return nil
 }
 
 func equalDigest(a, b []byte) bool {

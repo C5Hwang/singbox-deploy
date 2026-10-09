@@ -68,6 +68,10 @@ type agentHandler struct {
 	readCoreVersion func(context.Context) (string, error)
 	coreActive      func(context.Context) bool
 	runCoreManager  func(context.Context, core.Action, string, io.Writer) (core.Result, error)
+	// Core staging seams: the host architecture and the direct GitHub
+	// download, so staging tests never touch the network.
+	coreArch     func() (string, error)
+	downloadCore func(ctx context.Context, url, dest string) error
 	// quotaStopped is a seam over the monitor store's quota-stop marker so
 	// health tests do not need a SQLite database on disk.
 	quotaStopped func() (bool, error)
@@ -420,6 +424,9 @@ func (h *agentHandler) Install(ctx context.Context, req nodeapi.InstallRequest, 
 	if applyErr != nil {
 		return applyErr
 	}
+	if !req.ConfigOnly {
+		clearCoreStage(h.layout, log)
+	}
 	if protocolOnly {
 		return nil
 	}
@@ -464,6 +471,7 @@ func (h *agentHandler) newSpokeOrchestrator(
 		NginxConfPath: h.nginxConfPath,
 		GOOS:          "linux",
 		GOARCH:        host.Arch,
+		Download:      stagedCoreDownload(h.layout, downloadDirect),
 		// A full spoke install must resolve to the exact hub-selected tag. This
 		// fixed resolver deliberately performs no "latest" release lookup.
 		LatestSingBox: func(context.Context) (string, error) {
@@ -1084,6 +1092,7 @@ func (h *agentHandler) ChangeCore(ctx context.Context, req nodeapi.CoreRequest, 
 	if !h.isCoreActive(ctx) {
 		return fmt.Errorf("sing-box service is not active after changing core to %s", req.SingBoxVersion)
 	}
+	clearCoreStage(h.layout, log)
 	fmt.Fprintf(log, "verified sing-box core %s and active %s\n", reported, system.SingBoxService)
 	return nil
 }
@@ -1101,6 +1110,7 @@ func (h *agentHandler) runCoreManagerDefault(
 	manager := &core.Manager{
 		Runner:   h.commandRunner(ctx, log),
 		Layout:   h.layout,
+		Download: stagedCoreDownload(h.layout, downloadDirect),
 		Progress: agentProgressLogger(log),
 		GOOS:     "linux",
 		GOARCH:   host.Arch,

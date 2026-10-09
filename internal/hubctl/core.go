@@ -69,6 +69,7 @@ func (c *Controller) ChangeFleetCore(ctx context.Context, target string, log io.
 		old  string
 	}
 	changed := make([]changedSpoke, 0, len(status.Spokes))
+	archives := c.newCoreArchives()
 	rollback := func(cause error, localMayHaveChanged bool) error {
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
@@ -95,6 +96,12 @@ func (c *Controller) ChangeFleetCore(ctx context.Context, target string, log io.
 		for i := len(changed) - 1; i >= 0; i-- {
 			item := changed[i]
 			fmt.Fprintf(log, "rolling %s core back to %s...\n", item.node.EffectiveAlias(), item.old)
+			if stageErr := c.stageSpokeCore(recoveryCtx, item.node, item.old, archives, log); stageErr != nil {
+				rollbackErrs = append(rollbackErrs,
+					fmt.Errorf("roll back %s core to %s: %w",
+						item.node.EffectiveAlias(), item.old, stageErr))
+				continue
+			}
 			client := c.NewClient(item.node)
 			if restoreErr := client.ChangeCore(recoveryCtx, nodeapi.CoreRequest{
 				SingBoxVersion: item.old,
@@ -125,6 +132,13 @@ func (c *Controller) ChangeFleetCore(ctx context.Context, target string, log io.
 			continue
 		}
 
+		// Staging leaves the running core untouched, so a failure here needs
+		// no rollback of this spoke.
+		if err := c.stageSpokeCore(ctx, spoke.Node, target, archives, log); err != nil {
+			stepErr := fmt.Errorf("change %s core to %s: %w", spoke.Node.EffectiveAlias(), target, err)
+			emitFleetCoreProgress(c.Progress, index, total, label, detail, "fail", stepErr)
+			return rollback(stepErr, false)
+		}
 		// Record the old version before sending the mutation. If the response is
 		// lost after the Agent commits, rollback still repairs the possibly
 		// changed node instead of assuming the failed request was side-effect

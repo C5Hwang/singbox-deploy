@@ -370,9 +370,8 @@ func (o *Orchestrator) stepSingBox(ctx context.Context, cfg Config) error {
 		return err
 	}
 	archive := release.SingBoxArchiveName(tag, o.GOOS, o.GOARCH)
-	url := fmt.Sprintf("https://github.com/SagerNet/sing-box/releases/download/%s/%s", tag, archive)
 	archivePath := filepath.Join(filepath.Dir(o.Layout.SingBoxBin), archive)
-	if err := o.Download(ctx, url, archivePath); err != nil {
+	if err := o.Download(ctx, release.SingBoxArchiveURL(tag, archive), archivePath); err != nil {
 		return err
 	}
 	f, err := os.Open(archivePath)

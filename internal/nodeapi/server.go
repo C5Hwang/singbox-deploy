@@ -36,6 +36,13 @@ type CoreHandler interface {
 	ChangeCore(ctx context.Context, req CoreRequest, log io.Writer) error
 }
 
+// CoreStageHandler is implemented by agents that can stage a sing-box release
+// archive ahead of an install or core change. An agent without it downloads
+// the release from GitHub during that operation instead.
+type CoreStageHandler interface {
+	StageCore(ctx context.Context, req CoreStageRequest, log io.Writer) error
+}
+
 // RelayHandler is implemented by agents that can front another node's traffic.
 // Keeping it optional lets a newer Hub report an agent that predates relaying
 // instead of failing an install with a routing error.
@@ -95,6 +102,7 @@ func (s *Server) Mux() http.Handler {
 	s.handle(mux, http.MethodPost, "/api/uninstall", s.handleUninstall)
 	s.handle(mux, http.MethodPost, "/api/upgrade", s.handleUpgrade)
 	s.handle(mux, http.MethodPost, "/api/core", s.handleCore)
+	s.handle(mux, http.MethodPost, "/api/core/stage", s.handleCoreStage)
 	s.handle(mux, http.MethodPost, "/api/relay", s.handleRelay)
 	s.handle(mux, http.MethodGet, "/api/subscription", s.handleSubscription)
 	mux.HandleFunc("/api/monitor/usage", s.auth(s.handleTrafficUsage))
@@ -248,6 +256,26 @@ func (s *Server) handleCore(w http.ResponseWriter, r *http.Request) {
 	}
 	streamOperation(w, func(log io.Writer) error {
 		return handler.ChangeCore(r.Context(), req, log)
+	})
+}
+
+func (s *Server) handleCoreStage(w http.ResponseWriter, r *http.Request) {
+	var req CoreStageRequest
+	if err := decodeJSON(w, r, &req, maxCoreStageRequestBody); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ValidateCoreStageRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	handler, ok := s.Handler.(CoreStageHandler)
+	if !ok {
+		http.Error(w, "sing-box core staging is not supported", http.StatusNotImplemented)
+		return
+	}
+	streamOperation(w, func(log io.Writer) error {
+		return handler.StageCore(r.Context(), req, log)
 	})
 }
 
@@ -504,6 +532,8 @@ const (
 	// []byte expands by 4/3 when JSON/base64 encoded. Leave a small allowance
 	// for field names and the version/digest strings.
 	maxUpgradeRequestBody int64 = (MaxAgentBinarySize+2)/3*4 + 4096
+	// A pushed core archive travels with its release metadata, both base64.
+	maxCoreStageRequestBody int64 = (MaxCoreArchiveSize+2)/3*4 + (MaxCoreReleaseMetadataSize+2)/3*4 + 4096
 )
 
 // decodeJSON accepts exactly one JSON value, bounded before decoding. JSON

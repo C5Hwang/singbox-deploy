@@ -664,6 +664,72 @@ func ValidateCoreRequest(req CoreRequest) error {
 	return ValidateStableSingBoxTag(req.SingBoxVersion)
 }
 
+// MaxCoreArchiveSize bounds a hub-pushed sing-box archive. Upstream archives
+// are far smaller; the limit only keeps a compromised overlay peer from
+// exhausting the agent's memory with JSON.
+const MaxCoreArchiveSize = 64 << 20
+
+// MaxCoreReleaseMetadataSize bounds the upstream release metadata pushed with
+// an archive. GitHub's release JSON is tens of kilobytes.
+const MaxCoreReleaseMetadataSize = 2 << 20
+
+// CoreStageRequest makes one exact sing-box release archive available on the
+// agent before a full install or core change consumes it. Without Archive the
+// agent downloads the release from GitHub itself. A spoke that cannot reach
+// GitHub (typically one in mainland China) is retried with Archive set: the
+// hub-downloaded upstream archive plus the GitHub release metadata it was
+// verified against, so the agent repeats the same upstream digest check.
+type CoreStageRequest struct {
+	SingBoxVersion  string `json:"singBoxVersion"`
+	ArchiveName     string `json:"archiveName,omitempty"`
+	ArchiveSHA256   string `json:"archiveSHA256,omitempty"`
+	Archive         []byte `json:"archive,omitempty"`
+	ReleaseMetadata []byte `json:"releaseMetadata,omitempty"`
+}
+
+// Pushed reports whether the request carries a hub-supplied archive.
+func (r CoreStageRequest) Pushed() bool {
+	return len(r.Archive) > 0
+}
+
+// ValidateCoreStageRequest checks the target tag and, for a pushed archive,
+// its size bounds, upstream file name, and self-consistent digest.
+func ValidateCoreStageRequest(req CoreStageRequest) error {
+	if err := ValidateStableSingBoxTag(req.SingBoxVersion); err != nil {
+		return err
+	}
+	if !req.Pushed() {
+		if req.ArchiveName != "" || req.ArchiveSHA256 != "" || len(req.ReleaseMetadata) > 0 {
+			return fmt.Errorf("sing-box archive fields require an archive")
+		}
+		return nil
+	}
+	if len(req.Archive) > MaxCoreArchiveSize {
+		return fmt.Errorf("sing-box archive is too large (%d bytes)", len(req.Archive))
+	}
+	prefix := "sing-box-" + strings.TrimPrefix(req.SingBoxVersion, "v") + "-linux-"
+	arch := strings.TrimSuffix(strings.TrimPrefix(req.ArchiveName, prefix), ".tar.gz")
+	if !strings.HasPrefix(req.ArchiveName, prefix) || !strings.HasSuffix(req.ArchiveName, ".tar.gz") ||
+		arch == "" || strings.ContainsAny(arch, "/\\.") {
+		return fmt.Errorf("invalid sing-box archive name %q for %s", req.ArchiveName, req.SingBoxVersion)
+	}
+	if len(req.ReleaseMetadata) == 0 {
+		return fmt.Errorf("sing-box release metadata is required with an archive")
+	}
+	if len(req.ReleaseMetadata) > MaxCoreReleaseMetadataSize {
+		return fmt.Errorf("sing-box release metadata is too large (%d bytes)", len(req.ReleaseMetadata))
+	}
+	want, err := hex.DecodeString(req.ArchiveSHA256)
+	if err != nil || len(want) != sha256.Size {
+		return fmt.Errorf("invalid sing-box archive SHA-256")
+	}
+	got := sha256.Sum256(req.Archive)
+	if subtle.ConstantTimeCompare(want, got[:]) != 1 {
+		return fmt.Errorf("sing-box archive SHA-256 mismatch")
+	}
+	return nil
+}
+
 // CertRequest ships a refreshed certificate pair to a spoke (e.g. after the hub
 // renews it). The agent writes the pair and restarts TLS-dependent services.
 type CertRequest struct {

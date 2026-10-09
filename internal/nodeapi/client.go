@@ -165,6 +165,16 @@ func (c *Client) ChangeCore(ctx context.Context, req CoreRequest, log io.Writer)
 	return c.stream(ctx, "/api/core", req, log)
 }
 
+// StageCore asks the spoke to make one exact sing-box release archive
+// available locally for the next install or core change. Without an archive
+// the agent downloads it from GitHub; with one it stores the pushed bytes.
+func (c *Client) StageCore(ctx context.Context, req CoreStageRequest, log io.Writer) error {
+	if err := ValidateCoreStageRequest(req); err != nil {
+		return err
+	}
+	return c.stream(ctx, "/api/core/stage", req, log)
+}
+
 // ApplyRelay replaces the spoke's complete relay job: which landing nodes it
 // fronts and on which ports. An empty request withdraws the data plane.
 func (c *Client) ApplyRelay(ctx context.Context, req RelayRequest, log io.Writer) error {

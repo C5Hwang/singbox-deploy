@@ -3,7 +3,10 @@ package nodeapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +22,7 @@ type fakeHandler struct {
 	installReq     InstallRequest
 	upgradeReq     UpgradeRequest
 	coreReq        CoreRequest
+	coreStageReq   CoreStageRequest
 	relayReq       RelayRequest
 	failWith       string
 	monitor        http.Handler
@@ -54,6 +58,15 @@ func (h *fakeHandler) ApplyCert(_ context.Context, _ CertRequest, log io.Writer)
 
 func (h *fakeHandler) Uninstall(_ context.Context, _ UninstallRequest, log io.Writer) error {
 	fmt.Fprintln(log, "removed")
+	return nil
+}
+
+func (h *fakeHandler) StageCore(_ context.Context, req CoreStageRequest, log io.Writer) error {
+	h.coreStageReq = req
+	fmt.Fprintf(log, "staged %s\n", req.SingBoxVersion)
+	if h.failWith != "" {
+		return fmt.Errorf("%s", h.failWith)
+	}
 	return nil
 }
 
@@ -1032,5 +1045,92 @@ func TestMonitorIPDetailForwardsOnlyAParsedAddress(t *testing.T) {
 	(&Server{Token: "secret", Handler: h}).Mux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d for a non-address, want 400", rec.Code)
+	}
+}
+
+func pushedCoreStageRequest(archive []byte) CoreStageRequest {
+	sum := sha256.Sum256(archive)
+	return CoreStageRequest{
+		SingBoxVersion:  "v1.12.4",
+		ArchiveName:     "sing-box-1.12.4-linux-amd64.tar.gz",
+		ArchiveSHA256:   hex.EncodeToString(sum[:]),
+		Archive:         archive,
+		ReleaseMetadata: []byte(`{"assets":[]}`),
+	}
+}
+
+func TestCoreStageRoundTripCarriesPushedArchive(t *testing.T) {
+	h := &fakeHandler{}
+	client, closeFn := newTestServer(t, h, "secret")
+	defer closeFn()
+
+	var log bytes.Buffer
+	if err := client.StageCore(context.Background(), CoreStageRequest{SingBoxVersion: "v1.12.4"}, &log); err != nil {
+		t.Fatalf("direct StageCore: %v", err)
+	}
+	if h.coreStageReq.Pushed() || h.coreStageReq.SingBoxVersion != "v1.12.4" {
+		t.Fatalf("direct stage request = %+v", h.coreStageReq)
+	}
+	if !strings.Contains(log.String(), "staged v1.12.4") {
+		t.Fatalf("stage log not streamed: %q", log.String())
+	}
+
+	req := pushedCoreStageRequest(bytes.Repeat([]byte{0x1f, 0x8b}, 1024))
+	if err := client.StageCore(context.Background(), req, io.Discard); err != nil {
+		t.Fatalf("pushed StageCore: %v", err)
+	}
+	got := h.coreStageReq
+	if !bytes.Equal(got.Archive, req.Archive) || got.ArchiveName != req.ArchiveName ||
+		got.ArchiveSHA256 != req.ArchiveSHA256 || !bytes.Equal(got.ReleaseMetadata, req.ReleaseMetadata) {
+		t.Fatalf("agent received wrong pushed stage: %+v", got.ArchiveName)
+	}
+
+	h.failWith = "github unreachable"
+	if err := client.StageCore(context.Background(), CoreStageRequest{SingBoxVersion: "v1.12.4"}, io.Discard); err == nil || !strings.Contains(err.Error(), "github unreachable") {
+		t.Fatalf("stage failure = %v", err)
+	}
+}
+
+func TestValidateCoreStageRequest(t *testing.T) {
+	valid := pushedCoreStageRequest([]byte("archive"))
+	for name, tc := range map[string]struct {
+		mutate  func(*CoreStageRequest)
+		wantErr string
+	}{
+		"pushed":           {mutate: func(*CoreStageRequest) {}},
+		"direct":           {mutate: func(r *CoreStageRequest) { *r = CoreStageRequest{SingBoxVersion: "v1.12.4"} }},
+		"latest tag":       {mutate: func(r *CoreStageRequest) { r.SingBoxVersion = "latest" }, wantErr: "exact stable tag"},
+		"fields no bytes":  {mutate: func(r *CoreStageRequest) { r.Archive = nil }, wantErr: "require an archive"},
+		"other version":    {mutate: func(r *CoreStageRequest) { r.ArchiveName = "sing-box-1.12.3-linux-amd64.tar.gz" }, wantErr: "invalid sing-box archive name"},
+		"path in name":     {mutate: func(r *CoreStageRequest) { r.ArchiveName = "sing-box-1.12.4-linux-../x.tar.gz" }, wantErr: "invalid sing-box archive name"},
+		"no metadata":      {mutate: func(r *CoreStageRequest) { r.ReleaseMetadata = nil }, wantErr: "metadata is required"},
+		"digest mismatch":  {mutate: func(r *CoreStageRequest) { r.ArchiveSHA256 = strings.Repeat("0", 64) }, wantErr: "SHA-256 mismatch"},
+		"malformed digest": {mutate: func(r *CoreStageRequest) { r.ArchiveSHA256 = "xyz" }, wantErr: "invalid sing-box archive SHA-256"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := valid
+			tc.mutate(&req)
+			err := ValidateCoreStageRequest(req)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCoreStageUnsupportedByLegacyAgent(t *testing.T) {
+	type legacyHandler struct{ Handler }
+	client, closeFn := newTestServer(t, legacyHandler{Handler: &fakeHandler{}}, "secret")
+	defer closeFn()
+	err := client.StageCore(context.Background(), CoreStageRequest{SingBoxVersion: "v1.12.4"}, io.Discard)
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) || statusErr.Code != http.StatusNotImplemented {
+		t.Fatalf("legacy Agent error = %v", err)
 	}
 }
