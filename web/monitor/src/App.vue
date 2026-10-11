@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watchEffect } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import SidebarNav from "./components/SidebarNav.vue";
 import TimezonePicker from "./components/TimezonePicker.vue";
 import TokenGate from "./components/TokenGate.vue";
@@ -7,6 +7,7 @@ import Latency from "./pages/Latency.vue";
 import NetworkTraffic from "./pages/NetworkTraffic.vue";
 import Relay from "./pages/Relay.vue";
 import Resources from "./pages/Resources.vue";
+import Subscriptions from "./pages/Subscriptions.vue";
 import TopIPs from "./pages/TopIPs.vue";
 import { fetchSummary, hasStoredAccessToken, onUnauthorized, setAccessToken, UnauthorizedError } from "./api";
 import { formatAgo } from "./clock";
@@ -22,6 +23,7 @@ const PAGES: { key: Tab; title: string; short: string; blurb: string }[] = [
   { key: "topips", title: "Clients", short: "Clients", blurb: "Client addresses ranked by traffic" },
   { key: "latency", title: "Latency", short: "Latency", blurb: "Round-trip time to Chinese carriers, by city" },
   { key: "relay", title: "Relay", short: "Relay", blurb: "Relay to landing node routes and their latency" },
+  { key: "subscriptions", title: "Subscriptions", short: "Subscribe", blurb: "Build subscription links from a domain and salt" },
 ];
 
 const PAGE_COMPONENTS = {
@@ -30,6 +32,7 @@ const PAGE_COMPONENTS = {
   topips: TopIPs,
   latency: Latency,
   relay: Relay,
+  subscriptions: Subscriptions,
 } as const;
 
 const activeTab = ref<Tab>("traffic");
@@ -120,15 +123,36 @@ watchEffect(() => {
 });
 
 const tabs = computed(() => PAGES.filter((p) => p.key !== "relay" || showRelay.value));
+
+// The phone's tab strip scrolls sideways, and the later tabs start out past its
+// edge: picking one that is half under the edge, or landing on one some other
+// way, would leave the current page's tab out of sight. The strip centres it.
+const tabbar = ref<HTMLElement | null>(null);
+watch(
+  activeTab,
+  () => {
+    const strip = tabbar.value;
+    const tab = strip?.querySelector<HTMLElement>("button.active");
+    if (!strip || !tab || strip.scrollWidth <= strip.clientWidth) return;
+    const box = strip.getBoundingClientRect();
+    const at = tab.getBoundingClientRect();
+    const left = strip.scrollLeft + at.left - box.left - (box.width - at.width) / 2;
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    strip.scrollTo({ left, behavior: still ? "auto" : "smooth" });
+  },
+  { flush: "post" },
+);
 const page = computed(() => PAGES.find((p) => p.key === activeTab.value)!);
 const pageComponent = computed(() => PAGE_COMPONENTS[activeTab.value]);
 // Only the two overview pages take the error: the rest read the summary alone,
 // and handing them a prop they do not declare would land it on their markup.
-const pageProps = computed(() =>
-  activeTab.value === "traffic" || activeTab.value === "resources"
+// The subscriptions page reads neither — it builds its links in the browser.
+const pageProps = computed(() => {
+  if (activeTab.value === "subscriptions") return {};
+  return activeTab.value === "traffic" || activeTab.value === "resources"
     ? { summary: summary.value, error: error.value }
-    : { summary: summary.value },
-);
+    : { summary: summary.value };
+});
 
 const subtitle = computed(() => {
   if (error.value) return `Failed to load data: ${error.value}`;
@@ -196,7 +220,7 @@ onUnmounted(stopPolling);
       <!-- The phone's navigation. It is a direct child of main rather than of
            the header so it can stick to the top on its own while the title
            scrolls away above it. -->
-      <nav class="tabbar" aria-label="Pages">
+      <nav ref="tabbar" class="tabbar" aria-label="Pages">
         <button
           v-for="tab in tabs"
           :key="tab.key"

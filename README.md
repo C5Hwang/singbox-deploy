@@ -28,7 +28,8 @@ are managed from the hub's terminal UI.
 - Supports node-to-node relaying, forwarding traffic for one node through
   another over a lower-latency ingress path.
 - A web dashboard watches the whole fleet: resource usage and per-node quotas,
-  per-client-IP traffic rankings, and latency to Chinese carriers.
+  per-client-IP traffic rankings, and latency to Chinese carriers. It also
+  builds subscription links, including Tailscale mode, from a domain and salt.
 - Monthly traffic quotas per node, with temporary traffic packages that top
   a node up until the next reset.
 - Nginx serves a masquerade site, chosen from bundled

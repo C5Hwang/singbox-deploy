@@ -107,6 +107,22 @@ defineEmits<{
         </svg>
         <span class="nav-label">Relay</span>
       </a>
+
+      <a
+        class="nav-item"
+        :class="{ active: activeTab === 'subscriptions' }"
+        href="#"
+        title="Subscriptions"
+        @click.prevent="$emit('update:activeTab', 'subscriptions')"
+      >
+        <!-- A feed: the mark of a thing a client subscribes to. -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 11a8 8 0 0 1 8 8" />
+          <path d="M5 4a15 15 0 0 1 15 15" />
+          <circle cx="6" cy="18" r="1.4" fill="currentColor" stroke="none" />
+        </svg>
+        <span class="nav-label">Subscriptions</span>
+      </a>
     </nav>
 
     <div class="fleet" :title="`${onlineCount} of ${sourceCount} nodes serving`">

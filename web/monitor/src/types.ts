@@ -48,7 +48,7 @@ export interface ResourceHourlyPoint {
 }
 
 // The dashboard's top-level pages, in sidebar order.
-export type Tab = "traffic" | "resources" | "topips" | "latency" | "relay";
+export type Tab = "traffic" | "resources" | "topips" | "latency" | "relay" | "subscriptions";
 
 // One bucket of an address's history, at whichever granularity it was read at.
 export interface IPSeriesPoint {
