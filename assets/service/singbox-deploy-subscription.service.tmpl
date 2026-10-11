@@ -1,0 +1,53 @@
+[Unit]
+Description=singbox-deploy dynamic subscription service
+Documentation=https://github.com/C5Hwang/singbox-deploy
+After=network.target
+
+[Service]
+# exec, so a sandbox the host cannot set up (226/NAMESPACE on some container
+# VPSes) fails the install's restart instead of looping behind a 502.
+Type=exec
+ExecStart={{ .DeployBin }} subscription serve --listen 127.0.0.1:{{ .Port }} --subscribe-dir {{ json .SubscribeDir }} --keys-dir {{ json .SubscribeKeysDir }}
+Restart=on-failure
+RestartSec=5
+# It answers public requests (through Nginx), so it runs as a throwaway user in
+# a sandbox that can write nothing. It reads only the world-readable files Nginx
+# already serves and, to decrypt a Tailscale client link's auth key, the
+# world-readable per-token keys derived from the subscription salts; the salts
+# themselves stay in the state directory, which it cannot see. /run is listed
+# because on some container hosts ProtectKernelTunables, ProtectControlGroups or
+# ProtectProc leave it writable even under ProtectSystem=strict.
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/run -{{ .SubscribeDir }} -{{ .SubscribeKeysDir }}
+InaccessiblePaths=-{{ .StateDir }} -{{ .TLSDir }}
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Nginx on this host is its only client.
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

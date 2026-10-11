@@ -1656,6 +1656,7 @@ func TestLegacyHubArtifactsAreRemovedWhenConvertingToSpoke(t *testing.T) {
 	for _, want := range []string{
 		"/usr/bin/singbox-deploy",
 		"/etc/systemd/system/" + system.CertRenewTimer,
+		"/etc/systemd/system/" + system.SubscriptionService,
 		filepath.Join(layout.StateDir, "dns_credentials"),
 		filepath.Join(layout.StateDir, "dns_credential"),
 		filepath.Join(layout.StateDir, "email"),
@@ -1712,7 +1713,7 @@ func TestDisableLegacyHubServicesSkipsMissingUnits(t *testing.T) {
 
 func TestDisableLegacyHubServicesDisablesInstalledUnits(t *testing.T) {
 	systemdDir := t.TempDir()
-	for _, unit := range []string{system.CertRenewTimer, system.MonitorService} {
+	for _, unit := range []string{system.CertRenewTimer, system.MonitorService, system.SubscriptionService} {
 		if err := os.WriteFile(filepath.Join(systemdDir, unit), []byte("[Unit]\n"), 0o644); err != nil {
 			t.Fatalf("write %s: %v", unit, err)
 		}
@@ -1724,6 +1725,7 @@ func TestDisableLegacyHubServicesDisablesInstalledUnits(t *testing.T) {
 	want := []string{
 		"systemctl disable --now " + system.CertRenewTimer,
 		"systemctl disable --now " + system.MonitorService,
+		"systemctl disable --now " + system.SubscriptionService,
 	}
 	if strings.Join(runner.commands, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("commands = %v, want %v", runner.commands, want)

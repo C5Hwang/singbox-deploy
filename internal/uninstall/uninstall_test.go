@@ -37,6 +37,7 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 		layout.MonitorDB + "-shm",
 		filepath.Join(layout.WebRoot, "index.html"),
 		filepath.Join(layout.SubscribeDir, "default", "token"),
+		filepath.Join(layout.SubscribeKeysDir, "token"),
 		filepath.Join(layout.Root, "custom.txt"),
 		nginxConf,
 		filepath.Join(nginxDir, "unrelated.conf"),
@@ -44,7 +45,8 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 	} {
 		writeTestFile(t, path)
 	}
-	for _, unit := range []string{system.SingBoxService, system.MonitorService, system.CertRenewService, system.CertRenewTimer} {
+	units := []string{system.SingBoxService, system.MonitorService, system.SubscriptionService, system.CertRenewService, system.CertRenewTimer}
+	for _, unit := range units {
 		writeTestFile(t, filepath.Join(systemdDir, unit))
 	}
 
@@ -66,6 +68,7 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 	for _, want := range []string{
 		"systemctl disable --now singbox-deploy-cert-renew.timer",
 		"systemctl disable --now singbox-deploy-monitor.service",
+		"systemctl disable --now singbox-deploy-subscription.service",
 		"systemctl disable --now sing-box.service",
 		"systemctl stop singbox-deploy-cert-renew.service",
 		"systemctl daemon-reload",
@@ -84,11 +87,17 @@ func TestUninstallRemovesOnlyManagedSelectedArtifacts(t *testing.T) {
 		layout.MonitorDB + "-wal",
 		layout.MonitorDB + "-shm",
 		layout.SubscribeDir,
+		layout.SubscribeKeysDir,
 		nginxConf,
 		cronPath,
 	} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("%s should be removed, stat err=%v", path, err)
+		}
+	}
+	for _, unit := range units {
+		if _, err := os.Stat(filepath.Join(systemdDir, unit)); !os.IsNotExist(err) {
+			t.Fatalf("unit %s should be removed, stat err=%v", unit, err)
 		}
 	}
 	for _, path := range []string{layout.TLSDir, layout.WebRoot, filepath.Join(layout.Root, "custom.txt"), filepath.Join(nginxDir, "unrelated.conf")} {

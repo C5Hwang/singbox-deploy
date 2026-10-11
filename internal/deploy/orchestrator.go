@@ -50,7 +50,7 @@ type Orchestrator struct {
 	Progress              func(Event)
 
 	GOOS, GOARCH  string
-	DeployBin     string // path to the singbox-deploy binary (for the monitor unit)
+	DeployBin     string // path to the singbox-deploy binary (for the monitor and subscription units)
 	SystemdDir    string // default /etc/systemd/system
 	NginxConfPath string // default /etc/nginx/conf.d/singbox-deploy.conf
 }
@@ -127,8 +127,14 @@ func (o *Orchestrator) steps(cfg Config) []step {
 		{"Config", "generate and validate config.json", o.stepConfig},
 		{"Services", "install and start sing-box.service", o.stepServices},
 		{"Subscriptions", "generate subscription files", o.stepSubscriptions},
-		{"Nginx config", "write managed config, deploy site, and reload", o.stepNginxConfig},
 	}
+	// The hub publishes /s/, and Nginx hands every query-bearing request there
+	// to the subscription service, so the service is up before Nginx is
+	// pointed at it. A spoke publishes no subscription and runs no service.
+	if !cfg.SpokeMode {
+		steps = append(steps, step{"Subscription service", "install and start the dynamic subscription service", o.stepSubscriptionService})
+	}
+	steps = append(steps, step{"Nginx config", "write managed config, deploy site, and reload", o.stepNginxConfig})
 	// On a spoke the agent daemon runs the monitor sampler in-process, so no
 	// standalone monitor unit is installed; the hub still installs one.
 	if cfg.DeployMonitor && !cfg.SpokeMode {
@@ -283,9 +289,14 @@ func (o *Orchestrator) stepPortCheck(ctx context.Context, cfg Config) error {
 // check so reinstalling a running deployment does not fail on ports the old
 // services still hold. Errors are ignored: on a fresh install nothing is
 // running, and stepServices/stepNginxConfig restart them with the new config.
-func (o *Orchestrator) stepStopManaged(_ context.Context, _ Config) error {
+func (o *Orchestrator) stepStopManaged(_ context.Context, cfg Config) error {
 	_ = o.Runner.Run(system.Systemctl("stop", system.SingBoxService))
 	_ = o.Runner.Run(system.Systemctl("stop", "nginx"))
+	// The subscription service holds its loopback port, which the port check
+	// probes on a hub.
+	if !cfg.SpokeMode {
+		_ = o.Runner.Run(system.Systemctl("stop", system.SubscriptionService))
+	}
 	return nil
 }
 
@@ -453,6 +464,10 @@ func (o *Orchestrator) stepSubscriptions(_ context.Context, cfg Config) error {
 	// are folded in afterwards over the overlay (hubctl.RefreshSubscriptions);
 	// on a spoke, these local outputs are what the hub fetches to aggregate.
 	return WriteSubscriptions(o.Layout, cfg)
+}
+
+func (o *Orchestrator) stepSubscriptionService(_ context.Context, _ Config) error {
+	return InstallSubscriptionService(o.Runner, o.Layout, o.SystemdDir, o.DeployBin)
 }
 
 func (o *Orchestrator) stepNginxConfig(_ context.Context, cfg Config) error {

@@ -43,27 +43,36 @@ var (
 	selfUpdateUpgradeSpokes = upgradeSpokeAgentsBeforeHub
 	selfUpdateRestoreSpokes = restoreSpokeAgentsToCurrentHub
 	selfUpdateMonitorActive = func(ctx context.Context) (bool, error) {
-		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(probeCtx, "systemctl", "is-active", system.MonitorService).CombinedOutput()
-		if probeCtx.Err() != nil {
-			return false, probeCtx.Err()
-		}
-		state := strings.ToLower(strings.TrimSpace(string(out)))
-		switch state {
-		case "active", "reloading", "activating":
-			return true, nil
-		case "inactive", "failed", "deactivating", "unknown":
-			return false, nil
-		}
-		if err != nil {
-			return false, fmt.Errorf("systemctl is-active: %w: %s", err, state)
-		}
-		// A successful but unfamiliar state is treated as active so the updated
-		// binary gets one conservative try-restart after it is committed.
-		return true, nil
+		return systemdUnitActive(ctx, system.MonitorService)
+	}
+	selfUpdateSubscriptionActive = func(ctx context.Context) (bool, error) {
+		return systemdUnitActive(ctx, system.SubscriptionService)
 	}
 )
+
+// systemdUnitActive probes whether a unit is running before the binary it
+// executes is replaced. A unit that is not installed reads as inactive.
+func systemdUnitActive(ctx context.Context, unit string) (bool, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(probeCtx, "systemctl", "is-active", unit).CombinedOutput()
+	if probeCtx.Err() != nil {
+		return false, probeCtx.Err()
+	}
+	state := strings.ToLower(strings.TrimSpace(string(out)))
+	switch state {
+	case "active", "reloading", "activating":
+		return true, nil
+	case "inactive", "failed", "deactivating", "unknown":
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("systemctl is-active: %w: %s", err, state)
+	}
+	// A successful but unfamiliar state is treated as active so the updated
+	// binary gets one conservative try-restart after it is committed.
+	return true, nil
+}
 
 type selfUpdateManager struct {
 	phase selfUpdatePhase
@@ -233,6 +242,7 @@ func (sm *selfUpdateManager) backendManager(logs *logWriter) *selfupdate.Manager
 	}
 	if logs != nil {
 		monitorWasActive := false
+		subscriptionWasActive := false
 		serviceRunner := selfUpdateServiceRunner(logs)
 		mgr.Progress = func(e deploy.Event) {
 			ev := e
@@ -249,6 +259,15 @@ func (sm *selfUpdateManager) backendManager(logs *logWriter) *selfupdate.Manager
 			} else {
 				monitorWasActive = active
 			}
+			// The subscription service runs the hub binary too, so it keeps
+			// serving the old code until it is restarted.
+			active, err = selfUpdateSubscriptionActive(ctx)
+			if err != nil {
+				subscriptionWasActive = true
+				fmt.Fprintf(logs, "warning: cannot determine subscription service state; will try to restart it after the update: %v\n", err)
+			} else {
+				subscriptionWasActive = active
+			}
 			return selfUpdateUpgradeSpokes(ctx, candidatePath, targetVersion, logs)
 		}
 		mgr.ReplaceFailed = func(_ context.Context, _ string) error {
@@ -257,14 +276,23 @@ func (sm *selfUpdateManager) backendManager(logs *logWriter) *selfupdate.Manager
 			return selfUpdateRestoreSpokes(rollbackCtx, logs)
 		}
 		mgr.AfterReplace = func(_ context.Context, _ string) error {
-			if !monitorWasActive {
-				return nil
+			var errs []error
+			if subscriptionWasActive {
+				fmt.Fprintln(logs, "restarting the active subscription service with the updated hub binary...")
+				if err := serviceRunner.Run(system.Systemctl("try-restart", system.SubscriptionService)); err != nil {
+					errs = append(errs, fmt.Errorf("try-restart subscription service after self-update: %w", err))
+				}
 			}
-			fmt.Fprintln(logs, "restarting the active monitor service with the updated hub binary...")
-			if err := serviceRunner.Run(system.Systemctl("try-restart", system.MonitorService)); err != nil {
-				return fmt.Errorf("try-restart monitor service after self-update: %w", err)
+			// The restarted monitor is also the first process of the new
+			// binary, so its startup migrations bring the node up to date
+			// without waiting for the operator to relaunch the TUI.
+			if monitorWasActive {
+				fmt.Fprintln(logs, "restarting the active monitor service with the updated hub binary...")
+				if err := serviceRunner.Run(system.Systemctl("try-restart", system.MonitorService)); err != nil {
+					errs = append(errs, fmt.Errorf("try-restart monitor service after self-update: %w", err))
+				}
 			}
-			return nil
+			return errors.Join(errs...)
 		}
 	}
 	return mgr
@@ -467,7 +495,7 @@ func (sm *selfUpdateManager) committedErrorView() string {
 		body += "\n\n" + logs
 	}
 	return body + "\n\n" + summaryInfo.Render(
-		"The new hub binary is installed. Resolve the error above, then exit and relaunch; if monitor activation failed, restart "+system.MonitorService+" manually.",
+		"The new hub binary is installed. Resolve the error above, then exit and relaunch; if a service restart failed, restart "+system.MonitorService+" or "+system.SubscriptionService+" manually.",
 	) + "\n"
 }
 

@@ -13,12 +13,7 @@ server {
     ssl_certificate_key {{ .KeyPath }};
 
     root {{ .WebRoot }};
-{{ if .SubscriptionInSiteBlock }}
-    location /s/ {
-        alias {{ .SubscribeDir }}/;
-        default_type text/plain;
-        charset utf-8;
-    }
+{{ if .SubscriptionInSiteBlock }}{{ template "subscription" . }}
 {{ end }}
 {{ if and .PublicMonitor .EnableMonitor .MonitorSharesSiteBlock }}
 {{ if .EnableMonitorFrontend }}
@@ -51,12 +46,7 @@ server {
     ssl_certificate_key {{ .SubscriptionKeyPath }};
 
     root {{ .WebRoot }};
-
-    location /s/ {
-        alias {{ .SubscribeDir }}/;
-        default_type text/plain;
-        charset utf-8;
-    }
+{{ template "subscription" . }}
 
     location / {
         try_files $uri $uri/ /index.html;
@@ -71,12 +61,7 @@ server {
 
     ssl_certificate {{ .MonitorCertificatePath }};
     ssl_certificate_key {{ .MonitorKeyPath }};
-{{ if .SubscriptionInMonitorBlock }}
-    location /s/ {
-        alias {{ .SubscribeDir }}/;
-        default_type text/plain;
-        charset utf-8;
-    }
+{{ if .SubscriptionInMonitorBlock }}{{ template "subscription" . }}
 {{ end }}
 {{ if .EnableMonitorFrontend }}
     location = / {
@@ -125,3 +110,31 @@ server {
     return 444;
 }
 {{ end }}
+{{- define "subscription" }}
+    # A plain subscription link is a static file. A link with a query string,
+    # such as one asking for Tailscale mode, is answered by the loopback
+    # subscription service, which reads the same file and rewrites it.
+    location /s/ {
+        error_page 418 = @subscription_dynamic;
+        if ($args) {
+            return 418;
+        }
+        alias {{ .SubscribeDir }}/;
+        default_type text/plain;
+        charset utf-8;
+    }
+
+    # Named, so the original URI and query reach the service unchanged. The
+    # query can carry a Tailscale auth key, so these requests are never logged:
+    # upstream errors would otherwise copy the request line into the error log,
+    # and a large response would be spooled to a temporary file. The service
+    # logs its own failures to the journal.
+    location @subscription_dynamic {
+        access_log off;
+        error_log /dev/null crit;
+        proxy_max_temp_file_size 0;
+        proxy_pass http://127.0.0.1:{{ .SubscriptionServicePort }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+{{- end }}

@@ -11,9 +11,13 @@ type Layout struct {
 	FragmentsDir string
 	ConfigJSON   string
 	SubscribeDir string
-	WebRoot      string
-	MonitorDB    string
-	TLSDir       string
+	// SubscribeKeysDir holds, per published subscription token, the key its
+	// Tailscale client links' auth keys are encrypted under. It sits beside
+	// SubscribeDir rather than inside it, because Nginx serves SubscribeDir.
+	SubscribeKeysDir string
+	WebRoot          string
+	MonitorDB        string
+	TLSDir           string
 }
 
 // DefaultLayout returns the production layout rooted at /etc/singbox-deploy.
@@ -25,14 +29,15 @@ func DefaultLayout() Layout {
 // this with a temporary directory; production uses DefaultLayout.
 func LayoutForRoot(root string) Layout {
 	return Layout{
-		Root:         root,
-		StateDir:     root + "/state",
-		SingBoxBin:   root + "/sing-box/sing-box",
-		FragmentsDir: root + "/sing-box/conf/fragments",
-		ConfigJSON:   root + "/sing-box/conf/config.json",
-		SubscribeDir: root + "/subscribe",
-		WebRoot:      root + "/www",
-		MonitorDB:    root + "/monitor/monitor.db",
-		TLSDir:       root + "/tls",
+		Root:             root,
+		StateDir:         root + "/state",
+		SingBoxBin:       root + "/sing-box/sing-box",
+		FragmentsDir:     root + "/sing-box/conf/fragments",
+		ConfigJSON:       root + "/sing-box/conf/config.json",
+		SubscribeDir:     root + "/subscribe",
+		SubscribeKeysDir: root + "/subscribe-keys",
+		WebRoot:          root + "/www",
+		MonitorDB:        root + "/monitor/monitor.db",
+		TLSDir:           root + "/tls",
 	}
 }

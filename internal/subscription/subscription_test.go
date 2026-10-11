@@ -14,6 +14,14 @@ func TestTokenFromSalt(t *testing.T) {
 	}
 }
 
+// The token trims its salt like AuthKeyCipherKey and the dashboard do, so a
+// salt with stray whitespace still yields the link the dashboard builds.
+func TestTokenFromSaltTrimsTheSalt(t *testing.T) {
+	if got, want := TokenFromSalt("  abc \n"), TokenFromSalt("abc"); got != want {
+		t.Fatalf("TokenFromSalt(padded) = %s, want %s", got, want)
+	}
+}
+
 func TestRewriteRemoteNodeName(t *testing.T) {
 	got := RewriteRemoteNodeName("JP-01 Tokyo", "US-vps1")
 	want := "🇺🇸 US-vps1-01 Tokyo"

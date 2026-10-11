@@ -219,7 +219,7 @@ func (um *uninstallManager) confirmView() string {
 	layout := uninstallUILayout()
 	rows := []summaryLine{
 		summaryText("Always remove managed integration points:"),
-		summaryIndentedRow(2, "Services", system.SingBoxService+", "+system.MonitorService),
+		summaryIndentedRow(2, "Services", system.SingBoxService+", "+system.MonitorService+", "+system.SubscriptionService),
 		summaryIndentedRow(2, "ACME renewal", system.CertRenewTimer+" or managed cron entry"),
 		summaryIndentedRow(2, "Nginx config", "/etc/nginx/conf.d/singbox-deploy.conf"),
 		summaryIndentedRow(2, "Unrelated Nginx configs", "kept"),
@@ -283,6 +283,6 @@ func uninstallOptions(layout paths.Layout) []uninstallDataOption {
 		{key: uninstallCertificatesKey, label: "Certificates", path: layout.TLSDir},
 		{key: uninstallMonitorDBKey, label: "Monitor database", path: layout.MonitorDB},
 		{key: uninstallSiteKey, label: "Masquerade site files", path: layout.WebRoot},
-		{key: uninstallSubscriptionsKey, label: "Subscription outputs", path: layout.SubscribeDir},
+		{key: uninstallSubscriptionsKey, label: "Subscription outputs", path: layout.SubscribeDir + " and " + layout.SubscribeKeysDir},
 	}
 }

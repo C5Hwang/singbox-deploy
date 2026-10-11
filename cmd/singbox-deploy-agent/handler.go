@@ -498,7 +498,7 @@ func runSpokeDeployment(configOnly bool, fullInstall, reconfigure func() error) 
 }
 
 func disableLegacyHubServices(runner system.Runner, systemdDir string) {
-	for _, unit := range []string{system.CertRenewTimer, system.CertRenewService, system.MonitorService} {
+	for _, unit := range []string{system.CertRenewTimer, system.CertRenewService, system.MonitorService, system.SubscriptionService} {
 		if _, err := os.Stat(filepath.Join(systemdDir, unit)); err != nil {
 			continue
 		}
@@ -521,6 +521,7 @@ func legacyHubArtifactPaths(layout paths.Layout) []string {
 		"/etc/systemd/system/" + system.CertRenewTimer,
 		"/etc/systemd/system/" + system.CertRenewService,
 		"/etc/systemd/system/" + system.MonitorService,
+		"/etc/systemd/system/" + system.SubscriptionService,
 		filepath.Join(layout.StateDir, "dns_credentials"),
 		filepath.Join(layout.StateDir, "certs"),
 		filepath.Join(layout.StateDir, "acme_account_key"),

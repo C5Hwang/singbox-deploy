@@ -57,6 +57,10 @@ func TestAgentStartupMigratesPersistedSubscriptionTemplate(t *testing.T) {
 	if err != nil || marker != "3" {
 		t.Fatalf("subscription schema marker = %q, %v", marker, err)
 	}
+	// Schema 3 gives every published token its auth key cipher key.
+	if _, err := os.Stat(filepath.Join(layout.SubscribeKeysDir, token)); err != nil {
+		t.Fatalf("migration did not publish the auth key cipher key: %v", err)
+	}
 }
 
 func TestAgentStartupRemovesLegacyACMEEmail(t *testing.T) {

@@ -66,8 +66,9 @@ func (s SubscriptionGroupSpec) PublishesNodes() bool {
 	return s.IncludeLocal || len(s.Sources) > 0
 }
 
-// WriteSubscriptionGroups publishes one set of subscription files per group and
-// then deletes every file whose token no longer belongs to a published group.
+// WriteSubscriptionGroups publishes one set of subscription files per group,
+// each with its auth key cipher key, and then deletes every file and key whose
+// token no longer belongs to a published group.
 // Groups are written before the sweep, so a token shared by two specs (rejected
 // by the registry, but possible in a hand-edited state tree) keeps the last
 // write rather than leaving a hole. A group with nothing to publish is skipped
@@ -86,13 +87,13 @@ func WriteSubscriptionGroups(layout paths.Layout, cfg Config, specs []Subscripti
 		if err != nil {
 			return err
 		}
-		token := SubscriptionToken(spec.Salt)
-		if err := writeSubscriptionFiles(layout, token, out); err != nil {
+		token, err := writeSubscriptionFiles(layout, spec.Salt, out)
+		if err != nil {
 			return err
 		}
 		tokens[token] = struct{}{}
 	}
-	return removeStaleSubscriptionFiles(layout.SubscribeDir, tokens)
+	return removeStaleSubscriptionFiles(layout, tokens)
 }
 
 // buildSubscriptionGroup renders every output format for one group. The group

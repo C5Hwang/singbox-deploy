@@ -72,6 +72,18 @@ func TestValidatePorts(t *testing.T) {
 		}
 	})
 
+	t.Run("monitor service cannot take the subscription service port", func(t *testing.T) {
+		cfg := base()
+		cfg.MonitorPort = DefaultSubscriptionServicePort
+		if err := cfg.ValidatePorts(); err == nil {
+			t.Fatal("monitor service sharing the subscription service port must conflict")
+		}
+		cfg.SpokeMode = true
+		if err := cfg.ValidatePorts(); err != nil {
+			t.Fatalf("a spoke runs no subscription service, got %v", err)
+		}
+	})
+
 	t.Run("spoke ignores unused public web ports", func(t *testing.T) {
 		cfg := base()
 		cfg.SpokeMode = true

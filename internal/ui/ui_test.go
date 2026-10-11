@@ -93,17 +93,25 @@ func (r *selfUpdateRecordingRunner) Run(c system.Command) error {
 
 func withSelfUpdateBackendDeps(t *testing.T, active bool, runner system.Runner) {
 	t.Helper()
+	withSelfUpdateServiceStates(t, active, false, runner)
+}
+
+func withSelfUpdateServiceStates(t *testing.T, monitorActive, subscriptionActive bool, runner system.Runner) {
+	t.Helper()
 	oldActive := selfUpdateMonitorActive
+	oldSubscriptionActive := selfUpdateSubscriptionActive
 	oldRunner := selfUpdateServiceRunner
 	oldUpgrade := selfUpdateUpgradeSpokes
 	oldRestore := selfUpdateRestoreSpokes
 	t.Cleanup(func() {
 		selfUpdateMonitorActive = oldActive
+		selfUpdateSubscriptionActive = oldSubscriptionActive
 		selfUpdateServiceRunner = oldRunner
 		selfUpdateUpgradeSpokes = oldUpgrade
 		selfUpdateRestoreSpokes = oldRestore
 	})
-	selfUpdateMonitorActive = func(context.Context) (bool, error) { return active, nil }
+	selfUpdateMonitorActive = func(context.Context) (bool, error) { return monitorActive, nil }
+	selfUpdateSubscriptionActive = func(context.Context) (bool, error) { return subscriptionActive, nil }
 	selfUpdateServiceRunner = func(*logWriter) system.Runner { return runner }
 	selfUpdateUpgradeSpokes = func(context.Context, string, string, *logWriter) error { return nil }
 	selfUpdateRestoreSpokes = func(context.Context, *logWriter) error { return nil }
@@ -141,6 +149,44 @@ func TestSelfUpdateLeavesPreviouslyInactiveMonitorStopped(t *testing.T) {
 	}
 	if len(runner.commands) != 0 {
 		t.Fatalf("inactive monitor service was mutated: %v", runner.commands)
+	}
+}
+
+// The subscription service executes the hub binary as well, so a running one
+// is restarted onto the new binary alongside the monitor; one that is not
+// running (or not installed) is left alone.
+func TestSelfUpdateTryRestartsPreviouslyActiveSubscriptionService(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		monitorActive, subscription bool
+		want                        []string
+	}{
+		{name: "both active", monitorActive: true, subscription: true, want: []string{
+			"systemctl try-restart " + system.SubscriptionService,
+			"systemctl try-restart " + system.MonitorService,
+		}},
+		{name: "subscription only", subscription: true, want: []string{
+			"systemctl try-restart " + system.SubscriptionService,
+		}},
+		{name: "subscription inactive", monitorActive: true, want: []string{
+			"systemctl try-restart " + system.MonitorService,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &selfUpdateRecordingRunner{}
+			withSelfUpdateServiceStates(t, tc.monitorActive, tc.subscription, runner)
+			logs := &logWriter{ch: make(chan runMsg, 16)}
+			mgr := (&selfUpdateManager{host: supportedTestHost(), currentVersion: "v1.0.0"}).backendManager(logs)
+			if err := mgr.BeforeReplace(context.Background(), "/tmp/candidate", "v2.0.0"); err != nil {
+				t.Fatalf("BeforeReplace: %v", err)
+			}
+			if err := mgr.AfterReplace(context.Background(), "v2.0.0"); err != nil {
+				t.Fatalf("AfterReplace: %v", err)
+			}
+			if strings.Join(runner.commands, "\n") != strings.Join(tc.want, "\n") {
+				t.Fatalf("service activation commands = %v, want %v", runner.commands, tc.want)
+			}
+		})
 	}
 }
 

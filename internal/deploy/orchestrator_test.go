@@ -175,8 +175,8 @@ func TestOrchestratorRunsFullFlow(t *testing.T) {
 			t.Fatalf("step %q failed: %v", e.Label, e.Err)
 		}
 	}
-	if okCount != 14 {
-		t.Fatalf("expected 14 ok steps, got %d", okCount)
+	if okCount != 15 {
+		t.Fatalf("expected 15 ok steps, got %d", okCount)
 	}
 
 	// Key commands were issued.

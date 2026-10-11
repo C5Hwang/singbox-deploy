@@ -28,6 +28,7 @@ func nginxTemplateData(overrides map[string]any) map[string]any {
 
 		"SubscriptionDomain":          "example.com",
 		"SubscriptionCertificatePath": "/etc/singbox-deploy/tls/example.com.crt",
+		"SubscriptionServicePort":     19092,
 		"SubscriptionKeyPath":         "/etc/singbox-deploy/tls/example.com.key",
 		"SubscriptionInSiteBlock":     false,
 		"SubscriptionInMonitorBlock":  false,

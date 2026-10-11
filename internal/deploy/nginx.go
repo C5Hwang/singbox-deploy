@@ -119,6 +119,9 @@ func WriteManagedNginxConfig(layout paths.Layout, cfg Config, nginxConfPath stri
 		"SubscriptionRejectBlock":     subscriptionRejectBlock,
 		"MonitorRejectBlock":          monitorRejectBlock,
 		"PublicMonitor":               !cfg.SpokeMode,
+		// Wherever /s/ lands, a request carrying a query string is proxied to
+		// the loopback subscription service instead of served from disk.
+		"SubscriptionServicePort": DefaultSubscriptionServicePort,
 	})
 	if err != nil {
 		return err

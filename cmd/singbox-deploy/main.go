@@ -13,6 +13,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/relay"
+	"github.com/C5Hwang/singbox-deploy/internal/system"
 	"github.com/C5Hwang/singbox-deploy/internal/ui"
 )
 
@@ -48,10 +49,25 @@ func main() {
 			// monitor service from starting.
 			fmt.Fprintln(os.Stderr, "warning: migrate subscriptions:", err)
 		}
+		serviceCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		_, err = migrateSubscriptionService(serviceCtx, paths.DefaultLayout(), system.NewExecRunnerContext(serviceCtx, nil))
+		cancel()
+		if err != nil {
+			// Plain subscription links keep working from Nginx's static files;
+			// only Tailscale mode waits for the next process to retry.
+			fmt.Fprintln(os.Stderr, "warning: install subscription service:", err)
+		}
 	}
 	if len(os.Args) > 1 && os.Args[1] == "monitor" {
 		if err := runMonitor(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "monitor:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "subscription" {
+		if err := runSubscription(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "subscription:", err)
 			os.Exit(1)
 		}
 		return

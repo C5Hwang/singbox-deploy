@@ -16,6 +16,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/monitor"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
+	"github.com/C5Hwang/singbox-deploy/internal/state"
 	"github.com/C5Hwang/singbox-deploy/internal/subscription"
 )
 
@@ -381,18 +382,24 @@ func writeSubscriptionOutputs(layout paths.Layout, cfg Config, out subscriptionO
 	if err := ensurePublicLayoutRoot(layout); err != nil {
 		return err
 	}
-	token := SubscriptionToken(cfg.Salt)
-	if err := writeSubscriptionFiles(layout, token, out); err != nil {
+	token, err := writeSubscriptionFiles(layout, cfg.Salt, out)
+	if err != nil {
 		return err
 	}
-	if err := removeStaleSubscriptionFiles(layout.SubscribeDir, map[string]struct{}{token: {}}); err != nil {
+	if err := removeStaleSubscriptionFiles(layout, map[string]struct{}{token: {}}); err != nil {
 		return err
 	}
 	return writeStateFile(layout.StateDir, "subscribe_salt", cfg.Salt+"\n")
 }
 
-// writeSubscriptionFiles publishes one token's file in every format directory.
-func writeSubscriptionFiles(layout paths.Layout, token string, out subscriptionOutputs) error {
+// writeSubscriptionFiles publishes one file per format directory, named after
+// the salt's token, and returns the token. The token's auth key cipher key goes first,
+// so a published profile always has the key its Tailscale client links need.
+func writeSubscriptionFiles(layout paths.Layout, salt string, out subscriptionOutputs) (string, error) {
+	token := SubscriptionToken(salt)
+	if err := writeAuthKeyCipherKey(layout, salt, token); err != nil {
+		return "", err
+	}
 	pathsByDir := map[string]string{
 		"default":           out.DefaultBase64,
 		"clashMeta":         out.ClashFragment,
@@ -403,38 +410,86 @@ func writeSubscriptionFiles(layout paths.Layout, token string, out subscriptionO
 	}
 	for dir, body := range pathsByDir {
 		if err := WriteFile(filepath.Join(layout.SubscribeDir, dir, token), []byte(body), 0o644); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	return token, nil
 }
 
-// removeStaleSubscriptionFiles deletes every published file whose token is no
-// longer live. The hub publishes one token per subscription group, so the set
-// is what keeps the other groups' files from being swept away.
-func removeStaleSubscriptionFiles(subscribeDir string, tokens map[string]struct{}) error {
+// writeAuthKeyCipherKey publishes the key a token's Tailscale client links are
+// encrypted under, for the loopback subscription service (which never sees a
+// salt). It is world-readable like the subscription files, which already hold
+// every proxy credential; what it protects against is a link that outlives
+// its subscription, and the stale sweep deletes it with the subscription.
+func writeAuthKeyCipherKey(layout paths.Layout, salt, token string) error {
+	if err := os.MkdirAll(layout.SubscribeKeysDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.Chmod(layout.SubscribeKeysDir, 0o755); err != nil {
+		return err
+	}
+	return state.WriteFileAtomic(filepath.Join(layout.SubscribeKeysDir, token), subscription.AuthKeyCipherKeyFile(salt), 0o644)
+}
+
+// removeStaleSubscriptionFiles deletes every published file, and then every
+// auth key cipher key, whose token is no longer live. The hub publishes one
+// token per subscription group, so the set is what keeps the other groups'
+// files from being swept away.
+func removeStaleSubscriptionFiles(layout paths.Layout, tokens map[string]struct{}) error {
+	subscribeDir := layout.SubscribeDir
 	for _, dir := range subscriptionFormatDirs {
-		entries, err := os.ReadDir(filepath.Join(subscribeDir, dir))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
+		if err := removeStaleTokenFiles(filepath.Join(subscribeDir, dir), tokens); err != nil {
 			return err
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			if _, live := tokens[entry.Name()]; live {
-				continue
-			}
-			if err := os.Remove(filepath.Join(subscribeDir, dir, entry.Name())); err != nil && !os.IsNotExist(err) {
-				return err
-			}
 		}
 	}
 	for _, legacy := range []string{"sing-box", "sing-boxProfiles"} {
 		if err := os.RemoveAll(filepath.Join(subscribeDir, legacy)); err != nil {
+			return err
+		}
+	}
+	// Last, so a profile never outlives its key file. A destroyed
+	// subscription leaves no key behind, and with it no way to open the
+	// auth key of a link that is still around.
+	return removeStaleTokenFiles(layout.SubscribeKeysDir, tokens)
+}
+
+// staleTempFileAge is how old a temp sibling left by an atomic write must be
+// before the sweep treats it as a crash leftover rather than another
+// process's write in progress.
+const staleTempFileAge = time.Minute
+
+// removeStaleTokenFiles deletes every file in dir not named after a live
+// token. A missing dir has nothing to delete. A recent temp sibling is
+// another process's atomic write still in flight (two refreshes can overlap),
+// so it is left for that write's rename; an old one is a crash leftover.
+func removeStaleTokenFiles(dir string, tokens map[string]struct{}) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if _, live := tokens[entry.Name()]; live {
+			continue
+		}
+		if strings.Contains(entry.Name(), ".tmp-") {
+			info, err := entry.Info()
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if time.Since(info.ModTime()) < staleTempFileAge {
+				continue
+			}
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}

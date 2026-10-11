@@ -18,6 +18,13 @@ are managed from the hub's terminal UI.
   distributes them to the spokes.
 - Subscriptions aggregate every node in the fleet, served in share-link,
   Clash Meta, sing-box, and Surge formats.
+- Tailscale mode for the full profiles: append `?tailscale=server` to keep
+  tailnet traffic and MagicDNS out of the proxy alongside the official
+  Tailscale app, or `?tailscale=client&hostname=<name>&authkey=<encrypted>` to
+  have the proxy client join the tailnet itself. The link carries the auth key
+  encrypted with a key derived from the subscription's salt (the dashboard
+  generates it), so once that subscription is deleted or re-salted its old
+  links no longer reveal the auth key.
 - Supports node-to-node relaying, forwarding traffic for one node through
   another over a lower-latency ingress path.
 - A web dashboard watches the whole fleet: resource usage and per-node quotas,

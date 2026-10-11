@@ -37,6 +37,7 @@ func TestCandidateInspectionAndAgentExportSkipHubMigration(t *testing.T) {
 		{args: []string{"singbox-deploy", "cert", "renew"}, want: true},
 		{args: []string{"singbox-deploy", "--version"}, want: false},
 		{args: []string{"singbox-deploy", "agent", "export", "--arch", "amd64"}, want: false},
+		{args: []string{"singbox-deploy", "subscription", "serve"}, want: false},
 	}
 	for _, tt := range tests {
 		if got := shouldMigrateHubSubscriptions(tt.args); got != tt.want {

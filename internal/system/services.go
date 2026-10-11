@@ -6,6 +6,9 @@ const (
 	MonitorService   = "singbox-deploy-monitor.service"
 	CertRenewService = "singbox-deploy-cert-renew.service"
 	CertRenewTimer   = "singbox-deploy-cert-renew.timer"
+	// SubscriptionService answers the /s/ requests Nginx cannot serve as
+	// static files: those carrying a query string, such as Tailscale mode.
+	SubscriptionService = "singbox-deploy-subscription.service"
 	// RelayService reinstalls the relay forwarding ruleset after a reboot.
 	// nftables rules do not survive one, and the node it fronts keeps
 	// publishing this relay's address in the meantime.

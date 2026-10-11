@@ -3,14 +3,29 @@ package main
 import (
 	"context"
 
+	"github.com/C5Hwang/singbox-deploy/internal/deploy"
 	"github.com/C5Hwang/singbox-deploy/internal/hubctl"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/submigration"
+	"github.com/C5Hwang/singbox-deploy/internal/system"
 )
 
 func migrateHubSubscriptions(ctx context.Context, layout paths.Layout, expectedVersion string) (bool, error) {
 	return submigration.EnsureCurrent(ctx, layout, func(ctx context.Context) error {
 		return (&hubctl.Controller{Layout: layout, ExpectedVersion: expectedVersion}).RefreshSubscriptions(ctx)
+	})
+}
+
+// migrateSubscriptionService gives a node deployed before the dynamic
+// subscription service its unit and the Nginx routing to it. It compares
+// against what is on disk and what systemd reports instead of keeping a
+// marker, so a node that is already current costs a couple of file reads and
+// two systemctl probes, and one left half-done by a failed attempt is
+// finished by the next process.
+func migrateSubscriptionService(ctx context.Context, layout paths.Layout, runner system.Runner) (bool, error) {
+	return deploy.EnsureSubscriptionService(ctx, deploy.SubscriptionServiceMigration{
+		Runner: runner,
+		Layout: layout,
 	})
 }
 
@@ -34,7 +49,9 @@ func shouldMigrateHubSubscriptions(args []string) bool {
 	// "relay" runs from a boot-time unit and must reinstall the forwarding
 	// rules immediately; the subscription migration reaches the network and
 	// would hold that up for as long as its timeout.
-	case "--version", "agent", "relay":
+	// "subscription" serves public requests from a sandbox that can write
+	// nothing, and is itself what the subscription-service migration starts.
+	case "--version", "agent", "relay", "subscription":
 		return false
 	default:
 		return true

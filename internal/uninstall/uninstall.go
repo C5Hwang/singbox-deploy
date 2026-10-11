@@ -122,7 +122,7 @@ func (o Options) stepRelay(ctx context.Context) error {
 }
 
 func (o Options) stepStopServices(context.Context) error {
-	for _, unit := range []string{system.CertRenewTimer, system.MonitorService, system.SingBoxService} {
+	for _, unit := range []string{system.CertRenewTimer, system.MonitorService, system.SubscriptionService, system.SingBoxService} {
 		if !fileExists(filepath.Join(o.SystemdDir, unit)) {
 			continue
 		}
@@ -142,7 +142,7 @@ func (o Options) stepStopServices(context.Context) error {
 
 func (o Options) stepSystemdUnits(context.Context) error {
 	removed := false
-	for _, unit := range []string{system.SingBoxService, system.MonitorService, system.CertRenewService, system.CertRenewTimer} {
+	for _, unit := range []string{system.SingBoxService, system.MonitorService, system.SubscriptionService, system.CertRenewService, system.CertRenewTimer} {
 		ok, err := removeFileIfExists(filepath.Join(o.SystemdDir, unit))
 		if err != nil {
 			return err
@@ -213,8 +213,12 @@ func (o Options) stepSelectedData(context.Context) error {
 		}
 	}
 	if o.DeleteSubscriptions {
-		if err := removeManagedDir(root, o.Layout.SubscribeDir); err != nil {
-			return err
+		// The keys that open the subscriptions' Tailscale client links go
+		// with them.
+		for _, dir := range []string{o.Layout.SubscribeDir, o.Layout.SubscribeKeysDir} {
+			if err := removeManagedDir(root, dir); err != nil {
+				return err
+			}
 		}
 	}
 	return removeEmptyLayoutRoot(o.Layout.Root)

@@ -30,6 +30,12 @@ const (
 	DefaultResetHour              = 0
 	DefaultMonitorAlias           = "Local Server"
 	DefaultMonitorIntervalSeconds = 60
+
+	// DefaultSubscriptionServicePort is the loopback port of the dynamic
+	// subscription service, which Nginx hands every /s/ request that carries a
+	// query string. It is not configurable: Nginx and the unit both take it
+	// from here.
+	DefaultSubscriptionServicePort = 19092
 )
 
 // Credentials holds every generated secret for the single user.
@@ -306,6 +312,9 @@ func (c Config) portChecks() []system.Port {
 	if c.DeployMonitor {
 		checks = append(checks, system.Port{Number: c.MonitorPort, Proto: "tcp", Label: "monitor service", Public: false})
 	}
+	if !c.SpokeMode {
+		checks = append(checks, system.Port{Number: DefaultSubscriptionServicePort, Proto: "tcp", Label: subscriptionServicePortLabel, Public: false})
+	}
 	return checks
 }
 
@@ -332,6 +341,9 @@ func (c Config) ValidatePorts() error {
 	}
 	if !c.SpokeMode {
 		if err := claim(c.SubscribePort, "subscription", true); err != nil {
+			return err
+		}
+		if err := claim(DefaultSubscriptionServicePort, subscriptionServicePortLabel, false); err != nil {
 			return err
 		}
 	}
