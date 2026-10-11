@@ -3,37 +3,22 @@
 `singbox-deploy` is a Go tool for deploying and managing
 [sing-box](https://github.com/SagerNet/sing-box) on Linux.
 
-On a single server it installs sing-box, configures Nginx, obtains Let's Encrypt
-certificates, and generates subscription files. Across multiple servers it runs
-as a hub: additional servers join as spokes over a private WireGuard overlay and
-are managed from the hub's terminal UI.
+It sets up sing-box, Nginx, certificates, and subscriptions on a single server,
+and scales to a fleet managed from one hub.
 
 ## Core Features
 
-- Hub-and-spoke topology. The TUI runs on the hub, which handles adding,
-  configuring, monitoring, and removing spokes.
-- Spokes are bootstrapped once over SSH; control traffic then moves to the
-  WireGuard overlay.
-- The hub issues and renews Let's Encrypt certificates over ACME DNS-01 and
-  distributes them to the spokes.
-- Subscriptions aggregate every node in the fleet, served in share-link,
-  Clash Meta, sing-box, and Surge formats.
-- Tailscale mode for the full profiles: append `?tailscale=server` to keep
-  tailnet traffic and MagicDNS out of the proxy alongside the official
-  Tailscale app, or `?tailscale=client&hostname=<name>&authkey=<encrypted>` to
-  have the proxy client join the tailnet itself. The link carries the auth key
-  encrypted with a key derived from the subscription's salt (the dashboard
-  generates it), so once that subscription is deleted or re-salted its old
-  links no longer reveal the auth key.
-- Supports node-to-node relaying, forwarding traffic for one node through
-  another over a lower-latency ingress path.
-- A web dashboard watches the whole fleet: resource usage and per-node quotas,
-  per-client-IP traffic rankings, and latency to Chinese carriers. It also
-  builds subscription links, including Tailscale mode, from a domain and salt.
-- Monthly traffic quotas per node, with temporary traffic packages that top
-  a node up until the next reset.
-- Nginx serves a masquerade site, chosen from bundled
-  [HTML5 UP](https://html5up.net) templates.
+- Hub-and-spoke management: the hub's TUI adds and manages spokes over a
+  private WireGuard overlay.
+- Centralized Let's Encrypt certificates, issued on the hub and distributed
+  to spokes.
+- Fleet-wide subscriptions in share-link, Clash Meta, sing-box, and Surge
+  formats, with an optional Tailscale mode.
+- Node-to-node relaying over lower-latency ingress paths.
+- Web dashboard for fleet monitoring and subscription link generation.
+- Monthly traffic quotas per node, with temporary top-up packages.
+- Nginx masquerade site from bundled [HTML5 UP](https://html5up.net)
+  templates.
 
 ## Supported Protocols
 
@@ -48,20 +33,15 @@ are managed from the hub's terminal UI.
 curl -fsSL https://github.com/C5Hwang/singbox-deploy/releases/latest/download/install.sh | sudo bash
 ```
 
-To install a specific release, set `SINGBOX_DEPLOY_VERSION` to its tag:
+This installs the binary to `/usr/bin/singbox-deploy`. Run
+`sudo singbox-deploy` to start the interactive setup.
+
+To install a specific release (v0.2.3 or later), set `SINGBOX_DEPLOY_VERSION`:
 
 ```bash
 curl -fsSL https://github.com/C5Hwang/singbox-deploy/releases/latest/download/install.sh | \
   sudo env SINGBOX_DEPLOY_VERSION=v0.3.0 bash
 ```
-
-Each installer is pinned to the release it ships with; setting
-`SINGBOX_DEPLOY_VERSION` to any `vMAJOR.MINOR.PATCH` tag overrides that. The tag
-must be v0.2.3 or later, as earlier releases ship no `SHA256SUMS`.
-
-The installer detects your platform and downloads the corresponding release
-binary to `/usr/bin/singbox-deploy`. Then run `sudo singbox-deploy` to start
-the interactive setup.
 
 ## Build From Source
 
@@ -74,7 +54,7 @@ directory before the hub is built.
 
 ### Requirements
 
-- Go 1.25 or newer.
+- Go 1.26 or newer.
 - Node.js 22 or newer.
 - pnpm 9 or newer.
 
