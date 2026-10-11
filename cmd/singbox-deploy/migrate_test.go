@@ -54,7 +54,7 @@ func TestHubStartupMigratesPersistedSubscriptionTemplate(t *testing.T) {
 	}
 	assertDomesticDNSUsesNativeDirectDialer(t, body)
 	marker, err := store.ReadValue("subscription_schema_version", true)
-	if err != nil || marker != "2" {
+	if err != nil || marker != "3" {
 		t.Fatalf("subscription schema marker = %q, %v", marker, err)
 	}
 }

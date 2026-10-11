@@ -41,7 +41,7 @@ func TestEnsureCurrentRegeneratesOnceAndMarksSchema(t *testing.T) {
 		t.Fatalf("regenerator calls = %d, want 1", calls)
 	}
 	marker, err := state.NewStore(layout.StateDir).ReadValue(markerName, true)
-	if err != nil || marker != "2" {
+	if err != nil || marker != "3" {
 		t.Fatalf("schema marker = %q, %v", marker, err)
 	}
 }
@@ -64,7 +64,7 @@ func TestEnsureCurrentMigratesPreviousSchema(t *testing.T) {
 		t.Fatalf("regenerator calls = %d, want 1", calls)
 	}
 	marker, err := store.ReadValue(markerName, true)
-	if err != nil || marker != "2" {
+	if err != nil || marker != "3" {
 		t.Fatalf("schema marker = %q, %v", marker, err)
 	}
 }

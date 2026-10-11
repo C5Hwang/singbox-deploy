@@ -15,7 +15,7 @@ encrypted-dns-server = https://doh.pub/dns-query, https://dns.alidns.com/dns-que
 # > geoip
 geoip-maxmind-url = https://cdn.jsdelivr.net/gh/Hackl0us/GeoIP2-CN@release/Country.mmdb
 # > skip proxy
-skip-proxy = 127.0.0.1, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 100.64.0.0/10, localhost, *.local, *.crashlytics.com
+skip-proxy = 127.0.0.1, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, localhost, *.local
 
 [Proxy]
 DIRECT = direct
@@ -41,11 +41,7 @@ Kobo = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{
 Apple = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
 Google = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 Microsoft = select, DIRECT, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
-Ponte = select, 🚀 手动切换, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}, DIRECT
 漏网之鱼 = select, 🚀 手动切换, DIRECT, ♻️ 自动选择{{- range .Countries }}, {{ .Tag }}{{- end }}
-
-[Ponte]
-client-proxy-name = Ponte
 
 [Rule]
 RULE-SET,https://fastly.jsdelivr.net/gh/QuixoticHeart/rule-set@ruleset/surge/private.list,DIRECT
