@@ -54,7 +54,7 @@ directory before the hub is built.
 
 ### Requirements
 
-- Go 1.26 or newer.
+- Go 1.26.10 or newer.
 - Node.js 22 or newer.
 - pnpm 9 or newer.
 

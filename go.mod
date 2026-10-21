@@ -2,6 +2,8 @@ module github.com/C5Hwang/singbox-deploy
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
