@@ -497,7 +497,7 @@ func (m *Monitor) latencySnapshot(since int64) (LatencySnapshot, error) {
 	if err != nil {
 		return LatencySnapshot{}, err
 	}
-	return LatencySnapshot{Targets: m.pingCollector.Targets(), Latest: latest}, nil
+	return LatencySnapshot{Targets: m.pingCollector.ReportedTargets(), Latest: latest}, nil
 }
 
 // topIPTrafficEntries bounds one response, counted in stored keys rather than

@@ -149,6 +149,10 @@ export interface PingTarget {
   address: string;
   kind?: string;
   name?: string;
+  // problem says why the latest round could not probe this target at all —
+  // its name resolved only to a private address, say. Such a target has no
+  // fresh reading, and whatever older one it has no longer describes it.
+  problem?: string;
 }
 
 export function isRelayTarget(target: PingTarget): boolean {

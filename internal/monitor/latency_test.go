@@ -3,9 +3,11 @@ package monitor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,8 +23,8 @@ func TestCollectDropsFailedProbes(t *testing.T) {
 			{ID: "ok", Address: "192.0.2.1"},
 			{ID: "broken", Address: "192.0.2.2"},
 		},
-		probe: func(_ context.Context, address string) (PingSample, error) {
-			if address == "192.0.2.2" {
+		probe: func(_ context.Context, target PingTarget) (PingSample, error) {
+			if target.Address == "192.0.2.2" {
 				return PingSample{}, context.DeadlineExceeded
 			}
 			return PingSample{AvgMS: &avg, LossPct: 0}, nil
@@ -45,7 +47,7 @@ func TestCollectSamplesRuntimeTargetsToo(t *testing.T) {
 	c := &PingCollector{
 		targets: []PingTarget{{ID: "telecom-beijing", Address: "192.0.2.1:80"}},
 		extra:   func() []PingTarget { return extra },
-		probe: func(context.Context, string) (PingSample, error) {
+		probe: func(context.Context, PingTarget) (PingSample, error) {
 			return PingSample{AvgMS: &avg}, nil
 		},
 	}
@@ -257,7 +259,7 @@ func TestTCPPingMeasuresAnAcceptingListener(t *testing.T) {
 		}
 	}()
 
-	sample, err := tcpPing(context.Background(), listener.Addr().String())
+	sample, err := tcpPing(context.Background(), listener.Addr().String(), false)
 	if err != nil {
 		t.Fatalf("tcpPing: %v", err)
 	}
@@ -279,7 +281,7 @@ func TestTCPPingReportsFullLossOnARefusedPort(t *testing.T) {
 	address := listener.Addr().String()
 	listener.Close()
 
-	sample, err := tcpPing(context.Background(), address)
+	sample, err := tcpPing(context.Background(), address, false)
 	if err != nil {
 		t.Fatalf("tcpPing: %v", err)
 	}
@@ -295,7 +297,7 @@ func TestTCPPingReportsFullLossOnARefusedPort(t *testing.T) {
 // it as loss would blame the route for a configuration mistake. Collect drops
 // errored probes, so the target keeps its previous history instead.
 func TestTCPPingErrorsOnAnUnusableAddress(t *testing.T) {
-	if _, err := tcpPing(context.Background(), "missing-port.example.com"); err == nil {
+	if _, err := tcpPing(context.Background(), "missing-port.example.com", false); err == nil {
 		t.Fatal("tcpPing accepted an address with no port")
 	}
 }
@@ -307,5 +309,105 @@ func TestPingSampleFromCountsLossAgainstAttempts(t *testing.T) {
 	}
 	if sample.AvgMS == nil || *sample.AvgMS != 100 {
 		t.Fatalf("AvgMS = %v, want the average over the answered connects", sample.AvgMS)
+	}
+}
+
+// A carrier name that resolves into private space is refused before any
+// connect, so a bad catalogue record is not recorded as a dead route.
+func TestTCPPingRefusesANonPublicAddressWhenAsked(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	_, err = tcpPing(context.Background(), listener.Addr().String(), true)
+	var unroutable *UnroutableTargetError
+	if !errors.As(err, &unroutable) {
+		t.Fatalf("err = %v, want an UnroutableTargetError", err)
+	}
+	if !strings.Contains(unroutable.Error(), "127.0.0.1") {
+		t.Fatalf("message = %q, want the resolved address named", unroutable.Error())
+	}
+}
+
+func TestIsPublicAddr(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"122.13.24.8":     true,
+		"10.225.67.107":   false,
+		"172.16.0.1":      false,
+		"192.168.1.1":     false,
+		"127.0.0.1":       false,
+		"169.254.1.1":     false,
+		"0.0.0.0":         false,
+		"224.0.0.1":       false,
+		"::ffff:10.0.0.1": false,
+	} {
+		if got := isPublicAddr(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("isPublicAddr(%s) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+// Only carrier probes are held to a public address: a landing node may sit on
+// the operator's private network.
+func TestProbeTargetExemptsRelayTargets(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+
+	address := listener.Addr().String()
+	if _, err := probeTarget(context.Background(), PingTarget{ID: "c", Address: address}); err == nil {
+		t.Fatal("carrier probe accepted a loopback address")
+	}
+	sample, err := probeTarget(context.Background(), PingTarget{ID: "relay:aa", Kind: "relay", Address: address})
+	if err != nil || sample.AvgMS == nil {
+		t.Fatalf("relay probe = %#v, %v; want a measured sample", sample, err)
+	}
+}
+
+// A refused target leaves no sample but is reported with its reason, and the
+// reason clears once a round probes it again.
+func TestCollectReportsUnroutableTargets(t *testing.T) {
+	avg := 3.0
+	broken := true
+	c := &PingCollector{
+		targets: []PingTarget{
+			{ID: "ok", Address: "192.0.2.1:80"},
+			{ID: "bad", Address: "bad.example:80"},
+		},
+		probe: func(_ context.Context, target PingTarget) (PingSample, error) {
+			if target.ID == "bad" && broken {
+				return PingSample{}, &UnroutableTargetError{Host: "bad.example", Addrs: []netip.Addr{netip.MustParseAddr("10.0.0.1")}}
+			}
+			return PingSample{AvgMS: &avg}, nil
+		},
+	}
+	if samples := c.Collect(context.Background()); len(samples) != 1 {
+		t.Fatalf("samples = %#v, want only the routable target", samples)
+	}
+	reported := c.ReportedTargets()
+	if reported[0].Problem != "" || !strings.Contains(reported[1].Problem, "10.0.0.1") {
+		t.Fatalf("reported = %#v", reported)
+	}
+	if c.targets[1].Problem != "" {
+		t.Fatal("ReportedTargets wrote into the fixed list")
+	}
+
+	broken = false
+	c.Collect(context.Background())
+	if problem := c.ReportedTargets()[1].Problem; problem != "" {
+		t.Fatalf("problem = %q after a clean round, want it cleared", problem)
 	}
 }

@@ -90,8 +90,18 @@ onUnmounted(() => {
 function carrierLatest(node: NodeLatency): PingLatestPoint[] {
   const snapshot = node.snapshot;
   if (!snapshot) return [];
-  const ids = new Set(carrierTargets(snapshot.targets).map((t) => t.id));
+  // A target the node refused to probe keeps whatever reading it had before
+  // it broke; that reading is left out rather than counted as a dead route.
+  const ids = new Set(
+    carrierTargets(snapshot.targets)
+      .filter((t) => !t.problem)
+      .map((t) => t.id),
+  );
   return snapshot.latest.filter((p) => ids.has(p.target));
+}
+
+function unprobedCount(node: NodeLatency): number {
+  return node.snapshot ? carrierTargets(node.snapshot.targets).filter((t) => t.problem).length : 0;
 }
 
 // The card's headline is the node's median reachable probe: a mean would let
@@ -136,8 +146,10 @@ function statusLabel(node: NodeLatency): string {
   const answering = latest.filter((p) => p.lossPct < 100).length;
   if (node.pending) return "waiting for this node";
   if (node.error) return "unavailable";
-  if (latest.length === 0) return "no data";
-  return `${answering} of ${latest.length} probes answering`;
+  const unprobed = unprobedCount(node);
+  const skipped = unprobed > 0 ? ` · ${unprobed} with a bad address` : "";
+  if (latest.length === 0) return unprobed > 0 ? `no data${skipped}` : "no data";
+  return `${answering} of ${latest.length} probes answering${skipped}`;
 }
 </script>
 

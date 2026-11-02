@@ -30,8 +30,12 @@ function unique(pick: (t: PingTarget) => string): string[] {
   return seen;
 }
 
+function targetAt(carrier: string, city: string): PingTarget | undefined {
+  return targets.value.find((t) => t.carrier === carrier && t.city === city);
+}
+
 function latestAt(carrier: string, city: string): PingLatestPoint | undefined {
-  const target = targets.value.find((t) => t.carrier === carrier && t.city === city);
+  const target = targetAt(carrier, city);
   return target ? props.snapshot.latest.find((p) => p.target === target.id) : undefined;
 }
 
@@ -44,6 +48,24 @@ interface Cell {
 }
 
 function cell(carrier: string, city: string): Cell {
+  // A target the node refused to probe is a broken probe, not a dead route, so
+  // it is neither drawn red nor left showing a reading from before it broke.
+  const problem = targetAt(carrier, city)?.problem;
+  if (problem) {
+    return {
+      key: `${carrier}-${city}`,
+      text: "bad ip",
+      lossText: "—",
+      style: {
+        "--fill": LATENCY_MISSING.fill,
+        "--ink": LATENCY_MISSING.ink,
+        "--loss": "0%",
+        "--loss-color": LOSS_WARNING,
+        "--loss-ink": LOSS_CLEAR,
+      },
+      title: `${carrier} · ${city} — not probed: ${problem}`,
+    };
+  }
   const latest = latestAt(carrier, city);
   const ms = latest?.avgMs ?? null;
   const loss = latest ? latest.lossPct : null;

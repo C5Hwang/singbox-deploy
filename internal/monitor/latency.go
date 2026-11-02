@@ -2,7 +2,11 @@ package monitor
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +53,10 @@ type PingTarget struct {
 	Kind string `json:"kind,omitempty"`
 	// Name labels a runtime target, which has no carrier or city to name it by.
 	Name string `json:"name,omitempty"`
+	// Problem says why the latest round could not probe the target at all, so
+	// the dashboard can name a broken probe instead of drawing it as a dead
+	// route. It is only ever set on the copies ReportedTargets hands out.
+	Problem string `json:"problem,omitempty"`
 }
 
 // DefaultPingTargets is the probe list: three carriers by three cities.
@@ -109,14 +117,26 @@ type PingCollector struct {
 	// than on the next restart. nil means the fixed list is all there is.
 	extra func() []PingTarget
 	// probe is the test seam. Production opens real connections.
-	probe func(context.Context, string) (PingSample, error)
+	probe func(context.Context, PingTarget) (PingSample, error)
+
+	// problems holds, per target ID, why the latest round refused to probe it.
+	mu       sync.Mutex
+	problems map[string]string
 }
 
 // NewPingCollector returns a collector for the default targets. Probing is a TCP
 // connect from inside this process, so it needs no external utility and no raw
 // socket and is never nil.
 func NewPingCollector() *PingCollector {
-	return &PingCollector{targets: DefaultPingTargets, probe: tcpPing}
+	return &PingCollector{targets: DefaultPingTargets, probe: probeTarget}
+}
+
+// probeTarget is the production probe. Only the carrier probes are held to a
+// public address: they measure a route across the internet, so a catalogue
+// name that resolves into private space can only ever time out. A landing node
+// is the operator's own and may legitimately sit on a private network.
+func probeTarget(ctx context.Context, target PingTarget) (PingSample, error) {
+	return tcpPing(ctx, target.Address, target.Kind == "")
 }
 
 // newPingCollectorWithExtra returns a collector that also samples whatever
@@ -152,6 +172,21 @@ func (c *PingCollector) Targets() []PingTarget {
 	return targets
 }
 
+// ReportedTargets is Targets with each one's Problem from the latest round
+// filled in. The copies are fresh, so the fixed list is never written to.
+func (c *PingCollector) ReportedTargets() []PingTarget {
+	targets := append([]PingTarget(nil), c.Targets()...)
+	if c == nil {
+		return targets
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range targets {
+		targets[i].Problem = c.problems[targets[i].ID]
+	}
+	return targets
+}
+
 // Collect probes every target. The probes run concurrently so one unreachable
 // target cannot stretch a round past the sampling interval; results come back
 // in target order. A target that could not be probed at all is omitted, which
@@ -164,13 +199,15 @@ func (c *PingCollector) Collect(ctx context.Context) map[string]PingSample {
 	// a round describes the same set of targets.
 	targets := c.Targets()
 	samples := make([]*PingSample, len(targets))
+	errs := make([]error, len(targets))
 	var wg sync.WaitGroup
 	for i, target := range targets {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sample, err := c.probe(ctx, target.Address)
+			sample, err := c.probe(ctx, target)
 			if err != nil {
+				errs[i] = err
 				return
 			}
 			samples[i] = &sample
@@ -178,12 +215,60 @@ func (c *PingCollector) Collect(ctx context.Context) map[string]PingSample {
 	}
 	wg.Wait()
 	out := make(map[string]PingSample, len(targets))
+	problems := make(map[string]string)
 	for i, target := range targets {
 		if samples[i] != nil {
 			out[target.ID] = *samples[i]
 		}
+		var unroutable *UnroutableTargetError
+		if errors.As(errs[i], &unroutable) {
+			problems[target.ID] = unroutable.Error()
+		}
 	}
+	c.setProblems(problems)
 	return out
+}
+
+// setProblems replaces the per-target problems with this round's, logging each
+// one when it first appears or changes rather than once a minute.
+func (c *PingCollector) setProblems(problems map[string]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, problem := range problems {
+		if c.problems[id] != problem {
+			log.Printf("monitor: latency target %s skipped: %s", id, problem)
+		}
+	}
+	c.problems = problems
+}
+
+// UnroutableTargetError is a probe refused because its name resolved only to
+// addresses the public internet cannot route to. A connect would just time
+// out, and recording that as a sample would blame a route for what is really
+// a bad DNS record.
+type UnroutableTargetError struct {
+	Host  string
+	Addrs []netip.Addr
+}
+
+func (e *UnroutableTargetError) Error() string {
+	return fmt.Sprintf("%s resolves to %s, which is not a public address", e.Host, joinAddrs(e.Addrs))
+}
+
+func joinAddrs(addrs []netip.Addr) string {
+	parts := make([]string, len(addrs))
+	for i, addr := range addrs {
+		parts[i] = addr.String()
+	}
+	return strings.Join(parts, ", ")
+}
+
+// isPublicAddr reports whether addr is one a probe across the internet can
+// reach: global unicast and outside the private ranges. Loopback, link-local,
+// multicast and the unspecified address all fail IsGlobalUnicast.
+func isPublicAddr(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	return addr.IsGlobalUnicast() && !addr.IsPrivate()
 }
 
 // tcpPing times pingCount connects to address and averages the ones that
@@ -191,7 +276,10 @@ func (c *PingCollector) Collect(ctx context.Context) map[string]PingSample {
 // resolved address, so a slow resolver is not billed to the route; a name that
 // does not resolve at all is an error rather than a sample, which leaves the
 // target's history untouched instead of recording a route failure.
-func tcpPing(ctx context.Context, address string) (PingSample, error) {
+//
+// With publicOnly set, the first public address is probed and a name with none
+// is an *UnroutableTargetError, for the same reason.
+func tcpPing(ctx context.Context, address string, publicOnly bool) (PingSample, error) {
 	ctx, cancel := context.WithTimeout(ctx, pingRoundDeadline)
 	defer cancel()
 	host, port, err := net.SplitHostPort(address)
@@ -205,7 +293,20 @@ func tcpPing(ctx context.Context, address string) (PingSample, error) {
 	if len(addrs) == 0 {
 		return PingSample{}, &net.DNSError{Err: "no address", Name: host}
 	}
-	target := net.JoinHostPort(addrs[0].String(), port)
+	addr := addrs[0]
+	if publicOnly {
+		found := false
+		for _, candidate := range addrs {
+			if isPublicAddr(candidate) {
+				addr, found = candidate, true
+				break
+			}
+		}
+		if !found {
+			return PingSample{}, &UnroutableTargetError{Host: host, Addrs: addrs}
+		}
+	}
+	target := net.JoinHostPort(addr.String(), port)
 
 	var (
 		total     time.Duration
