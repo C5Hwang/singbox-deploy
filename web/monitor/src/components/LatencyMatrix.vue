@@ -101,7 +101,7 @@ function shortCarrier(name: string): string {
 </script>
 
 <template>
-  <div class="matrix" role="table" aria-label="Latency by carrier and city, milliseconds">
+  <div class="matrix" role="table" aria-label="Latency by carrier and region, milliseconds">
     <div class="row head" role="row">
       <span class="corner" role="columnheader"></span>
       <span v-for="city in cities" :key="city" class="col-head" role="columnheader">{{ city }}</span>

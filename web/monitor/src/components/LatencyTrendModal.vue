@@ -15,10 +15,10 @@ const showPeakAverage = ref(false);
 // page and are filtered out here the same way the matrix filters them.
 const allTargets = computed(() => carrierTargets(props.snapshot.targets));
 
-// Carriers and cities are filtered independently: the interesting comparisons
-// are one carrier across three cities and one city across three carriers, and a
-// single flat list of nine lines cannot express either. This is the one thing
-// this chart has that the others do not.
+// Carriers and regions are filtered independently: the interesting comparisons
+// are one carrier across three regions and one region across three carriers,
+// and a single flat list of nine lines cannot express either. This is the one
+// thing this chart has that the others do not.
 const carriers = computed(() => uniqueBy((t) => t.carrier ?? ""));
 const cities = computed(() => uniqueBy((t) => t.city ?? ""));
 
@@ -103,7 +103,7 @@ const { chartRef, loading } = useTrendChart(
           </button>
         </div>
         <div class="filter-group">
-          <span class="eyebrow">City</span>
+          <span class="eyebrow">Region</span>
           <button
             v-for="city in cities"
             :key="city"

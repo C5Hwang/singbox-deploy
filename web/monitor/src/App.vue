@@ -21,7 +21,7 @@ const PAGES: { key: Tab; title: string; short: string; blurb: string }[] = [
   { key: "traffic", title: "Network Traffic", short: "Traffic", blurb: "Cycle usage against each node's quota" },
   { key: "resources", title: "Resources", short: "Resources", blurb: "CPU, memory, disk and IO on every node" },
   { key: "topips", title: "Clients", short: "Clients", blurb: "Client addresses ranked by traffic" },
-  { key: "latency", title: "Latency", short: "Latency", blurb: "Round-trip time to Chinese carriers, by city" },
+  { key: "latency", title: "Latency", short: "Latency", blurb: "Round-trip time to Chinese carriers, by region" },
   { key: "relay", title: "Relay", short: "Relay", blurb: "Relay to landing node routes and their latency" },
   { key: "subscriptions", title: "Subscriptions", short: "Subscribe", blurb: "Build subscription links from a domain and salt" },
 ];

@@ -59,7 +59,8 @@ type PingTarget struct {
 	Problem string `json:"problem,omitempty"`
 }
 
-// DefaultPingTargets is the probe list: three carriers by three cities.
+// DefaultPingTargets is the probe list: three carriers by three regions (two
+// municipalities and one province).
 //
 // The hostnames come from the Zstatic CDN node catalogue, which publishes one
 // name per carrier per region for exactly this purpose. They are probed by TCP
@@ -72,13 +73,13 @@ type PingTarget struct {
 var DefaultPingTargets = []PingTarget{
 	{ID: "telecom-beijing", Carrier: "China Telecom", City: "Beijing", Address: "bj-ct-v4.ip.zstaticcdn.com:80"},
 	{ID: "telecom-shanghai", Carrier: "China Telecom", City: "Shanghai", Address: "sh-ct-v4.ip.zstaticcdn.com:80"},
-	{ID: "telecom-guangzhou", Carrier: "China Telecom", City: "Guangzhou", Address: "gd-guangzhou-ct-v4.ip.zstaticcdn.com:80"},
+	{ID: "telecom-guangdong", Carrier: "China Telecom", City: "Guangdong", Address: "gd-ct-v4.ip.zstaticcdn.com:80"},
 	{ID: "unicom-beijing", Carrier: "China Unicom", City: "Beijing", Address: "bj-cu-v4.ip.zstaticcdn.com:80"},
 	{ID: "unicom-shanghai", Carrier: "China Unicom", City: "Shanghai", Address: "sh-cu-v4.ip.zstaticcdn.com:80"},
-	{ID: "unicom-guangzhou", Carrier: "China Unicom", City: "Guangzhou", Address: "gd-guangzhou-cu-v4.ip.zstaticcdn.com:80"},
+	{ID: "unicom-guangdong", Carrier: "China Unicom", City: "Guangdong", Address: "gd-cu-v4.ip.zstaticcdn.com:80"},
 	{ID: "mobile-beijing", Carrier: "China Mobile", City: "Beijing", Address: "bj-cm-v4.ip.zstaticcdn.com:80"},
 	{ID: "mobile-shanghai", Carrier: "China Mobile", City: "Shanghai", Address: "sh-cm-v4.ip.zstaticcdn.com:80"},
-	{ID: "mobile-guangzhou", Carrier: "China Mobile", City: "Guangzhou", Address: "gd-guangzhou-cm-v4.ip.zstaticcdn.com:80"},
+	{ID: "mobile-guangdong", Carrier: "China Mobile", City: "Guangdong", Address: "gd-cm-v4.ip.zstaticcdn.com:80"},
 }
 
 // RelayPingTargetPrefix namespaces a relay's probe of one landing node, keeping
