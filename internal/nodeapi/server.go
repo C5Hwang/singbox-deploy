@@ -50,6 +50,13 @@ type RelayHandler interface {
 	ApplyRelay(ctx context.Context, req RelayRequest, log io.Writer) error
 }
 
+// IPBanHandler is implemented by agents that can enforce IP bans. It is
+// optional so a newer Hub reports an agent that predates bans as too old
+// instead of failing with a routing error.
+type IPBanHandler interface {
+	ApplyIPBan(ctx context.Context, req IPBanRequest, log io.Writer) error
+}
+
 // ProtocolStateHandler is implemented by agents that support full protocol
 // editing. Keeping it optional lets a newer Hub diagnose an older Agent
 // cleanly instead of changing the base lifecycle interface.
@@ -104,6 +111,7 @@ func (s *Server) Mux() http.Handler {
 	s.handle(mux, http.MethodPost, "/api/core", s.handleCore)
 	s.handle(mux, http.MethodPost, "/api/core/stage", s.handleCoreStage)
 	s.handle(mux, http.MethodPost, "/api/relay", s.handleRelay)
+	s.handle(mux, http.MethodPost, "/api/ipban", s.handleIPBan)
 	s.handle(mux, http.MethodGet, "/api/subscription", s.handleSubscription)
 	mux.HandleFunc("/api/monitor/usage", s.auth(s.handleTrafficUsage))
 	s.handle(mux, http.MethodPost, "/api/monitor/package", s.handleTrafficPackage)
@@ -276,6 +284,26 @@ func (s *Server) handleCoreStage(w http.ResponseWriter, r *http.Request) {
 	}
 	streamOperation(w, func(log io.Writer) error {
 		return handler.StageCore(r.Context(), req, log)
+	})
+}
+
+func (s *Server) handleIPBan(w http.ResponseWriter, r *http.Request) {
+	var req IPBanRequest
+	if err := decodeJSON(w, r, &req, maxIPBanRequestBody); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ValidateIPBanRequest(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	handler, ok := s.Handler.(IPBanHandler)
+	if !ok {
+		http.Error(w, "IP bans are not supported by this agent", http.StatusNotImplemented)
+		return
+	}
+	streamOperation(w, func(log io.Writer) error {
+		return handler.ApplyIPBan(r.Context(), req, log)
 	})
 }
 
@@ -529,6 +557,9 @@ const (
 	// A relay job is a handful of small records per landing node, and a hub
 	// fronting a large fleet through one relay is still far inside this.
 	maxRelayRequestBody int64 = 256 << 10
+	// A ban rule set is one short address list per fronted node; even a long
+	// blocklist on a busy relay stays well inside this.
+	maxIPBanRequestBody int64 = 1 << 20
 	// []byte expands by 4/3 when JSON/base64 encoded. Leave a small allowance
 	// for field names and the version/digest strings.
 	maxUpgradeRequestBody int64 = (MaxAgentBinarySize+2)/3*4 + 4096

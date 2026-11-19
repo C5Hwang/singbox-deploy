@@ -20,6 +20,7 @@ import (
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/core"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/ipban"
 	"github.com/C5Hwang/singbox-deploy/internal/nodeapi"
 	"github.com/C5Hwang/singbox-deploy/internal/nodes"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
@@ -97,6 +98,9 @@ type Controller struct {
 	// Tests replace it so a hub-side relay change never reaches the host's
 	// nftables; a spoke's goes over the agent API and needs no seam.
 	NewRelayApplier func() *relay.Applier
+	// NewIPBanApplier builds the installer for the hub's own IP ban rules, so
+	// tests never reach the host's nftables.
+	NewIPBanApplier func() *ipban.Applier
 	// ResolveHostIPv4 records a landing node's address when a relay link is
 	// provisioned, so the relay has a fallback if its own resolver is not up
 	// yet at boot. It returns "" for a name it cannot resolve, which is not an
@@ -184,6 +188,11 @@ func (c *Controller) defaults() {
 	}
 	if c.ResolveHostIPv4 == nil {
 		c.ResolveHostIPv4 = resolveHostIPv4
+	}
+	if c.NewIPBanApplier == nil {
+		c.NewIPBanApplier = func() *ipban.Applier {
+			return &ipban.Applier{Layout: c.Layout, Runner: c.Runner}
+		}
 	}
 	if c.NewRelayApplier == nil {
 		c.NewRelayApplier = func() *relay.Applier {
@@ -836,6 +845,12 @@ func (c *Controller) detachNode(ctx context.Context, node nodes.Node, log io.Wri
 		if err := c.ApplyRelayFor(ctx, relayID, log); err != nil {
 			fmt.Fprintf(log, "warning: could not withdraw relay forwarding for %s: %v\n", node.EffectiveAlias(), err)
 		}
+	}
+	// A ban naming a node that no longer exists would hand it to a later node
+	// reusing the ID. The relays that fronted the node have their rules for it
+	// withdrawn by the reconciliation the refresh below runs.
+	if err := ipban.DropNode(c.Layout, identifier); err != nil {
+		fmt.Fprintf(log, "warning: could not drop %s from the IP ban registry: %v\n", node.EffectiveAlias(), err)
 	}
 	// Drop the removed spoke's nodes from the hub's published subscription.
 	if err := c.RefreshSubscriptions(ctx); err != nil {

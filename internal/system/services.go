@@ -13,6 +13,9 @@ const (
 	// nftables rules do not survive one, and the node it fronts keeps
 	// publishing this relay's address in the meantime.
 	RelayService = "singbox-deploy-relay.service"
+	// IPBanService reinstalls the IP ban ruleset after a reboot, for the same
+	// reason: nftables rules do not survive one.
+	IPBanService = "singbox-deploy-ipban.service"
 )
 
 // Systemctl returns a systemctl command for the given action and unit, e.g.

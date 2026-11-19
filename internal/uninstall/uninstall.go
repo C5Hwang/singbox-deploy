@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/ipban"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -64,6 +65,7 @@ func (o *Options) defaults() {
 func (o Options) steps() []deploy.Step {
 	return []deploy.Step{
 		{Label: "Relay", Detail: "withdraw any relay forwarding this node performs", Run: o.stepRelay},
+		{Label: "IP bans", Detail: "lift any IP ban this node enforces", Run: o.stepIPBan},
 		{Label: "Stop services", Detail: "stop and disable managed systemd units", Run: o.stepStopServices},
 		{Label: "Firewall", Detail: "close managed protocol and subscription ports", Run: o.stepFirewall},
 		{Label: "Systemd units", Detail: "remove managed systemd unit and timer files", Run: o.stepSystemdUnits},
@@ -117,6 +119,18 @@ func (o Options) stepRelay(ctx context.Context) error {
 		Firewall:   system.DetectFirewall(),
 		Runner:     o.Runner,
 	}
+	_ = applier.Clear(ctx)
+	return nil
+}
+
+// stepIPBan drops the ban table and its boot-time unit. Like stepRelay it is
+// best-effort, and a node that was never told about a ban is left alone.
+func (o Options) stepIPBan(ctx context.Context) error {
+	cfg, err := ipban.Load(o.Layout)
+	if err != nil || cfg.Empty() {
+		return nil
+	}
+	applier := &ipban.Applier{Layout: o.Layout, SystemdDir: o.SystemdDir, Runner: o.Runner}
 	_ = applier.Clear(ctx)
 	return nil
 }

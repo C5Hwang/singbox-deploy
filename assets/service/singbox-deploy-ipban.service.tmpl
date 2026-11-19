@@ -1,0 +1,15 @@
+[Unit]
+Description=singbox-deploy IP bans
+Documentation=https://github.com/C5Hwang/singbox-deploy
+Before=sing-box.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+ExecStart={{ .Bin }} ipban apply
+
+[Install]
+WantedBy=multi-user.target

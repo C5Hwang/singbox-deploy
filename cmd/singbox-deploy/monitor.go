@@ -92,7 +92,9 @@ func runMonitor(args []string) error {
 			// The snapshot that was just refreshed is what says whether each
 			// relay still has traffic left, so this is the moment to republish
 			// if any of them crossed its limit — or came back after a reset.
-			return errors.Join(refreshErr, ctrl.ReconcileRelayPublication(ctx))
+			// IP bans are reconciled on the same timer, which is what retries
+			// a spoke that was unreachable when a ban changed.
+			return errors.Join(refreshErr, ctrl.ReconcileRelayPublication(ctx), ctrl.ReconcileIPBans(ctx, nil))
 		},
 		FetchRemoteData: func(ctx context.Context, sourceID, path string, query url.Values) ([]byte, error) {
 			endpoint, err := monitorEndpointForPath(path)

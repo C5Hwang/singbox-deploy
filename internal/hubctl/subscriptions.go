@@ -143,6 +143,13 @@ func (c *Controller) RefreshSubscriptions(ctx context.Context) error {
 	if err := c.pruneSubscriptionCache(aggregated); err != nil {
 		errs = append(errs, err)
 	}
+	// Every IP ban is enforced on the ports the subscriptions publish, so it
+	// has to follow them whenever they are republished: a protocol that moved
+	// port, a relay that was added or withdrawn, a node that joined or left.
+	// Only nodes whose rules actually changed are contacted.
+	if err := c.ReconcileIPBans(ctx, nil); err != nil {
+		errs = append(errs, err)
+	}
 	return joinErrors(errs)
 }
 

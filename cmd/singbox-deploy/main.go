@@ -11,6 +11,7 @@ import (
 
 	"github.com/C5Hwang/singbox-deploy/internal/certmgr"
 	"github.com/C5Hwang/singbox-deploy/internal/deploy"
+	"github.com/C5Hwang/singbox-deploy/internal/ipban"
 	"github.com/C5Hwang/singbox-deploy/internal/paths"
 	"github.com/C5Hwang/singbox-deploy/internal/relay"
 	"github.com/C5Hwang/singbox-deploy/internal/system"
@@ -89,6 +90,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "relay" {
 		if err := relay.Command(context.Background(), os.Args[2:], "/usr/bin/singbox-deploy"); err != nil {
 			fmt.Fprintln(os.Stderr, "relay:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "ipban" {
+		if err := ipban.Command(context.Background(), os.Args[2:], "/usr/bin/singbox-deploy"); err != nil {
+			fmt.Fprintln(os.Stderr, "ipban:", err)
 			os.Exit(1)
 		}
 		return

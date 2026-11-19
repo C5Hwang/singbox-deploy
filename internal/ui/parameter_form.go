@@ -32,6 +32,9 @@ type field struct {
 	skip      func(vals map[string]string) bool
 	noteFunc  func(vals map[string]string) string
 	badgeFunc func(vals map[string]string) string
+	// hideDefault drops the "default:" line, for a multi-choice field whose
+	// default is already shown by which options start ticked.
+	hideDefault bool
 }
 
 func fieldFromParameter(f uiparams.Field) field {
@@ -399,7 +402,7 @@ func (f *parameterForm) View(title string) string {
 			b.WriteString(dimStyle.Render(line) + "\n")
 		}
 	}
-	if def := f.fieldDefault(field); def != "" {
+	if def := f.fieldDefault(field); def != "" && !field.hideDefault {
 		value := def
 		if field.secret {
 			value = "•••••••• (set)"

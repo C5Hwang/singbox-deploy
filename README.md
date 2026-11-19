@@ -15,6 +15,7 @@ and scales to a fleet managed from one hub.
 - Fleet-wide subscriptions in share-link, Clash Meta, sing-box, and Surge
   formats, with an optional Tailscale mode.
 - Node-to-node relaying over lower-latency ingress paths.
+- Per-node IP bans that also hold for traffic arriving through a relay.
 - Web dashboard for fleet monitoring and subscription link generation.
 - Monthly traffic quotas per node, with temporary top-up packages.
 - Nginx masquerade site from bundled [HTML5 UP](https://html5up.net)

@@ -98,6 +98,7 @@ type Model struct {
 	install      *installFlow
 	protocols    *protocolManager
 	relay        *relayManager
+	ipban        *ipBanManager
 	subscribe    *subscriptionManager
 	monitor      *monitorManager
 	core         *coreManager
@@ -128,6 +129,7 @@ func defaultGroups() []MenuGroup {
 		{Title: "Proxy", Items: []MenuItem{
 			{Label: "Protocol settings", Activate: activateProtocols},
 			{Label: "Relay", Activate: activateRelay},
+			{Label: "IP ban", Activate: activateIPBan},
 		}},
 		{Title: "Services", Items: []MenuItem{
 			{Label: "Subscription settings", Activate: activateSubscriptions},
@@ -163,6 +165,13 @@ func activateRelay(m *Model) tea.Cmd {
 	r := newRelayManager()
 	r.setSize(m.width, m.height)
 	m.relay = r
+	return nil
+}
+
+func activateIPBan(m *Model) tea.Cmd {
+	b := newIPBanManager()
+	b.setSize(m.width, m.height)
+	m.ipban = b
 	return nil
 }
 
@@ -318,6 +327,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.RefreshStatus()
 			}
 			m.relay = nil
+		}
+		return m, cmd
+	}
+	if m.ipban != nil {
+		cmd, done := m.ipban.Update(msg)
+		if done {
+			m.ipban = nil
 		}
 		return m, cmd
 	}
@@ -542,7 +558,7 @@ func (m *Model) contentColumn(width, height int) string {
 // showsStatus reports whether the main status screen is on display, meaning no
 // sub-flow has taken over the content column.
 func (m *Model) showsStatus() bool {
-	return m.install == nil && m.protocols == nil && m.relay == nil && m.subscribe == nil &&
+	return m.install == nil && m.protocols == nil && m.relay == nil && m.ipban == nil && m.subscribe == nil &&
 		m.monitor == nil && m.core == nil && m.certificates == nil && m.nodes == nil &&
 		m.selfupdate == nil && m.regenerate == nil && m.uninstall == nil
 }
@@ -559,6 +575,10 @@ func (m *Model) contentView(width, height int) string {
 	if m.relay != nil {
 		m.relay.setSize(width, height)
 		return m.relay.View()
+	}
+	if m.ipban != nil {
+		m.ipban.setSize(width, height)
+		return m.ipban.View()
 	}
 	if m.subscribe != nil {
 		m.subscribe.setSize(width, height)
@@ -607,6 +627,8 @@ func (m *Model) footerView() string {
 			parts = append(parts, m.protocols.footerHints()...)
 		} else if m.relay != nil {
 			parts = append(parts, m.relay.footerHints()...)
+		} else if m.ipban != nil {
+			parts = append(parts, m.ipban.footerHints()...)
 		} else if m.subscribe != nil {
 			parts = append(parts, m.subscribe.footerHints()...)
 		} else if m.monitor != nil {

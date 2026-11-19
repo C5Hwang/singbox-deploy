@@ -184,6 +184,15 @@ func (c *Client) ApplyRelay(ctx context.Context, req RelayRequest, log io.Writer
 	return c.stream(ctx, "/api/relay", req, log)
 }
 
+// ApplyIPBan replaces the spoke's complete IP ban rule set. An empty request
+// lifts every ban on the node.
+func (c *Client) ApplyIPBan(ctx context.Context, req IPBanRequest, log io.Writer) error {
+	if err := ValidateIPBanRequest(req); err != nil {
+		return err
+	}
+	return c.stream(ctx, "/api/ipban", req, log)
+}
+
 // Subscription fetches one subscription format body from the agent.
 func (c *Client) Subscription(ctx context.Context, format string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -296,6 +297,53 @@ type InstallRequest struct {
 
 	CertificatePEM string `json:"certificatePEM"`
 	PrivateKeyPEM  string `json:"privateKeyPEM"`
+}
+
+// IPBanRule drops every listed address on every listed port of a spoke.
+type IPBanRule struct {
+	// Label says what the ports belong to, for the agent's log only.
+	Label string `json:"label"`
+	// Addresses are single IPv4/IPv6 addresses or CIDR prefixes.
+	Addresses []string `json:"addresses"`
+	TCP       []int    `json:"tcp,omitempty"`
+	UDP       []int    `json:"udp,omitempty"`
+}
+
+// IPBanRequest replaces a spoke's complete IP ban rule set. The Hub owns the
+// ban registry and the relay topology the ports come from, so a request is a
+// full replacement; an empty Rules list lifts every ban on the node.
+type IPBanRequest struct {
+	Rules []IPBanRule `json:"rules"`
+}
+
+// ValidateIPBanRequest rejects a rule set that could not become a ruleset. The
+// Agent validates again before installing anything; this is the check at the
+// trust boundary.
+func ValidateIPBanRequest(req IPBanRequest) error {
+	for _, rule := range req.Rules {
+		for _, address := range rule.Addresses {
+			value := strings.TrimSpace(address)
+			var err error
+			if strings.Contains(value, "/") {
+				var prefix netip.Prefix
+				prefix, err = netip.ParsePrefix(value)
+				if err == nil && prefix.Bits() == 0 {
+					return fmt.Errorf("banned prefix %q would match every client", value)
+				}
+			} else {
+				_, err = netip.ParseAddr(value)
+			}
+			if err != nil {
+				return fmt.Errorf("banned address %q is not an IP address or CIDR prefix", value)
+			}
+		}
+		for _, port := range append(append([]int(nil), rule.TCP...), rule.UDP...) {
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("banned port must be between 1 and 65535")
+			}
+		}
+	}
+	return nil
 }
 
 // RelayForward is one fronted protocol's port mapping on a relay node: the
