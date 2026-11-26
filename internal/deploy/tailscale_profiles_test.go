@@ -340,11 +340,11 @@ func TestTailscaleSurgeProfiles(t *testing.T) {
 	client := applyTailscale(t, subscription.ProfileSurge, base, tailscaleClientOpts)
 	assertContainsInOrder(t, client,
 		"skip-proxy = 127.0.0.1, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, localhost, *.local\n",
-		"always-real-ip = *.ts.net\n\n[Proxy]\nDIRECT = direct\nTailscale = tailscale, section-name=tailnet\n\n[Proxy Group]\n",
+		"\n[Proxy]\nDIRECT = direct\nTailscale = tailscale, section-name=tailnet\n\n[Proxy Group]\n",
 		"[Tailscale tailnet]\nauth-key = tskey-auth-kAbC123-XyZ_789\nhostname = laptop\n\n[Rule]\n"+
 			"DOMAIN-SUFFIX,ts.net,Tailscale\nIP-CIDR,100.64.0.0/10,Tailscale,no-resolve\nIP-CIDR6,fd7a:115c:a1e0::/48,Tailscale,no-resolve\nRULE-SET,",
 	)
-	for _, absent := range []string{"tun-excluded-routes", "[Host]", "underlying-proxy", "tailscale.com"} {
+	for _, absent := range []string{"always-real-ip", "tun-excluded-routes", "[Host]", "underlying-proxy", "tailscale.com"} {
 		if strings.Contains(client, absent) {
 			t.Fatalf("client profile should not contain %q", absent)
 		}

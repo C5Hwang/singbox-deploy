@@ -844,11 +844,13 @@ func applySurgeTailscale(body []byte, opts TailscaleOptions) ([]byte, error) {
 		return general(func(start, end int) []string { return iniMergeList(lines, start, end, key, values...) })
 	}
 
-	if err = mergeGeneral("always-real-ip", "*."+magicDNSSuffix); err != nil {
-		return nil, err
-	}
 	switch opts.Role {
 	case TailscaleServer:
+		// always-real-ip hands MagicDNS names to the upstream resolver, which
+		// [Host] points at the system resolver the official app configures.
+		if err = mergeGeneral("always-real-ip", "*."+magicDNSSuffix); err != nil {
+			return nil, err
+		}
 		// tun-excluded-routes keeps the tailnet off Surge VIF; skip-proxy
 		// keeps system-proxy requests for tailnet addresses and MagicDNS
 		// names off Surge as well. The base profile lists neither.
@@ -862,6 +864,11 @@ func applySurgeTailscale(body []byte, opts TailscaleOptions) ([]byte, error) {
 			return nil, err
 		}
 	case TailscaleClient:
+		// No always-real-ip here: MagicDNS records exist only inside the
+		// Tailscale policy, so a name must reach Surge by hostname (fake IP)
+		// for the policy to resolve it. A real-IP lookup would go to the
+		// upstream resolvers, which do not know tailnet names.
+		//
 		// skip-proxy would hand system-proxy requests for the tailnet to the
 		// system (macOS) or to VIF (iOS) instead of the Tailscale policy.
 		if err = general(func(start, end int) []string {

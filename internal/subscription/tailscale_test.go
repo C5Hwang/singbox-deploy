@@ -373,7 +373,7 @@ FINAL,全球流量
 	}
 	wantClient := `[General]
 # > skip proxy
-always-real-ip = *.lan, *.ts.net
+always-real-ip = *.lan
 tun-excluded-routes = 239.255.255.250/32
 
 [Proxy]
